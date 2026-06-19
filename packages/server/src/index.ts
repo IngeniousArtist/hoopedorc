@@ -8,7 +8,7 @@ import { WS_PATH, pickAssignedModel } from "@orc/types";
 import { ENV, defaultSettings } from "./config";
 import { seed } from "./mock";
 import type { Db } from "./db/index";
-import { initDb, openDb } from "./db/index";
+import { initDb } from "./db/index";
 import * as repo from "./db/repo";
 import { WsHub } from "./ws-hub";
 import { EngineRunner } from "./engine-runner";
@@ -18,7 +18,8 @@ type RouteParams = { id: string };
 
 function setupDb(): Db {
   if (ENV.mock) {
-    const db = openDb(":memory:");
+    // In-memory DB needs the schema applied before seeding.
+    const db = initDb(":memory:");
     const { projects, tasks, settings } = seed();
     const p = projects[0]!;
     repo.createProject(db, {
