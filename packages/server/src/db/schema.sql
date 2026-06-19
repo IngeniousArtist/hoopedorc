@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   depends_on          TEXT NOT NULL DEFAULT '[]',  -- JSON array of task ids
   acceptance_criteria TEXT NOT NULL DEFAULT '[]',  -- JSON array of strings
   assigned_model      TEXT NOT NULL,
+  role                TEXT,                         -- optional Role for routing
   scope_paths         TEXT NOT NULL DEFAULT '[]',  -- JSON array of globs
   branch              TEXT,
   worktree_path       TEXT,

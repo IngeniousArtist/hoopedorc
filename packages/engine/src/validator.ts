@@ -1,14 +1,22 @@
+import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import type { GateResult, MergeDecision, Project, Settings, Task } from "@orc/types";
+import type {
+  GateResult,
+  MergeDecision,
+  ModelId,
+  Project,
+  Settings,
+  Task,
+} from "@orc/types";
 import { pickAssignedModel } from "@orc/types";
 import type { AgentAdapter } from "@orc/adapters";
 import type { Validator } from "./index.js";
 
+const MAX_DIFF_CHARS = 40_000;
+
 export class ValidatorImpl implements Validator {
   constructor(
-    private readonly adapterFactory: (
-      modelId: string,
-    ) => AgentAdapter,
+    private readonly adapterFactory: (modelId: ModelId) => AgentAdapter,
     private readonly settings: Settings,
   ) {}
 
@@ -40,21 +48,57 @@ export class ValidatorImpl implements Validator {
       );
     }
 
+    const cwd = task.worktreePath ?? project.localPath;
+    const diff = this.getDiff(project, cwd);
     const adapter = this.adapterFactory(validatorModel);
-    const prompt = this.buildReviewPrompt(task, gate);
+    const prompt = this.buildReviewPrompt(task, gate, diff);
 
     const result = await adapter.run({
       model: validatorModel,
       prompt,
-      cwd: project.localPath,
+      cwd,
       onLog: () => {},
     });
 
-    return this.parseDecision(result.summary ?? "", task, gate, validatorModel);
+    const decision = this.parseDecision(
+      result.summary ?? "",
+      task,
+      gate,
+      validatorModel,
+    );
+
+    // Enforce the confidence threshold: a low-confidence approval is escalated
+    // to a human rather than auto-merged.
+    if (
+      decision.verdict === "approve" &&
+      decision.confidence < this.settings.confidenceThreshold
+    ) {
+      decision.verdict = "escalate";
+      decision.reasons = [
+        `Validator confidence ${decision.confidence} is below threshold ${this.settings.confidenceThreshold}.`,
+        ...decision.reasons,
+      ];
+    }
+
+    return decision;
   }
 
-  private buildReviewPrompt(task: Task, gate: GateResult): string {
-    return `You are a code reviewer. Grade the implementation of this task against its acceptance criteria.
+  private getDiff(project: Project, cwd: string): string {
+    try {
+      const out = execSync(
+        `git diff origin/${project.defaultBranch} HEAD`,
+        { cwd, stdio: "pipe", encoding: "utf-8", maxBuffer: 64 * 1024 * 1024 },
+      );
+      return out.length > MAX_DIFF_CHARS
+        ? out.slice(0, MAX_DIFF_CHARS) + "\n... (diff truncated)"
+        : out;
+    } catch {
+      return "(could not compute diff)";
+    }
+  }
+
+  private buildReviewPrompt(task: Task, gate: GateResult, diff: string): string {
+    return `You are a code reviewer. Grade the implementation of this task against its acceptance criteria, using the diff below as the primary evidence.
 
 ## Task
 **Title:** ${task.title}
@@ -72,6 +116,11 @@ ${task.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}
 | tests | ${gate.tests ? "PASS" : "FAIL"} | ${gate.details.tests ?? ""} |
 | noConflicts | ${gate.noConflicts ? "PASS" : "FAIL"} | ${gate.details.noConflicts ?? ""} |
 | inScope | ${gate.inScope ? "PASS" : "FAIL"} | ${gate.details.inScope ?? ""} |
+
+## Diff (vs default branch)
+\`\`\`diff
+${diff}
+\`\`\`
 
 Respond with ONLY a JSON object (no markdown, no explanation):
 {

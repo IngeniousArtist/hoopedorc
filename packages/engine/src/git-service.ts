@@ -1,58 +1,75 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { Project, Task } from "@orc/types";
 import type { GitService } from "./index.js";
+
+// All commands use execFileSync with argument arrays (no shell), so task titles,
+// descriptions, branch names, and repo URLs can't inject shell commands.
+
+function git(args: string[], cwd?: string): string {
+  return execFileSync("git", args, {
+    cwd,
+    stdio: "pipe",
+    encoding: "utf-8",
+  });
+}
+
+function gh(args: string[], cwd?: string): string {
+  return execFileSync("gh", args, {
+    cwd,
+    stdio: "pipe",
+    encoding: "utf-8",
+  });
+}
 
 export class GitServiceImpl implements GitService {
   async ensureClone(project: Project): Promise<void> {
     if (existsSync(project.localPath)) {
       try {
-        execSync("git remote get-url origin", {
-          cwd: project.localPath,
-          stdio: "pipe",
-        });
+        git(["remote", "get-url", "origin"], project.localPath);
         return;
       } catch {
-        /* directory exists but not a git repo — remove and reclone */
+        /* directory exists but not a git repo — fall through and clone */
       }
     }
-
-    execSync(`git clone "${project.repoUrl}" "${project.localPath}"`, {
-      stdio: "pipe",
-    });
+    git(["clone", project.repoUrl, project.localPath]);
   }
 
   async commitAll(worktreePath: string, message: string): Promise<void> {
-    execSync("git add -A", { cwd: worktreePath, stdio: "pipe" });
+    git(["add", "-A"], worktreePath);
     try {
-      execSync(`git commit -m "${message.replace(/"/g, '\\"')}"`, {
-        cwd: worktreePath,
-        stdio: "pipe",
-      });
+      git(["commit", "-m", message], worktreePath);
     } catch {
-      /* commit may fail if nothing to commit — that's ok */
+      /* nothing to commit — that's ok */
     }
   }
 
   async push(worktreePath: string, branch: string): Promise<void> {
-    execSync(`git push origin "${branch}"`, {
-      cwd: worktreePath,
-      stdio: "pipe",
-    });
+    git(["push", "origin", branch], worktreePath);
   }
 
   async openPr(project: Project, task: Task): Promise<number> {
-    const body = task.description + "\n\n## Acceptance Criteria\n" +
+    const body =
+      task.description +
+      "\n\n## Acceptance Criteria\n" +
       task.acceptanceCriteria.map((c) => `- ${c}`).join("\n");
 
-    const output = execSync(
-      `gh pr create` +
-        ` --repo "${project.repoUrl}"` +
-        ` --base "${project.defaultBranch}"` +
-        ` --head "${task.branch}"` +
-        ` --title "${task.title.replace(/"/g, '\\"')}"` +
-        ` --body "${body.replace(/"/g, '\\"').replace(/\n/g, "\\n")}"`,
-      { cwd: task.worktreePath ?? project.localPath, stdio: "pipe", encoding: "utf-8" },
+    const output = gh(
+      [
+        "pr",
+        "create",
+        "--repo",
+        project.repoUrl,
+        "--base",
+        project.defaultBranch,
+        "--head",
+        task.branch ?? "",
+        "--title",
+        task.title,
+        "--body",
+        body,
+      ],
+      task.worktreePath ?? project.localPath,
     );
 
     const match = output.match(/\/pull\/(\d+)/);
@@ -65,36 +82,39 @@ export class GitServiceImpl implements GitService {
   }
 
   async mergePr(project: Project, prNumber: number): Promise<void> {
-    execSync(
-      `gh pr merge "${prNumber}" --squash --delete-branch` +
-        ` --repo "${project.repoUrl}"`,
-      { stdio: "pipe" },
-    );
+    gh([
+      "pr",
+      "merge",
+      String(prNumber),
+      "--squash",
+      "--delete-branch",
+      "--repo",
+      project.repoUrl,
+    ]);
   }
 
   async revertMerge(project: Project, prNumber: number): Promise<void> {
-    const listOutput = execSync(
-      `gh pr view "${prNumber}" --repo "${project.repoUrl}" --json mergeCommit --jq ".mergeCommit.oid"`,
-      { cwd: project.localPath, stdio: "pipe", encoding: "utf-8" },
+    const mergeCommit = gh(
+      [
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        project.repoUrl,
+        "--json",
+        "mergeCommit",
+        "--jq",
+        ".mergeCommit.oid",
+      ],
+      project.localPath,
     ).trim();
 
-    if (!listOutput) {
+    if (!mergeCommit) {
       throw new Error(`No merge commit found for PR #${prNumber}`);
     }
 
-    execSync(`git fetch origin`, {
-      cwd: project.localPath,
-      stdio: "pipe",
-    });
-
-    execSync(`git revert -m 1 "${listOutput}" --no-edit`, {
-      cwd: project.localPath,
-      stdio: "pipe",
-    });
-
-    execSync(`git push origin "${project.defaultBranch}"`, {
-      cwd: project.localPath,
-      stdio: "pipe",
-    });
+    git(["fetch", "origin"], project.localPath);
+    git(["revert", "-m", "1", mergeCommit, "--no-edit"], project.localPath);
+    git(["push", "origin", project.defaultBranch], project.localPath);
   }
 }

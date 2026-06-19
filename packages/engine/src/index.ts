@@ -12,11 +12,13 @@ import type {
   GateResult,
   LogEvent,
   MergeDecision,
+  ModelId,
   Project,
   Run,
   Settings,
   Task,
 } from "@orc/types";
+import type { AgentAdapter } from "@orc/adapters";
 
 export { STUCK_DETECTION } from "./constants.js";
 export { WorktreeManagerImpl } from "./worktree-manager.js";
@@ -44,6 +46,8 @@ export interface EngineEvents {
 export interface WorktreeManager {
   create(project: Project, task: Task): Promise<{ branch: string; path: string }>;
   remove(project: Project, task: Task): Promise<void>;
+  /** Paths changed in the task's worktree vs the project default branch. */
+  changedFiles(project: Project, task: Task): Promise<string[]>;
   /** True if the task modified only files matching task.scopePaths. */
   changedFilesInScope(project: Project, task: Task): Promise<boolean>;
 }
@@ -75,7 +79,9 @@ export interface SchedulerDeps {
   validator: Validator;
   settings: Settings;
   events: EngineEvents;
-  /** Base URL of the running `opencode serve` instance for creating adapters. */
+  /** Resolves an author model id to the adapter that runs it. */
+  adapterFor: (modelId: ModelId) => AgentAdapter;
+  /** Base URL of the running `opencode serve` instance (for opencode adapters). */
   opencodeBaseUrl: string;
 }
 

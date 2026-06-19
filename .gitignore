@@ -9,4 +9,5 @@ dist
 .DS_Store
 .worktrees
 worktrees
+.hoopedorc
 hoopedorc.db
