@@ -1,0 +1,230 @@
+// Core domain model for the Hoopedorc orchestrator.
+//
+// THIS FILE IS THE SHARED CONTRACT. The engine, server, adapters, and web app
+// all build against these types. A change here is a breaking change that must be
+// coordinated across every module — treat it accordingly.
+
+/** The models available to the orchestrator. */
+export type ModelId =
+  | "claude" // planner + optional reviewer — runs via Claude Code (Pro sub)
+  | "glm" // frontend specialist + frontend reviewer — via OpenCode
+  | "deepseek-pro" // hard tasks + primary validator/merger — via OpenCode
+  | "deepseek-flash" // medium tasks — via OpenCode
+  | "grok" // status summaries / Telegram updates — via OpenCode
+  | "nex"; // documentation — via OpenCode (OpenRouter, free tier)
+
+/** What a model is allowed/expected to do. */
+export type Role =
+  | "planner"
+  | "frontend"
+  | "hard"
+  | "medium"
+  | "docs"
+  | "validator"
+  | "updates";
+
+/** How the orchestrator actually executes a model. */
+export type RunnerKind = "claude-code" | "opencode";
+
+export interface ModelConfig {
+  id: ModelId;
+  displayName: string;
+  runner: RunnerKind;
+  /**
+   * For runner === "opencode": the provider/model string OpenCode expects.
+   * Get the exact values from `opencode models`. The defaults shipped in the
+   * scaffold are placeholders and must be verified against your OpenCode setup.
+   */
+  opencodeModel?: string;
+  roles: Role[];
+  enabled: boolean;
+  /** Cost accounting + budget caps (USD). */
+  costPer1kInputUsd?: number;
+  costPer1kOutputUsd?: number;
+  monthlyBudgetUsd?: number;
+  /** How many tasks this model may run at once. */
+  maxConcurrent: number;
+}
+
+export type Difficulty = "easy" | "medium" | "hard";
+
+export type TaskStatus =
+  | "backlog" // planned, not yet runnable (deps unmet)
+  | "ready" // deps satisfied, can be dispatched
+  | "in_progress" // a model is actively working in a worktree
+  | "in_review" // implementation done; gates + validator running
+  | "changes_requested" // validator asked for fixes; will retry
+  | "blocked" // waiting on a dependency or a human decision
+  | "done" // merged to main
+  | "failed"; // exhausted retries / hard failure
+
+export interface Task {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  difficulty: Difficulty;
+  status: TaskStatus;
+  /** DAG edges: task ids that must be `done` before this one is `ready`. */
+  dependsOn: string[];
+  /** Objective, checkable statements the validator grades the work against. */
+  acceptanceCriteria: string[];
+  /** The model assigned to implement this task. */
+  assignedModel: ModelId;
+  /**
+   * Glob patterns this task is allowed to modify. Edits outside this set trip
+   * the "out-of-scope" rail and force a human approval before merge.
+   */
+  scopePaths: string[];
+  /** Git/GitHub state, populated as the task runs. */
+  branch?: string;
+  worktreePath?: string;
+  prNumber?: number;
+  attempts: number;
+  maxAttempts: number;
+  createdAt: string; // ISO 8601
+  updatedAt: string; // ISO 8601
+}
+
+export type ProjectStatus =
+  | "created"
+  | "planning"
+  | "planned"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed";
+
+export interface Project {
+  id: string;
+  name: string;
+  repoUrl: string; // GitHub remote
+  defaultBranch: string; // usually "main"
+  localPath: string; // primary clone on disk
+  status: ProjectStatus;
+  prdPath?: string; // path to the generated PRD within the repo (e.g. docs/PRD.md)
+  budgetUsd?: number; // hard cap for the whole project run
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type RunStatus = "running" | "passed" | "failed" | "stopped";
+
+/** A single execution of one task by one model. */
+export interface Run {
+  id: string;
+  taskId: string;
+  model: ModelId;
+  attempt: number;
+  status: RunStatus;
+  startedAt: string;
+  endedAt?: string;
+  /** "completed" | "stuck" | "budget" | "error" | "killed" */
+  exitReason?: string;
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+}
+
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+export interface LogEvent {
+  id: string;
+  runId: string;
+  taskId: string;
+  ts: string;
+  level: LogLevel;
+  /** "agent" | "engine" | "git" | "gate" | "validator" */
+  source: string;
+  message: string;
+}
+
+/** Objective pre-merge gates. ALL must pass for an auto-merge. */
+export interface GateResult {
+  typecheck: boolean;
+  lint: boolean;
+  build: boolean;
+  tests: boolean;
+  noConflicts: boolean;
+  /** True only if the run modified files within task.scopePaths. */
+  inScope: boolean;
+  /** gate name -> output/summary, for logs + the audit trail. */
+  details: Record<string, string>;
+}
+
+export type MergeVerdict = "approve" | "request_changes" | "escalate";
+
+export interface MergeDecision {
+  id: string;
+  taskId: string;
+  runId: string;
+  validatorModel: ModelId;
+  verdict: MergeVerdict;
+  /** Why. For `request_changes`, these become the fix instructions. */
+  reasons: string[];
+  /** 0..1; below Settings.confidenceThreshold => escalate to a human. */
+  confidence: number;
+  gate: GateResult;
+  ts: string;
+}
+
+export type NotificationSeverity = "info" | "warn" | "action_required";
+
+/**
+ * Surfaced in the UI and over Telegram. `action_required` notifications with
+ * `requiresApproval` block the related decision until answered.
+ */
+export interface Notification {
+  id: string;
+  projectId: string;
+  taskId?: string;
+  severity: NotificationSeverity;
+  title: string;
+  message: string;
+  requiresApproval: boolean;
+  /** Choices to present, e.g. ["approve", "reject"]. */
+  options?: string[];
+  respondedWith?: string;
+  createdAt: string;
+}
+
+export interface CostRecord {
+  id: string;
+  projectId: string;
+  model: ModelId;
+  taskId?: string;
+  runId?: string;
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+  ts: string;
+}
+
+export type MergePolicy =
+  | "hard_gate_flag_risky" // gates + validator pass, ask only for risky changes (DEFAULT)
+  | "fully_autonomous" // gates + validator pass => merge, never ask
+  | "always_ask"; // build everything, but require a human tap to merge
+
+/** Global, persisted settings. */
+export interface Settings {
+  models: ModelConfig[];
+  plannerModel: ModelId;
+  validatorByDifficulty: Record<Difficulty, ModelId>;
+  mergePolicy: MergePolicy;
+  /** Change classes that always require human approval, regardless of gates. */
+  riskyChangeRules: {
+    dbSchema: boolean;
+    newDependencies: boolean;
+    authOrSecrets: boolean;
+    outOfScopeEdits: boolean;
+  };
+  globalMonthlyBudgetUsd?: number;
+  /** Validator confidence below this => escalate to a human. */
+  confidenceThreshold: number;
+  telegram?: {
+    enabled: boolean;
+    /** Name of the env var holding the token — never the raw token. */
+    botTokenRef?: string;
+    chatId?: string;
+  };
+}

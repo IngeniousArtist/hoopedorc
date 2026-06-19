@@ -1,0 +1,12 @@
+node_modules
+dist
+*.tsbuildinfo
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.local
+.DS_Store
+.worktrees
+worktrees
+hoopedorc.db
