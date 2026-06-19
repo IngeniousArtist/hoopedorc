@@ -1,1 +1,8 @@
 @import "tailwindcss";
+
+html,
+body,
+#root {
+  @apply bg-neutral-950 text-neutral-100;
+  min-height: 100vh;
+}
