@@ -96,6 +96,8 @@ export function defaultSettings(): Settings {
 export const ENV = {
   port: Number(process.env.PORT ?? 4317),
   dbPath: process.env.DB_PATH ?? "hoopedorc.db",
-  opencodeBaseUrl: process.env.OPENCODE_BASE_URL ?? "http://localhost:4096",
+  // Empty by default => `opencode run` runs standalone. Set OPENCODE_BASE_URL
+  // (and run `opencode serve`) only to centralize sessions on one server.
+  opencodeBaseUrl: process.env.OPENCODE_BASE_URL ?? "",
   mock: process.env.MOCK === "1",
 };
