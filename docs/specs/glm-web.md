@@ -6,8 +6,9 @@ in `apps/web/`. Treat `@orc/types` as a fixed, read-only contract, and the API i
 real models needed.
 
 ## Setup
+You are working in a dedicated git worktree on branch `feat/web` (the
+orchestrator created it). From the worktree root:
 ```bash
-git checkout -b feat/web
 npm install
 npm run build -w @orc/types
 npm run mock          # starts the mock API on :4317 AND the web app on :5173

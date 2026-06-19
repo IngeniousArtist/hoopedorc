@@ -5,8 +5,9 @@ adapters**. Work only in `packages/server/` and `packages/adapters/`. Treat
 `@orc/types` as a fixed, read-only contract.
 
 ## Setup
+You are working in a dedicated git worktree on branch `feat/server-adapters` (the
+orchestrator created it). From the worktree root:
 ```bash
-git checkout -b feat/server-adapters
 npm install
 npm run build -w @orc/types
 ```

@@ -5,8 +5,9 @@ inside `packages/engine/`. Do not modify other packages. Treat `@orc/types` as a
 fixed, read-only contract.
 
 ## Setup
+You are working in a dedicated git worktree on branch `feat/engine` (the
+orchestrator created it). From the worktree root:
 ```bash
-git checkout -b feat/engine
 npm install
 npm run build -w @orc/types   # the contract must be built before you can import it
 ```
