@@ -69,8 +69,10 @@ export interface Task {
   dependsOn: string[];
   /** Objective, checkable statements the validator grades the work against. */
   acceptanceCriteria: string[];
-  /** The model assigned to implement this task. */
+  /** The model assigned to implement this task (resolved via the RoutingPolicy). */
   assignedModel: ModelId;
+  /** Optional category for role-based routing, e.g. "frontend" or "docs". */
+  role?: Role;
   /**
    * Glob patterns this task is allowed to modify. Edits outside this set trip
    * the "out-of-scope" rail and force a human approval before merge.
@@ -205,11 +207,30 @@ export type MergePolicy =
   | "fully_autonomous" // gates + validator pass => merge, never ask
   | "always_ask"; // build everything, but require a human tap to merge
 
+/**
+ * Which model fills each job. This is exactly what the Settings UI exposes as a
+ * set of dropdowns, so jobs can be re-routed freely — e.g. point `byRole.docs`
+ * at `grok` if `nex` becomes unavailable. Only `enabled` models are selectable.
+ */
+export interface RoutingPolicy {
+  /** Plans the project and writes the PRD + task DAG. */
+  planner: ModelId;
+  /** Default author model by task difficulty (the fallback when no role fits). */
+  byDifficulty: Record<Difficulty, ModelId>;
+  /**
+   * Role-specific author overrides (e.g. frontend->glm, docs->nex, updates->grok).
+   * Optional per role; wins over `byDifficulty` when a task's `role` matches.
+   */
+  byRole: Partial<Record<Role, ModelId>>;
+  /** Reviewer/merger by difficulty. Must differ from the author at run time. */
+  validatorByDifficulty: Record<Difficulty, ModelId>;
+}
+
 /** Global, persisted settings. */
 export interface Settings {
   models: ModelConfig[];
-  plannerModel: ModelId;
-  validatorByDifficulty: Record<Difficulty, ModelId>;
+  /** Role/difficulty -> model assignment. Edited via the Settings selectors. */
+  routing: RoutingPolicy;
   mergePolicy: MergePolicy;
   /** Change classes that always require human approval, regardless of gates. */
   riskyChangeRules: {
@@ -227,4 +248,21 @@ export interface Settings {
     botTokenRef?: string;
     chatId?: string;
   };
+}
+
+/**
+ * Resolve which model should author a task. A role override (e.g. docs->grok)
+ * wins over the difficulty default. Engine, server, and the planner should all
+ * route through this helper so assignment stays consistent.
+ */
+export function pickAssignedModel(
+  routing: RoutingPolicy,
+  difficulty: Difficulty,
+  role?: Role,
+): ModelId {
+  if (role) {
+    const override = routing.byRole[role];
+    if (override) return override;
+  }
+  return routing.byDifficulty[difficulty];
 }

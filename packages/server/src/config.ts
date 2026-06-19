@@ -63,11 +63,23 @@ export const DEFAULT_MODELS: ModelConfig[] = [
 export function defaultSettings(): Settings {
   return {
     models: DEFAULT_MODELS,
-    plannerModel: "claude",
-    validatorByDifficulty: {
-      easy: "deepseek-pro",
-      medium: "deepseek-pro",
-      hard: "deepseek-pro",
+    routing: {
+      planner: "claude",
+      byDifficulty: {
+        easy: "deepseek-flash",
+        medium: "deepseek-flash",
+        hard: "deepseek-pro",
+      },
+      byRole: {
+        frontend: "glm",
+        docs: "nex",
+        updates: "grok",
+      },
+      validatorByDifficulty: {
+        easy: "deepseek-pro",
+        medium: "deepseek-pro",
+        hard: "deepseek-pro",
+      },
     },
     mergePolicy: "hard_gate_flag_risky",
     riskyChangeRules: {

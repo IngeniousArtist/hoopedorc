@@ -7,7 +7,10 @@ it — all three modules depend on it.**
 ## Domain types (`@orc/types/domain.ts`)
 `ModelId`, `Role`, `RunnerKind`, `ModelConfig`, `Difficulty`, `TaskStatus`,
 `Task`, `Project`, `Run`, `LogEvent`, `GateResult`, `MergeDecision`,
-`Notification`, `CostRecord`, `Settings`. Read the file — it is the source of truth.
+`Notification`, `CostRecord`, `RoutingPolicy`, `Settings`, and the
+`pickAssignedModel(routing, difficulty, role?)` helper. Read the file — it is the
+source of truth. `Settings.routing` is what the Settings UI exposes as per-job
+model selectors (planner, by-difficulty, by-role, validator).
 
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.

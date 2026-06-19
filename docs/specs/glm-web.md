@@ -22,13 +22,22 @@ mock API. Build it out.
    `changes_requested`, `blocked`, `failed`). Each card shows title, assigned
    model, difficulty, attempts, and dependency badges. Show dependency links /
    ordering (a small graph or "blocked by" chips). Drag-to-reassign status calls
-   `PATCH /api/tasks/:id`.
+   `PATCH /api/tasks/:id`. Each card also has a **model dropdown** that overrides
+   just that task (`PATCH /api/tasks/:id { assignedModel }`).
 2. **Live logs** — open the WebSocket at `/ws`, handle `ServerEvent`s, and show a
    streaming per-task / per-run log panel (click a card → live logs). Auto-scroll,
    level coloring.
-3. **Settings page** — edit `Settings`: model→role mapping, validator by
-   difficulty, merge policy, risky-change rules, budgets, Telegram on/off.
-   `GET/PUT /api/settings`.
+3. **Settings page (the role selectors)** — edit `Settings`. Render one dropdown
+   per job, all sourced from `Settings.routing`:
+   - Planner — `routing.planner`
+   - Author by difficulty: easy / medium / hard — `routing.byDifficulty`
+   - Role overrides: frontend, docs, updates, … — `routing.byRole` (this is how
+     the user re-routes a job, e.g. point **docs** at **grok** if **nex** is gone)
+   - Validator by difficulty — `routing.validatorByDifficulty`
+   Each dropdown lists only **enabled** models (`models[].enabled`); show a
+   model's default `roles` as a hint but do NOT restrict the choice. Flag any
+   selector still pointing at a disabled/missing model. Also edit merge policy,
+   risky-change rules, budgets, and Telegram on/off. `GET/PUT /api/settings`.
 4. **Cost view** — `GET /api/projects/:id/costs`: total + per-model spend, live
    updates from `cost.updated`.
 5. **Notifications / approvals** — list `Notification`s; for `requiresApproval`

@@ -27,10 +27,13 @@ from `src/index.ts`.
    `typecheck` (`npm run typecheck`), `lint`, `build`, `tests`, `noConflicts`
    (merge-base check vs default branch), `inScope` (from WorktreeManager). Capture
    output into `details`. Missing scripts = treat as pass-with-note, never crash.
-4. **Validator** — given a task + `GateResult`, call the validator model through
-   an `AgentAdapter` (injected) to grade against `task.acceptanceCriteria`; return
-   a `MergeDecision` with `verdict`, `reasons`, and `confidence`. Must refuse to
-   review code it authored (assert `validatorModel !== task.assignedModel`).
+4. **Validator** — the validator model is
+   `settings.routing.validatorByDifficulty[task.difficulty]`. Given a task +
+   `GateResult`, call it through an `AgentAdapter` (injected) to grade against
+   `task.acceptanceCriteria`; return a `MergeDecision` with `verdict`, `reasons`,
+   and `confidence`. Must refuse to review code it authored (assert
+   `validatorModel !== task.assignedModel`). Resolve author assignment with the
+   `pickAssignedModel(routing, task.difficulty, task.role)` helper from `@orc/types`.
 5. **Orchestrator.start** — the loop described in the stub's TODO: ready tasks →
    respect `ModelConfig.maxConcurrent` → run author model via adapter (with the
    `STUCK_DETECTION` limits + `AbortSignal`) → commit/push/PR → gates → fix-loop
