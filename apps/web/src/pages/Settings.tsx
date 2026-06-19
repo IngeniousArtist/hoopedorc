@@ -1,0 +1,470 @@
+import type {
+  Difficulty,
+  MergePolicy,
+  ModelId,
+  Role,
+  RoutingPolicy,
+  Settings as SettingsType,
+} from "@orc/types";
+import { useEffect, useState } from "react";
+import { api } from "../api/client";
+import { ModelSelect } from "../components/ModelSelect";
+
+const DIFFICULTIES: Difficulty[] = ["easy", "medium", "hard"];
+
+const ROLE_LABELS: Record<Role, string> = {
+  planner: "Planner",
+  frontend: "Frontend",
+  hard: "Hard tasks",
+  medium: "Medium tasks",
+  docs: "Documentation",
+  validator: "Validator",
+  updates: "Updates",
+};
+
+const BY_ROLE_KEYS: Role[] = [
+  "frontend",
+  "hard",
+  "medium",
+  "docs",
+  "updates",
+];
+
+const MERGE_POLICY_LABELS: Record<MergePolicy, string> = {
+  hard_gate_flag_risky: "Hard gates, flag risky",
+  fully_autonomous: "Fully autonomous",
+  always_ask: "Always ask for approval",
+};
+
+const RISKY_RULES: {
+  key: keyof SettingsType["riskyChangeRules"];
+  label: string;
+}[] = [
+  { key: "dbSchema", label: "Database schema changes" },
+  { key: "newDependencies", label: "New dependencies" },
+  { key: "authOrSecrets", label: "Auth / secrets changes" },
+  { key: "outOfScopeEdits", label: "Out-of-scope edits" },
+];
+
+export function Settings() {
+  const [settings, setSettings] = useState<SettingsType | null>(
+    null,
+  );
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    api<{ settings: SettingsType }>("getSettings")
+      .then((r) => setSettings(r.settings))
+      .catch((e) => setError(String(e)));
+  }, []);
+
+  if (!settings) {
+    return (
+      <div className="text-sm text-neutral-400">
+        {error ? `Error: ${error}` : "Loading settings…"}
+      </div>
+    );
+  }
+
+  const enabledModels = settings.models.filter((m) => m.enabled);
+
+  function updateRouting(fn: (r: RoutingPolicy) => RoutingPolicy) {
+    setSettings((prev) =>
+      prev ? { ...prev, routing: fn(prev.routing) } : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
+  function updateMergePolicy(mp: MergePolicy) {
+    setSettings((prev) =>
+      prev ? { ...prev, mergePolicy: mp } : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
+  function updateRiskyRule(
+    key: keyof SettingsType["riskyChangeRules"],
+    value: boolean,
+  ) {
+    setSettings((prev) =>
+      prev
+        ? {
+            ...prev,
+            riskyChangeRules: {
+              ...prev.riskyChangeRules,
+              [key]: value,
+            },
+          }
+        : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
+  function updateBudget(value: string) {
+    const num = value === "" ? undefined : parseFloat(value);
+    setSettings((prev) =>
+      prev
+        ? { ...prev, globalMonthlyBudgetUsd: isNaN(num!) ? undefined : num }
+        : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
+  function updateConfidence(value: string) {
+    const num = parseFloat(value);
+    if (isNaN(num)) return;
+    setSettings((prev) =>
+      prev ? { ...prev, confidenceThreshold: num } : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
+  function updateTelegramEnabled(enabled: boolean) {
+    setSettings((prev) =>
+      prev
+        ? {
+            ...prev,
+            telegram: {
+              enabled,
+              botTokenRef: prev.telegram?.botTokenRef,
+              chatId: prev.telegram?.chatId,
+            },
+          }
+        : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
+  function updateTelegramField(
+    field: "botTokenRef" | "chatId",
+    value: string,
+  ) {
+    setSettings((prev) =>
+      prev
+        ? {
+            ...prev,
+            telegram: {
+              enabled: prev.telegram?.enabled ?? false,
+              botTokenRef: prev.telegram?.botTokenRef,
+              chatId: prev.telegram?.chatId,
+              [field]: value || undefined,
+            },
+          }
+        : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
+  async function save() {
+    if (!settings) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await api<{ settings: SettingsType }>(
+        "updateSettings",
+        { body: { settings } },
+      );
+      setSettings(res.settings);
+      setDirty(false);
+      setSaved(true);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="max-w-2xl space-y-8">
+      <h2 className="text-lg font-semibold">Settings</h2>
+
+      {error && (
+        <div className="rounded border border-red-800 bg-red-950/50 px-4 py-2 text-sm text-red-400">
+          {error}
+        </div>
+      )}
+      {saved && (
+        <div className="rounded border border-green-800 bg-green-950/50 px-4 py-2 text-sm text-green-400">
+          Settings saved.
+        </div>
+      )}
+
+      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+        <h3 className="text-sm font-medium text-neutral-300">
+          Model Routing
+        </h3>
+
+        <div>
+          <label className="mb-1 block text-xs text-neutral-400">
+            Planner
+          </label>
+          <ModelSelect
+            value={settings.routing.planner}
+            models={enabledModels}
+            onChange={(m) => {
+              if (m)
+                updateRouting((r) => ({ ...r, planner: m }));
+            }}
+          />
+        </div>
+
+        <div>
+          <label className="mb-2 block text-xs text-neutral-400">
+            Author by difficulty
+          </label>
+          <div className="grid grid-cols-3 gap-3">
+            {DIFFICULTIES.map((d) => (
+              <div key={d}>
+                <label className="mb-1 block text-[10px] text-neutral-500 capitalize">
+                  {d}
+                </label>
+                <ModelSelect
+                  value={settings.routing.byDifficulty[d]}
+                  models={enabledModels}
+                  onChange={(m) => {
+                    if (m)
+                      updateRouting((r) => ({
+                        ...r,
+                        byDifficulty: {
+                          ...r.byDifficulty,
+                          [d]: m,
+                        },
+                      }));
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label className="mb-2 block text-xs text-neutral-400">
+            Role overrides (optional)
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            {BY_ROLE_KEYS.map((role) => (
+              <div key={role}>
+                <label className="mb-1 block text-[10px] text-neutral-500">
+                  {ROLE_LABELS[role]}
+                </label>
+                <ModelSelect
+                  value={settings.routing.byRole[role]}
+                  models={enabledModels}
+                  onChange={(m) => {
+                    updateRouting((r) => {
+                      const next = { ...r.byRole };
+                      if (m) {
+                        next[role] = m;
+                      } else {
+                        delete next[role];
+                      }
+                      return { ...r, byRole: next };
+                    });
+                  }}
+                  allowEmpty
+                  emptyLabel="(use difficulty)"
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label className="mb-2 block text-xs text-neutral-400">
+            Validator by difficulty
+          </label>
+          <div className="grid grid-cols-3 gap-3">
+            {DIFFICULTIES.map((d) => (
+              <div key={d}>
+                <label className="mb-1 block text-[10px] text-neutral-500 capitalize">
+                  {d}
+                </label>
+                <ModelSelect
+                  value={
+                    settings.routing.validatorByDifficulty[d]
+                  }
+                  models={enabledModels}
+                  onChange={(m) => {
+                    if (m)
+                      updateRouting((r) => ({
+                        ...r,
+                        validatorByDifficulty: {
+                          ...r.validatorByDifficulty,
+                          [d]: m,
+                        },
+                      }));
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+        <h3 className="text-sm font-medium text-neutral-300">
+          Merge Policy
+        </h3>
+        <select
+          value={settings.mergePolicy}
+          onChange={(e) =>
+            updateMergePolicy(e.target.value as MergePolicy)
+          }
+          className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+        >
+          {(
+            Object.entries(MERGE_POLICY_LABELS) as [
+              MergePolicy,
+              string,
+            ][]
+          ).map(([key, label]) => (
+            <option key={key} value={key}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </section>
+
+      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+        <h3 className="text-sm font-medium text-neutral-300">
+          Risky Change Rules
+        </h3>
+        <div className="space-y-2">
+          {RISKY_RULES.map(({ key, label }) => (
+            <label
+              key={key}
+              className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={settings.riskyChangeRules[key]}
+                onChange={(e) =>
+                  updateRiskyRule(key, e.target.checked)
+                }
+                className="rounded border-neutral-700 bg-neutral-800"
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+      </section>
+
+      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+        <h3 className="text-sm font-medium text-neutral-300">
+          Budget & Thresholds
+        </h3>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="mb-1 block text-xs text-neutral-400">
+              Monthly budget (USD)
+            </label>
+            <input
+              type="number"
+              value={
+                settings.globalMonthlyBudgetUsd ?? ""
+              }
+              onChange={(e) => updateBudget(e.target.value)}
+              placeholder="Unlimited"
+              className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-neutral-400">
+              Confidence threshold
+            </label>
+            <input
+              type="number"
+              min={0}
+              max={1}
+              step={0.05}
+              value={settings.confidenceThreshold}
+              onChange={(e) =>
+                updateConfidence(e.target.value)
+              }
+              className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+        <h3 className="text-sm font-medium text-neutral-300">
+          Telegram
+        </h3>
+        <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={settings.telegram?.enabled ?? false}
+            onChange={(e) =>
+              updateTelegramEnabled(e.target.checked)
+            }
+            className="rounded border-neutral-700 bg-neutral-800"
+          />
+          Enable Telegram notifications
+        </label>
+        {settings.telegram?.enabled && (
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="mb-1 block text-xs text-neutral-400">
+                Bot token env var
+              </label>
+              <input
+                type="text"
+                value={settings.telegram?.botTokenRef ?? ""}
+                onChange={(e) =>
+                  updateTelegramField(
+                    "botTokenRef",
+                    e.target.value,
+                  )
+                }
+                placeholder="e.g. TELEGRAM_BOT_TOKEN"
+                className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-neutral-400">
+                Chat ID
+              </label>
+              <input
+                type="text"
+                value={settings.telegram?.chatId ?? ""}
+                onChange={(e) =>
+                  updateTelegramField(
+                    "chatId",
+                    e.target.value,
+                  )
+                }
+                className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+              />
+            </div>
+          </div>
+        )}
+      </section>
+
+      <div className="flex items-center gap-3">
+        <button
+          onClick={save}
+          disabled={!dirty || saving}
+          className="rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Save Settings"}
+        </button>
+        {dirty && (
+          <span className="text-xs text-amber-400">
+            Unsaved changes
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
