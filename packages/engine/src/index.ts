@@ -6,8 +6,7 @@
 // worktree, run the assigned model via an adapter, enforce the pre-merge gates
 // + validator review with a bounded fix-loop, then merge to main or escalate.
 //
-// Everything below is an interface or a worked stub. Implement against these
-// signatures. Depend ONLY on @orc/types and @orc/adapters — never on @orc/server.
+// Depend ONLY on @orc/types and @orc/adapters — never on @orc/server.
 
 import type {
   GateResult,
@@ -18,6 +17,13 @@ import type {
   Settings,
   Task,
 } from "@orc/types";
+
+export { STUCK_DETECTION } from "./constants.js";
+export { WorktreeManagerImpl } from "./worktree-manager.js";
+export { GitServiceImpl } from "./git-service.js";
+export { GateRunnerImpl } from "./gate-runner.js";
+export { ValidatorImpl } from "./validator.js";
+export { Orchestrator } from "./orchestrator.js";
 
 /** Callbacks the engine uses to report progress + ask humans for decisions. */
 export interface EngineEvents {
@@ -69,6 +75,8 @@ export interface SchedulerDeps {
   validator: Validator;
   settings: Settings;
   events: EngineEvents;
+  /** Base URL of the running `opencode serve` instance for creating adapters. */
+  opencodeBaseUrl: string;
 }
 
 export interface Scheduler {
@@ -76,48 +84,4 @@ export interface Scheduler {
   pause(project: Project): Promise<void>;
   /** Tasks whose dependsOn are all `done` and are still in `backlog`. */
   readyTasks(tasks: Task[]): Task[];
-}
-
-/** Tunables for killing runaway / looping runs. */
-export const STUCK_DETECTION = {
-  /** Hard wall-clock cap for a single run. */
-  maxRunMs: 20 * 60 * 1000,
-  /** Kill if no new log line within this window. */
-  idleMs: 3 * 60 * 1000,
-  /** Kill if the same command/tool repeats this many times consecutively. */
-  maxRepeats: 8,
-} as const;
-
-/**
- * Reference implementation skeleton. `readyTasks` is fully implemented as a
- * worked example of the DAG semantics; the rest is for deepseek-pro to build.
- */
-export class Orchestrator implements Scheduler {
-  constructor(private readonly deps: SchedulerDeps) {}
-
-  readyTasks(tasks: Task[]): Task[] {
-    const done = new Set(
-      tasks.filter((t) => t.status === "done").map((t) => t.id),
-    );
-    return tasks.filter(
-      (t) =>
-        t.status === "backlog" && t.dependsOn.every((dep) => done.has(dep)),
-    );
-  }
-
-  async start(_project: Project, _tasks: Task[]): Promise<void> {
-    // TODO(deepseek-pro): loop:
-    //   1. readyTasks() -> respect per-model maxConcurrent
-    //   2. worktrees.create -> adapter.run (assigned model) with stuck detection
-    //   3. git.commitAll + push + openPr
-    //   4. gates.run -> if fail, feed details back to the author model (retry <= maxAttempts)
-    //   5. validator.review -> approve | request_changes (retry) | escalate (requestApproval)
-    //   6. apply mergePolicy + riskyChangeRules -> git.mergePr OR requestApproval
-    //   7. mark done; recompute readyTasks
-    throw new Error("not implemented — see docs/specs/deepseek-pro-engine.md");
-  }
-
-  async pause(_project: Project): Promise<void> {
-    throw new Error("not implemented — see docs/specs/deepseek-pro-engine.md");
-  }
 }
