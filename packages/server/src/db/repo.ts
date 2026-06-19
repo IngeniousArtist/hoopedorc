@@ -1,0 +1,511 @@
+import type {
+  CostRecord,
+  LogEvent,
+  MergeDecision,
+  Notification,
+  Project,
+  Run,
+  Settings,
+  Task,
+} from "@orc/types";
+import type { Db } from "./index";
+
+function json<T>(raw: unknown): T {
+  if (typeof raw === "string") return JSON.parse(raw) as T;
+  return raw as T;
+}
+
+function asStr(v: unknown): string {
+  if (v instanceof Buffer) return v.toString("utf8");
+  return String(v ?? "");
+}
+
+// ── Projects ──
+
+function mapProject(row: Record<string, unknown>): Project {
+  return {
+    id: asStr(row.id),
+    name: asStr(row.name),
+    repoUrl: asStr(row.repo_url),
+    defaultBranch: asStr(row.default_branch),
+    localPath: asStr(row.local_path),
+    status: asStr(row.status) as Project["status"],
+    prdPath: row.prd_path ? asStr(row.prd_path) : undefined,
+    budgetUsd: row.budget_usd != null ? Number(row.budget_usd) : undefined,
+    createdAt: asStr(row.created_at),
+    updatedAt: asStr(row.updated_at),
+  };
+}
+
+export function getProjects(db: Db): Project[] {
+  return db
+    .prepare(
+      "SELECT id, name, repo_url, default_branch, local_path, status, prd_path, budget_usd, created_at, updated_at FROM projects ORDER BY created_at DESC",
+    )
+    .all()
+    .map((r) => mapProject(r as Record<string, unknown>));
+}
+
+export function getProject(db: Db, id: string): Project | null {
+  const row = db
+    .prepare(
+      "SELECT id, name, repo_url, default_branch, local_path, status, prd_path, budget_usd, created_at, updated_at FROM projects WHERE id = ?",
+    )
+    .get(id) as Record<string, unknown> | undefined;
+  return row ? mapProject(row) : null;
+}
+
+export function createProject(
+  db: Db,
+  p: Omit<Project, "createdAt" | "updatedAt">,
+): Project {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO projects (id, name, repo_url, default_branch, local_path, status, prd_path, budget_usd, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    p.id,
+    p.name,
+    p.repoUrl,
+    p.defaultBranch,
+    p.localPath,
+    p.status,
+    p.prdPath ?? null,
+    p.budgetUsd ?? null,
+    now,
+    now,
+  );
+  return getProject(db, p.id)!;
+}
+
+export function updateProject(
+  db: Db,
+  id: string,
+  updates: Partial<Project>,
+): Project | null {
+  const now = new Date().toISOString();
+  const set: string[] = ["updated_at = ?"];
+  const vals: unknown[] = [now];
+
+  const colMap: Record<string, string> = {
+    name: "name",
+    repoUrl: "repo_url",
+    defaultBranch: "default_branch",
+    localPath: "local_path",
+    status: "status",
+    prdPath: "prd_path",
+    budgetUsd: "budget_usd",
+  };
+
+  for (const [key, col] of Object.entries(colMap)) {
+    if (key in updates) {
+      set.push(`${col} = ?`);
+      vals.push((updates as Record<string, unknown>)[key] ?? null);
+    }
+  }
+
+  vals.push(id);
+  db.prepare(`UPDATE projects SET ${set.join(", ")} WHERE id = ?`).run(...vals);
+  return getProject(db, id);
+}
+
+// ── Tasks ──
+
+function mapTask(row: Record<string, unknown>): Task {
+  return {
+    id: asStr(row.id),
+    projectId: asStr(row.project_id),
+    title: asStr(row.title),
+    description: asStr(row.description),
+    difficulty: asStr(row.difficulty) as Task["difficulty"],
+    status: asStr(row.status) as Task["status"],
+    dependsOn: json<string[]>(row.depends_on),
+    acceptanceCriteria: json<string[]>(row.acceptance_criteria),
+    assignedModel: asStr(row.assigned_model) as Task["assignedModel"],
+    scopePaths: json<string[]>(row.scope_paths),
+    branch: row.branch ? asStr(row.branch) : undefined,
+    worktreePath: row.worktree_path ? asStr(row.worktree_path) : undefined,
+    prNumber: row.pr_number != null ? Number(row.pr_number) : undefined,
+    attempts: Number(row.attempts),
+    maxAttempts: Number(row.max_attempts),
+    createdAt: asStr(row.created_at),
+    updatedAt: asStr(row.updated_at),
+  };
+}
+
+export function getTasks(db: Db, projectId: string): Task[] {
+  return db
+    .prepare("SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at ASC")
+    .all(projectId)
+    .map((r) => mapTask(r as Record<string, unknown>));
+}
+
+export function getTask(db: Db, id: string): Task | null {
+  const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? mapTask(row) : null;
+}
+
+export function createTask(
+  db: Db,
+  t: Omit<Task, "createdAt" | "updatedAt">,
+): Task {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO tasks (id, project_id, title, description, difficulty, status, depends_on, acceptance_criteria, assigned_model, scope_paths, attempts, max_attempts, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    t.id,
+    t.projectId,
+    t.title,
+    t.description,
+    t.difficulty,
+    t.status,
+    JSON.stringify(t.dependsOn),
+    JSON.stringify(t.acceptanceCriteria),
+    t.assignedModel,
+    JSON.stringify(t.scopePaths),
+    t.attempts,
+    t.maxAttempts,
+    now,
+    now,
+  );
+  return getTask(db, t.id)!;
+}
+
+export function updateTask(
+  db: Db,
+  id: string,
+  updates: Partial<Task>,
+): Task | null {
+  const now = new Date().toISOString();
+  const set: string[] = ["updated_at = ?"];
+  const vals: unknown[] = [now];
+
+  const colMap: Record<string, string> = {
+    title: "title",
+    description: "description",
+    difficulty: "difficulty",
+    status: "status",
+    assignedModel: "assigned_model",
+    branch: "branch",
+    worktreePath: "worktree_path",
+    prNumber: "pr_number",
+    attempts: "attempts",
+    maxAttempts: "max_attempts",
+  };
+  const jsonCols = new Set(["dependsOn", "acceptanceCriteria", "scopePaths"]);
+
+  for (const [key, col] of Object.entries(colMap)) {
+    if (key in updates) {
+      set.push(`${col} = ?`);
+      vals.push((updates as Record<string, unknown>)[key] ?? null);
+    }
+  }
+  for (const key of jsonCols) {
+    if (key in updates) {
+      const col = key.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`);
+      set.push(`${col} = ?`);
+      vals.push(JSON.stringify((updates as Record<string, unknown>)[key]));
+    }
+  }
+
+  vals.push(id);
+  db.prepare(`UPDATE tasks SET ${set.join(", ")} WHERE id = ?`).run(...vals);
+  return getTask(db, id);
+}
+
+// ── Runs ──
+
+function mapRun(row: Record<string, unknown>): Run {
+  return {
+    id: asStr(row.id),
+    taskId: asStr(row.task_id),
+    model: asStr(row.model) as Run["model"],
+    attempt: Number(row.attempt),
+    status: asStr(row.status) as Run["status"],
+    startedAt: asStr(row.started_at),
+    endedAt: row.ended_at ? asStr(row.ended_at) : undefined,
+    exitReason: row.exit_reason ? asStr(row.exit_reason) : undefined,
+    costUsd: Number(row.cost_usd),
+    tokensIn: Number(row.tokens_in),
+    tokensOut: Number(row.tokens_out),
+  };
+}
+
+export function getRuns(db: Db, taskId: string): Run[] {
+  return db
+    .prepare("SELECT * FROM runs WHERE task_id = ? ORDER BY started_at DESC")
+    .all(taskId)
+    .map((r) => mapRun(r as Record<string, unknown>));
+}
+
+export function getRun(db: Db, id: string): Run | null {
+  const row = db.prepare("SELECT * FROM runs WHERE id = ?").get(id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? mapRun(row) : null;
+}
+
+export function createRun(
+  db: Db,
+  r: Omit<Run, "id"> & { id?: string },
+): Run {
+  const id = r.id ?? crypto.randomUUID();
+  db.prepare(
+    `INSERT INTO runs (id, task_id, model, attempt, status, started_at, cost_usd, tokens_in, tokens_out)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, r.taskId, r.model, r.attempt, r.status, r.startedAt, r.costUsd, r.tokensIn, r.tokensOut);
+  return getRun(db, id)!;
+}
+
+export function updateRun(
+  db: Db,
+  id: string,
+  updates: Partial<Run>,
+): Run | null {
+  const set: string[] = [];
+  const vals: unknown[] = [];
+
+  const colMap: Record<string, string> = {
+    status: "status",
+    endedAt: "ended_at",
+    exitReason: "exit_reason",
+    costUsd: "cost_usd",
+    tokensIn: "tokens_in",
+    tokensOut: "tokens_out",
+  };
+
+  for (const [key, col] of Object.entries(colMap)) {
+    if (key in updates) {
+      set.push(`${col} = ?`);
+      vals.push((updates as Record<string, unknown>)[key] ?? null);
+    }
+  }
+
+  if (set.length === 0) return getRun(db, id);
+  vals.push(id);
+  db.prepare(`UPDATE runs SET ${set.join(", ")} WHERE id = ?`).run(...vals);
+  return getRun(db, id);
+}
+
+// ── Logs ──
+
+function mapLog(row: Record<string, unknown>): LogEvent {
+  return {
+    id: asStr(row.id),
+    runId: asStr(row.run_id),
+    taskId: asStr(row.task_id),
+    ts: asStr(row.ts),
+    level: asStr(row.level) as LogEvent["level"],
+    source: asStr(row.source) as LogEvent["source"],
+    message: asStr(row.message),
+  };
+}
+
+export function getLogs(db: Db, runId: string): LogEvent[] {
+  return db
+    .prepare("SELECT * FROM logs WHERE run_id = ? ORDER BY ts ASC")
+    .all(runId)
+    .map((r) => mapLog(r as Record<string, unknown>));
+}
+
+export function createLog(
+  db: Db,
+  l: Omit<LogEvent, "id"> & { id?: string },
+): LogEvent {
+  const id = l.id ?? crypto.randomUUID();
+  db.prepare(
+    "INSERT INTO logs (id, run_id, task_id, ts, level, source, message) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(id, l.runId, l.taskId, l.ts, l.level, l.source, l.message);
+  return { ...l, id } as LogEvent;
+}
+
+// ── Merge Decisions ──
+
+function mapMergeDecision(row: Record<string, unknown>): MergeDecision {
+  return {
+    id: asStr(row.id),
+    taskId: asStr(row.task_id),
+    runId: asStr(row.run_id),
+    validatorModel: asStr(row.validator_model) as MergeDecision["validatorModel"],
+    verdict: asStr(row.verdict) as MergeDecision["verdict"],
+    reasons: json<string[]>(row.reasons),
+    confidence: Number(row.confidence),
+    gate: json<MergeDecision["gate"]>(row.gate),
+    ts: asStr(row.ts),
+  };
+}
+
+export function getMergeDecisions(db: Db, taskId: string): MergeDecision[] {
+  return db
+    .prepare("SELECT * FROM merge_decisions WHERE task_id = ? ORDER BY ts DESC")
+    .all(taskId)
+    .map((r) => mapMergeDecision(r as Record<string, unknown>));
+}
+
+export function createMergeDecision(
+  db: Db,
+  d: MergeDecision,
+): MergeDecision {
+  db.prepare(
+    `INSERT INTO merge_decisions (id, task_id, run_id, validator_model, verdict, reasons, confidence, gate, ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    d.id,
+    d.taskId,
+    d.runId,
+    d.validatorModel,
+    d.verdict,
+    JSON.stringify(d.reasons),
+    d.confidence,
+    JSON.stringify(d.gate),
+    d.ts,
+  );
+  return d;
+}
+
+// ── Costs ──
+
+function mapCost(row: Record<string, unknown>): CostRecord {
+  return {
+    id: asStr(row.id),
+    projectId: asStr(row.project_id),
+    model: asStr(row.model) as CostRecord["model"],
+    taskId: row.task_id ? asStr(row.task_id) : undefined,
+    runId: row.run_id ? asStr(row.run_id) : undefined,
+    costUsd: Number(row.cost_usd),
+    tokensIn: Number(row.tokens_in),
+    tokensOut: Number(row.tokens_out),
+    ts: asStr(row.ts),
+  };
+}
+
+export function getCosts(db: Db, projectId: string): CostRecord[] {
+  return db
+    .prepare("SELECT * FROM costs WHERE project_id = ? ORDER BY ts DESC")
+    .all(projectId)
+    .map((r) => mapCost(r as Record<string, unknown>));
+}
+
+export function createCost(
+  db: Db,
+  c: Omit<CostRecord, "id"> & { id?: string },
+): CostRecord {
+  const id = c.id ?? crypto.randomUUID();
+  db.prepare(
+    `INSERT INTO costs (id, project_id, model, task_id, run_id, cost_usd, tokens_in, tokens_out, ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, c.projectId, c.model, c.taskId ?? null, c.runId ?? null, c.costUsd, c.tokensIn, c.tokensOut, c.ts);
+  return { ...c, id } as CostRecord;
+}
+
+export function getCostSummary(
+  db: Db,
+  projectId: string,
+): { totalUsd: number; byModel: Record<string, number> } {
+  const rows = db
+    .prepare("SELECT model, SUM(cost_usd) as total FROM costs WHERE project_id = ? GROUP BY model")
+    .all(projectId) as { model: string; total: number }[];
+  const byModel: Record<string, number> = {};
+  let totalUsd = 0;
+  for (const r of rows) {
+    const t = Number(r.total);
+    byModel[r.model] = t;
+    totalUsd += t;
+  }
+  return { totalUsd, byModel };
+}
+
+export function getModelMonthlyCost(db: Db, model: string): number {
+  const now = new Date();
+  const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const row = db
+    .prepare("SELECT COALESCE(SUM(cost_usd), 0) as total FROM costs WHERE model = ? AND ts >= ?")
+    .get(model, firstOfMonth) as { total: number } | undefined;
+  return row ? Number(row.total) : 0;
+}
+
+// ── Notifications ──
+
+function mapNotification(row: Record<string, unknown>): Notification {
+  return {
+    id: asStr(row.id),
+    projectId: asStr(row.project_id),
+    taskId: row.task_id ? asStr(row.task_id) : undefined,
+    severity: asStr(row.severity) as Notification["severity"],
+    title: asStr(row.title),
+    message: asStr(row.message),
+    requiresApproval: Number(row.requires_approval) === 1,
+    options: row.options ? json<string[]>(row.options) : undefined,
+    respondedWith: row.responded_with ? asStr(row.responded_with) : undefined,
+    createdAt: asStr(row.created_at),
+  };
+}
+
+export function getNotifications(db: Db, projectId?: string): Notification[] {
+  let rows: Record<string, unknown>[];
+  if (projectId) {
+    rows = db
+      .prepare("SELECT * FROM notifications WHERE project_id = ? ORDER BY created_at DESC")
+      .all(projectId) as Record<string, unknown>[];
+  } else {
+    rows = db
+      .prepare("SELECT * FROM notifications ORDER BY created_at DESC")
+      .all() as Record<string, unknown>[];
+  }
+  return rows.map(mapNotification);
+}
+
+export function createNotification(
+  db: Db,
+  n: Omit<Notification, "id" | "createdAt"> & { id?: string },
+): Notification {
+  const id = n.id ?? crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO notifications (id, project_id, task_id, severity, title, message, requires_approval, options, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    n.projectId,
+    n.taskId ?? null,
+    n.severity,
+    n.title,
+    n.message,
+    n.requiresApproval ? 1 : 0,
+    n.options ? JSON.stringify(n.options) : null,
+    now,
+  );
+  return { ...n, id, createdAt: now } as Notification;
+}
+
+export function respondToNotification(
+  db: Db,
+  id: string,
+  choice: string,
+): Notification | null {
+  db.prepare("UPDATE notifications SET responded_with = ? WHERE id = ?").run(choice, id);
+  const row = db.prepare("SELECT * FROM notifications WHERE id = ?").get(id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? mapNotification(row) : null;
+}
+
+// ── Settings ──
+
+export function getSettings(db: Db): Settings | null {
+  const row = db.prepare("SELECT json FROM settings WHERE id = 1").get() as
+    | { json: string }
+    | undefined;
+  return row ? json<Settings>(row.json) : null;
+}
+
+export function upsertSettings(db: Db, s: Settings): Settings {
+  db.prepare(
+    `INSERT INTO settings (id, json) VALUES (1, ?)
+     ON CONFLICT(id) DO UPDATE SET json = excluded.json`,
+  ).run(JSON.stringify(s));
+  return getSettings(db)!;
+}

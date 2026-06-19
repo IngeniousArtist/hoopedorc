@@ -1,24 +1,11 @@
-// @orc/adapters — how the orchestrator actually runs a model on a task.
-//
-// OWNER: deepseek-flash  (see docs/specs/deepseek-flash-server-adapters.md)
-//
-// Two runners:
-//   - ClaudeAdapter   -> Claude Code headless (uses the logged-in Pro sub)
-//   - OpenCodeAdapter -> a running `opencode serve` HTTP API (every other model)
-//
-// Depend ONLY on @orc/types.
-
+import { spawn } from "node:child_process";
 import type { ModelConfig, ModelId } from "@orc/types";
 
 export interface AgentRunOptions {
   model: ModelId;
-  /** The full task instructions: description + acceptance criteria + scope. */
   prompt: string;
-  /** The task's worktree path — the agent's working directory. */
   cwd: string;
-  /** Stream every line of agent output here (drives live logs). */
   onLog: (line: string) => void;
-  /** Abort to stop/kill the run (used by stuck detection + manual stop). */
   signal?: AbortSignal;
 }
 
@@ -36,40 +23,211 @@ export interface AgentAdapter {
   run(opts: AgentRunOptions): Promise<AgentRunResult>;
 }
 
-/**
- * Drives Claude Code in headless mode. Implement with either:
- *   - the Claude Agent SDK (@anthropic-ai/claude-agent-sdk), or
- *   - spawning `claude -p <prompt> --output-format stream-json` and parsing it.
- * Uses the existing Claude Code login (Pro subscription) — no API key here.
- */
 export class ClaudeAdapter implements AgentAdapter {
   readonly runner = "claude-code" as const;
-  async run(_opts: AgentRunOptions): Promise<AgentRunResult> {
-    throw new Error(
-      "not implemented — see docs/specs/deepseek-flash-server-adapters.md",
-    );
+
+  async run(opts: AgentRunOptions): Promise<AgentRunResult> {
+    return new Promise((resolve) => {
+      const proc = spawn("claude", [
+        "-p", opts.prompt,
+        "--output-format", "stream-json",
+      ], {
+        cwd: opts.cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      const buffers: string[] = [];
+
+      const onData = (chunk: Buffer) => {
+        const text = chunk.toString("utf8");
+        buffers.push(text);
+        opts.onLog(text);
+      };
+
+      proc.stdout?.on("data", onData);
+      proc.stderr?.on("data", onData);
+
+      const kill = () => {
+        proc.kill("SIGTERM");
+        setTimeout(() => proc.killed || proc.kill("SIGKILL"), 2000);
+      };
+
+      if (opts.signal) {
+        if (opts.signal.aborted) {
+          kill();
+          resolve({
+            ok: false,
+            exitReason: "killed",
+            costUsd: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+          });
+          return;
+        }
+        opts.signal.addEventListener("abort", kill, { once: true });
+      }
+
+      proc.on("error", (err) => {
+        opts.onLog(`[claude] spawn error: ${err.message}\n`);
+        resolve({
+          ok: false,
+          exitReason: "error",
+          costUsd: 0,
+          tokensIn: 0,
+          tokensOut: 0,
+        });
+      });
+
+      proc.on("close", (code, _signal) => {
+        if (opts.signal?.aborted) {
+          resolve({
+            ok: false,
+            exitReason: "killed",
+            costUsd: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+          });
+          return;
+        }
+
+        const full = buffers.join("");
+        let costUsd = 0;
+        let tokensIn = 0;
+        let tokensOut = 0;
+
+        for (const line of full.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const parsed = JSON.parse(trimmed);
+            if (parsed.type === "result" && parsed.result) {
+              const r = parsed.result;
+              costUsd = r.costUsd ?? r.cost_usd ?? 0;
+              tokensIn = r.tokensIn ?? r.tokens_in ?? 0;
+              tokensOut = r.tokensOut ?? r.tokens_out ?? 0;
+            } else if (parsed.type === "error") {
+              resolve({
+                ok: false,
+                exitReason: "error",
+                costUsd,
+                tokensIn,
+                tokensOut,
+                summary: parsed.error?.message ?? parsed.error,
+              });
+              return;
+            }
+          } catch {
+            // not JSON — log line from claude, already streamed via onLog
+          }
+        }
+
+        const ok = code === 0;
+        resolve({
+          ok,
+          exitReason: ok ? "completed" : "error",
+          costUsd,
+          tokensIn,
+          tokensOut,
+        });
+      });
+    });
   }
 }
 
-/**
- * Talks to a running `opencode serve` HTTP API and selects the provider/model
- * per call (opencodeModel, e.g. "deepseek/deepseek-pro"). Handles every
- * non-Claude model, including Grok (OAuth is configured inside OpenCode).
- */
 export class OpenCodeAdapter implements AgentAdapter {
   readonly runner = "opencode" as const;
+
   constructor(
     private readonly baseUrl: string,
     private readonly opencodeModel: string,
   ) {}
-  async run(_opts: AgentRunOptions): Promise<AgentRunResult> {
-    throw new Error(
-      "not implemented — see docs/specs/deepseek-flash-server-adapters.md",
-    );
+
+  async run(opts: AgentRunOptions): Promise<AgentRunResult> {
+    const url = `${this.baseUrl.replace(/\/$/, "")}/chat`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: this.opencodeModel,
+        prompt: opts.prompt,
+        stream: true,
+      }),
+      signal: opts.signal,
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "unknown error");
+      opts.onLog(`[opencode] HTTP ${response.status}: ${text}\n`);
+      return { ok: false, exitReason: "error", costUsd: 0, tokensIn: 0, tokensOut: 0 };
+    }
+
+    if (!response.body) {
+      return { ok: false, exitReason: "error", costUsd: 0, tokensIn: 0, tokensOut: 0 };
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let costUsd = 0;
+    let tokensIn = 0;
+    let tokensOut = 0;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+
+        for (const raw of lines) {
+          const line = raw.trim();
+          if (!line) continue;
+
+          // SSE format: "data: {...}"
+          let jsonStr = line;
+          if (line.startsWith("data: ")) {
+            jsonStr = line.slice(6);
+          }
+
+          if (jsonStr === "[DONE]") continue;
+
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const text =
+              parsed.choices?.[0]?.delta?.content ??
+              parsed.choices?.[0]?.text ??
+              parsed.message?.content ??
+              parsed.text ??
+              "";
+            if (text) {
+              opts.onLog(text);
+            }
+            if (parsed.usage) {
+              tokensIn = parsed.usage.prompt_tokens ?? parsed.usage.input_tokens ?? tokensIn;
+              tokensOut = parsed.usage.completion_tokens ?? parsed.usage.output_tokens ?? tokensOut;
+            }
+            if (parsed.costUsd != null) {
+              costUsd = parsed.costUsd;
+            }
+          } catch {
+            // not JSON — stream it raw
+            if (line) opts.onLog(line + "\n");
+          }
+        }
+      }
+    } catch (err) {
+      if (opts.signal?.aborted) {
+        return { ok: false, exitReason: "killed", costUsd, tokensIn, tokensOut };
+      }
+      opts.onLog(`[opencode] stream error: ${err}\n`);
+      return { ok: false, exitReason: "error", costUsd, tokensIn, tokensOut };
+    }
+
+    return { ok: true, exitReason: "completed", costUsd, tokensIn, tokensOut };
   }
 }
 
-/** Resolve a ModelConfig to a ready-to-use adapter. */
 export function makeAdapter(
   cfg: ModelConfig,
   opencodeBaseUrl: string,
