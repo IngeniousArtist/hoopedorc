@@ -14,8 +14,13 @@ export class GateRunnerImpl implements GateRunner {
     const typecheck = this.runScript(worktreePath, "typecheck");
     const lint = this.runScript(worktreePath, "lint");
     const build = this.runScript(worktreePath, "build");
-    const tests = this.runScript(worktreePath, "test") &&
-      this.runScript(worktreePath, "tests");
+    // Support either a "test" or "tests" npm script; both must pass if present.
+    const testRun = this.runScript(worktreePath, "test");
+    const testsRun = this.runScript(worktreePath, "tests");
+    const tests = {
+      passed: testRun.passed && testsRun.passed,
+      output: [testRun.output, testsRun.output].filter(Boolean).join("\n"),
+    };
     const noConflicts = this.checkNoConflicts(project, worktreePath);
     const inScope = await this.worktrees.changedFilesInScope(project, task);
 

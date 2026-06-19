@@ -1,15 +1,18 @@
 import "dotenv/config";
+import { tmpdir } from "node:os";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
-import type { ServerEvent } from "@orc/types";
-import { WS_PATH } from "@orc/types";
+import type { ServerEvent, Task } from "@orc/types";
+import { WS_PATH, pickAssignedModel } from "@orc/types";
 import { ENV, defaultSettings } from "./config";
 import { seed } from "./mock";
 import type { Db } from "./db/index";
 import { initDb, openDb } from "./db/index";
 import * as repo from "./db/repo";
 import { WsHub } from "./ws-hub";
+import { EngineRunner } from "./engine-runner";
+import { runPlanner } from "./planner";
 
 type RouteParams = { id: string };
 
@@ -60,6 +63,7 @@ async function main() {
 
   const db = setupDb();
   const hub = new WsHub();
+  const engine = new EngineRunner(db, hub);
 
   // ensure settings exist
   if (!repo.getSettings(db)) {
@@ -84,12 +88,14 @@ async function main() {
     if (!body.name) {
       return reply.code(400).send({ error: "name is required" });
     }
+    const id = crypto.randomUUID();
     const project = repo.createProject(db, {
-      id: crypto.randomUUID(),
+      id,
       name: body.name,
       repoUrl: body.repoUrl ?? "https://github.com/placeholder/repo",
       defaultBranch: body.defaultBranch ?? "main",
-      localPath: ".",
+      localPath: `.hoopedorc/repos/${id}`,
+      budgetUsd: body.budgetUsd,
       status: "created",
     });
     broadcast({ type: "project.updated", payload: project });
@@ -115,52 +121,83 @@ async function main() {
     const body = req.body as { goal?: string; requireApproval?: boolean } | undefined;
 
     repo.updateProject(db, id, { status: "planning" });
+    const goal = body?.goal ?? "";
+    const settings = repo.getSettings(db) ?? defaultSettings();
 
-    // Stub planner — returns a pre-generated task DAG
-    const stubTasks = [
-      repo.createTask(db, {
+    let prdMarkdown: string;
+    const createdTasks: Task[] = [];
+
+    try {
+      // Real planner: Claude turns the goal into a PRD + dependency-ordered DAG.
+      const plan = await runPlanner(goal, project.name, tmpdir());
+      prdMarkdown = plan.prdMarkdown;
+      const ids = plan.tasks.map(() => crypto.randomUUID());
+      plan.tasks.forEach((pt, i) => {
+        createdTasks.push(
+          repo.createTask(db, {
+            id: ids[i]!,
+            projectId: id,
+            title: pt.title,
+            description: pt.description,
+            difficulty: pt.difficulty,
+            status: pt.dependsOn.length === 0 ? "ready" : "backlog",
+            dependsOn: pt.dependsOn.map((d) => ids[d]!).filter(Boolean),
+            acceptanceCriteria: pt.acceptanceCriteria,
+            assignedModel: pickAssignedModel(settings.routing, pt.difficulty, pt.role),
+            role: pt.role,
+            scopePaths: pt.scopePaths,
+            attempts: 0,
+            maxAttempts: 3,
+          }),
+        );
+      });
+    } catch (err) {
+      // Fallback so planning never hard-fails (e.g. claude unavailable).
+      app.log.warn(
+        `planner failed, using stub: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      prdMarkdown = `# PRD: ${project.name}\n\n${goal || "No goal provided."}\n`;
+      const t1 = repo.createTask(db, {
         id: crypto.randomUUID(),
         projectId: id,
         title: "Initial setup & scaffolding",
-        description: body?.goal ?? "Set up the project structure",
+        description: goal || "Set up the project structure",
         difficulty: "easy",
         status: "ready",
         dependsOn: [],
         acceptanceCriteria: ["Project builds", "Tests pass"],
-        assignedModel: "deepseek-flash",
+        assignedModel: pickAssignedModel(settings.routing, "easy"),
         scopePaths: ["**/*"],
         attempts: 0,
         maxAttempts: 3,
-      }),
-      repo.createTask(db, {
+      });
+      const t2 = repo.createTask(db, {
         id: crypto.randomUUID(),
         projectId: id,
         title: "Core implementation",
         description: "Implement the main feature logic",
         difficulty: "medium",
         status: "backlog",
-        dependsOn: [],
+        dependsOn: [t1.id],
         acceptanceCriteria: ["Feature works end-to-end"],
-        assignedModel: "deepseek-flash",
+        assignedModel: pickAssignedModel(settings.routing, "medium"),
         scopePaths: ["**/*"],
         attempts: 0,
         maxAttempts: 3,
-      }),
-    ];
-
-    // Wire dependsOn for the second task
-    repo.updateTask(db, stubTasks[1]!.id, { dependsOn: [stubTasks[0]!.id] });
+      });
+      createdTasks.push(t1, t2);
+    }
 
     repo.updateProject(db, id, { status: "planned" });
     broadcast({ type: "project.updated", payload: repo.getProject(db, id)! });
-    for (const t of stubTasks) {
-      broadcast({ type: "task.updated", payload: repo.getTask(db, t.id)! });
+    for (const t of createdTasks) {
+      broadcast({ type: "task.updated", payload: t });
     }
 
     return {
       project: repo.getProject(db, id)!,
       tasks: repo.getTasks(db, id),
-      prdMarkdown: `# PRD: ${project.name}\n\n${body?.goal ?? "No goal provided."}\n`,
+      prdMarkdown,
     };
   });
 
@@ -170,10 +207,12 @@ async function main() {
     if (!project) return reply.code(404).send({ error: "project not found" });
 
     repo.updateProject(db, id, { status: "running" });
-    broadcast({ type: "project.updated", payload: repo.getProject(db, id)! });
+    const running = repo.getProject(db, id)!;
+    broadcast({ type: "project.updated", payload: running });
 
-    // Delegate to engine (stub for now — engine wiring is deepseek-pro's job)
-    return { project: repo.getProject(db, id)! };
+    // Run the whole DAG autonomously in the background.
+    await engine.start(running);
+    return { project: running };
   });
 
   app.post("/api/projects/:id/pause", async (req, reply) => {
@@ -181,6 +220,7 @@ async function main() {
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
 
+    await engine.pause(project);
     repo.updateProject(db, id, { status: "paused" });
     broadcast({ type: "project.updated", payload: repo.getProject(db, id)! });
     return { project: repo.getProject(db, id)! };
@@ -295,6 +335,10 @@ async function main() {
     broadcast({ type: "run.updated", payload: run });
     broadcast({ type: "task.updated", payload: updatedTask });
 
+    // Execute this single task through the engine in the background.
+    const project = repo.getProject(db, task.projectId)!;
+    void engine.dispatchOne(project, task.id);
+
     return { run, task: updatedTask };
   });
 
@@ -385,6 +429,10 @@ async function main() {
 
     const notification = repo.respondToNotification(db, id, body.choice);
     if (!notification) return reply.code(404).send({ error: "notification not found" });
+
+    // Unblock the engine if it's waiting on this approval.
+    engine.resolveApproval(id, body.choice);
+    broadcast({ type: "notification", payload: notification });
 
     return { notification };
   });

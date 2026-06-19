@@ -10,7 +10,7 @@ import type {
   Settings,
   Task,
 } from "@orc/types";
-import { makeAdapter, type AgentAdapter, type AgentRunResult } from "@orc/adapters";
+import type { AgentRunResult } from "@orc/adapters";
 import { STUCK_DETECTION } from "./constants.js";
 import type { EngineEvents, Scheduler, SchedulerDeps } from "./index.js";
 
@@ -29,7 +29,8 @@ export class Orchestrator implements Scheduler {
     );
     return tasks.filter(
       (t) =>
-        t.status === "backlog" && t.dependsOn.every((dep) => done.has(dep)),
+        (t.status === "backlog" || t.status === "ready") &&
+        t.dependsOn.every((dep) => done.has(dep)),
     );
   }
 
@@ -119,6 +120,12 @@ export class Orchestrator implements Scheduler {
     }
 
     this.emit("info", "engine", "Orchestrator paused", "");
+  }
+
+  /** Run a single task through the full pipeline (manual dispatch). */
+  async runTask(project: Project, task: Task): Promise<void> {
+    this.paused = false;
+    await this.executeTask(project, task);
   }
 
   private async executeTask(
@@ -264,7 +271,7 @@ export class Orchestrator implements Scheduler {
 
       if (this.paused) return;
 
-      const canMerge = this.canAutoMerge(finalGate!);
+      const canMerge = await this.canAutoMerge(project, task, finalGate!);
       if (canMerge) {
         await this.deps.git.mergePr(project, task.prNumber!);
         task.status = "done";
@@ -312,14 +319,7 @@ export class Orchestrator implements Scheduler {
     task: Task,
     fixInstructions?: string,
   ): Promise<AgentRunResult | null> {
-    const cfg = this.deps.settings.models.find(
-      (m) => m.id === task.assignedModel,
-    );
-    if (!cfg) {
-      throw new Error(`No ModelConfig for ${task.assignedModel}`);
-    }
-
-    const adapter = makeAdapter(cfg, this.deps.opencodeBaseUrl);
+    const adapter = this.deps.adapterFor(task.assignedModel);
     const prompt = this.buildAuthorPrompt(task, fixInstructions);
 
     const controller = new AbortController();
@@ -480,13 +480,38 @@ export class Orchestrator implements Scheduler {
     return failures.join("\n");
   }
 
-  private canAutoMerge(gate: GateResult): boolean {
+  private async canAutoMerge(
+    project: Project,
+    task: Task,
+    gate: GateResult,
+  ): Promise<boolean> {
     const { mergePolicy, riskyChangeRules } = this.deps.settings;
 
     if (mergePolicy === "fully_autonomous") return true;
     if (mergePolicy === "always_ask") return false;
 
+    // hard_gate_flag_risky: auto-merge unless a risky-change rule trips.
     if (riskyChangeRules.outOfScopeEdits && !gate.inScope) return false;
+
+    const files = await this.deps.worktrees.changedFiles(project, task);
+    if (riskyChangeRules.dbSchema && files.some((f) => /\.sql$|migrations?\//i.test(f))) {
+      this.emit("warn", "engine", "Risky: DB/schema change detected", task.id);
+      return false;
+    }
+    if (
+      riskyChangeRules.newDependencies &&
+      files.some((f) => /(^|\/)package\.json$/.test(f))
+    ) {
+      this.emit("warn", "engine", "Risky: dependency change detected", task.id);
+      return false;
+    }
+    if (
+      riskyChangeRules.authOrSecrets &&
+      files.some((f) => /\.env|auth|secret|credential|token/i.test(f))
+    ) {
+      this.emit("warn", "engine", "Risky: auth/secret change detected", task.id);
+      return false;
+    }
 
     return true;
   }

@@ -122,6 +122,7 @@ function mapTask(row: Record<string, unknown>): Task {
     dependsOn: json<string[]>(row.depends_on),
     acceptanceCriteria: json<string[]>(row.acceptance_criteria),
     assignedModel: asStr(row.assigned_model) as Task["assignedModel"],
+    role: row.role ? (asStr(row.role) as Task["role"]) : undefined,
     scopePaths: json<string[]>(row.scope_paths),
     branch: row.branch ? asStr(row.branch) : undefined,
     worktreePath: row.worktree_path ? asStr(row.worktree_path) : undefined,
@@ -153,8 +154,8 @@ export function createTask(
 ): Task {
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO tasks (id, project_id, title, description, difficulty, status, depends_on, acceptance_criteria, assigned_model, scope_paths, attempts, max_attempts, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO tasks (id, project_id, title, description, difficulty, status, depends_on, acceptance_criteria, assigned_model, role, scope_paths, attempts, max_attempts, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     t.id,
     t.projectId,
@@ -165,6 +166,7 @@ export function createTask(
     JSON.stringify(t.dependsOn),
     JSON.stringify(t.acceptanceCriteria),
     t.assignedModel,
+    t.role ?? null,
     JSON.stringify(t.scopePaths),
     t.attempts,
     t.maxAttempts,
@@ -189,6 +191,7 @@ export function updateTask(
     difficulty: "difficulty",
     status: "status",
     assignedModel: "assigned_model",
+    role: "role",
     branch: "branch",
     worktreePath: "worktree_path",
     prNumber: "pr_number",

@@ -44,29 +44,31 @@ export class WorktreeManagerImpl implements WorktreeManager {
     }
   }
 
-  async changedFilesInScope(project: Project, task: Task): Promise<boolean> {
+  async changedFiles(project: Project, task: Task): Promise<string[]> {
     const worktreePath = task.worktreePath;
-    if (!worktreePath) return false;
-
-    if (task.scopePaths.length === 0) return true;
-
-    let changedFiles: string[] = [];
+    if (!worktreePath) return [];
     try {
       const output = execSync(
         `git diff --name-only origin/${project.defaultBranch} HEAD`,
         { cwd: worktreePath, stdio: "pipe", encoding: "utf-8" },
       );
-      changedFiles = output
+      return output
         .split("\n")
         .map((f) => f.trim())
         .filter(Boolean);
     } catch {
-      return false;
+      return [];
     }
+  }
 
-    if (changedFiles.length === 0) return true;
+  async changedFilesInScope(project: Project, task: Task): Promise<boolean> {
+    if (!task.worktreePath) return false;
+    if (task.scopePaths.length === 0) return true;
 
-    return changedFiles.every((file) =>
+    const changed = await this.changedFiles(project, task);
+    if (changed.length === 0) return true;
+
+    return changed.every((file) =>
       task.scopePaths.some((pattern) => minimatch(file, pattern, { dot: true })),
     );
   }
