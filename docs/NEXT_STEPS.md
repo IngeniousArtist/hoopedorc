@@ -42,6 +42,126 @@ on run 2). And the **budget-enforcement gap is now closed** — see the (struck-
 
 ---
 
+# Roadmap / planned features
+
+**Decisions captured 2026-06-21 (from the user):**
+- **Planning UX:** chat-to-draft → editable task table → approve (build *both* the chat and the table).
+- **Planning models (two-tier):** **Sonnet** drives the conversational planning/chat (many cheap
+  turns); **Opus** does the one-shot deconstruction of the agreed plan into the task DAG + model
+  assignments (high-leverage, quality-critical). Handoff: Sonnet → natural-language plan/PRD; Opus →
+  strict JSON DAG (difficulty, deps, scope, acceptance criteria, assigned model). NOTE: Opus on the
+  Pro sub is usage-limited — keeping it to the single deconstruction call (not the chat) stays well
+  under the cap; fall back to Sonnet for deconstruction if ever throttled.
+- **Telegram:** full scope — remote approvals + status/cost summaries + two-way commands.
+- **Deployment target:** always-on server (EC2), reachable **only over Tailscale** (no public
+  ingress) — so app-level auth is optional; lock the EC2 security group to the tailnet.
+- **Build first:** (1) planning chat in the web UI, (2) GitHub repo creation in New Project +
+  verifying the full `npm run dev` UI flow end-to-end.
+
+> Status note: the autonomous engine (author → gates → validator → auto-merge) is **verified
+> working** with real models on a throwaway repo. The one path still unverified through the real
+> app is the web UI **New Project → Plan → Start** flow, specifically the Claude **planner** step
+> (it was deliberately bypassed in testing). Verifying it is folded into P0 #2 below.
+
+## P0 — build first
+
+### 1. Planning: chat with Claude → editable task table → approve
+**What:** Replace the one-shot New Project flow with: enter a goal → a **chat panel** where Claude
+(the planner model) proposes a plan and you refine it conversationally ("split that task", "add
+tests", "don't touch the DB") → the agreed plan renders as an **editable task table** (add / remove /
+reorder; edit title, description, difficulty, assigned model, scope paths, acceptance criteria,
+dependencies) → **Approve** materializes the Task rows → Start.
+
+**Why:** today's `POST /api/projects/:id/plan` is single-shot and non-deterministic; a non-expert
+needs to shape scope (and therefore cost) before spending real money.
+
+**Two-tier model design (see decisions above):** chat turns → **Sonnet**; final deconstruction of
+the agreed plan into the JSON task DAG + assignments → **Opus**.
+
+**How (sketch):**
+- Backend: add a multi-turn planning endpoint, e.g. `POST /api/projects/:id/plan/chat` taking
+  `{ messages[] }` and returning `{ reply, proposedPlan }`. The chat turns use **Sonnet**; when the
+  user approves, a final **Opus** call deconstructs the agreed plan into the strict task DAG. Keep
+  the proposed plan as a *draft* (new `plan_drafts` table, or `status: "proposed"` tasks not yet
+  scheduled). Add `POST /api/projects/:id/plan/commit` to turn the approved draft into real Task
+  rows (status `ready`/`backlog` by deps) — reuse the materialization already in `/plan`.
+- **Prerequisite — Claude adapter needs model selection.** `ClaudeAdapter` currently spawns
+  `claude -p …` with **no `--model` flag**, so it can't target Sonnet vs Opus. Add a model id to the
+  claude `ModelConfig` (e.g. `claudeModel: "claude-sonnet-4-6"` / `"claude-opus-4-8"`) and pass
+  `--model` in the spawn args. Then define two `runner: claude-code` configs (one Sonnet, one Opus)
+  and route planner-chat → Sonnet, planner-deconstruct → Opus. Files: `packages/adapters/src/index.ts`,
+  `packages/types` (ModelConfig), `packages/server/src/config.ts` (default roster + routing).
+- Show per-turn cost in the chat so refining a plan doesn't quietly add up.
+- Frontend: chat panel + editable task table on the New Project page.
+- Watch the planner's working dir: `runPlanner` runs in `tmpdir()` and only generates text, but if
+  it starts reading the repo for context, set `PWD` like the adapters now do (see fix #1 above).
+- Files: `packages/server/src/planner.ts`, `…/index.ts` (routes), `packages/types` (DTOs),
+  `apps/web` New Project page.
+
+### 2. Create a GitHub repo from New Project (+ verify full UI flow)
+**What:** New Project offers **"use existing repo URL"** *or* **"create a new private repo for me"**
+→ backend runs `gh repo create <name> --private --add-readme`, sets it as `project.repoUrl`.
+
+**Why:** user wants to start from nothing and have the project synced to a fresh repo.
+
+**How:** extend `POST /api/projects` with `{ createRepo, repoName }`; on create, shell `gh repo
+create` (gh is authed), seed a minimal `package.json` so gates pass on the first task (or let a
+scaffold task do it), then proceed as normal. Frontend: a toggle in the New Project form. Then run
+the real `npm run dev` UI path (New Project → chat plan → Start → auto-merge) on the throwaway repo
+to close the last unverified gap. Files: `…/index.ts` (POST /api/projects), `git-service.ts`
+(optional `ensureRepo`), `apps/web`.
+
+## P1
+
+### 3. Telegram — approvals + status/cost + two-way commands
+- **Approvals:** when the engine calls `events.requestApproval` (risky merge, escalation, attempts
+  exhausted), also push to Telegram with inline Approve/Reject buttons; the bot callback resolves
+  the *same* pending approval via `EngineRunner.resolveApproval` (the UI already does this through
+  `POST /api/notifications/:id/respond` — Telegram is a second channel into the same resolver).
+- **Status/cost:** push on task start/finish/merge/failure + budget alerts; periodic run summaries
+  (Grok already has `roles: ["updates"]` in config).
+- **Two-way commands:** start/pause a project, add a task, check status/cost by messaging the bot.
+- **How:** a bot (telegraf/grammY or raw Bot API) in the server process; `settings.telegram`
+  (already exists, `{ enabled: false }`) holds bot token + allowed chat id. Map `notification.id`
+  ↔ Telegram message for callback resolution. **Restrict to the configured chat id** — approvals
+  merge real code. Files: new `packages/server/src/telegram.ts`, wire into `EngineRunner` events.
+
+### 4. Cost / token analytics + pre-run estimates
+**What:** a Costs dashboard — tokens + $ per model, over time, per project/task; budget burn rate +
+projection ("at this rate you'll hit your $X cap in ~N tasks"); a **pre-run estimate** for a task or
+whole plan. **Why:** user asked for estimates; cost tracking is now accurate (fix #3, prior session).
+**How:** the `costs` table already records per-run `costUsd`/`tokensIn`/`tokensOut`/`model`/`ts`. Add
+time-series + per-model/per-project aggregation endpoints (build on `getCostSummary` /
+`getGlobalMonthlyCost`); estimate from rolling per-model $/token averages × expected task size.
+Files: `repo.ts`, `index.ts`, `apps/web` Costs page.
+
+## P2 — suggested (not yet prioritized)
+- **Audit log** — persist every merge decision + approval (who/what/when/why) + run; PRD requires
+  it. `merge_decisions` holds verdicts today; extend to a full trail + a UI timeline.
+- **One-click rollback** — wire the engine's existing `git-service.revertMerge` to a UI button +
+  endpoint for when an auto-merge goes wrong.
+- **Setup / health check page** — verify `gh`, `claude`, and each `opencode` model's auth show green
+  before spending money.
+- **Retry / replay a failed task** from the UI; **PR diff viewer** (gh pr diff / GitHub API).
+- **Optional "wait for GitHub Actions/CI"** gate before merge (gates currently run locally only).
+- **Custom gates per project** — configure which npm scripts count as gates (repos vary).
+- **Scheduled / cron runs** — recurring maintenance or timed runs (enabled by always-on EC2).
+
+## Always-on (EC2) deployment notes
+Target is a 24/7 box reachable **only over Tailscale**, so plan for: process supervision
+(systemd/pm2) + restart-on-crash; persistent SQLite (back it up, or move to a managed DB);
+provisioning `gh` / `claude` / `opencode` auth on the box; env for ports. The budget rail added this
+session matters most here (unattended spend). Telegram is genuinely useful once the server is always
+up.
+
+**Networking (Tailscale):** the EC2 sits on the tailnet, so **no public ingress** — app-level auth is
+optional. Lock it down: the EC2 **security group must NOT open the app/web ports to `0.0.0.0`** —
+allow only the tailnet (and SSH over Tailscale). Bind the server to the tailscale interface / `100.x`
+address (or rely on the SG). Anyone on one of your tailnet devices can reach it; for a solo dev that's
+acceptable, so app auth stays optional rather than required.
+
+---
+
 # Earlier (verification session, 2026-06-19/20)
 
 You asked me to check whether the orchestrator actually works. Summary: build/typecheck/tests
