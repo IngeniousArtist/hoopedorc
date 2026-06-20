@@ -19,6 +19,8 @@ export class Orchestrator implements Scheduler {
   private readonly activeTaskIds = new Set<string>();
   private readonly taskAbortControllers = new Map<string, AbortController>();
   private readonly modelActiveCount = new Map<ModelId, number>();
+  /** Tasks already logged as budget-blocked this run, to avoid log spam. */
+  private readonly budgetBlockedWarned = new Set<string>();
   private currentTasks: Task[] = [];
 
   constructor(private readonly deps: SchedulerDeps) {}
@@ -37,6 +39,7 @@ export class Orchestrator implements Scheduler {
   async start(project: Project, tasks: Task[]): Promise<void> {
     this.paused = false;
     this.currentTasks = tasks;
+    this.budgetBlockedWarned.clear();
 
     this.emit("info", "engine", "Orchestrator starting", "");
 
@@ -64,6 +67,24 @@ export class Orchestrator implements Scheduler {
           );
           continue;
         }
+
+        // Budget guard: refuse to dispatch new work once a cap is hit. Once
+        // every ready task is budget-blocked and nothing is in flight, the loop
+        // below winds the run down (dispatched === 0 && no active tasks → break).
+        const budgetMsg = this.deps.checkBudget?.(task.assignedModel) ?? null;
+        if (budgetMsg) {
+          if (!this.budgetBlockedWarned.has(task.id)) {
+            this.budgetBlockedWarned.add(task.id);
+            this.emit(
+              "error",
+              "engine",
+              `Budget cap reached, not dispatching: ${budgetMsg}`,
+              task.id,
+            );
+          }
+          continue;
+        }
+        this.budgetBlockedWarned.delete(task.id);
 
         const active =
           this.modelActiveCount.get(task.assignedModel) ?? 0;
@@ -156,6 +177,22 @@ export class Orchestrator implements Scheduler {
       ) {
         if (this.paused) return;
 
+        // Stop spending mid-task if a budget cap has since been hit (e.g. by a
+        // concurrent task or this task's earlier attempts). Leave it in backlog
+        // so it can resume once budget is raised or the month rolls over.
+        const budgetMsg = this.deps.checkBudget?.(task.assignedModel) ?? null;
+        if (budgetMsg) {
+          this.emit(
+            "error",
+            "engine",
+            `Budget cap reached, stopping task: ${budgetMsg}`,
+            task.id,
+          );
+          task.status = "backlog";
+          this.deps.events.onTaskUpdated(task);
+          return;
+        }
+
         this.emit(
           "info",
           "engine",
@@ -186,6 +223,25 @@ export class Orchestrator implements Scheduler {
           path,
           `feat: ${task.title} (attempt ${task.attempts})`,
         );
+
+        // Guard: if the author produced no committed changes, there's nothing to
+        // open a PR for. `gh pr create` would fail with a cryptic "No commits
+        // between main and <branch>". The usual cause is the agent writing files
+        // outside its worktree (e.g. resolving the wrong project root).
+        const changed = await this.deps.worktrees.changedFiles(project, task);
+        if (changed.length === 0) {
+          this.emit(
+            "error",
+            "engine",
+            `Author produced no changes in the worktree (${path}). ` +
+              `Nothing to commit/PR — check that the agent wrote into the worktree, not elsewhere.`,
+            task.id,
+          );
+          task.status = "failed";
+          this.deps.events.onTaskUpdated(task);
+          return;
+        }
+
         await this.deps.git.push(path, branch);
 
         if (task.attempts === 1 && task.prNumber == null) {

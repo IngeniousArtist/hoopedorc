@@ -49,7 +49,7 @@ const approveAdapter: AgentAdapter = {
   },
 };
 
-function fakeDeps(over: Partial<SchedulerDeps>, merged: number[], changed: string[] = []): SchedulerDeps {
+function fakeDeps(over: Partial<SchedulerDeps>, merged: number[], changed: string[] = ["src/example.ts"]): SchedulerDeps {
   return {
     settings: settings(),
     opencodeBaseUrl: "",
@@ -89,6 +89,39 @@ test("drives a 2-task DAG to done and merges both, respecting dependency order",
   assert.equal(t1.status, "done");
   assert.equal(t2.status, "done");
   assert.equal(merged.length, 2);
+});
+
+test("a budget cap stops the autonomous loop before dispatching or merging", async () => {
+  const merged: number[] = [];
+  const logs: { level: string; message: string }[] = [];
+  let authorRuns = 0;
+  const deps = fakeDeps(
+    {
+      checkBudget: () => "Project budget $1 exceeded ($2.00 used)",
+      adapterFor: () => ({
+        runner: "opencode",
+        async run() {
+          authorRuns++;
+          return { ok: true, exitReason: "completed", costUsd: 0.01, tokensIn: 1, tokensOut: 1, summary: "" };
+        },
+      }),
+      events: {
+        onLog(e) { logs.push({ level: e.level, message: e.message }); },
+        onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() { return "reject"; },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+  assert.equal(authorRuns, 0, "no model should run while over budget");
+  assert.equal(merged.length, 0, "nothing should merge while over budget");
+  assert.notEqual(t1.status, "done");
+  assert.ok(
+    logs.some((l) => l.level === "error" && /Budget cap reached/.test(l.message)),
+    "should emit a budget-cap error log",
+  );
 });
 
 test("a risky change (new dependency) escalates to a human instead of auto-merging", async () => {

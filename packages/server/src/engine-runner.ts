@@ -12,6 +12,7 @@ import { ENV } from "./config";
 import type { Db } from "./db/index";
 import * as repo from "./db/repo";
 import type { WsHub } from "./ws-hub";
+import { checkBudget } from "./budget";
 
 /**
  * Bridges the engine to the server: builds SchedulerDeps whose events persist to
@@ -64,6 +65,7 @@ export class EngineRunner {
       settings,
       adapterFor,
       opencodeBaseUrl: ENV.opencodeBaseUrl,
+      checkBudget: (modelId) => checkBudget(this.db, project.id, modelId, settings),
       events: {
         onLog: (e) => {
           const log = repo.createLog(this.db, e);

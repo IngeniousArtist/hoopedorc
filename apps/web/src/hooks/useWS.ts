@@ -26,9 +26,11 @@ export function useWS(
     };
 
     return () => {
-      ws.send(
-        JSON.stringify({ type: "unsubscribe", projectId }),
-      );
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(
+          JSON.stringify({ type: "unsubscribe", projectId }),
+        );
+      }
       ws.close();
     };
   }, [projectId]);

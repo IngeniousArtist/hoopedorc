@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
@@ -13,6 +14,7 @@ import * as repo from "./db/repo";
 import { WsHub } from "./ws-hub";
 import { EngineRunner } from "./engine-runner";
 import { runPlanner } from "./planner";
+import { checkBudget } from "./budget";
 
 type RouteParams = { id: string };
 
@@ -95,7 +97,7 @@ async function main() {
       name: body.name,
       repoUrl: body.repoUrl ?? "https://github.com/placeholder/repo",
       defaultBranch: body.defaultBranch ?? "main",
-      localPath: `.hoopedorc/repos/${id}`,
+      localPath: join(ENV.reposDir, id),
       budgetUsd: body.budgetUsd,
       status: "created",
     });
@@ -263,40 +265,6 @@ async function main() {
     return { task: updated };
   });
 
-  function checkBudget(
-    projectId: string,
-    model: string,
-    settings: import("@orc/types").Settings,
-  ): string | null {
-    // Project budget check
-    const project = repo.getProject(db, projectId);
-    if (project?.budgetUsd) {
-      const { totalUsd } = repo.getCostSummary(db, projectId);
-      if (totalUsd >= project.budgetUsd) {
-        return `Project budget $${project.budgetUsd} exceeded ($${totalUsd} used)`;
-      }
-    }
-
-    // Model monthly budget check
-    const modelCfg = settings.models.find((m) => m.id === model);
-    if (modelCfg?.monthlyBudgetUsd) {
-      const monthly = repo.getModelMonthlyCost(db, model);
-      if (monthly >= modelCfg.monthlyBudgetUsd) {
-        return `Model ${model} monthly budget $${modelCfg.monthlyBudgetUsd} exceeded ($${monthly} used)`;
-      }
-    }
-
-    // Global monthly budget check
-    if (settings.globalMonthlyBudgetUsd) {
-      const allCosts = repo.getCostSummary(db, projectId);
-      if (allCosts.totalUsd >= settings.globalMonthlyBudgetUsd) {
-        return `Global monthly budget $${settings.globalMonthlyBudgetUsd} exceeded`;
-      }
-    }
-
-    return null;
-  }
-
   app.post("/api/tasks/:id/dispatch", async (req, reply) => {
     const { id } = req.params as RouteParams;
     const task = repo.getTask(db, id);
@@ -310,7 +278,7 @@ async function main() {
     if (!settings) return reply.code(500).send({ error: "settings not found" });
 
     // Budget check
-    const budgetMsg = checkBudget(task.projectId, task.assignedModel, settings);
+    const budgetMsg = checkBudget(db, task.projectId, task.assignedModel, settings);
     if (budgetMsg) {
       return reply.code(403).send({ error: `budget cap: ${budgetMsg}` });
     }

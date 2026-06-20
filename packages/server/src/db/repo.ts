@@ -430,6 +430,16 @@ export function getModelMonthlyCost(db: Db, model: string): number {
   return row ? Number(row.total) : 0;
 }
 
+/** Total spend this calendar month across all projects and models. */
+export function getGlobalMonthlyCost(db: Db): number {
+  const now = new Date();
+  const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const row = db
+    .prepare("SELECT COALESCE(SUM(cost_usd), 0) as total FROM costs WHERE ts >= ?")
+    .get(firstOfMonth) as { total: number } | undefined;
+  return row ? Number(row.total) : 0;
+}
+
 // ── Notifications ──
 
 function mapNotification(row: Record<string, unknown>): Notification {

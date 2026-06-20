@@ -1,8 +1,10 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ModelConfig, Settings } from "@orc/types";
 
 /**
- * Default model roster. The `opencodeModel` strings are PLACEHOLDERS — replace
- * them with the exact provider/model ids from `opencode models` for your setup.
+ * Default model roster. The `opencodeModel` strings are verified against
+ * `opencode models` output for this setup.
  */
 export const DEFAULT_MODELS: ModelConfig[] = [
   {
@@ -78,7 +80,10 @@ export function defaultSettings(): Settings {
       validatorByDifficulty: {
         easy: "deepseek-pro",
         medium: "deepseek-pro",
-        hard: "deepseek-pro",
+        // Hard tasks are authored by deepseek-pro (byDifficulty.hard below), so
+        // the validator must be a different model — self-review is forbidden
+        // (validator.ts throws if validatorModel === authorModel).
+        hard: "glm",
       },
     },
     mergePolicy: "hard_gate_flag_risky",
@@ -100,4 +105,10 @@ export const ENV = {
   // (and run `opencode serve`) only to centralize sessions on one server.
   opencodeBaseUrl: process.env.OPENCODE_BASE_URL ?? "",
   mock: process.env.MOCK === "1",
+  // Where per-project repo clones + their task worktrees live. MUST be outside
+  // the orchestrator's own working tree: each worktree is `${localPath}-wt-<id>`,
+  // and coding agents (opencode/claude) resolve their project root by walking up
+  // to the nearest `.git`. If a worktree is nested inside this repo, the agent
+  // resolves to THIS repo and writes files here instead of the worktree.
+  reposDir: process.env.REPOS_DIR ?? join(homedir(), ".hoopedorc", "repos"),
 };

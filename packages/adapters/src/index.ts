@@ -83,7 +83,15 @@ export class ClaudeAdapter implements AgentAdapter {
           "--permission-mode",
           CLAUDE_PERMISSION_MODE,
         ],
-        { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] },
+        // PWD must be set explicitly: spawn's `cwd` changes the child's actual
+        // working directory but does NOT update the inherited $PWD env var, and
+        // CLI agents resolve their project root from $PWD. Without this, the
+        // agent runs in the server's launch directory instead of the worktree.
+        {
+          cwd: opts.cwd,
+          env: { ...process.env, PWD: opts.cwd },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
       );
 
       let costUsd = 0;
@@ -198,6 +206,11 @@ export class OpenCodeAdapter implements AgentAdapter {
     return new Promise((resolve) => {
       const proc = spawn("opencode", args, {
         cwd: opts.cwd,
+        // PWD must be set explicitly: spawn's `cwd` does NOT update the inherited
+        // $PWD env var, and `opencode run` resolves its working directory from
+        // $PWD (verified). Without this it runs in the server's launch directory
+        // and writes files there instead of the task worktree.
+        env: { ...process.env, PWD: opts.cwd },
         stdio: ["ignore", "pipe", "pipe"],
       });
 
@@ -209,26 +222,22 @@ export class OpenCodeAdapter implements AgentAdapter {
       let killed = false;
 
       const handleEvent = (obj: Record<string, unknown>) => {
-        // Best-effort extraction across possible event shapes.
-        const part =
-          (obj.text as string) ??
-          ((obj.part as { text?: string })?.text ?? "") ??
-          ((obj.message as { content?: string })?.content ?? "");
-        if (typeof part === "string" && part) text += part;
-        const usage = obj.usage as
+        // `opencode run --format json` nests everything under `part`. Text
+        // arrives on "text" parts; cost/tokens arrive per-step on "step-finish"
+        // parts and are incremental (per step), so accumulate across the run.
+        const part = obj.part as
           | {
-              input_tokens?: number;
-              output_tokens?: number;
-              prompt_tokens?: number;
-              completion_tokens?: number;
+              text?: string;
+              cost?: number;
+              tokens?: { input?: number; output?: number };
             }
           | undefined;
-        if (usage) {
-          tokensIn = usage.input_tokens ?? usage.prompt_tokens ?? tokensIn;
-          tokensOut = usage.output_tokens ?? usage.completion_tokens ?? tokensOut;
+        if (typeof part?.text === "string") text += part.text;
+        if (typeof part?.cost === "number") costUsd += part.cost;
+        if (part?.tokens) {
+          tokensIn += part.tokens.input ?? 0;
+          tokensOut += part.tokens.output ?? 0;
         }
-        const cost = (obj.cost as number) ?? (obj.costUsd as number);
-        if (typeof cost === "number") costUsd = cost;
       };
 
       const onData = (chunk: Buffer) => {

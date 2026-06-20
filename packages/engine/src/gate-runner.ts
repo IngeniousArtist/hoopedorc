@@ -81,21 +81,30 @@ export class GateRunnerImpl implements GateRunner {
       return false;
     }
 
+    // Dry-run merge of the default branch into the task branch. A clean merge —
+    // OR "Already up to date" when the branch is simply ahead — exits 0 and means
+    // no conflict. A non-zero exit means a real conflict.
+    let clean: boolean;
     try {
       execSync(
         `git merge --no-commit --no-ff "origin/${project.defaultBranch}"`,
         { cwd, stdio: "pipe", timeout: 30_000 },
       );
-      execSync("git merge --abort", { cwd, stdio: "pipe" });
-      return true;
+      clean = true;
     } catch {
-      try {
-        execSync("git merge --abort", { cwd, stdio: "pipe" });
-      } catch {
-        /* ignore */
-      }
-      return false;
+      clean = false;
     }
+
+    // Roll back any merge state. When the branch was already up to date there is
+    // no merge in progress, so this fails harmlessly — ignore it. (Aborting
+    // inside the success path is what made a clean branch look like a conflict.)
+    try {
+      execSync("git merge --abort", { cwd, stdio: "pipe" });
+    } catch {
+      /* no merge in progress — nothing to abort */
+    }
+
+    return clean;
   }
 
   private allFail(reason: string): GateResult {

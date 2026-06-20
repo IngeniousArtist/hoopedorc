@@ -83,6 +83,13 @@ export interface SchedulerDeps {
   adapterFor: (modelId: ModelId) => AgentAdapter;
   /** Base URL of the running `opencode serve` instance (for opencode adapters). */
   opencodeBaseUrl: string;
+  /**
+   * Returns a reason string if running `modelId` would exceed a budget cap, or
+   * `null` if within budget. Consulted before dispatching each task and before
+   * each retry attempt so an unattended run stops once a cap is hit. Optional;
+   * if omitted, no budget enforcement is applied.
+   */
+  checkBudget?: (modelId: ModelId) => string | null;
 }
 
 export interface Scheduler {
