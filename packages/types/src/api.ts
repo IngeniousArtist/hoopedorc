@@ -120,6 +120,22 @@ export interface PlanCommitResponse {
   prdMarkdown: string;
 }
 
+/** Persisted planning state for a project — fetched on Plan page load. */
+export interface PlanningSessionResponse {
+  messages: PlanChatMessage[];
+  prd?: string;
+  draftTasks?: DraftTask[];
+  planCostUsd: number;
+}
+
+export interface SaveDraftRequest {
+  prdMarkdown: string;
+  tasks: DraftTask[];
+}
+export interface SaveDraftResponse {
+  ok: true;
+}
+
 export interface ListTasksResponse {
   tasks: Task[];
 }
@@ -303,6 +319,8 @@ export const ROUTES = {
   planChat: "POST /api/projects/:id/plan/chat",
   planDeconstruct: "POST /api/projects/:id/plan/deconstruct",
   planCommit: "POST /api/projects/:id/plan/commit",
+  planSession: "GET /api/projects/:id/plan/session",
+  planSaveDraft: "POST /api/projects/:id/plan/save-draft",
   startProject: "POST /api/projects/:id/start",
   pauseProject: "POST /api/projects/:id/pause",
   listTasks: "GET /api/projects/:id/tasks",

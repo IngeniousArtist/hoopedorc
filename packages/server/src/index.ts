@@ -522,6 +522,11 @@ async function main() {
         ENV.plannerChatModel,
       );
       recordPlanningCost(id, costUsd);
+      // Persist the full conversation (including assistant reply) so the Plan
+      // tab can restore it on reload or after a tab switch.
+      repo.savePlanningSession(db, id, {
+        messages: [...messages, { role: "assistant", content: text }],
+      });
       return { reply: text, costUsd };
     } catch (err) {
       return reply.code(502).send({
@@ -530,7 +535,7 @@ async function main() {
     }
   });
 
-  // Deconstruct the agreed conversation into a draft task DAG (NOT yet persisted).
+  // Deconstruct the agreed conversation into a draft task DAG (NOT yet persisted as tasks).
   app.post("/api/projects/:id/plan/deconstruct", async (req, reply) => {
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
@@ -551,16 +556,44 @@ async function main() {
       );
       recordPlanningCost(id, costUsd);
       const settings = repo.getSettings(db) ?? defaultSettings();
-      return {
-        prdMarkdown: output.prdMarkdown,
-        tasks: withAssignedModels(output, settings),
-        costUsd,
-      };
+      const tasks = withAssignedModels(output, settings);
+      // Persist draft tasks + PRD so the Plan tab can restore them on reload.
+      repo.savePlanningSession(db, id, {
+        messages,
+        prd: output.prdMarkdown,
+        draftTasks: tasks,
+      });
+      return { prdMarkdown: output.prdMarkdown, tasks, costUsd };
     } catch (err) {
       return reply.code(502).send({
         error: `deconstruction failed: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
+  });
+
+  // Save the user's in-progress edits to the draft task table without committing.
+  app.post("/api/projects/:id/plan/save-draft", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    if (!repo.getProject(db, id)) return reply.code(404).send({ error: "project not found" });
+    const body = req.body as { prdMarkdown?: string; tasks?: DraftTask[] };
+    repo.savePlanningSession(db, id, {
+      prd: body.prdMarkdown,
+      draftTasks: body.tasks ?? null,
+    });
+    return { ok: true };
+  });
+
+  // Return the persisted planning session for the Plan tab to restore on load.
+  app.get("/api/projects/:id/plan/session", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    if (!repo.getProject(db, id)) return reply.code(404).send({ error: "project not found" });
+    const session = repo.getPlanningSession(db, id);
+    const planCostUsd = (
+      db.prepare(
+        "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM costs WHERE project_id = ? AND task_id IS NULL",
+      ).get(id) as { total: number }
+    ).total;
+    return { ...session, planCostUsd };
   });
 
   // Commit the (user-edited) draft tasks into real Task rows.
@@ -578,6 +611,8 @@ async function main() {
     const settings = repo.getSettings(db) ?? defaultSettings();
     const created = materializeTasks(db, id, body.tasks, settings);
     repo.updateProject(db, id, { status: "planned" });
+    // Clear the draft table (tasks are now real); keep the conversation for history.
+    repo.savePlanningSession(db, id, { prd: null, draftTasks: null });
 
     broadcast({ type: "project.updated", payload: repo.getProject(db, id)! });
     for (const t of created) broadcast({ type: "task.updated", payload: t });

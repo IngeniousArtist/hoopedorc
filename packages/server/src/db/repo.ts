@@ -1,9 +1,11 @@
 import type {
   AuditEntry,
   CostRecord,
+  DraftTask,
   LogEvent,
   MergeDecision,
   Notification,
+  PlanChatMessage,
   Project,
   Run,
   Settings,
@@ -134,6 +136,38 @@ export function deleteProject(db: Db, id: string): void {
     db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
   });
   run(id);
+}
+
+// ── Planning session ──
+
+export function savePlanningSession(
+  db: Db,
+  projectId: string,
+  opts: { messages?: PlanChatMessage[]; prd?: string | null; draftTasks?: DraftTask[] | null },
+): void {
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  if (opts.messages !== undefined) { sets.push("planning_messages = ?"); vals.push(JSON.stringify(opts.messages)); }
+  if (opts.prd !== undefined) { sets.push("planning_prd = ?"); vals.push(opts.prd ?? null); }
+  if (opts.draftTasks !== undefined) { sets.push("planning_draft_tasks = ?"); vals.push(opts.draftTasks ? JSON.stringify(opts.draftTasks) : null); }
+  if (sets.length === 0) return;
+  vals.push(projectId);
+  db.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+}
+
+export function getPlanningSession(
+  db: Db,
+  projectId: string,
+): { messages: PlanChatMessage[]; prd?: string; draftTasks?: DraftTask[] } {
+  const row = db
+    .prepare("SELECT planning_messages, planning_prd, planning_draft_tasks FROM projects WHERE id = ?")
+    .get(projectId) as { planning_messages: string | null; planning_prd: string | null; planning_draft_tasks: string | null } | undefined;
+  if (!row) return { messages: [] };
+  return {
+    messages: row.planning_messages ? (JSON.parse(row.planning_messages) as PlanChatMessage[]) : [],
+    prd: row.planning_prd ?? undefined,
+    draftTasks: row.planning_draft_tasks ? (JSON.parse(row.planning_draft_tasks) as DraftTask[]) : undefined,
+  };
 }
 
 // ── Tasks ──

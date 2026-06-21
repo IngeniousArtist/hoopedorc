@@ -12,12 +12,14 @@ import { Board } from "./pages/Board";
 import { CostView } from "./pages/CostView";
 import { NewProject } from "./pages/NewProject";
 import { Notifications } from "./pages/Notifications";
+import { PlanView } from "./pages/PlanView";
 import { ProjectsView } from "./pages/ProjectsView";
 import { Settings } from "./pages/Settings";
 import { SetupView } from "./pages/SetupView";
 
 type Page =
   | "board"
+  | "plan"
   | "costs"
   | "audit"
   | "notifications"
@@ -28,6 +30,7 @@ type Page =
 
 const NAV: { page: Page; label: string }[] = [
   { page: "board", label: "Board" },
+  { page: "plan", label: "Plan" },
   { page: "costs", label: "Costs" },
   { page: "audit", label: "Audit" },
   { page: "notifications", label: "Notifications" },
@@ -38,7 +41,7 @@ const NAV: { page: Page; label: string }[] = [
 ];
 
 /** Pages that need a selected project to render anything useful. */
-const PROJECT_PAGES: Page[] = ["board", "costs", "audit", "notifications"];
+const PROJECT_PAGES: Page[] = ["board", "plan", "costs", "audit", "notifications"];
 
 const STORAGE_KEY = "hoop.projectId";
 
@@ -86,10 +89,11 @@ export function App() {
   }, []);
   useWS(selectedProjectId, onWS);
 
-  // A freshly created project becomes the active one.
+  // A freshly created project becomes the active one, then go straight to Plan.
   const handleProjectCreated = useCallback((p: Project) => {
     setProjects((prev) => [p, ...prev.filter((x) => x.id !== p.id)]);
     setSelectedProjectId(p.id);
+    setPage("plan");
   }, []);
 
   const handleProjectDeleted = useCallback(
@@ -163,6 +167,12 @@ export function App() {
               <ProjectHeader key={selectedProject.id} project={selectedProject} />
             )}
             {page === "board" && <Board projectId={selectedProjectId} />}
+            {page === "plan" && (
+              <PlanView
+                projectId={selectedProjectId}
+                onDone={() => setPage("board")}
+              />
+            )}
             {page === "costs" && <CostView projectId={selectedProjectId} />}
             {page === "audit" && <AuditView projectId={selectedProjectId} />}
             {page === "notifications" && (

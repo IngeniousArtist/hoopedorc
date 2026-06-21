@@ -4,16 +4,19 @@
 PRAGMA journal_mode = WAL;
 
 CREATE TABLE IF NOT EXISTS projects (
-  id             TEXT PRIMARY KEY,
-  name           TEXT NOT NULL,
-  repo_url       TEXT NOT NULL,
-  default_branch TEXT NOT NULL DEFAULT 'main',
-  local_path     TEXT NOT NULL,
-  status         TEXT NOT NULL,
-  prd_path       TEXT,
-  budget_usd     REAL,
-  created_at     TEXT NOT NULL,
-  updated_at     TEXT NOT NULL
+  id                    TEXT PRIMARY KEY,
+  name                  TEXT NOT NULL,
+  repo_url              TEXT NOT NULL,
+  default_branch        TEXT NOT NULL DEFAULT 'main',
+  local_path            TEXT NOT NULL,
+  status                TEXT NOT NULL,
+  prd_path              TEXT,
+  budget_usd            REAL,
+  planning_messages     TEXT,   -- JSON PlanChatMessage[]
+  planning_prd          TEXT,   -- PRD markdown from last deconstruct
+  planning_draft_tasks  TEXT,   -- JSON DraftTask[] from last deconstruct (user-editable)
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS tasks (

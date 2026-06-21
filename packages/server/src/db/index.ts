@@ -22,5 +22,14 @@ export function initDb(path: string = ENV.dbPath): Db {
   // schema.sql into dist or inline it — see the spec.
   const schema = readFileSync(join(here, "schema.sql"), "utf8");
   db.exec(schema);
+  // Safe column migrations for existing databases (SQLite ignores IF NOT EXISTS
+  // on ALTER TABLE, so we catch the "duplicate column" error instead).
+  for (const col of [
+    "ALTER TABLE projects ADD COLUMN planning_messages TEXT",
+    "ALTER TABLE projects ADD COLUMN planning_prd TEXT",
+    "ALTER TABLE projects ADD COLUMN planning_draft_tasks TEXT",
+  ]) {
+    try { db.exec(col); } catch { /* column already exists */ }
+  }
   return db;
 }
