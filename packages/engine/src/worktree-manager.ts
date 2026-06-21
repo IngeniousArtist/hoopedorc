@@ -8,13 +8,17 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { minimatch } from "minimatch";
 import type { Project, Task } from "@orc/types";
 import type { WorktreeManager } from "./index.js";
 
 const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
 const DEPS_MARKER = ".hoopedorc-deps-hash";
+// Things the orchestrator (or an agent) generates that must never get staged by
+// `git add -A` and committed into a task's PR — most importantly the symlinked
+// node_modules we drop into every worktree for the gates.
+const GIT_EXCLUDE_ENTRIES = ["node_modules", ".hoopedorc-deps-hash"];
 
 export class WorktreeManagerImpl implements WorktreeManager {
   async create(
@@ -90,9 +94,47 @@ export class WorktreeManagerImpl implements WorktreeManager {
       { cwd: project.localPath, stdio: "pipe" },
     );
 
+    // MUST run before ensureDeps drops the node_modules symlink, and before the
+    // agent's `git add -A`: otherwise node_modules gets committed into the
+    // task's PR and the inScope gate fails it as an out-of-scope change. This
+    // is the local safety net; new repos also get a committed .gitignore.
+    this.ensureGitExclude(path);
     this.ensureDeps(project, path);
 
     return { branch, path };
+  }
+
+  /**
+   * Append node_modules (etc.) to git's local exclude so `git add -A` in a
+   * worktree never stages the symlinked deps. Uses `info/exclude` (shared
+   * across all worktrees via the common git dir, never committed) so it works
+   * even for older projects whose repo has no .gitignore.
+   */
+  private ensureGitExclude(cwd: string): void {
+    try {
+      const rel = execSync("git rev-parse --git-path info/exclude", {
+        cwd,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+      }).trim();
+      const abs = isAbsolute(rel) ? rel : join(cwd, rel);
+
+      let content = "";
+      try {
+        content = readFileSync(abs, "utf-8");
+      } catch {
+        /* no exclude file yet */
+      }
+      const have = new Set(content.split("\n").map((l) => l.trim()));
+      const missing = GIT_EXCLUDE_ENTRIES.filter((e) => !have.has(e));
+      if (missing.length === 0) return;
+
+      mkdirSync(dirname(abs), { recursive: true });
+      const prefix = content && !content.endsWith("\n") ? content + "\n" : content;
+      writeFileSync(abs, prefix + missing.join("\n") + "\n");
+    } catch {
+      /* best effort */
+    }
   }
 
   /**

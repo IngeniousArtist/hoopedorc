@@ -70,5 +70,34 @@ export function createGithubRepo(rawName: string): CreatedRepo {
     `content=${content}`,
   ]);
 
+  // Seed a .gitignore so build artifacts the orchestrator/agents generate
+  // (node_modules, lockfile churn, env files, OS cruft) never get committed
+  // into task PRs — without this, `git add -A` in a worktree commits
+  // node_modules and the inScope gate fails every task.
+  const gitignore = [
+    "node_modules/",
+    ".hoopedorc-deps-hash",
+    "dist/",
+    "build/",
+    ".next/",
+    "out/",
+    ".env",
+    ".env.*",
+    "*.log",
+    ".DS_Store",
+    "",
+  ].join("\n");
+  const giContent = Buffer.from(gitignore, "utf8").toString("base64");
+  gh([
+    "api",
+    "--method",
+    "PUT",
+    `repos/${nameWithOwner}/contents/.gitignore`,
+    "-f",
+    "message=chore: seed .gitignore (hoopedorc)",
+    "-f",
+    `content=${giContent}`,
+  ]);
+
   return { repoUrl, nameWithOwner };
 }
