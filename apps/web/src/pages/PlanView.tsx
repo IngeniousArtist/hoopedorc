@@ -349,6 +349,17 @@ export function PlanView({
             Chat with Claude
           </h3>
 
+          {/* Iteration hint: project.prd is only set after a prior commit, so
+              its presence means this is a follow-up planning round. */}
+          {project?.prd && messages.length === 0 && (
+            <div className="rounded border border-blue-900/50 bg-blue-950/20 px-3 py-2 text-xs text-blue-200">
+              This project already has a plan and shipped work. Describe the
+              changes or additions you want — Claude reads the prior PRD,
+              completed tasks, and activity log, then appends only the new tasks
+              to the board.
+            </div>
+          )}
+
           <div className="max-h-96 space-y-2 overflow-y-auto rounded border border-neutral-800 bg-neutral-950 p-3">
             {messages.length === 0 && (
               <p className="text-xs text-neutral-400">

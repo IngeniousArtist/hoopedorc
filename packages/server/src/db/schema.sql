@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS projects (
   local_path            TEXT NOT NULL,
   status                TEXT NOT NULL,
   prd_path              TEXT,
+  prd                   TEXT,   -- last committed PRD markdown (for v2 planning context)
   budget_usd            REAL,
   planning_messages     TEXT,   -- JSON PlanChatMessage[]
   planning_prd          TEXT,   -- PRD markdown from last deconstruct

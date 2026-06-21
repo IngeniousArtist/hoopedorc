@@ -91,14 +91,39 @@ outstanding ambiguities, and the scope/tasks are well-defined — end your reply
 this token on its own line: [PLAN_COMPLETE]
 Only emit [PLAN_COMPLETE] once you are genuinely ready; do not emit it mid-conversation.`;
 
-function buildChatPrompt(messages: PlanChatMessage[], projectName: string): string {
+/**
+ * Block describing what the project already shipped, injected when planning a
+ * follow-up iteration (v2+). Tells the planner to propose only the delta on top
+ * of existing, already-built work rather than re-planning from scratch.
+ */
+function priorContextBlock(priorContext?: string): string {
+  if (!priorContext) return "";
+  return `
+
+## EXISTING PROJECT — this is a follow-up iteration
+This project has already shipped earlier work. Below is its prior PRD, the
+tasks already completed, and a recent activity log. Treat all of this as DONE
+and present in the codebase. Your job now is to plan ONLY the NEW work the user
+is asking for in this conversation — do NOT recreate or re-scaffold existing
+functionality. Build on what's there, reuse existing files/conventions, and
+only propose tasks for the incremental changes.
+
+${priorContext}
+`;
+}
+
+function buildChatPrompt(
+  messages: PlanChatMessage[],
+  projectName: string,
+  priorContext?: string,
+): string {
   const transcript = messages
     .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
     .join("\n\n");
   return `${CHAT_SYSTEM}
 
 Project: "${projectName}"
-
+${priorContextBlock(priorContext)}
 Conversation so far:
 ${transcript}
 
@@ -108,6 +133,7 @@ Reply as the Assistant to the latest User message.`;
 function buildDeconstructPrompt(
   messages: PlanChatMessage[],
   projectName: string,
+  priorContext?: string,
 ): string {
   const transcript = messages
     .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
@@ -120,11 +146,17 @@ Your working directory is the project's actual cloned repository. If it already 
 use your file tools to check real file paths and existing structure before writing scopePaths —
 each task's scopePaths must match files/globs that actually make sense for this repo, not
 invented paths. For a brand-new/empty project, plan from the conversation alone.
-
+${priorContextBlock(priorContext)}
 ## Planning conversation
 ${transcript}
 
-${DECONSTRUCT_SHAPE}`;
+${DECONSTRUCT_SHAPE}
+
+${priorContext
+  ? `Because this is a follow-up iteration, the "prd" you return should be the UPDATED full PRD
+(prior PRD revised to include the new work), and "tasks" should contain ONLY the new tasks for
+this iteration — not the already-completed ones.`
+  : ""}`;
 }
 
 interface ClaudeJsonResult {
@@ -245,9 +277,10 @@ export async function runPlannerChat(
   projectName: string,
   cwd: string,
   model?: string,
+  priorContext?: string,
 ): Promise<{ reply: string; costUsd: number }> {
   const { text, costUsd } = await runClaudeJson(
-    buildChatPrompt(messages, projectName),
+    buildChatPrompt(messages, projectName, priorContext),
     cwd,
     model,
   );
@@ -260,9 +293,10 @@ export async function runPlannerDeconstruct(
   projectName: string,
   cwd: string,
   model?: string,
+  priorContext?: string,
 ): Promise<{ output: PlanOutput; costUsd: number }> {
   const { text, costUsd } = await runClaudeJson(
-    buildDeconstructPrompt(messages, projectName),
+    buildDeconstructPrompt(messages, projectName, priorContext),
     cwd,
     model,
   );

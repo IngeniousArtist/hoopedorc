@@ -34,6 +34,7 @@ function mapProject(row: Record<string, unknown>): Project {
     localPath: asStr(row.local_path),
     status: asStr(row.status) as Project["status"],
     prdPath: row.prd_path ? asStr(row.prd_path) : undefined,
+    prd: row.prd ? asStr(row.prd) : undefined,
     budgetUsd: row.budget_usd != null ? Number(row.budget_usd) : undefined,
     createdAt: asStr(row.created_at),
     updatedAt: asStr(row.updated_at),
@@ -43,7 +44,7 @@ function mapProject(row: Record<string, unknown>): Project {
 export function getProjects(db: Db): Project[] {
   return db
     .prepare(
-      "SELECT id, name, repo_url, default_branch, local_path, status, prd_path, budget_usd, created_at, updated_at FROM projects ORDER BY created_at DESC",
+      "SELECT id, name, repo_url, default_branch, local_path, status, prd_path, prd, budget_usd, created_at, updated_at FROM projects ORDER BY created_at DESC",
     )
     .all()
     .map((r) => mapProject(r as Record<string, unknown>));
@@ -52,7 +53,7 @@ export function getProjects(db: Db): Project[] {
 export function getProject(db: Db, id: string): Project | null {
   const row = db
     .prepare(
-      "SELECT id, name, repo_url, default_branch, local_path, status, prd_path, budget_usd, created_at, updated_at FROM projects WHERE id = ?",
+      "SELECT id, name, repo_url, default_branch, local_path, status, prd_path, prd, budget_usd, created_at, updated_at FROM projects WHERE id = ?",
     )
     .get(id) as Record<string, unknown> | undefined;
   return row ? mapProject(row) : null;
@@ -97,6 +98,7 @@ export function updateProject(
     localPath: "local_path",
     status: "status",
     prdPath: "prd_path",
+    prd: "prd",
     budgetUsd: "budget_usd",
   };
 

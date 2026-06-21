@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Project, Task } from "@orc/types";
 import type { GitService } from "./index.js";
 
@@ -160,6 +160,46 @@ export class GitServiceImpl implements GitService {
       git(["push", "origin", project.defaultBranch], project.localPath);
     } catch {
       /* best effort — a changelog gap is cosmetic, never block the merge */
+    }
+  }
+
+  /**
+   * Write a file into the primary clone and push it straight to the default
+   * branch. Used to persist docs/PRD.md at plan-commit time so the PRD lives
+   * in the repo (durable, visible, readable by the in-repo planner next time).
+   * Best-effort: a push failure never blocks the commit flow. Not on the
+   * GitService interface — this is a server-side convenience, not part of the
+   * orchestrator's pipeline.
+   */
+  async commitFile(
+    project: Project,
+    relPath: string,
+    content: string,
+    message: string,
+  ): Promise<void> {
+    try {
+      await this.ensureClone(project);
+      git(["fetch", "origin", project.defaultBranch], project.localPath);
+      git(["checkout", project.defaultBranch], project.localPath);
+      git(
+        ["merge", "--ff-only", `origin/${project.defaultBranch}`],
+        project.localPath,
+      );
+
+      const full = join(project.localPath, relPath);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, content.endsWith("\n") ? content : content + "\n", "utf-8");
+
+      git(["add", relPath], project.localPath);
+      // No-op commit (content unchanged) would exit non-zero — tolerate it.
+      try {
+        git(["commit", "-m", message], project.localPath);
+      } catch {
+        return;
+      }
+      git(["push", "origin", project.defaultBranch], project.localPath);
+    } catch {
+      /* best effort — PRD also persists in the DB */
     }
   }
 

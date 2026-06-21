@@ -199,6 +199,45 @@ async function resolvePlannerCwd(project: Project): Promise<string> {
   }
 }
 
+/**
+ * For a follow-up planning iteration: summarize what the project already
+ * shipped — prior PRD, completed/failed tasks, and recent audit activity — so
+ * the planner builds on it instead of re-planning from scratch. Returns
+ * undefined for a first-time plan (no committed tasks yet), which leaves the
+ * planning prompts unchanged.
+ */
+function buildPriorContext(db: Db, project: Project): string | undefined {
+  const tasks = repo.getTasks(db, project.id);
+  if (tasks.length === 0) return undefined; // first plan — nothing prior
+
+  const fmtTask = (t: Task) =>
+    `- [${t.status}] ${t.title}${t.role ? ` (${t.role})` : ""} — ${t.description.split("\n")[0]}`;
+  const taskList = tasks.map(fmtTask).join("\n");
+
+  // Recent terminal/notable audit entries, newest first, capped so the prompt
+  // stays bounded on long-running projects.
+  const audit = repo
+    .getAuditLog(db, project.id)
+    .filter((e) =>
+      ["task_done", "task_failed", "merge_decision", "rollback"].includes(e.kind),
+    )
+    .slice(0, 25)
+    .map((e) => `- ${e.ts.slice(0, 10)} ${e.kind}: ${e.summary}`)
+    .join("\n");
+
+  const prd = project.prd?.trim()
+    ? `### Prior PRD\n${project.prd.trim()}`
+    : "### Prior PRD\n(none recorded)";
+
+  return [
+    prd,
+    `### Tasks already on the board (${tasks.length})\n${taskList}`,
+    audit ? `### Recent activity\n${audit}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 async function main() {
   const app = Fastify({ logger: true });
   await app.register(cors, { origin: true });
@@ -589,6 +628,7 @@ async function main() {
         project.name,
         cwd,
         ENV.plannerChatModel,
+        buildPriorContext(db, project),
       );
       recordPlanningCost(id, costUsd);
       // Persist the full conversation (including assistant reply) so the Plan
@@ -623,6 +663,7 @@ async function main() {
         project.name,
         cwd,
         ENV.plannerDeconstructModel,
+        buildPriorContext(db, project),
       );
       recordPlanningCost(id, costUsd);
       const settings = repo.getSettings(db) ?? defaultSettings();
@@ -680,9 +721,26 @@ async function main() {
     repo.updateProject(db, id, { status: "planning" });
     const settings = repo.getSettings(db) ?? defaultSettings();
     const created = materializeTasks(db, id, body.tasks, settings);
-    repo.updateProject(db, id, { status: "planned" });
-    // Clear the draft table (tasks are now real); keep the conversation for history.
-    repo.savePlanningSession(db, id, { prd: null, draftTasks: null });
+
+    // Persist the committed PRD so the next planning iteration (and the user)
+    // can see what this project set out to build. Stored in the DB (reliable
+    // source for v2 planning context) and written to the repo (durable +
+    // visible + readable by the in-repo planner). New tasks are appended to
+    // any already on the board — done tasks stay as history.
+    const prdMarkdown = body.prdMarkdown?.trim()
+      ? body.prdMarkdown
+      : (project.prd ?? `# ${project.name}\n`);
+    repo.updateProject(db, id, { status: "planned", prd: prdMarkdown });
+
+    // Clear the whole planning session (draft + PRD scratch + conversation) so
+    // the next iteration starts from a fresh chat; the committed outcome lives
+    // in project.prd / tasks / audit log, which is what v2 planning reads.
+    repo.savePlanningSession(db, id, { messages: [], prd: null, draftTasks: null });
+
+    const prdPath = project.prdPath ?? "docs/PRD.md";
+    void gitForPlanning
+      .commitFile(project, prdPath, prdMarkdown, "docs: update PRD (hoopedorc)")
+      .catch(() => {});
 
     broadcast({ type: "project.updated", payload: repo.getProject(db, id)! });
     for (const t of created) broadcast({ type: "task.updated", payload: t });
@@ -690,7 +748,7 @@ async function main() {
     return {
       project: repo.getProject(db, id)!,
       tasks: repo.getTasks(db, id),
-      prdMarkdown: body.prdMarkdown ?? `# ${project.name}\n`,
+      prdMarkdown,
     };
   });
 

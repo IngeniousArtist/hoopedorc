@@ -117,6 +117,9 @@ export interface Project {
   localPath: string; // primary clone on disk
   status: ProjectStatus;
   prdPath?: string; // path to the generated PRD within the repo (e.g. docs/PRD.md)
+  /** The last committed PRD markdown. Persisted so a later planning iteration
+   *  (v2) can be given what the project already set out to build. */
+  prd?: string;
   budgetUsd?: number; // hard cap for the whole project run
   createdAt: string;
   updatedAt: string;
