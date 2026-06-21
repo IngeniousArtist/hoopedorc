@@ -5,6 +5,7 @@ import type {
   Role,
   RoutingPolicy,
   Settings as SettingsType,
+  TelegramTestResponse,
 } from "@orc/types";
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
@@ -54,6 +55,8 @@ export function Settings() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [telegramTesting, setTelegramTesting] = useState(false);
+  const [telegramTestMsg, setTelegramTestMsg] = useState<string | null>(null);
 
   useEffect(() => {
     api<{ settings: SettingsType }>("getSettings")
@@ -130,12 +133,24 @@ export function Settings() {
   function updateTelegramEnabled(enabled: boolean) {
     setSettings((prev) =>
       prev
+        ? { ...prev, telegram: { ...(prev.telegram ?? { enabled: false }), enabled } }
+        : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
+  function updateTelegramField(
+    field: "botTokenRef" | "botToken" | "chatId",
+    value: string,
+  ) {
+    setSettings((prev) =>
+      prev
         ? {
             ...prev,
             telegram: {
-              enabled,
-              botTokenRef: prev.telegram?.botTokenRef,
-              chatId: prev.telegram?.chatId,
+              ...(prev.telegram ?? { enabled: false }),
+              [field]: value || undefined,
             },
           }
         : prev,
@@ -144,25 +159,24 @@ export function Settings() {
     setSaved(false);
   }
 
-  function updateTelegramField(
-    field: "botTokenRef" | "chatId",
-    value: string,
-  ) {
-    setSettings((prev) =>
-      prev
-        ? {
-            ...prev,
-            telegram: {
-              enabled: prev.telegram?.enabled ?? false,
-              botTokenRef: prev.telegram?.botTokenRef,
-              chatId: prev.telegram?.chatId,
-              [field]: value || undefined,
-            },
-          }
-        : prev,
-    );
-    setDirty(true);
-    setSaved(false);
+  async function sendTelegramTest() {
+    setTelegramTesting(true);
+    setTelegramTestMsg(null);
+    try {
+      const res = await api<TelegramTestResponse>("telegramTest", {
+        body: {
+          token: settings?.telegram?.botToken,
+          chatId: settings?.telegram?.chatId,
+        },
+      });
+      setTelegramTestMsg(
+        res.ok ? "Sent — check your Telegram." : `Failed: ${res.error}`,
+      );
+    } catch (e) {
+      setTelegramTestMsg(String(e));
+    } finally {
+      setTelegramTesting(false);
+    }
   }
 
   async function save() {
@@ -398,57 +412,88 @@ export function Settings() {
       </section>
 
       <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <h3 className="text-sm font-medium text-neutral-300">
-          Telegram
-        </h3>
+        <h3 className="text-sm font-medium text-neutral-300">Telegram</h3>
+        <p className="text-[11px] text-neutral-500">
+          Create a bot with @BotFather, paste its token + your chat ID below,
+          send a test, then enable. Tip: message the bot once with no chat ID
+          set and it replies with yours. Approvals + commands are restricted to
+          that chat ID.
+        </p>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div className="col-span-2">
+            <label className="mb-1 block text-xs text-neutral-400">
+              Bot token (from @BotFather)
+            </label>
+            <input
+              type="password"
+              autoComplete="off"
+              value={settings.telegram?.botToken ?? ""}
+              onChange={(e) => updateTelegramField("botToken", e.target.value)}
+              placeholder="123456789:ABCdef…"
+              className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+            />
+            <p className="mt-1 text-[10px] text-neutral-600">
+              Stored locally in the app DB. Leave blank to use the env var under
+              Advanced instead.
+            </p>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs text-neutral-400">Chat ID</label>
+            <input
+              type="text"
+              value={settings.telegram?.chatId ?? ""}
+              onChange={(e) => updateTelegramField("chatId", e.target.value)}
+              placeholder="e.g. 123456789"
+              className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+            />
+          </div>
+          <div className="flex items-end">
+            <button
+              onClick={sendTelegramTest}
+              disabled={telegramTesting || !settings.telegram?.chatId}
+              className="rounded border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+            >
+              {telegramTesting ? "Sending…" : "Send test message"}
+            </button>
+          </div>
+        </div>
+        {telegramTestMsg && (
+          <div className="rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-[11px] text-neutral-300">
+            {telegramTestMsg}
+          </div>
+        )}
+
         <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
           <input
             type="checkbox"
             checked={settings.telegram?.enabled ?? false}
-            onChange={(e) =>
-              updateTelegramEnabled(e.target.checked)
-            }
+            onChange={(e) => updateTelegramEnabled(e.target.checked)}
             className="rounded border-neutral-700 bg-neutral-800"
           />
           Enable Telegram notifications
         </label>
-        {settings.telegram?.enabled && (
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="mb-1 block text-xs text-neutral-400">
-                Bot token env var
-              </label>
-              <input
-                type="text"
-                value={settings.telegram?.botTokenRef ?? ""}
-                onChange={(e) =>
-                  updateTelegramField(
-                    "botTokenRef",
-                    e.target.value,
-                  )
-                }
-                placeholder="e.g. TELEGRAM_BOT_TOKEN"
-                className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs text-neutral-400">
-                Chat ID
-              </label>
-              <input
-                type="text"
-                value={settings.telegram?.chatId ?? ""}
-                onChange={(e) =>
-                  updateTelegramField(
-                    "chatId",
-                    e.target.value,
-                  )
-                }
-                className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
-              />
-            </div>
+
+        <details>
+          <summary className="cursor-pointer text-[11px] text-neutral-500">
+            Advanced: read the token from an env var instead of storing it
+          </summary>
+          <div className="mt-2">
+            <label className="mb-1 block text-xs text-neutral-400">
+              Bot token env var
+            </label>
+            <input
+              type="text"
+              value={settings.telegram?.botTokenRef ?? ""}
+              onChange={(e) => updateTelegramField("botTokenRef", e.target.value)}
+              placeholder="TELEGRAM_BOT_TOKEN"
+              className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+            />
+            <p className="mt-1 text-[10px] text-neutral-600">
+              Used only when the token field above is empty.
+            </p>
           </div>
-        )}
+        </details>
       </section>
 
       <div className="flex items-center gap-3">

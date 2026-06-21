@@ -1,5 +1,112 @@
 # Resume here
 
+## 🛠️ 2026-06-21 (cont. 2) — Telegram UI fields + test button, project selector
+
+- **Telegram is now configurable from the UI.** Added `settings.telegram.botToken` (raw token,
+  stored in the DB; takes precedence over the `botTokenRef` env var). Settings page: token
+  (password) + chat-id fields above the enable toggle, a **Send test message** button, and the
+  env-var option moved under an "Advanced" `<details>`. New `POST /api/telegram/test`
+  (`sendTelegramMessage` helper, sends without starting the poll loop; uses saved config unless the
+  body overrides). `configureTelegram` resolves `botToken || env[botTokenRef]`. Verified: 400
+  guards, and a bogus token reaches Telegram and returns "Unauthorized" (so a real token will
+  deliver). **User will add the real token later.**
+- **Project selector** (closes the hardcoded-`PROJECT_ID` gap). `App.tsx` now lists projects
+  (`GET /api/projects`), shows a picker in the nav, persists the choice in `localStorage`, keeps the
+  list live via WS `project.updated`, and auto-selects a newly created project (NewProject now takes
+  an `onProjectCreated` callback). Project-scoped pages show a "create one" placeholder when none is
+  selected. Board/Costs/Audit/Notifications now work in real mode.
+
+## 🛠️ 2026-06-21 (cont.) — P1 #3, #4 + P2 quick-wins + retry/diff BUILT
+
+Built the rest of the roadmap (user picked all four, in order). Typecheck clean across all 5
+workspaces, full build OK, 3/3 engine tests green; every new route smoke-verified on its no-cost
+paths against a live server.
+
+**P1 #4 — Cost analytics + pre-run estimates.** `repo.getCostAnalytics` (per-model w/ tokens+runs,
+daily series, per-task) + `repo.getModelRunAverages`; new `estimate.ts` (`estimatePlan`: author+
+validator run-avgs × tasks, expected/high range, fallbacks when no history → flagged low
+confidence). Endpoints `GET /api/projects/:id/analytics` and `…/estimate`. `CostView.tsx` rebuilt:
+headline cost/tokens/avg, budget bar + "~N more tasks at this rate", estimate panel, daily bars,
+per-model + per-task tables. Verified math (e.g. easy deepseek-flash→deepseek-pro = $0.026 expected,
+$0.078 @3 attempts).
+
+**P1 #3 — Telegram bot.** Dependency-free raw Bot API, long-polling (no public webhook → works
+behind Tailscale). New `telegram.ts` (`TelegramBot` implements `ServerNotifier`): inline
+Approve/Reject buttons (callback → same `resolveNotification` as the HTTP route), status pushes
+(task done/failed, project finished), commands (/status /cost /projects /start /pause). Token read
+from env var named by `settings.telegram.botTokenRef` (never raw); restricted to configured chatId;
+discovery helper replies with your chat id when none set. Wired via `EngineRunner.setNotifier`;
+`configureTelegram()` (re)starts on boot + on settings save. Crash-safe (disabled default; enabled-
+without-token warns). **Needs your BotFather token + chat id to go live.**
+
+**P2 safety quick-wins.** (a) **Audit log** — new `audit_log` table + `repo.createAuditEntry`/
+`getAuditLog`; entries written for merge_decision, approval_requested/resolved, task_done/failed,
+rollback, retry; `GET /api/projects/:id/audit` + `AuditView.tsx` timeline. (b) **One-click
+rollback** — `EngineRunner.rollback` → `git-service.revertMerge`; `POST /api/tasks/:id/rollback`
+(409 if no PR) + Board button on done tasks. (c) **Setup/health page** — `setup.ts` probes
+`gh auth status` / `claude --version` / `opencode auth list`; `GET /api/setup` + `SetupView.tsx`
+(verified all green: gh=IngeniousArtist, claude 2.1.185, opencode creds).
+
+**Retry/replay + PR diff viewer.** `POST /api/tasks/:id/retry` (failed/changes_requested/blocked →
+reset attempts, re-dispatch, audit "retry"); `GET /api/tasks/:id/diff` via `gh pr diff` (verified
+against PR #3). Board selected-task action bar now has Retry, View PR diff (inline `<pre>`), and
+Rollback. Nav gained **Audit** + **Setup** pages.
+
+**Note (pre-existing, not addressed):** the web app still hardcodes `PROJECT_ID = "proj-hoopedorc"`
+(the mock id) in `App.tsx`, so Board/Costs/Audit show nothing in real mode until a project picker
+exists. All real-mode work so far has gone through the API/curl. A project selector is the obvious
+next UI task.
+
+## 🛠️ 2026-06-21 — P0 #1 + #2 BUILT + planning chat LIVE-VERIFIED
+
+Both P0 "build first" items are implemented, typecheck/build clean, 3/3 engine tests green.
+**Live-verified end-to-end through the real app** (existing test repo `hoopedorc-test-run`):
+plan/chat (Sonnet) → plan/deconstruct (Opus, returned a 1-task DAG) → plan/commit → start →
+author(deepseek-flash) → gates → validator → **auto-merge: PR #3 MERGED**, `src/clamp.js` +
+`src/clamp.test.js` now on `main`. Cost: $0.3661 total (planning/claude $0.3627 — Opus+Sonnet
+cache-creation overhead dominates; author deepseek-flash $0.0034). This also closed the prior
+session's last gap (real-app New Project → Plan → Start). **Still unexercised live: a real
+`gh repo create`** via the new-repo toggle (user opted to verify against the existing repo); the
+no-cost paths of that route are verified and `slugifyRepoName` is unit-checked.
+
+Note on planning cost: a chat turn + an Opus deconstruct ran ~$0.36 here, mostly Claude
+cache-creation, not a few cents — worth showing per-turn cost prominently in the UI (already wired)
+and consider `PLANNER_DECONSTRUCT_MODEL=sonnet` for cheap plans.
+
+**P0 #1 — Planning chat (Sonnet → Opus → editable table → approve):**
+- Prerequisite done: `ModelConfig.claudeModel` added (`packages/types`), `ClaudeAdapter` now passes
+  `--model` (`packages/adapters`), `makeAdapter` forwards `cfg.claudeModel`. Default `claude`
+  config pinned to `"sonnet"`.
+- `packages/server/src/planner.ts`: `runClaudeJson` now takes a model alias + returns
+  `{ text, costUsd }` (parses `total_cost_usd`); new `runPlannerChat` (conversational, Sonnet) and
+  `runPlannerDeconstruct` (strict JSON DAG, Opus); shared `parsePlanOutput`. `runPlanner` kept for
+  the legacy one-shot `/plan`.
+- New endpoints (`packages/server/src/index.ts`): `POST /api/projects/:id/plan/chat`,
+  `…/plan/deconstruct` (returns an unsaved draft DAG with suggested models), `…/plan/commit`
+  (materializes edited drafts → Task rows). Planner spend recorded to `costs` (model `"claude"`)
+  via `recordPlanningCost`, so it counts against the budget. Shared `materializeTasks` helper now
+  backs both `/plan` and `/plan/commit`.
+- Model aliases configurable: `ENV.plannerChatModel` (`PLANNER_CHAT_MODEL`, default `sonnet`),
+  `ENV.plannerDeconstructModel` (`PLANNER_DECONSTRUCT_MODEL`, default `opus`).
+- Web (`apps/web/src/pages/NewProject.tsx`): full rewrite — create form with repo toggle, a chat
+  panel (Cmd/Ctrl+Enter to send, live planning-cost readout), and an editable task table
+  (title/description/difficulty/model/scope/acceptance + add/remove/reorder + dependency checkboxes
+  via stable keys so reorder stays correct) → "Approve & Create Tasks" → commit.
+
+**P0 #2 — Create a GitHub repo from New Project:**
+- `packages/server/src/github.ts`: `createGithubRepo(name)` runs `gh repo create <slug> --private
+  --add-readme`, then seeds a minimal `package.json` via the contents API. (Verified: an empty repo
+  with no `package.json` makes `npm run <script> --if-present` exit 254 → every gate fails; a
+  minimal `package.json` with no scripts exits 0 → gates pass.) `slugifyRepoName` unit-checked.
+- `POST /api/projects` now accepts `{ createRepo, repoName }`: creates the repo and sets
+  `repoUrl`; without `createRepo` it requires a `repoUrl` (400 otherwise). Web form has a
+  new-repo / existing-repo radio.
+
+**Live-verification: DONE** for the chat/deconstruct/commit/run path (see top of file, PR #3).
+The only piece not yet exercised live is the **create-a-new-repo** toggle (`createRepo`) — verify
+it once by creating a fresh repo from New Project (the gate-seeding `package.json` logic is tested,
+but `gh repo create` itself hasn't been run live).
+
 ## ✅ 2026-06-20/21 — FIRST REAL END-TO-END RUN SUCCEEDED
 
 A true autonomous run with real models, through the actual app, now works. On a throwaway repo

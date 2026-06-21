@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
-import type { Difficulty, Role } from "@orc/types";
+import type { Difficulty, PlanChatMessage, Role } from "@orc/types";
 
-// Real planner: runs Claude Code headless to turn a goal into a PRD + task DAG.
-// Falls back to a stub in the caller if this throws.
+// Planning runs Claude Code headless. Two tiers (see docs/NEXT_STEPS.md):
+//   - chat turns           -> Sonnet (many cheap conversational turns)
+//   - final deconstruction  -> Opus  (one high-leverage call: plan -> task DAG)
+// Both go through `claude -p`; the model is selected with `--model`.
 
 export interface PlannedTask {
   title: string;
@@ -22,21 +24,7 @@ export interface PlanOutput {
 
 const PLAN_TIMEOUT_MS = 5 * 60 * 1000;
 
-function buildPrompt(goal: string, projectName: string): string {
-  return `You are the planning agent for an autonomous multi-model coding team.
-Plan the project "${projectName}" for this goal:
-
-${goal}
-
-Produce a short PRD and break the work into a dependency-ordered task DAG.
-For each task choose:
-- difficulty: "easy" | "medium" | "hard"
-- role (optional): "frontend" | "docs" | "hard" | "medium" | "updates"
-- acceptanceCriteria: concrete, checkable statements
-- dependsOn: array of indices of earlier tasks that must finish first
-- scopePaths: glob(s) the task is allowed to modify
-
-Respond with ONLY a JSON object, no markdown fences, in this exact shape:
+const DECONSTRUCT_SHAPE = `Respond with ONLY a JSON object, no markdown fences, in this exact shape:
 {
   "prd": "markdown string",
   "tasks": [
@@ -50,16 +38,77 @@ Respond with ONLY a JSON object, no markdown fences, in this exact shape:
       "scopePaths": ["src/**"]
     }
   ]
-}`;
+}
+Rules for each task:
+- difficulty: "easy" | "medium" | "hard"
+- role (optional): "frontend" | "docs" | "hard" | "medium" | "updates"
+- acceptanceCriteria: concrete, checkable statements
+- dependsOn: indices of earlier tasks that must finish first
+- scopePaths: glob(s) the task is allowed to modify`;
+
+function buildPrompt(goal: string, projectName: string): string {
+  return `You are the planning agent for an autonomous multi-model coding team.
+Plan the project "${projectName}" for this goal:
+
+${goal}
+
+Produce a short PRD and break the work into a dependency-ordered task DAG.
+${DECONSTRUCT_SHAPE}`;
 }
 
-function runClaudeJson(prompt: string, cwd: string): Promise<string> {
+const CHAT_SYSTEM = `You are the planning collaborator for an autonomous multi-model coding team.
+Talk with the user to shape WHAT to build and how to break it into tasks. Be concise and
+concrete: propose a small set of dependency-ordered tasks, ask clarifying questions when scope
+is ambiguous, and adapt when the user says things like "split that task", "add tests", or
+"don't touch the DB". Keep replies short — this is a planning chat, not an essay. Do NOT output
+JSON; a separate step turns the agreed plan into a structured task list.`;
+
+function buildChatPrompt(messages: PlanChatMessage[], projectName: string): string {
+  const transcript = messages
+    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+    .join("\n\n");
+  return `${CHAT_SYSTEM}
+
+Project: "${projectName}"
+
+Conversation so far:
+${transcript}
+
+Reply as the Assistant to the latest User message.`;
+}
+
+function buildDeconstructPrompt(
+  messages: PlanChatMessage[],
+  projectName: string,
+): string {
+  const transcript = messages
+    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
+    .join("\n\n");
+  return `You are the planning agent for an autonomous multi-model coding team.
+Below is a planning conversation for the project "${projectName}". Turn the AGREED plan into a
+short PRD and a dependency-ordered task DAG. Honor every constraint the user stated.
+
+## Planning conversation
+${transcript}
+
+${DECONSTRUCT_SHAPE}`;
+}
+
+interface ClaudeJsonResult {
+  text: string;
+  costUsd: number;
+}
+
+/** Run `claude -p --output-format json` and return its text + reported cost. */
+function runClaudeJson(
+  prompt: string,
+  cwd: string,
+  model?: string,
+): Promise<ClaudeJsonResult> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(
-      "claude",
-      ["-p", prompt, "--output-format", "json"],
-      { cwd, stdio: ["ignore", "pipe", "pipe"] },
-    );
+    const args = ["-p", prompt, "--output-format", "json"];
+    if (model) args.push("--model", model);
+    const proc = spawn("claude", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
     const timer = setTimeout(() => {
@@ -79,12 +128,20 @@ function runClaudeJson(prompt: string, cwd: string): Promise<string> {
         reject(new Error(`claude exited ${code}: ${err.slice(0, 500)}`));
         return;
       }
-      // claude --output-format json wraps the answer: { ..., "result": "<text>" }
+      // claude --output-format json wraps the answer:
+      // { ..., "result": "<text>", "total_cost_usd": <n> }
       try {
-        const wrapper = JSON.parse(out);
-        resolve(typeof wrapper.result === "string" ? wrapper.result : out);
+        const wrapper = JSON.parse(out) as {
+          result?: unknown;
+          total_cost_usd?: number;
+          cost_usd?: number;
+        };
+        resolve({
+          text: typeof wrapper.result === "string" ? wrapper.result : out,
+          costUsd: wrapper.total_cost_usd ?? wrapper.cost_usd ?? 0,
+        });
       } catch {
-        resolve(out);
+        resolve({ text: out, costUsd: 0 });
       }
     });
   });
@@ -101,12 +158,8 @@ function extractJsonObject(text: string): string {
 
 const DIFFICULTIES = new Set<Difficulty>(["easy", "medium", "hard"]);
 
-export async function runPlanner(
-  goal: string,
-  projectName: string,
-  cwd: string,
-): Promise<PlanOutput> {
-  const text = await runClaudeJson(buildPrompt(goal, projectName), cwd);
+/** Parse a raw planner JSON string into a normalized PlanOutput. */
+function parsePlanOutput(text: string, projectName: string, goal = ""): PlanOutput {
   const parsed = JSON.parse(extractJsonObject(text)) as {
     prd?: string;
     tasks?: unknown[];
@@ -136,5 +189,49 @@ export async function runPlanner(
     };
   });
 
-  return { prdMarkdown: String(parsed.prd ?? `# ${projectName}\n\n${goal}`), tasks };
+  return {
+    prdMarkdown: String(parsed.prd ?? `# ${projectName}\n\n${goal}`),
+    tasks,
+  };
+}
+
+/** Single-shot planner: goal -> PRD + DAG. Used by the legacy /plan endpoint. */
+export async function runPlanner(
+  goal: string,
+  projectName: string,
+  cwd: string,
+  model?: string,
+): Promise<PlanOutput> {
+  const { text } = await runClaudeJson(buildPrompt(goal, projectName), cwd, model);
+  return parsePlanOutput(text, projectName, goal);
+}
+
+/** One conversational planning turn (Sonnet). Returns reply text + cost. */
+export async function runPlannerChat(
+  messages: PlanChatMessage[],
+  projectName: string,
+  cwd: string,
+  model?: string,
+): Promise<{ reply: string; costUsd: number }> {
+  const { text, costUsd } = await runClaudeJson(
+    buildChatPrompt(messages, projectName),
+    cwd,
+    model,
+  );
+  return { reply: text.trim(), costUsd };
+}
+
+/** Deconstruct an agreed conversation into a strict task DAG (Opus). */
+export async function runPlannerDeconstruct(
+  messages: PlanChatMessage[],
+  projectName: string,
+  cwd: string,
+  model?: string,
+): Promise<{ output: PlanOutput; costUsd: number }> {
+  const { text, costUsd } = await runClaudeJson(
+    buildDeconstructPrompt(messages, projectName),
+    cwd,
+    model,
+  );
+  return { output: parsePlanOutput(text, projectName), costUsd };
 }

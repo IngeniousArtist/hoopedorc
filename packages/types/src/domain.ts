@@ -36,6 +36,12 @@ export interface ModelConfig {
    * scaffold are placeholders and must be verified against your OpenCode setup.
    */
   opencodeModel?: string;
+  /**
+   * For runner === "claude-code": the `claude --model` alias or id to target
+   * (e.g. "sonnet" / "opus" / "claude-opus-4-8"). Lets the same Claude runner
+   * back both a cheap model and a high-leverage one. Omitted => CLI default.
+   */
+  claudeModel?: string;
   roles: Role[];
   enabled: boolean;
   /** Cost accounting + budget caps (USD). */
@@ -202,6 +208,20 @@ export interface CostRecord {
   ts: string;
 }
 
+/** One entry in the append-only audit trail. */
+export interface AuditEntry {
+  id: string;
+  projectId: string;
+  taskId?: string;
+  ts: string; // ISO 8601
+  /** merge_decision | approval_requested | approval_resolved | task_done | task_failed | rollback | ... */
+  kind: string;
+  /** Who/what triggered it: "validator:<model>" | "human" | "engine". */
+  actor: string;
+  summary: string;
+  detail?: Record<string, unknown>;
+}
+
 export type MergePolicy =
   | "hard_gate_flag_risky" // gates + validator pass, ask only for risky changes (DEFAULT)
   | "fully_autonomous" // gates + validator pass => merge, never ask
@@ -244,8 +264,14 @@ export interface Settings {
   confidenceThreshold: number;
   telegram?: {
     enabled: boolean;
-    /** Name of the env var holding the token — never the raw token. */
+    /** Name of the env var holding the token (fallback if botToken is unset). */
     botTokenRef?: string;
+    /**
+     * Raw bot token, stored locally. Takes precedence over botTokenRef. Fine for
+     * a solo box behind Tailscale; prefer botTokenRef if you'd rather not persist
+     * the token in the DB.
+     */
+    botToken?: string;
     chatId?: string;
   };
 }
