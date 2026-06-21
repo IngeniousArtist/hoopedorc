@@ -1289,6 +1289,26 @@ async function main() {
 
   await app.listen({ port: ENV.port, host: "0.0.0.0" });
   app.log.info(`hoopedorc server up on :${ENV.port} (mock=${ENV.mock})`);
+
+  // Resume-on-boot. A project's status lives in the DB but the orchestrator
+  // driving it lives only in this process's memory. So if the server restarts
+  // while a project is "running" — crash, OOM, deploy, dev-server reload —
+  // the project stays "running" in the DB with nothing actually working on it,
+  // and silently hangs forever. On boot, re-dispatch any project still marked
+  // "running"; the orchestrator's orphan recovery requeues whatever task was
+  // mid-flight, so this picks up cleanly. Skipped in mock mode (no real engine).
+  if (!ENV.mock) {
+    for (const p of repo.getProjects(db)) {
+      if (p.status === "running" && !engine.isRunning(p.id)) {
+        app.log.info(`resuming project ${p.name} (${p.id}) after restart`);
+        void engine.start(p).catch((err) => {
+          app.log.error(
+            `failed to resume ${p.id}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+      }
+    }
+  }
 }
 
 main().catch((err) => {
