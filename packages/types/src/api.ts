@@ -37,6 +37,16 @@ export interface GetProjectResponse {
   project: Project | null;
 }
 
+export interface UpdateProjectRequest {
+  name?: string;
+  /** number to set, null to clear the cap. */
+  budgetUsd?: number | null;
+  defaultBranch?: string;
+}
+export interface UpdateProjectResponse {
+  project: Project;
+}
+
 export interface PlanProjectRequest {
   /** Free-text goal/feature description handed to the planner (Claude). */
   goal: string;
@@ -230,6 +240,21 @@ export interface SetupHealthResponse {
   allOk: boolean;
 }
 
+/** Result of running a trivial prompt through one model (costs a little). */
+export interface ModelTestResult {
+  id: ModelId;
+  displayName: string;
+  ok: boolean;
+  costUsd: number;
+  ms: number;
+  reply?: string;
+  error?: string;
+}
+export interface TestModelsResponse {
+  results: ModelTestResult[];
+  totalCostUsd: number;
+}
+
 /** Send a one-off Telegram test message. Uses saved config unless overridden. */
 export interface TelegramTestRequest {
   token?: string;
@@ -262,6 +287,7 @@ export const ROUTES = {
   createProject: "POST /api/projects",
   listProjects: "GET /api/projects",
   getProject: "GET /api/projects/:id",
+  updateProject: "PATCH /api/projects/:id",
   planProject: "POST /api/projects/:id/plan",
   planChat: "POST /api/projects/:id/plan/chat",
   planDeconstruct: "POST /api/projects/:id/plan/deconstruct",
@@ -288,6 +314,7 @@ export const ROUTES = {
   auditLog: "GET /api/projects/:id/audit",
   rollbackTask: "POST /api/tasks/:id/rollback",
   setupHealth: "GET /api/setup",
+  testModels: "POST /api/setup/test-models",
 } as const;
 
 export type RouteKey = keyof typeof ROUTES;

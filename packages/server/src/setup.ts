@@ -1,6 +1,14 @@
 import { execFile } from "node:child_process";
+import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import type { SetupCheck, SetupHealthResponse } from "@orc/types";
+import { makeAdapter } from "@orc/adapters";
+import type {
+  ModelTestResult,
+  Settings,
+  SetupCheck,
+  SetupHealthResponse,
+  TestModelsResponse,
+} from "@orc/types";
 
 const pexec = promisify(execFile);
 
@@ -50,4 +58,51 @@ export async function runSetupChecks(): Promise<SetupHealthResponse> {
     }),
   ]);
   return { checks, allOk: checks.every((c) => c.ok) };
+}
+
+/**
+ * Run a trivial prompt through every enabled model to confirm it actually
+ * responds (not just that auth exists). Costs a little real money, so this is
+ * only invoked behind an explicit button. Runs all models in parallel.
+ */
+export async function testModels(
+  settings: Settings,
+  opencodeBaseUrl: string,
+): Promise<TestModelsResponse> {
+  const enabled = settings.models.filter((m) => m.enabled);
+  const results: ModelTestResult[] = await Promise.all(
+    enabled.map(async (cfg): Promise<ModelTestResult> => {
+      const start = Date.now();
+      try {
+        const adapter = makeAdapter(cfg, opencodeBaseUrl);
+        const res = await adapter.run({
+          model: cfg.id,
+          prompt: "Reply with exactly the two characters: OK",
+          cwd: tmpdir(),
+          onLog: () => {},
+        });
+        const reply = (res.summary ?? "").trim().slice(0, 80);
+        return {
+          id: cfg.id,
+          displayName: cfg.displayName,
+          ok: res.ok,
+          costUsd: res.costUsd,
+          ms: Date.now() - start,
+          reply: reply || undefined,
+          error: res.ok ? undefined : (res.summary || "no output").slice(0, 200),
+        };
+      } catch (err) {
+        return {
+          id: cfg.id,
+          displayName: cfg.displayName,
+          ok: false,
+          costUsd: 0,
+          ms: Date.now() - start,
+          error: (err as Error).message.slice(0, 200),
+        };
+      }
+    }),
+  );
+  const totalCostUsd = results.reduce((s, r) => s + r.costUsd, 0);
+  return { results, totalCostUsd };
 }

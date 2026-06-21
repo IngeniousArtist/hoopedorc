@@ -1,5 +1,23 @@
 # Resume here
 
+## 🛠️ 2026-06-21 (cont. 3) — Run controls, model mgmt, project editing, model test
+
+Four more UI/UX features (user picked all, in order). Typecheck + build clean; 3/3 engine tests.
+- **Start/Pause/Resume in the UI** — new `ProjectHeader` component (rendered on project-scoped
+  pages) shows name/repo/budget/status + Start (▶, also "Resume" when paused) / Pause buttons
+  calling `startProject`/`pauseProject`. Status updates arrive via WS.
+- **Edit project budget post-create** — `PATCH /api/projects/:id` (`name`/`budgetUsd` (null clears)/
+  `defaultBranch`); inline budget editor in `ProjectHeader`. Verified set/clear/rename.
+- **Model management UI** — `ModelsEditor` component in Settings: add/remove/edit models
+  (displayName, id, runner, opencode/claude model id, roles, enabled, maxConcurrent, monthly
+  budget). Persists via the existing Save (PUT /api/settings). **Widened `ModelId` to
+  `… | (string & {})`** so arbitrary new model ids are allowed while keeping autocomplete for the
+  defaults.
+- **Test-each-model button** — `POST /api/setup/test-models` runs a one-word prompt through every
+  enabled model (parallel), reports ok/latency/cost/reply/error + total; Setup page button (gated:
+  costs a few ¢). Route verified returns empty/$0 with models disabled; per-model path reuses the
+  proven `makeAdapter`+`adapter.run` flow. **Not yet run live for real spend** (optional).
+
 ## 🛠️ 2026-06-21 (cont. 2) — Telegram UI fields + test button, project selector
 
 - **Telegram is now configurable from the UI.** Added `settings.telegram.botToken` (raw token,

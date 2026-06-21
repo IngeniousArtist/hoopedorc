@@ -1,4 +1,4 @@
-import type { SetupHealthResponse } from "@orc/types";
+import type { SetupHealthResponse, TestModelsResponse } from "@orc/types";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 
@@ -6,6 +6,8 @@ export function SetupView() {
   const [health, setHealth] = useState<SetupHealthResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [modelTest, setModelTest] = useState<TestModelsResponse | null>(null);
+  const [testing, setTesting] = useState(false);
 
   const check = useCallback(async () => {
     setLoading(true);
@@ -16,6 +18,19 @@ export function SetupView() {
       setError(String(e));
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const testAllModels = useCallback(async () => {
+    setTesting(true);
+    setError(null);
+    setModelTest(null);
+    try {
+      setModelTest(await api<TestModelsResponse>("testModels"));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setTesting(false);
     }
   }, []);
 
@@ -78,6 +93,58 @@ export function SetupView() {
           </div>
         </>
       )}
+
+      {/* Live model test */}
+      <div className="space-y-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium text-neutral-300">
+              Test each model
+            </h3>
+            <p className="text-[11px] text-neutral-500">
+              Sends a one-word prompt to every enabled model. Costs a few cents.
+            </p>
+          </div>
+          <button
+            onClick={testAllModels}
+            disabled={testing}
+            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+          >
+            {testing ? "Testing… (up to a minute)" : "Test models"}
+          </button>
+        </div>
+
+        {modelTest && (
+          <>
+            <div className="text-[11px] text-neutral-500">
+              Total cost ${modelTest.totalCostUsd.toFixed(4)}
+            </div>
+            <div className="divide-y divide-neutral-800 rounded border border-neutral-800">
+              {modelTest.results.map((r) => (
+                <div key={r.id} className="flex items-start gap-3 px-3 py-2">
+                  <span
+                    className={
+                      "mt-1 h-2 w-2 shrink-0 rounded-full " +
+                      (r.ok ? "bg-green-500" : "bg-red-500")
+                    }
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="text-neutral-200">{r.displayName}</span>
+                      <span className="font-mono text-[11px] text-neutral-500">
+                        {(r.ms / 1000).toFixed(1)}s · ${r.costUsd.toFixed(4)}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 break-words font-mono text-[11px] text-neutral-500">
+                      {r.ok ? `reply: ${r.reply ?? "(empty)"}` : `error: ${r.error}`}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

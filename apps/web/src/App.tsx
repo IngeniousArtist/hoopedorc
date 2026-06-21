@@ -6,6 +6,7 @@ import type {
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api/client";
 import { useWS } from "./hooks/useWS";
+import { ProjectHeader } from "./components/ProjectHeader";
 import { AuditView } from "./pages/AuditView";
 import { Board } from "./pages/Board";
 import { CostView } from "./pages/CostView";
@@ -87,6 +88,7 @@ export function App() {
 
   const needsProject = PROJECT_PAGES.includes(page);
   const hasProject = Boolean(selectedProjectId);
+  const selectedProject = projects.find((p) => p.id === selectedProjectId);
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
@@ -144,6 +146,9 @@ export function App() {
           </div>
         ) : (
           <>
+            {needsProject && selectedProject && (
+              <ProjectHeader key={selectedProject.id} project={selectedProject} />
+            )}
             {page === "board" && <Board projectId={selectedProjectId} />}
             {page === "costs" && <CostView projectId={selectedProjectId} />}
             {page === "audit" && <AuditView projectId={selectedProjectId} />}

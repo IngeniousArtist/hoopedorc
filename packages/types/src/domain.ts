@@ -4,14 +4,20 @@
 // all build against these types. A change here is a breaking change that must be
 // coordinated across every module — treat it accordingly.
 
-/** The models available to the orchestrator. */
+/**
+ * The models available to the orchestrator. The named ids are the shipped
+ * defaults (autocompleted everywhere); `(string & {})` keeps the union open so
+ * the user can add/remove arbitrary models from the Settings UI.
+ */
 export type ModelId =
   | "claude" // planner + optional reviewer — runs via Claude Code (Pro sub)
   | "glm" // frontend specialist + frontend reviewer — via OpenCode
   | "deepseek-pro" // hard tasks + primary validator/merger — via OpenCode
   | "deepseek-flash" // medium tasks — via OpenCode
   | "grok" // status summaries / Telegram updates — via OpenCode
-  | "nex"; // documentation — via OpenCode (OpenRouter, free tier)
+  | "nex" // documentation — via OpenCode (OpenRouter, free tier)
+  // eslint-disable-next-line @typescript-eslint/ban-types
+  | (string & {});
 
 /** What a model is allowed/expected to do. */
 export type Role =

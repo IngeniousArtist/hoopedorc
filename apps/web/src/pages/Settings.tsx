@@ -7,9 +7,11 @@ import type {
   Settings as SettingsType,
   TelegramTestResponse,
 } from "@orc/types";
+import type { ModelConfig } from "@orc/types";
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { ModelSelect } from "../components/ModelSelect";
+import { ModelsEditor } from "../components/ModelsEditor";
 
 const DIFFICULTIES: Difficulty[] = ["easy", "medium", "hard"];
 
@@ -78,6 +80,12 @@ export function Settings() {
     setSettings((prev) =>
       prev ? { ...prev, routing: fn(prev.routing) } : prev,
     );
+    setDirty(true);
+    setSaved(false);
+  }
+
+  function updateModels(models: ModelConfig[]) {
+    setSettings((prev) => (prev ? { ...prev, models } : prev));
     setDirty(true);
     setSaved(false);
   }
@@ -212,6 +220,8 @@ export function Settings() {
           Settings saved.
         </div>
       )}
+
+      <ModelsEditor models={settings.models} onChange={updateModels} />
 
       <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
         <h3 className="text-sm font-medium text-neutral-300">

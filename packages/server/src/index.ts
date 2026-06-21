@@ -23,7 +23,7 @@ import { createGithubRepo, getPrDiff } from "./github";
 import { checkBudget } from "./budget";
 import { estimatePlan } from "./estimate";
 import { TelegramBot, sendTelegramMessage } from "./telegram";
-import { runSetupChecks } from "./setup";
+import { runSetupChecks, testModels } from "./setup";
 import type {
   DraftTask,
   PlanChatMessage,
@@ -336,6 +336,32 @@ async function main() {
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
     return { project };
+  });
+
+  app.patch("/api/projects/:id", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+
+    const body = req.body as {
+      name?: string;
+      budgetUsd?: number | null;
+      defaultBranch?: string;
+    };
+    const updates: Record<string, unknown> = {};
+    if (typeof body.name === "string" && body.name.trim()) updates.name = body.name.trim();
+    if (typeof body.defaultBranch === "string" && body.defaultBranch.trim()) {
+      updates.defaultBranch = body.defaultBranch.trim();
+    }
+    // null clears the cap; a number sets it; undefined leaves it unchanged.
+    if (body.budgetUsd === null) updates.budgetUsd = undefined;
+    else if (typeof body.budgetUsd === "number" && body.budgetUsd >= 0) {
+      updates.budgetUsd = body.budgetUsd;
+    }
+
+    const updated = repo.updateProject(db, id, updates as Parameters<typeof repo.updateProject>[2]);
+    if (updated) broadcast({ type: "project.updated", payload: updated });
+    return { project: updated };
   });
 
   app.post("/api/projects/:id/plan", async (req, reply) => {
@@ -873,6 +899,12 @@ async function main() {
   // ── Setup / health check ──
   app.get("/api/setup", async () => {
     return runSetupChecks();
+  });
+
+  // Live-test every enabled model with a trivial prompt (costs a little).
+  app.post("/api/setup/test-models", async () => {
+    const settings = repo.getSettings(db) ?? defaultSettings();
+    return testModels(settings, ENV.opencodeBaseUrl);
   });
 
   // ── Realtime (WebSocket) ──
