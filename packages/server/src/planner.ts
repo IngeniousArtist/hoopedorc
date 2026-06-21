@@ -63,6 +63,13 @@ is ambiguous, and adapt when the user says things like "split that task", "add t
 "don't touch the DB". Keep replies short — this is a planning chat, not an essay. Do NOT output
 JSON; a separate step turns the agreed plan into a structured task list.
 
+Your working directory is the project's actual cloned repository. If the repo already has code
+in it (an existing project getting a new feature or bugfix, not a brand-new empty scaffold),
+use your file tools (read/glob/grep) to look at the real file structure, existing conventions,
+and relevant source before proposing scope paths or tasks — don't guess at file names or
+structure that you could just check. For a genuinely empty/new project, skip exploration and
+plan from the stated goal.
+
 When you are satisfied that the plan is complete — you have no more clarifying questions, no
 outstanding ambiguities, and the scope/tasks are well-defined — end your reply with exactly
 this token on its own line: [PLAN_COMPLETE]
@@ -92,6 +99,11 @@ function buildDeconstructPrompt(
   return `You are the planning agent for an autonomous multi-model coding team.
 Below is a planning conversation for the project "${projectName}". Turn the AGREED plan into a
 short PRD and a dependency-ordered task DAG. Honor every constraint the user stated.
+
+Your working directory is the project's actual cloned repository. If it already contains code,
+use your file tools to check real file paths and existing structure before writing scopePaths —
+each task's scopePaths must match files/globs that actually make sense for this repo, not
+invented paths. For a brand-new/empty project, plan from the conversation alone.
 
 ## Planning conversation
 ${transcript}

@@ -84,6 +84,25 @@ export class Orchestrator implements Scheduler {
     this.currentTasks = tasks;
     this.budgetBlockedWarned.clear();
 
+    // Orphan recovery: this Orchestrator instance starts with empty
+    // activeTaskIds, so any task already in "in_progress" was left mid-run by
+    // a previous process (crash, restart, deploy) — nothing is actually
+    // working on it. Requeue it as backlog so the scheduler retries it
+    // instead of silently stalling forever (it would never appear in
+    // readyTasks() and would permanently block every task that depends on it).
+    for (const task of tasks) {
+      if (task.status === "in_progress") {
+        this.emit(
+          "warn",
+          "engine",
+          `Recovering orphaned task (was in_progress with no active run): ${task.title}`,
+          task.id,
+        );
+        task.status = "backlog";
+        this.deps.events.onTaskUpdated(task);
+      }
+    }
+
     this.emit("info", "engine", "Orchestrator starting", "");
 
     while (!this.paused) {

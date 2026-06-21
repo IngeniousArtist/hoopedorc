@@ -5,8 +5,9 @@ import { dirname, join } from "node:path";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
-import type { ServerEvent, Task } from "@orc/types";
+import type { Project, ServerEvent, Task } from "@orc/types";
 import { WS_PATH, pickAssignedModel } from "@orc/types";
+import { GitServiceImpl } from "@orc/engine";
 import { ENV, defaultSettings } from "./config";
 import { seed } from "./mock";
 import type { Db } from "./db/index";
@@ -133,6 +134,25 @@ function withAssignedModels(
     scopePaths: t.scopePaths,
     assignedModel: pickAssignedModel(settings.routing, t.difficulty, t.role),
   }));
+}
+
+const gitForPlanning = new GitServiceImpl();
+
+/**
+ * Resolve the working directory for a planning call. Clones the project's
+ * repo on first use (it already exists on GitHub by the time planning runs —
+ * see createGithubRepo at project creation) so `claude -p` runs inside the
+ * real codebase and can read existing files with its built-in tools instead
+ * of planning blind in an empty tmp dir. Falls back to tmpdir() so planning
+ * never hard-fails if the clone can't be reached (e.g. offline).
+ */
+async function resolvePlannerCwd(project: Project): Promise<string> {
+  try {
+    await gitForPlanning.ensureClone(project);
+    return project.localPath;
+  } catch {
+    return tmpdir();
+  }
 }
 
 async function main() {
@@ -447,7 +467,8 @@ async function main() {
 
     try {
       // Real planner: Claude turns the goal into a PRD + dependency-ordered DAG.
-      const plan = await runPlanner(goal, project.name, tmpdir(), ENV.plannerDeconstructModel);
+      const cwd = await resolvePlannerCwd(project);
+      const plan = await runPlanner(goal, project.name, cwd, ENV.plannerDeconstructModel);
       prdMarkdown = plan.prdMarkdown;
       createdTasks.push(...materializeTasks(db, id, plan.tasks, settings));
     } catch (err) {
@@ -515,10 +536,11 @@ async function main() {
     }
 
     try {
+      const cwd = await resolvePlannerCwd(project);
       const { reply: text, costUsd } = await runPlannerChat(
         messages,
         project.name,
-        tmpdir(),
+        cwd,
         ENV.plannerChatModel,
       );
       recordPlanningCost(id, costUsd);
@@ -548,10 +570,11 @@ async function main() {
     }
 
     try {
+      const cwd = await resolvePlannerCwd(project);
       const { output, costUsd } = await runPlannerDeconstruct(
         messages,
         project.name,
-        tmpdir(),
+        cwd,
         ENV.plannerDeconstructModel,
       );
       recordPlanningCost(id, costUsd);

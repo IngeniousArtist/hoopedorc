@@ -9,13 +9,22 @@ export class WorktreeManagerImpl implements WorktreeManager {
     task: Task,
   ): Promise<{ branch: string; path: string }> {
     const branch = `orc/${task.id}`;
-    const worktreeRel = `.worktrees/${task.id}`;
     const path = `${project.localPath}-wt-${task.id}`;
 
-    execSync(`git worktree add "${path}" -b "${branch}"`, {
+    // Always branch off the latest remote default branch, not the primary
+    // clone's local HEAD. Sibling tasks merge to origin throughout a run, and
+    // the primary clone is never fast-forwarded in between — branching off a
+    // stale local HEAD makes a new task invisible to work that already
+    // landed, which is how independent tasks end up colliding on the same
+    // files (see e.g. two tasks both creating index.html from scratch).
+    execSync(`git fetch origin "${project.defaultBranch}"`, {
       cwd: project.localPath,
       stdio: "pipe",
     });
+    execSync(
+      `git worktree add "${path}" -b "${branch}" "origin/${project.defaultBranch}"`,
+      { cwd: project.localPath, stdio: "pipe" },
+    );
 
     return { branch, path };
   }

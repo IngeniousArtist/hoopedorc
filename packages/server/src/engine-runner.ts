@@ -206,12 +206,47 @@ export class EngineRunner {
         );
       } finally {
         this.orchestrators.delete(project.id);
-        repo.updateProject(this.db, project.id, { status: "completed" });
+
+        // Reflect what actually happened, not "completed" by default. The
+        // orchestrator's run loop also exits when it simply runs out of
+        // dispatchable work (e.g. every remaining task is blocked on a failed
+        // dependency, or budget-capped) — that is NOT the same as every task
+        // having finished successfully, and calling it "completed" hid a
+        // stuck board behind a status that looked fine.
+        const finalTasks = repo.getTasks(this.db, project.id);
+        const allDone = finalTasks.every((t) => t.status === "done");
+        const stillPending = finalTasks.some(
+          (t) =>
+            t.status === "backlog" ||
+            t.status === "ready" ||
+            t.status === "in_progress",
+        );
+        const anyFailed = finalTasks.some((t) => t.status === "failed");
+        const finalStatus = allDone
+          ? "completed"
+          : stillPending
+            ? "paused" // resumable: hit a budget cap or every ready task is blocked
+            : anyFailed
+              ? "failed"
+              : "completed";
+
+        repo.updateProject(this.db, project.id, { status: finalStatus });
+        if (finalStatus !== "completed") {
+          const blocked = finalTasks.filter((t) => t.status !== "done");
+          this.logError(
+            project.id,
+            `Run ended (${finalStatus}) with ${blocked.length} task(s) not done: ` +
+              blocked.map((t) => `${t.title} [${t.status}]`).join(", "),
+          );
+        }
+
         const fresh = repo.getProject(this.db, project.id);
         if (fresh) this.hub.broadcast({ type: "project.updated", payload: fresh });
         const { totalUsd } = repo.getCostSummary(this.db, project.id);
         this.notifier?.info(
-          `🏁 ${project.name} finished. Total spend $${totalUsd.toFixed(4)}.`,
+          finalStatus === "completed"
+            ? `🏁 ${project.name} finished. Total spend $${totalUsd.toFixed(4)}.`
+            : `⚠️ ${project.name} stopped (${finalStatus}) with unfinished tasks. Total spend $${totalUsd.toFixed(4)}.`,
         );
       }
     })();

@@ -91,6 +91,21 @@ export class GitServiceImpl implements GitService {
       "--repo",
       project.repoUrl,
     ]);
+
+    // Fast-forward the primary clone's default branch so it never drifts from
+    // origin. Nothing checks out this branch directly (each task gets its own
+    // worktree), so this is always safe. Keeps the clone usable as a faithful
+    // snapshot for the planner and any future worktree base.
+    try {
+      git(["fetch", "origin", project.defaultBranch], project.localPath);
+      git(["checkout", project.defaultBranch], project.localPath);
+      git(
+        ["merge", "--ff-only", `origin/${project.defaultBranch}`],
+        project.localPath,
+      );
+    } catch {
+      /* best effort — worktree creation re-fetches from origin anyway */
+    }
   }
 
   async revertMerge(project: Project, prNumber: number): Promise<void> {
