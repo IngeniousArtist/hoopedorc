@@ -38,6 +38,12 @@ export function Board({ projectId }: { projectId: string }) {
   const [actionBusy, setActionBusy] = useState(false);
   const [diff, setDiff] = useState<string | null>(null);
   const [costUsd, setCostUsd] = useState(0);
+  // Per-task "last time we heard anything" (client receive time, so it's
+  // immune to server clock skew). Drives the live heartbeat on running cards.
+  const [activity, setActivity] = useState<Record<string, number>>({});
+  // Re-render once a second so the heartbeat's "Ns ago" + color stay current
+  // even when no new events arrive. Only ticks while a task is in_progress.
+  const [, setNowTick] = useState(0);
 
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
@@ -121,38 +127,58 @@ export function Board({ projectId }: { projectId: string }) {
     };
   }, [selectedTaskId]);
 
-  const handleWSEvent = useCallback((event: ServerEvent) => {
-    switch (event.type) {
-      case "task.updated": {
-        const updated = event.payload;
-        setTasks((prev) =>
-          prev.map((t) => (t.id === updated.id ? updated : t)),
-        );
-        break;
-      }
-      case "run.updated": {
-        /* run status changes may reflect in task state; refetch */
-        break;
-      }
-      case "cost.updated": {
-        // The hub broadcasts to all clients; only count this project's spend
-        // (a concurrently-running project would otherwise inflate the total).
-        if (event.payload.projectId === projectIdRef.current) {
-          setCostUsd((c) => c + event.payload.costUsd);
-        }
-        break;
-      }
-      case "log": {
-        const logEvent = event.payload;
-        if (logEvent.taskId === selectedTaskIdRef.current) {
-          setLogs((prev) => [...prev, logEvent]);
-        }
-        break;
-      }
-    }
+  const markActivity = useCallback((taskId: string | undefined) => {
+    if (taskId) setActivity((a) => ({ ...a, [taskId]: Date.now() }));
   }, []);
 
+  const handleWSEvent = useCallback(
+    (event: ServerEvent) => {
+      switch (event.type) {
+        case "task.updated": {
+          const updated = event.payload;
+          setTasks((prev) =>
+            prev.map((t) => (t.id === updated.id ? updated : t)),
+          );
+          // Seed/refresh the heartbeat (covers a freshly-dispatched task).
+          markActivity(updated.id);
+          break;
+        }
+        case "run.updated": {
+          markActivity(event.payload.taskId);
+          break;
+        }
+        case "cost.updated": {
+          // The hub broadcasts to all clients; only count this project's spend
+          // (a concurrently-running project would otherwise inflate the total).
+          if (event.payload.projectId === projectIdRef.current) {
+            setCostUsd((c) => c + event.payload.costUsd);
+          }
+          break;
+        }
+        case "log": {
+          const logEvent = event.payload;
+          // Any log line for any task = that model is alive right now.
+          markActivity(logEvent.taskId);
+          if (logEvent.taskId === selectedTaskIdRef.current) {
+            setLogs((prev) => [...prev, logEvent]);
+          }
+          break;
+        }
+      }
+    },
+    [markActivity],
+  );
+
   useWS(projectId, handleWSEvent);
+
+  // 1s heartbeat ticker — only runs while something is in_progress, so an idle
+  // board doesn't re-render needlessly.
+  const hasRunning = tasks.some((t) => t.status === "in_progress");
+  useEffect(() => {
+    if (!hasRunning) return;
+    const id = setInterval(() => setNowTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [hasRunning]);
 
   const handleRollback = async (taskId: string, prNumber: number) => {
     if (
@@ -316,6 +342,7 @@ export function Board({ projectId }: { projectId: string }) {
                     task={t}
                     allTasks={tasks}
                     models={settings?.models ?? []}
+                    lastActivityAt={activity[t.id]}
                     onModelChange={(m) =>
                       handleModelChange(t.id, m)
                     }
