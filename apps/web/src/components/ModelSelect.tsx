@@ -6,12 +6,16 @@ export function ModelSelect({
   onChange,
   allowEmpty = false,
   emptyLabel = "—",
+  disabled = false,
+  disabledReason,
 }: {
   value: ModelId | undefined;
   models: ModelConfig[];
   onChange: (m: ModelId | undefined) => void;
   allowEmpty?: boolean;
   emptyLabel?: string;
+  disabled?: boolean;
+  disabledReason?: string;
 }) {
   const enabled = models.filter((m) => m.enabled);
   const selected = value ? models.find((m) => m.id === value) : undefined;
@@ -21,6 +25,7 @@ export function ModelSelect({
     <div>
       <select
         value={value ?? ""}
+        disabled={disabled}
         onChange={(e) => {
           const v = e.target.value;
           if (allowEmpty && v === "") {
@@ -31,9 +36,11 @@ export function ModelSelect({
         }}
         className={
           "w-full rounded border bg-neutral-900 px-2 py-1 text-xs " +
-          (isDisabled
-            ? "border-amber-600 text-amber-400"
-            : "border-neutral-700 text-neutral-200")
+          (disabled
+            ? "cursor-not-allowed border-neutral-800 text-neutral-500"
+            : isDisabled
+              ? "border-amber-600 text-amber-400"
+              : "border-neutral-700 text-neutral-200")
         }
       >
         {allowEmpty && <option value="">{emptyLabel}</option>}
@@ -48,12 +55,15 @@ export function ModelSelect({
           </option>
         )}
       </select>
-      {isDisabled && (
+      {disabled && disabledReason && (
+        <p className="mt-0.5 text-[10px] text-neutral-500">{disabledReason}</p>
+      )}
+      {!disabled && isDisabled && (
         <p className="mt-0.5 text-[10px] text-amber-500">
           Selected model is disabled or missing
         </p>
       )}
-      {selected && selected.enabled && (
+      {!disabled && selected && selected.enabled && (
         <p className="mt-0.5 text-[10px] text-neutral-500">
           Roles: {selected.roles.join(", ")}
         </p>

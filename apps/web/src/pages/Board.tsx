@@ -251,7 +251,8 @@ export function Board({ projectId }: { projectId: string }) {
         params: { id: taskId },
         body: { assignedModel: model },
       });
-    } catch {
+    } catch (e) {
+      setError(String(e));
       setTasks((prev) =>
         prev.map((t) =>
           t.id === taskId

@@ -697,6 +697,35 @@ async function main() {
       scopePaths?: string[];
     };
 
+    // A task that's actively executing already captured its model/scope for
+    // this run (the fallback chain and worktree are built from them at
+    // dispatch time) — changing them now wouldn't be picked up until the next
+    // attempt at best, and would be confusing mid-flight. Reassignment is only
+    // meaningful while the task is still waiting to be dispatched.
+    if (
+      existing.status === "in_progress" &&
+      (body.assignedModel || body.scopePaths)
+    ) {
+      return reply.code(409).send({
+        error: "task is in_progress — pause it or wait for this attempt to finish before reassigning model/scope",
+      });
+    }
+
+    // The validator must differ from the author or ValidatorImpl.review()
+    // throws "self-review is forbidden" mid-run (after gates already passed,
+    // wasting that attempt). Catch the collision here instead, where it's a
+    // clear 400 the UI can surface immediately.
+    if (body.assignedModel) {
+      const settings = repo.getSettings(db) ?? defaultSettings();
+      const validatorModel =
+        settings.routing.validatorByDifficulty[existing.difficulty];
+      if (body.assignedModel === validatorModel) {
+        return reply.code(400).send({
+          error: `${body.assignedModel} is also the validator for ${existing.difficulty} tasks — choose a different author model or change the validator routing in Settings`,
+        });
+      }
+    }
+
     const updates: Record<string, unknown> = {};
     if (body.status) updates.status = body.status;
     if (body.assignedModel) updates.assignedModel = body.assignedModel;
@@ -715,6 +744,17 @@ async function main() {
 
     if (task.status !== "ready" && task.status !== "backlog") {
       return reply.code(409).send({ error: `task is ${task.status}, not dispatchable` });
+    }
+
+    // dispatchOne spins up its own Orchestrator instance with empty
+    // activeTaskIds/modelActiveCount, sharing none of the autonomous run's
+    // in-flight state. Running both at once would let a manually-dispatched
+    // task bypass scope-overlap serialization and per-model concurrency caps
+    // the autonomous loop is enforcing — pause it first.
+    if (engine.isRunning(task.projectId)) {
+      return reply.code(409).send({
+        error: "project is running autonomously — pause it before dispatching a task manually",
+      });
     }
 
     const settings = repo.getSettings(db);
@@ -829,6 +869,15 @@ async function main() {
       return reply
         .code(409)
         .send({ error: `task is ${task.status}; only ${retryable.join("/")} can be retried` });
+    }
+
+    // Same reasoning as /dispatch: a manual retry spins up an independent
+    // Orchestrator that shares no in-flight state with an active autonomous
+    // run on this project.
+    if (engine.isRunning(task.projectId)) {
+      return reply.code(409).send({
+        error: "project is running autonomously — pause it before retrying a task manually",
+      });
     }
 
     const settings = repo.getSettings(db);

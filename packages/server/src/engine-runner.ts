@@ -73,6 +73,7 @@ export class EngineRunner {
       settings,
       adapterFor,
       opencodeBaseUrl: ENV.opencodeBaseUrl,
+      getTask: (id) => repo.getTask(this.db, id) ?? undefined,
       checkBudget: (modelId) => checkBudget(this.db, project.id, modelId, settings),
       events: {
         onLog: (e) => {
@@ -84,6 +85,10 @@ export class EngineRunner {
           repo.updateTask(this.db, t.id, {
             status: t.status,
             attempts: t.attempts,
+            // Model-fallback escalation bumps maxAttempts in memory mid-run
+            // (one extra attempt per fallback model) — persist it, otherwise
+            // the kanban card shows attempts > maxAttempts (e.g. "4/3").
+            maxAttempts: t.maxAttempts,
             branch: t.branch,
             worktreePath: t.worktreePath,
             prNumber: t.prNumber,

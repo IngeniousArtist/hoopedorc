@@ -87,6 +87,8 @@ export function TaskCard({
             onChange={(m) => {
               if (m) onModelChange(m);
             }}
+            disabled={task.status === "in_progress"}
+            disabledReason="Running — wait for this attempt to finish to reassign"
           />
         </div>
       )}

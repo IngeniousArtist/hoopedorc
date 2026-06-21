@@ -122,6 +122,20 @@ export class Orchestrator implements Scheduler {
         if (this.paused) break;
         if (this.activeTaskIds.has(task.id)) continue;
 
+        // Pick up edits made through the UI (e.g. reassigning the model on a
+        // backlog task in the kanban board) while this task was still
+        // waiting. `tasks` was loaded once at start() and never otherwise
+        // re-synced with the DB, so without this a model change on a
+        // not-yet-dispatched task would silently be ignored.
+        const fresh = this.deps.getTask?.(task.id);
+        if (fresh) {
+          task.assignedModel = fresh.assignedModel;
+          task.scopePaths = fresh.scopePaths;
+          task.acceptanceCriteria = fresh.acceptanceCriteria;
+          task.title = fresh.title;
+          task.description = fresh.description;
+        }
+
         // Scope-overlap serialization: hold this task back if any active task
         // writes to the same files. It will be dispatched once the conflicting
         // task merges and the loop iterates again.
@@ -266,8 +280,11 @@ export class Orchestrator implements Scheduler {
       ) {
         if (this.paused) return;
 
-        // Stop spending mid-task if a budget cap has since been hit.
-        const budgetMsg = this.deps.checkBudget?.(task.assignedModel) ?? null;
+        // Stop spending mid-task if a budget cap has since been hit. Checked
+        // against currentModel (which may be a fallback by this point), not
+        // task.assignedModel — the two can differ once escalation kicks in,
+        // and budget must gate whichever model is about to actually run.
+        const budgetMsg = this.deps.checkBudget?.(currentModel) ?? null;
         if (budgetMsg) {
           this.emit(
             "error",
