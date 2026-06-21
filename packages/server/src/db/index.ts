@@ -28,6 +28,7 @@ export function initDb(path: string = ENV.dbPath): Db {
     "ALTER TABLE projects ADD COLUMN planning_messages TEXT",
     "ALTER TABLE projects ADD COLUMN planning_prd TEXT",
     "ALTER TABLE projects ADD COLUMN planning_draft_tasks TEXT",
+    "ALTER TABLE tasks ADD COLUMN role TEXT",
   ]) {
     try { db.exec(col); } catch { /* column already exists */ }
   }
