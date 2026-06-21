@@ -1,10 +1,12 @@
 import type {
+  Difficulty,
   GateResult,
   LogEvent,
   LogLevel,
   MergeDecision,
   ModelId,
   Project,
+  RoutingPolicy,
   Run,
   RunStatus,
   Settings,
@@ -13,6 +15,47 @@ import type {
 import type { AgentRunResult } from "@orc/adapters";
 import { STUCK_DETECTION } from "./constants.js";
 import type { EngineEvents, Scheduler, SchedulerDeps } from "./index.js";
+
+/**
+ * Returns true if the two scope-path arrays share at least one overlapping
+ * file or directory prefix. Used to detect when concurrent tasks would write
+ * to the same files and need to be serialized.
+ * Empty arrays mean "no restriction" and are treated as non-overlapping so
+ * unrestricted tasks don't block each other unnecessarily.
+ */
+function scopesOverlap(a: string[], b: string[]): boolean {
+  if (a.length === 0 || b.length === 0) return false;
+  for (const pa of a) {
+    const na = pa.replace(/\/?\*\*$/, "").replace(/\/$/, "");
+    for (const pb of b) {
+      const nb = pb.replace(/\/?\*\*$/, "").replace(/\/$/, "");
+      if (na === nb || na.startsWith(nb + "/") || nb.startsWith(na + "/"))
+        return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Build the auto-escalation fallback chain for a task. Starts with the
+ * task's assigned model, then escalates through difficulty tiers (easy →
+ * medium → hard) using the routing byDifficulty table. Duplicates are
+ * skipped so the chain never retries the same model twice.
+ */
+function buildFallbackChain(
+  assignedModel: ModelId,
+  difficulty: Difficulty,
+  routing: RoutingPolicy,
+): ModelId[] {
+  const chain: ModelId[] = [assignedModel];
+  const tiers: Difficulty[] = ["easy", "medium", "hard"];
+  const start = tiers.indexOf(difficulty);
+  for (let i = start; i < tiers.length; i++) {
+    const m = routing.byDifficulty[tiers[i]!];
+    if (m && !chain.includes(m)) chain.push(m);
+  }
+  return chain;
+}
 
 export class Orchestrator implements Scheduler {
   private paused = false;
@@ -50,10 +93,28 @@ export class Orchestrator implements Scheduler {
         break;
       }
 
+      // Collect scope paths of all currently running tasks for overlap detection.
+      const activeScopePaths = [...this.activeTaskIds].flatMap(
+        (id) => this.currentTasks.find((t) => t.id === id)?.scopePaths ?? [],
+      );
+
       let dispatched = 0;
       for (const task of ready) {
         if (this.paused) break;
         if (this.activeTaskIds.has(task.id)) continue;
+
+        // Scope-overlap serialization: hold this task back if any active task
+        // writes to the same files. It will be dispatched once the conflicting
+        // task merges and the loop iterates again.
+        if (scopesOverlap(task.scopePaths, activeScopePaths)) {
+          this.emit(
+            "info",
+            "engine",
+            `Holding "${task.title}" — scope overlaps with a running task`,
+            task.id,
+          );
+          continue;
+        }
 
         const cfg = this.deps.settings.models.find(
           (m) => m.id === task.assignedModel,
@@ -158,6 +219,15 @@ export class Orchestrator implements Scheduler {
     task.status = "in_progress";
     this.deps.events.onTaskUpdated(task);
 
+    // Build the fallback escalation chain once per task execution.
+    const fallbackChain = buildFallbackChain(
+      task.assignedModel,
+      task.difficulty,
+      this.deps.settings.routing,
+    );
+    let fallbackIdx = 0;
+    let currentModel = fallbackChain[0]!;
+
     try {
       const { branch, path } = await this.deps.worktrees.create(
         project,
@@ -177,9 +247,7 @@ export class Orchestrator implements Scheduler {
       ) {
         if (this.paused) return;
 
-        // Stop spending mid-task if a budget cap has since been hit (e.g. by a
-        // concurrent task or this task's earlier attempts). Leave it in backlog
-        // so it can resume once budget is raised or the month rolls over.
+        // Stop spending mid-task if a budget cap has since been hit.
         const budgetMsg = this.deps.checkBudget?.(task.assignedModel) ?? null;
         if (budgetMsg) {
           this.emit(
@@ -196,7 +264,7 @@ export class Orchestrator implements Scheduler {
         this.emit(
           "info",
           "engine",
-          `Attempt ${task.attempts}/${task.maxAttempts}`,
+          `Attempt ${task.attempts}/${task.maxAttempts} [model: ${currentModel}]`,
           task.id,
         );
 
@@ -204,6 +272,7 @@ export class Orchestrator implements Scheduler {
           project,
           task,
           fixInstructions,
+          currentModel,
         );
         if (authorResult === null) return;
 
@@ -214,6 +283,20 @@ export class Orchestrator implements Scheduler {
             `Author run failed: ${authorResult.exitReason}`,
             task.id,
           );
+          // Immediately escalate to the next fallback model on adapter/stuck errors.
+          const next = fallbackChain[fallbackIdx + 1];
+          if (next) {
+            fallbackIdx++;
+            currentModel = next;
+            if (task.attempts >= task.maxAttempts) task.maxAttempts++;
+            this.emit(
+              "warn",
+              "engine",
+              `Switching to fallback model: ${currentModel}`,
+              task.id,
+            );
+            continue;
+          }
           task.status = "failed";
           this.deps.events.onTaskUpdated(task);
           return;
@@ -268,7 +351,24 @@ export class Orchestrator implements Scheduler {
             `Gates failed:\n${fixInstructions}`,
             task.id,
           );
+
           if (task.attempts < task.maxAttempts) continue;
+
+          // All attempts on this model exhausted — try the next fallback model
+          // before giving up entirely.
+          const next = fallbackChain[fallbackIdx + 1];
+          if (next) {
+            fallbackIdx++;
+            currentModel = next;
+            task.maxAttempts++;
+            this.emit(
+              "warn",
+              "engine",
+              `Gates still failing, switching to fallback model: ${currentModel}`,
+              task.id,
+            );
+            continue;
+          }
 
           task.status = "failed";
           this.deps.events.onTaskUpdated(task);
@@ -374,8 +474,10 @@ export class Orchestrator implements Scheduler {
     _project: Project,
     task: Task,
     fixInstructions?: string,
+    effectiveModel?: ModelId,
   ): Promise<AgentRunResult | null> {
-    const adapter = this.deps.adapterFor(task.assignedModel);
+    const model = effectiveModel ?? task.assignedModel;
+    const adapter = this.deps.adapterFor(model);
     const prompt = this.buildAuthorPrompt(task, fixInstructions);
 
     const controller = new AbortController();
@@ -397,7 +499,7 @@ export class Orchestrator implements Scheduler {
 
     try {
       const result = await adapter.run({
-        model: task.assignedModel,
+        model,
         prompt,
         cwd: task.worktreePath!,
         signal: controller.signal,
@@ -424,7 +526,7 @@ export class Orchestrator implements Scheduler {
         },
       });
 
-      this.emitRunEvent(task, result, "passed");
+      this.emitRunEvent(task, result, "passed", model);
       return result;
     } catch (err: unknown) {
       if (
@@ -432,7 +534,7 @@ export class Orchestrator implements Scheduler {
         controller.signal.aborted
       ) {
         if (this.paused) {
-          this.emitRunEvent(task, null, "stopped");
+          this.emitRunEvent(task, null, "stopped", model);
           return null;
         }
 
@@ -444,7 +546,7 @@ export class Orchestrator implements Scheduler {
           tokensOut: 0,
           summary: "Run killed by stuck detection",
         };
-        this.emitRunEvent(task, stuckResult, "failed");
+        this.emitRunEvent(task, stuckResult, "failed", model);
         return stuckResult;
       }
       throw err;
@@ -475,11 +577,12 @@ export class Orchestrator implements Scheduler {
     task: Task,
     result: AgentRunResult | null,
     status: RunStatus,
+    model?: ModelId,
   ): void {
     const run: Run = {
       id: `run-${task.id}-${task.attempts}`,
       taskId: task.id,
-      model: task.assignedModel,
+      model: model ?? task.assignedModel,
       attempt: task.attempts,
       status,
       startedAt: new Date().toISOString(),
@@ -572,5 +675,3 @@ export class Orchestrator implements Scheduler {
     return true;
   }
 }
-
-
