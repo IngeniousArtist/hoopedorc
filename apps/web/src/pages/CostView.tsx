@@ -57,7 +57,7 @@ export function CostView({ projectId }: { projectId: string }) {
       <h2 className="text-lg font-semibold">Costs &amp; Analytics</h2>
 
       {/* Headline + budget */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-4">
           <div className="text-3xl font-semibold text-neutral-100">
             {usd(a.totalUsd)}

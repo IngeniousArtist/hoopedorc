@@ -254,7 +254,7 @@ export function Settings() {
           <label className="mb-2 block text-xs text-neutral-400">
             Author by difficulty
           </label>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {DIFFICULTIES.map((d) => (
               <div key={d}>
                 <label className="mb-1 block text-[10px] text-neutral-500 capitalize">
@@ -283,7 +283,7 @@ export function Settings() {
           <label className="mb-2 block text-xs text-neutral-400">
             Role overrides (optional)
           </label>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {BY_ROLE_KEYS.map((role) => (
               <div key={role}>
                 <label className="mb-1 block text-[10px] text-neutral-500">
@@ -315,7 +315,7 @@ export function Settings() {
           <label className="mb-2 block text-xs text-neutral-400">
             Validator by difficulty
           </label>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {DIFFICULTIES.map((d) => (
               <div key={d}>
                 <label className="mb-1 block text-[10px] text-neutral-500 capitalize">
@@ -416,7 +416,7 @@ export function Settings() {
         <h3 className="text-sm font-medium text-neutral-300">
           Budget & Thresholds
         </h3>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label className="mb-1 block text-xs text-neutral-400">
               Monthly budget (USD)
@@ -459,7 +459,7 @@ export function Settings() {
           that chat ID.
         </p>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="col-span-2">
             <label className="mb-1 block text-xs text-neutral-400">
               Bot token (from @BotFather)

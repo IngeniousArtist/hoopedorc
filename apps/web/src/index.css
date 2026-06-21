@@ -6,3 +6,23 @@ body,
   @apply bg-neutral-950 text-neutral-100;
   min-height: 100vh;
 }
+
+/* Global focus-visible ring for every interactive control. Inputs/selects/
+   textareas across the app share the same dark border styling but none had
+   a focus state, so keyboard users couldn't see which field was active. */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid theme(colors.blue.500);
+  outline-offset: 1px;
+}
+
+/* Browser-default checkboxes/radios render with a light background that
+   clashes with the dark theme; accent-color re-themes them without needing
+   a custom-built control. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: theme(colors.blue.600);
+}

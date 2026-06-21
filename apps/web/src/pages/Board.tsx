@@ -271,13 +271,15 @@ export function Board({ projectId }: { projectId: string }) {
         </div>
       )}
 
-      <div className="flex gap-3 overflow-x-auto pb-4">
+      {/* snap-x makes mobile a one-column-at-a-time swipe; sm: reverts to the
+          normal multi-column horizontal scroll once there's room for it. */}
+      <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-4 sm:snap-none">
         {COLUMNS.map((col) => (
           <section
             key={col.status}
             onDragOver={handleDragOver}
             onDrop={(e) => handleDrop(col.status, e)}
-            className="min-w-[220px] max-w-[280px] flex-1 rounded-lg border border-neutral-800 bg-neutral-900/50 p-3"
+            className="min-w-[85vw] max-w-[85vw] flex-1 snap-center rounded-lg border border-neutral-800 bg-neutral-900/50 p-3 sm:min-w-[220px] sm:max-w-[280px] sm:snap-none"
           >
             <h2 className="mb-3 flex items-center gap-2 text-xs font-medium text-neutral-400 uppercase tracking-wider">
               {col.label}

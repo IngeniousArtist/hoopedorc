@@ -117,41 +117,53 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
-      <nav className="flex items-center gap-1 border-b border-neutral-800 bg-neutral-900 px-4 py-2">
-        <span className="mr-4 text-sm font-semibold tracking-wide text-neutral-100">
-          Hoopedorc
-        </span>
-        {NAV.map((item) => (
-          <button
-            key={item.page}
-            onClick={() => setPage(item.page)}
-            className={
-              "rounded px-3 py-1 text-xs transition-colors " +
-              (page === item.page
-                ? "bg-neutral-700 text-neutral-100"
-                : "text-neutral-400 hover:text-neutral-200")
-            }
-          >
-            {item.label}
-          </button>
-        ))}
-
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wide text-neutral-600">
-            Project
+      {/*
+        Two fixed rows rather than one flex row with a flex-1 middle section:
+        a flex-1 nav-links container next to a fixed-width project selector
+        will starve itself down to near-zero width on narrow screens instead
+        of wrapping (flex-wrap only kicks in once children hit their min
+        content size, and overflow-x-auto children have no min size to hit).
+        Two rows sidesteps that — the nav links always get the full row width.
+      */}
+      <nav className="sticky top-0 z-40 border-b border-neutral-800 bg-neutral-900 px-4 py-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-sm font-semibold tracking-wide text-neutral-100">
+            Hoopedorc
           </span>
-          <select
-            value={selectedProjectId}
-            onChange={(e) => setSelectedProjectId(e.target.value)}
-            className="max-w-[220px] rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
-          >
-            {projects.length === 0 && <option value="">No projects</option>}
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} ({p.status})
-              </option>
-            ))}
-          </select>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-wide text-neutral-600">
+              Project
+            </span>
+            <select
+              value={selectedProjectId}
+              onChange={(e) => setSelectedProjectId(e.target.value)}
+              className="max-w-[160px] rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 sm:max-w-[220px]"
+            >
+              {projects.length === 0 && <option value="">No projects</option>}
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.status})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="mt-2 flex items-center gap-1 overflow-x-auto">
+          {NAV.map((item) => (
+            <button
+              key={item.page}
+              onClick={() => setPage(item.page)}
+              className={
+                "shrink-0 rounded px-3 py-1 text-xs transition-colors " +
+                (page === item.page
+                  ? "bg-neutral-700 text-neutral-100"
+                  : "text-neutral-400 hover:text-neutral-200")
+              }
+            >
+              {item.label}
+            </button>
+          ))}
         </div>
       </nav>
 

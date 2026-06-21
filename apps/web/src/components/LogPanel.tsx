@@ -34,7 +34,7 @@ export function LogPanel({
   }, [logs]);
 
   return (
-    <div className="fixed bottom-0 right-0 top-0 z-50 flex w-96 flex-col border-l border-neutral-700 bg-neutral-900 shadow-2xl">
+    <div className="fixed bottom-0 right-0 top-0 z-50 flex w-full flex-col border-l border-neutral-700 bg-neutral-900 shadow-2xl sm:w-96">
       <div className="flex items-center justify-between border-b border-neutral-700 px-4 py-3">
         <div className="min-w-0 flex-1 text-sm font-medium text-neutral-200 truncate">
           {taskTitle ?? "Logs"}
