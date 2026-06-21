@@ -24,7 +24,7 @@ export { STUCK_DETECTION } from "./constants.js";
 export { WorktreeManagerImpl } from "./worktree-manager.js";
 export { GitServiceImpl } from "./git-service.js";
 export { GateRunnerImpl } from "./gate-runner.js";
-export { ValidatorImpl } from "./validator.js";
+export { ValidatorImpl, SelfReviewError } from "./validator.js";
 export { Orchestrator } from "./orchestrator.js";
 
 /** Callbacks the engine uses to report progress + ask humans for decisions. */
@@ -69,7 +69,18 @@ export interface GateRunner {
 
 /** The AI reviewer (deepseek-pro by default): grades against acceptance criteria. */
 export interface Validator {
-  review(project: Project, task: Task, gate: GateResult): Promise<MergeDecision>;
+  /**
+   * authorModel is the model that actually produced this attempt — pass the
+   * orchestrator's currentModel, not task.assignedModel. They diverge once
+   * fallback escalation has switched models mid-task, and the self-review
+   * check below must compare against whoever actually wrote the code.
+   */
+  review(
+    project: Project,
+    task: Task,
+    gate: GateResult,
+    authorModel: ModelId,
+  ): Promise<MergeDecision>;
 }
 
 export interface SchedulerDeps {

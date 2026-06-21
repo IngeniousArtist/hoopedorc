@@ -8,11 +8,13 @@ import type {
   Settings,
   Task,
 } from "@orc/types";
-import { pickAssignedModel } from "@orc/types";
 import type { AgentAdapter } from "@orc/adapters";
 import type { Validator } from "./index.js";
 
 const MAX_DIFF_CHARS = 40_000;
+
+/** Thrown when the configured validator would review its own author's work. */
+export class SelfReviewError extends Error {}
 
 export class ValidatorImpl implements Validator {
   constructor(
@@ -24,26 +26,18 @@ export class ValidatorImpl implements Validator {
     project: Project,
     task: Task,
     gate: GateResult,
+    authorModel: ModelId,
   ): Promise<MergeDecision> {
     const validatorModel =
       this.settings.routing.validatorByDifficulty[task.difficulty];
 
-    const authorModel = pickAssignedModel(
-      this.settings.routing,
-      task.difficulty,
-      task.role,
-    );
-
-    if (validatorModel === task.assignedModel) {
-      throw new Error(
-        `Validator model "${validatorModel}" is the same as the author model "${task.assignedModel}". ` +
-          `Self-review is forbidden.`,
-      );
-    }
-
+    // Checked against authorModel (whoever actually produced this attempt —
+    // may be a fallback model, not task.assignedModel) rather than re-deriving
+    // from settings, which would miss a collision introduced by mid-task
+    // fallback escalation.
     if (validatorModel === authorModel) {
-      throw new Error(
-        `Validator model "${validatorModel}" matches the resolved author model "${authorModel}". ` +
+      throw new SelfReviewError(
+        `Validator model "${validatorModel}" is the same as the author model "${authorModel}". ` +
           `Self-review is forbidden.`,
       );
     }

@@ -21,6 +21,24 @@ export class WorktreeManagerImpl implements WorktreeManager {
       cwd: project.localPath,
       stdio: "pipe",
     });
+
+    // Defense in depth: the branch name is deterministic (orc/<taskId>), so a
+    // retried task reuses it. If a prior attempt already pushed to and opened
+    // a PR on this branch, the remote ref has history this fresh local branch
+    // doesn't — pushing later would be rejected as non-fast-forward, failing
+    // every retry regardless of model. The retry endpoint clears the task's
+    // prNumber/branch so a fresh PR gets opened; deleting the stale remote
+    // branch here (best-effort — fine if it doesn't exist) lets that PR's old
+    // branch go away cleanly instead of blocking the new push.
+    try {
+      execSync(`git push origin --delete "${branch}"`, {
+        cwd: project.localPath,
+        stdio: "pipe",
+      });
+    } catch {
+      /* no remote branch by this name — the common case */
+    }
+
     execSync(
       `git worktree add "${path}" -b "${branch}" "origin/${project.defaultBranch}"`,
       { cwd: project.localPath, stdio: "pipe" },

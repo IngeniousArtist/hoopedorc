@@ -14,6 +14,7 @@ import type {
 } from "@orc/types";
 import type { AgentRunResult } from "@orc/adapters";
 import { STUCK_DETECTION } from "./constants.js";
+import { SelfReviewError } from "./validator.js";
 import type { EngineEvents, Scheduler, SchedulerDeps } from "./index.js";
 
 /**
@@ -363,7 +364,13 @@ export class Orchestrator implements Scheduler {
 
         await this.deps.git.push(path, branch);
 
-        if (task.attempts === 1 && task.prNumber == null) {
+        // Open the PR the first time a push actually succeeds — not
+        // hardcoded to attempt 1. An author-run failure (stuck detection,
+        // adapter error) can consume attempt 1 before ever reaching this
+        // line, e.g. via fallback escalation; gating on attempts === 1 then
+        // skips openPr() forever and task.prNumber stays undefined, which
+        // later crashes the merge step with `gh pr merge undefined`.
+        if (task.prNumber == null) {
           task.prNumber = await this.deps.git.openPr(project, task);
           this.deps.events.onTaskUpdated(task);
         }
@@ -411,11 +418,43 @@ export class Orchestrator implements Scheduler {
           return;
         }
 
-        const decision = await this.deps.validator.review(
-          project,
-          task,
-          gateResult,
-        );
+        let decision: MergeDecision;
+        try {
+          decision = await this.deps.validator.review(
+            project,
+            task,
+            gateResult,
+            currentModel,
+          );
+        } catch (err) {
+          if (!(err instanceof SelfReviewError)) throw err;
+          // Routing misconfiguration (author/validator collide for this
+          // difficulty, or escalation walked into the validator's model) —
+          // recoverable by escalating same as a gate failure, not fatal.
+          this.emit("warn", "validator", err.message, task.id);
+          const next = fallbackChain[fallbackIdx + 1];
+          if (next) {
+            fallbackIdx++;
+            currentModel = next;
+            task.maxAttempts++;
+            this.emit(
+              "warn",
+              "engine",
+              `Switching to fallback model: ${currentModel}`,
+              task.id,
+            );
+            continue;
+          }
+          this.emit(
+            "error",
+            "engine",
+            "No remaining fallback model avoids the validator collision — fix routing in Settings (byDifficulty/byRole vs validatorByDifficulty).",
+            task.id,
+          );
+          task.status = "failed";
+          this.deps.events.onTaskUpdated(task);
+          return;
+        }
         this.deps.events.onMergeDecision(decision);
 
         if (decision.verdict === "request_changes") {
@@ -462,6 +501,20 @@ export class Orchestrator implements Scheduler {
       }
 
       if (this.paused) return;
+
+      if (task.prNumber == null) {
+        this.emit(
+          "error",
+          "engine",
+          "Reached the merge step with no PR number — the author never " +
+            "produced a pushable change on any attempt. Failing instead of " +
+            'calling gh with an undefined PR ("gh pr merge undefined").',
+          task.id,
+        );
+        task.status = "failed";
+        this.deps.events.onTaskUpdated(task);
+        return;
+      }
 
       const canMerge = await this.canAutoMerge(project, task, finalGate!);
       if (canMerge) {
@@ -562,7 +615,10 @@ export class Orchestrator implements Scheduler {
         },
       });
 
-      this.emitRunEvent(task, result, "passed", model);
+      // adapter.run() can resolve with ok:false (e.g. exitReason "killed" from
+      // an internal timeout) without throwing — label the run row to match,
+      // not unconditionally "passed".
+      this.emitRunEvent(task, result, result.ok ? "passed" : "failed", model);
       return result;
     } catch (err: unknown) {
       if (

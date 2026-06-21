@@ -889,7 +889,23 @@ async function main() {
     // Fresh attempt counter, then dispatch one run through the engine. As with
     // /dispatch, the engine creates the authoritative run row itself — don't
     // pre-create one here (was leaving a permanently-"running" $0 orphan row).
-    repo.updateTask(db, id, { status: "in_progress", attempts: 1 });
+    // Also clear prNumber/branch/worktreePath: a prior failed attempt may
+    // have already pushed to and opened a PR on `orc/<taskId>`. Without this,
+    // the new attempt's worktree (freshly branched off origin/<default>)
+    // can't push to that same branch name — its remote ref has diverged —
+    // and the push is rejected as non-fast-forward, failing every retry
+    // regardless of which model runs it.
+    repo.updateTask(
+      db,
+      id,
+      {
+        status: "in_progress",
+        attempts: 1,
+        prNumber: null,
+        branch: null,
+        worktreePath: null,
+      } as Record<string, unknown> as Parameters<typeof repo.updateTask>[2],
+    );
     const now = new Date().toISOString();
     const placeholderRun: import("@orc/types").Run = {
       id: `run-${id}-1`,
@@ -1026,6 +1042,23 @@ async function main() {
       models: body.settings.models ?? current.models,
       riskyChangeRules: body.settings.riskyChangeRules ?? current.riskyChangeRules,
     };
+
+    // The same model can't author AND validate a difficulty tier — the
+    // validator throws "self-review forbidden" the moment a task of that
+    // difficulty (with no role override) reaches review, permanently failing
+    // it. Catch this at save time instead of letting it crash tasks later.
+    const collisions = (["easy", "medium", "hard"] as const).filter(
+      (d) =>
+        merged.routing.byDifficulty[d] === merged.routing.validatorByDifficulty[d],
+    );
+    if (collisions.length > 0) {
+      return reply.code(400).send({
+        error:
+          `byDifficulty and validatorByDifficulty assign the same model for: ${collisions.join(", ")}. ` +
+          `Choose a different validator for ${collisions.length === 1 ? "that tier" : "those tiers"}.`,
+      });
+    }
+
     const saved = repo.upsertSettings(db, merged);
     configureTelegram(); // apply enable/disable/token/chatId changes live
     return { settings: saved };
