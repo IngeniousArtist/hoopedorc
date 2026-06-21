@@ -70,19 +70,24 @@ function wireAbort(
 export class ClaudeAdapter implements AgentAdapter {
   readonly runner = "claude-code" as const;
 
+  /** Optional `claude --model` alias/id (e.g. "sonnet" / "opus"). */
+  constructor(private readonly claudeModel?: string) {}
+
   async run(opts: AgentRunOptions): Promise<AgentRunResult> {
     return new Promise((resolve) => {
+      const args = [
+        "-p",
+        opts.prompt,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--permission-mode",
+        CLAUDE_PERMISSION_MODE,
+      ];
+      if (this.claudeModel) args.push("--model", this.claudeModel);
       const proc = spawn(
         "claude",
-        [
-          "-p",
-          opts.prompt,
-          "--output-format",
-          "stream-json",
-          "--verbose",
-          "--permission-mode",
-          CLAUDE_PERMISSION_MODE,
-        ],
+        args,
         // PWD must be set explicitly: spawn's `cwd` changes the child's actual
         // working directory but does NOT update the inherited $PWD env var, and
         // CLI agents resolve their project root from $PWD. Without this, the
@@ -307,7 +312,7 @@ export function makeAdapter(
   cfg: ModelConfig,
   opencodeBaseUrl: string,
 ): AgentAdapter {
-  if (cfg.runner === "claude-code") return new ClaudeAdapter();
+  if (cfg.runner === "claude-code") return new ClaudeAdapter(cfg.claudeModel);
   if (!cfg.opencodeModel) {
     throw new Error(`model ${cfg.id} is runner=opencode but has no opencodeModel`);
   }

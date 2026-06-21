@@ -1,4 +1,5 @@
 import type {
+  AuditEntry,
   CostRecord,
   LogEvent,
   MergeDecision,
@@ -421,6 +422,110 @@ export function getCostSummary(
   return { totalUsd, byModel };
 }
 
+export interface ModelCostRow {
+  model: string;
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+  runs: number;
+}
+
+/** Rich per-project cost analytics: per-model, daily time-series, per-task. */
+export function getCostAnalytics(
+  db: Db,
+  projectId: string,
+): {
+  totalUsd: number;
+  totalTokensIn: number;
+  totalTokensOut: number;
+  byModel: ModelCostRow[];
+  daily: { date: string; costUsd: number }[];
+  byTask: { taskId: string; title: string; costUsd: number }[];
+} {
+  const byModel = (
+    db
+      .prepare(
+        `SELECT model,
+                SUM(cost_usd)  AS cost,
+                SUM(tokens_in) AS tin,
+                SUM(tokens_out) AS tout,
+                COUNT(*)       AS runs
+         FROM costs WHERE project_id = ? GROUP BY model ORDER BY cost DESC`,
+      )
+      .all(projectId) as Record<string, unknown>[]
+  ).map((r) => ({
+    model: asStr(r.model),
+    costUsd: Number(r.cost),
+    tokensIn: Number(r.tin),
+    tokensOut: Number(r.tout),
+    runs: Number(r.runs),
+  }));
+
+  const daily = (
+    db
+      .prepare(
+        `SELECT substr(ts, 1, 10) AS date, SUM(cost_usd) AS cost
+         FROM costs WHERE project_id = ? GROUP BY date ORDER BY date ASC`,
+      )
+      .all(projectId) as Record<string, unknown>[]
+  ).map((r) => ({ date: asStr(r.date), costUsd: Number(r.cost) }));
+
+  const byTask = (
+    db
+      .prepare(
+        `SELECT c.task_id AS task_id,
+                COALESCE(t.title, '(planning / untracked)') AS title,
+                SUM(c.cost_usd) AS cost
+         FROM costs c LEFT JOIN tasks t ON t.id = c.task_id
+         WHERE c.project_id = ?
+         GROUP BY c.task_id ORDER BY cost DESC`,
+      )
+      .all(projectId) as Record<string, unknown>[]
+  ).map((r) => ({
+    taskId: r.task_id ? asStr(r.task_id) : "",
+    title: asStr(r.title),
+    costUsd: Number(r.cost),
+  }));
+
+  const totals = db
+    .prepare(
+      `SELECT COALESCE(SUM(cost_usd),0) AS cost,
+              COALESCE(SUM(tokens_in),0) AS tin,
+              COALESCE(SUM(tokens_out),0) AS tout
+       FROM costs WHERE project_id = ?`,
+    )
+    .get(projectId) as { cost: number; tin: number; tout: number };
+
+  return {
+    totalUsd: Number(totals.cost),
+    totalTokensIn: Number(totals.tin),
+    totalTokensOut: Number(totals.tout),
+    byModel,
+    daily,
+    byTask,
+  };
+}
+
+/**
+ * Rolling per-model average spend per cost-record (≈ per run), across ALL
+ * projects. Used to estimate the cost of not-yet-run tasks.
+ */
+export function getModelRunAverages(
+  db: Db,
+): Record<string, { avgCostPerRun: number; runs: number }> {
+  const rows = db
+    .prepare(
+      `SELECT model, AVG(cost_usd) AS avg, COUNT(*) AS n
+       FROM costs WHERE cost_usd > 0 GROUP BY model`,
+    )
+    .all() as { model: string; avg: number; n: number }[];
+  const out: Record<string, { avgCostPerRun: number; runs: number }> = {};
+  for (const r of rows) {
+    out[r.model] = { avgCostPerRun: Number(r.avg), runs: Number(r.n) };
+  }
+  return out;
+}
+
 export function getModelMonthlyCost(db: Db, model: string): number {
   const now = new Date();
   const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
@@ -504,6 +609,50 @@ export function respondToNotification(
     | Record<string, unknown>
     | undefined;
   return row ? mapNotification(row) : null;
+}
+
+// ── Audit log ──
+
+function mapAudit(row: Record<string, unknown>): AuditEntry {
+  return {
+    id: asStr(row.id),
+    projectId: asStr(row.project_id),
+    taskId: row.task_id ? asStr(row.task_id) : undefined,
+    ts: asStr(row.ts),
+    kind: asStr(row.kind),
+    actor: asStr(row.actor),
+    summary: asStr(row.summary),
+    detail: row.detail ? json<Record<string, unknown>>(row.detail) : undefined,
+  };
+}
+
+export function createAuditEntry(
+  db: Db,
+  e: Omit<AuditEntry, "id" | "ts"> & { id?: string; ts?: string },
+): AuditEntry {
+  const id = e.id ?? crypto.randomUUID();
+  const ts = e.ts ?? new Date().toISOString();
+  db.prepare(
+    `INSERT INTO audit_log (id, project_id, task_id, ts, kind, actor, summary, detail)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    e.projectId,
+    e.taskId ?? null,
+    ts,
+    e.kind,
+    e.actor,
+    e.summary,
+    e.detail ? JSON.stringify(e.detail) : null,
+  );
+  return { ...e, id, ts } as AuditEntry;
+}
+
+export function getAuditLog(db: Db, projectId: string): AuditEntry[] {
+  return db
+    .prepare("SELECT * FROM audit_log WHERE project_id = ? ORDER BY ts DESC")
+    .all(projectId)
+    .map((r) => mapAudit(r as Record<string, unknown>));
 }
 
 // ── Settings ──

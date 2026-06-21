@@ -11,6 +11,9 @@ export const DEFAULT_MODELS: ModelConfig[] = [
     id: "claude",
     displayName: "Claude (planner / reviewer)",
     runner: "claude-code",
+    // Default the Claude runner to Sonnet; the one-shot plan deconstruction
+    // upgrades to Opus separately (ENV.plannerDeconstructModel).
+    claudeModel: "sonnet",
     roles: ["planner", "validator"],
     enabled: true,
     maxConcurrent: 1,
@@ -94,7 +97,9 @@ export function defaultSettings(): Settings {
       outOfScopeEdits: true,
     },
     confidenceThreshold: 0.7,
-    telegram: { enabled: false },
+    // Token is read from the env var named here, never stored raw. Set the var
+    // + chatId and flip enabled to turn the bot on.
+    telegram: { enabled: false, botTokenRef: "TELEGRAM_BOT_TOKEN" },
   };
 }
 
@@ -105,6 +110,11 @@ export const ENV = {
   // (and run `opencode serve`) only to centralize sessions on one server.
   opencodeBaseUrl: process.env.OPENCODE_BASE_URL ?? "",
   mock: process.env.MOCK === "1",
+  // Two-tier planning models (claude --model aliases). Sonnet drives the cheap
+  // conversational turns; Opus does the single high-leverage deconstruction of
+  // the agreed plan into the task DAG. Override if Opus is ever throttled.
+  plannerChatModel: process.env.PLANNER_CHAT_MODEL ?? "sonnet",
+  plannerDeconstructModel: process.env.PLANNER_DECONSTRUCT_MODEL ?? "opus",
   // Where per-project repo clones + their task worktrees live. MUST be outside
   // the orchestrator's own working tree: each worktree is `${localPath}-wt-<id>`,
   // and coding agents (opencode/claude) resolve their project root by walking up

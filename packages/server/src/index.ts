@@ -13,8 +13,22 @@ import { initDb } from "./db/index";
 import * as repo from "./db/repo";
 import { WsHub } from "./ws-hub";
 import { EngineRunner } from "./engine-runner";
-import { runPlanner } from "./planner";
+import {
+  runPlanner,
+  runPlannerChat,
+  runPlannerDeconstruct,
+  type PlanOutput,
+} from "./planner";
+import { createGithubRepo, getPrDiff } from "./github";
 import { checkBudget } from "./budget";
+import { estimatePlan } from "./estimate";
+import { TelegramBot, sendTelegramMessage } from "./telegram";
+import { runSetupChecks, testModels } from "./setup";
+import type {
+  DraftTask,
+  PlanChatMessage,
+  Settings as SettingsType,
+} from "@orc/types";
 
 type RouteParams = { id: string };
 
@@ -59,6 +73,67 @@ function setupDb(): Db {
   return initDb();
 }
 
+/** A planner/draft task: dependsOn are indices into the same array. */
+type MaterializableTask = {
+  title: string;
+  description: string;
+  difficulty: Task["difficulty"];
+  role?: Task["role"];
+  acceptanceCriteria: string[];
+  dependsOn: number[];
+  scopePaths: string[];
+  assignedModel?: Task["assignedModel"];
+};
+
+/**
+ * Turn index-based draft tasks into real Task rows, resolving index deps to ids
+ * and computing readiness from deps. Shared by /plan and /plan/commit.
+ */
+function materializeTasks(
+  db: Db,
+  projectId: string,
+  drafts: MaterializableTask[],
+  settings: SettingsType,
+): Task[] {
+  const ids = drafts.map(() => crypto.randomUUID());
+  return drafts.map((pt, i) =>
+    repo.createTask(db, {
+      id: ids[i]!,
+      projectId,
+      title: pt.title,
+      description: pt.description,
+      difficulty: pt.difficulty,
+      status: pt.dependsOn.length === 0 ? "ready" : "backlog",
+      dependsOn: pt.dependsOn.map((d) => ids[d]!).filter(Boolean),
+      acceptanceCriteria: pt.acceptanceCriteria,
+      assignedModel:
+        pt.assignedModel ??
+        pickAssignedModel(settings.routing, pt.difficulty, pt.role),
+      role: pt.role,
+      scopePaths: pt.scopePaths,
+      attempts: 0,
+      maxAttempts: 3,
+    }),
+  );
+}
+
+/** Resolve each draft task's suggested author model for display before commit. */
+function withAssignedModels(
+  output: PlanOutput,
+  settings: SettingsType,
+): DraftTask[] {
+  return output.tasks.map((t) => ({
+    title: t.title,
+    description: t.description,
+    difficulty: t.difficulty,
+    role: t.role,
+    acceptanceCriteria: t.acceptanceCriteria,
+    dependsOn: t.dependsOn,
+    scopePaths: t.scopePaths,
+    assignedModel: pickAssignedModel(settings.routing, t.difficulty, t.role),
+  }));
+}
+
 async function main() {
   const app = Fastify({ logger: true });
   await app.register(cors, { origin: true });
@@ -77,6 +152,134 @@ async function main() {
     hub.broadcast(e);
   }
 
+  /** Resolve a pending approval from any channel (HTTP or Telegram). */
+  function resolveNotification(id: string, choice: string) {
+    const notification = repo.respondToNotification(db, id, choice);
+    if (!notification) return null;
+    engine.resolveApproval(id, choice);
+    repo.createAuditEntry(db, {
+      projectId: notification.projectId,
+      taskId: notification.taskId,
+      kind: "approval_resolved",
+      actor: "human",
+      summary: `${notification.title} → ${choice}`,
+    });
+    broadcast({ type: "notification", payload: notification });
+    return notification;
+  }
+
+  /** Record + broadcast planner spend so it counts against the project budget. */
+  function recordPlanningCost(projectId: string, costUsd: number) {
+    if (costUsd <= 0) return;
+    const cost = repo.createCost(db, {
+      projectId,
+      model: "claude",
+      costUsd,
+      tokensIn: 0,
+      tokensOut: 0,
+      ts: new Date().toISOString(),
+    });
+    broadcast({ type: "cost.updated", payload: cost });
+  }
+
+  // ── Telegram (optional second channel) ──
+  let telegram: TelegramBot | undefined;
+
+  async function telegramCommand(cmd: string, args: string[]): Promise<string> {
+    switch (cmd) {
+      case "help":
+        return [
+          "Commands:",
+          "/status — projects + task counts",
+          "/cost — spend this month",
+          "/projects — list project ids",
+          "/start <projectId>",
+          "/pause <projectId>",
+        ].join("\n");
+      case "projects": {
+        const ps = repo.getProjects(db);
+        return ps.length
+          ? ps.map((p) => `${p.name} [${p.status}] — ${p.id}`).join("\n")
+          : "No projects.";
+      }
+      case "status": {
+        const ps = repo.getProjects(db);
+        if (!ps.length) return "No projects.";
+        return ps
+          .map((p) => {
+            const ts = repo.getTasks(db, p.id);
+            const done = ts.filter((t) => t.status === "done").length;
+            const failed = ts.filter((t) => t.status === "failed").length;
+            return `${p.name} [${p.status}] ${done}/${ts.length} done${failed ? `, ${failed} failed` : ""}`;
+          })
+          .join("\n");
+      }
+      case "cost": {
+        const monthly = repo.getGlobalMonthlyCost(db);
+        const lines = repo
+          .getProjects(db)
+          .map((p) => `  ${p.name}: $${repo.getCostSummary(db, p.id).totalUsd.toFixed(4)}`);
+        return `Spend this month: $${monthly.toFixed(4)}\n${lines.join("\n")}`;
+      }
+      case "start":
+      case "pause": {
+        const id = args[0];
+        if (!id) return `Usage: /${cmd} <projectId>`;
+        const project = repo.getProject(db, id);
+        if (!project) return `No project ${id}`;
+        if (cmd === "start") {
+          repo.updateProject(db, id, { status: "running" });
+          const running = repo.getProject(db, id)!;
+          broadcast({ type: "project.updated", payload: running });
+          await engine.start(running);
+          return `Started ${project.name}`;
+        }
+        await engine.pause(project);
+        repo.updateProject(db, id, { status: "paused" });
+        broadcast({ type: "project.updated", payload: repo.getProject(db, id)! });
+        return `Paused ${project.name}`;
+      }
+      default:
+        return `Unknown command /${cmd}. Try /help`;
+    }
+  }
+
+  /** (Re)start the bot from current settings. Safe to call repeatedly. */
+  function configureTelegram() {
+    if (telegram) {
+      telegram.stop();
+      telegram = undefined;
+      engine.setNotifier(undefined);
+    }
+    const settings = repo.getSettings(db) ?? defaultSettings();
+    const tg = settings.telegram;
+    if (!tg?.enabled) return;
+    const tokenVar = tg.botTokenRef ?? "TELEGRAM_BOT_TOKEN";
+    // Raw token (stored in settings) wins; otherwise read the named env var.
+    const token = tg.botToken || process.env[tokenVar];
+    if (!token) {
+      app.log.warn(
+        `telegram enabled but no token (set botToken or env var ${tokenVar}) — bot not started`,
+      );
+      return;
+    }
+    telegram = new TelegramBot(
+      token,
+      tg.chatId ?? "",
+      {
+        onApproval: (id, choice) => {
+          resolveNotification(id, choice);
+        },
+        onCommand: telegramCommand,
+      },
+      (m) => app.log.info(m),
+    );
+    telegram.start();
+    engine.setNotifier(telegram);
+  }
+
+  configureTelegram(); // start the bot at boot if enabled
+
   // ── Health ──
   app.get("/api/health", async () => ({ ok: true, mock: ENV.mock }));
 
@@ -85,17 +288,36 @@ async function main() {
     const body = req.body as {
       name: string;
       repoUrl?: string;
+      createRepo?: boolean;
+      repoName?: string;
       defaultBranch?: string;
       budgetUsd?: number;
     };
     if (!body.name) {
       return reply.code(400).send({ error: "name is required" });
     }
+
+    let repoUrl = body.repoUrl ?? "https://github.com/placeholder/repo";
+    if (body.createRepo) {
+      try {
+        const created = createGithubRepo(body.repoName || body.name);
+        repoUrl = created.repoUrl;
+      } catch (err) {
+        return reply.code(502).send({
+          error: `could not create repo: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    } else if (!body.repoUrl) {
+      return reply
+        .code(400)
+        .send({ error: "provide a repoUrl or set createRepo" });
+    }
+
     const id = crypto.randomUUID();
     const project = repo.createProject(db, {
       id,
       name: body.name,
-      repoUrl: body.repoUrl ?? "https://github.com/placeholder/repo",
+      repoUrl,
       defaultBranch: body.defaultBranch ?? "main",
       localPath: join(ENV.reposDir, id),
       budgetUsd: body.budgetUsd,
@@ -116,6 +338,32 @@ async function main() {
     return { project };
   });
 
+  app.patch("/api/projects/:id", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+
+    const body = req.body as {
+      name?: string;
+      budgetUsd?: number | null;
+      defaultBranch?: string;
+    };
+    const updates: Record<string, unknown> = {};
+    if (typeof body.name === "string" && body.name.trim()) updates.name = body.name.trim();
+    if (typeof body.defaultBranch === "string" && body.defaultBranch.trim()) {
+      updates.defaultBranch = body.defaultBranch.trim();
+    }
+    // null clears the cap; a number sets it; undefined leaves it unchanged.
+    if (body.budgetUsd === null) updates.budgetUsd = undefined;
+    else if (typeof body.budgetUsd === "number" && body.budgetUsd >= 0) {
+      updates.budgetUsd = body.budgetUsd;
+    }
+
+    const updated = repo.updateProject(db, id, updates as Parameters<typeof repo.updateProject>[2]);
+    if (updated) broadcast({ type: "project.updated", payload: updated });
+    return { project: updated };
+  });
+
   app.post("/api/projects/:id/plan", async (req, reply) => {
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
@@ -132,28 +380,9 @@ async function main() {
 
     try {
       // Real planner: Claude turns the goal into a PRD + dependency-ordered DAG.
-      const plan = await runPlanner(goal, project.name, tmpdir());
+      const plan = await runPlanner(goal, project.name, tmpdir(), ENV.plannerDeconstructModel);
       prdMarkdown = plan.prdMarkdown;
-      const ids = plan.tasks.map(() => crypto.randomUUID());
-      plan.tasks.forEach((pt, i) => {
-        createdTasks.push(
-          repo.createTask(db, {
-            id: ids[i]!,
-            projectId: id,
-            title: pt.title,
-            description: pt.description,
-            difficulty: pt.difficulty,
-            status: pt.dependsOn.length === 0 ? "ready" : "backlog",
-            dependsOn: pt.dependsOn.map((d) => ids[d]!).filter(Boolean),
-            acceptanceCriteria: pt.acceptanceCriteria,
-            assignedModel: pickAssignedModel(settings.routing, pt.difficulty, pt.role),
-            role: pt.role,
-            scopePaths: pt.scopePaths,
-            attempts: 0,
-            maxAttempts: 3,
-          }),
-        );
-      });
+      createdTasks.push(...materializeTasks(db, id, plan.tasks, settings));
     } catch (err) {
       // Fallback so planning never hard-fails (e.g. claude unavailable).
       app.log.warn(
@@ -201,6 +430,95 @@ async function main() {
       project: repo.getProject(db, id)!,
       tasks: repo.getTasks(db, id),
       prdMarkdown,
+    };
+  });
+
+  // ── Planning: chat (Sonnet) → deconstruct (Opus) → commit ──
+
+  // One conversational turn. The web chat panel sends the full transcript.
+  app.post("/api/projects/:id/plan/chat", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+
+    const body = req.body as { messages?: PlanChatMessage[] } | undefined;
+    const messages = body?.messages ?? [];
+    if (messages.length === 0) {
+      return reply.code(400).send({ error: "messages required" });
+    }
+
+    try {
+      const { reply: text, costUsd } = await runPlannerChat(
+        messages,
+        project.name,
+        tmpdir(),
+        ENV.plannerChatModel,
+      );
+      recordPlanningCost(id, costUsd);
+      return { reply: text, costUsd };
+    } catch (err) {
+      return reply.code(502).send({
+        error: `planner chat failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  });
+
+  // Deconstruct the agreed conversation into a draft task DAG (NOT yet persisted).
+  app.post("/api/projects/:id/plan/deconstruct", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+
+    const body = req.body as { messages?: PlanChatMessage[] } | undefined;
+    const messages = body?.messages ?? [];
+    if (messages.length === 0) {
+      return reply.code(400).send({ error: "messages required" });
+    }
+
+    try {
+      const { output, costUsd } = await runPlannerDeconstruct(
+        messages,
+        project.name,
+        tmpdir(),
+        ENV.plannerDeconstructModel,
+      );
+      recordPlanningCost(id, costUsd);
+      const settings = repo.getSettings(db) ?? defaultSettings();
+      return {
+        prdMarkdown: output.prdMarkdown,
+        tasks: withAssignedModels(output, settings),
+        costUsd,
+      };
+    } catch (err) {
+      return reply.code(502).send({
+        error: `deconstruction failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  });
+
+  // Commit the (user-edited) draft tasks into real Task rows.
+  app.post("/api/projects/:id/plan/commit", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+
+    const body = req.body as { prdMarkdown?: string; tasks?: DraftTask[] };
+    if (!Array.isArray(body.tasks) || body.tasks.length === 0) {
+      return reply.code(400).send({ error: "tasks required" });
+    }
+
+    repo.updateProject(db, id, { status: "planning" });
+    const settings = repo.getSettings(db) ?? defaultSettings();
+    const created = materializeTasks(db, id, body.tasks, settings);
+    repo.updateProject(db, id, { status: "planned" });
+
+    broadcast({ type: "project.updated", payload: repo.getProject(db, id)! });
+    for (const t of created) broadcast({ type: "task.updated", payload: t });
+
+    return {
+      project: repo.getProject(db, id)!,
+      tasks: repo.getTasks(db, id),
+      prdMarkdown: body.prdMarkdown ?? `# ${project.name}\n`,
     };
   });
 
@@ -338,6 +656,113 @@ async function main() {
     return { task: updatedTask };
   });
 
+  // Revert a task's merged PR (one-click rollback).
+  app.post("/api/tasks/:id/rollback", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const task = repo.getTask(db, id);
+    if (!task) return reply.code(404).send({ error: "task not found" });
+    if (!task.prNumber) {
+      return reply.code(409).send({ error: "task has no merged PR to roll back" });
+    }
+    const project = repo.getProject(db, task.projectId);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+
+    try {
+      await engine.rollback(project, task.prNumber);
+    } catch (err) {
+      return reply.code(502).send({
+        error: `rollback failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+
+    repo.updateTask(db, id, { status: "blocked" });
+    repo.createAuditEntry(db, {
+      projectId: project.id,
+      taskId: id,
+      kind: "rollback",
+      actor: "human",
+      summary: `Reverted PR #${task.prNumber} for "${task.title}"`,
+      detail: { prNumber: task.prNumber },
+    });
+    const updated = repo.getTask(db, id)!;
+    broadcast({ type: "task.updated", payload: updated });
+    return { task: updated };
+  });
+
+  // Retry a failed/blocked task from scratch (resets attempts, re-dispatches).
+  app.post("/api/tasks/:id/retry", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const task = repo.getTask(db, id);
+    if (!task) return reply.code(404).send({ error: "task not found" });
+
+    const retryable = ["failed", "changes_requested", "blocked"];
+    if (!retryable.includes(task.status)) {
+      return reply
+        .code(409)
+        .send({ error: `task is ${task.status}; only ${retryable.join("/")} can be retried` });
+    }
+
+    const settings = repo.getSettings(db);
+    if (!settings) return reply.code(500).send({ error: "settings not found" });
+
+    const budgetMsg = checkBudget(db, task.projectId, task.assignedModel, settings);
+    if (budgetMsg) return reply.code(403).send({ error: `budget cap: ${budgetMsg}` });
+
+    // Fresh attempt counter, then dispatch one run through the engine.
+    repo.updateTask(db, id, { status: "ready", attempts: 0 });
+    const now = new Date().toISOString();
+    const run = repo.createRun(db, {
+      taskId: id,
+      model: task.assignedModel,
+      attempt: 1,
+      status: "running",
+      startedAt: now,
+      costUsd: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+    });
+    repo.updateTask(db, id, { status: "in_progress", attempts: 1 });
+    const updatedTask = repo.getTask(db, id)!;
+    repo.createAuditEntry(db, {
+      projectId: task.projectId,
+      taskId: id,
+      kind: "retry",
+      actor: "human",
+      summary: `Retried "${task.title}"`,
+    });
+    broadcast({ type: "run.updated", payload: run });
+    broadcast({ type: "task.updated", payload: updatedTask });
+
+    const project = repo.getProject(db, task.projectId)!;
+    void engine.dispatchOne(project, id);
+    return { run, task: updatedTask };
+  });
+
+  // PR diff for a task (for the in-UI diff viewer).
+  app.get("/api/tasks/:id/diff", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const task = repo.getTask(db, id);
+    if (!task) return reply.code(404).send({ error: "task not found" });
+    if (!task.prNumber) {
+      return reply.code(409).send({ error: "task has no PR yet" });
+    }
+    const project = repo.getProject(db, task.projectId);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+
+    try {
+      const diff = getPrDiff(project.repoUrl, task.prNumber);
+      const MAX = 200_000;
+      return {
+        prNumber: task.prNumber,
+        diff: diff.length > MAX ? diff.slice(0, MAX) + "\n… (diff truncated)" : diff,
+      };
+    } catch (err) {
+      return reply.code(502).send({
+        error: `could not fetch diff: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  });
+
   // ── Runs ──
   app.get("/api/tasks/:id/runs", async (req) => {
     const { id } = req.params as RouteParams;
@@ -363,6 +788,47 @@ async function main() {
     };
   });
 
+  // Rich analytics: per-model + tokens, daily series, per-task, burn projection.
+  app.get("/api/projects/:id/analytics", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+
+    const a = repo.getCostAnalytics(db, id);
+    const tasks = repo.getTasks(db, id);
+    const completedTasks = tasks.filter((t) => t.status === "done").length;
+    const avgCostPerCompletedTask =
+      completedTasks > 0 ? a.totalUsd / completedTasks : 0;
+
+    let remainingBudgetUsd: number | undefined;
+    let tasksUntilCap: number | undefined;
+    if (project.budgetUsd) {
+      remainingBudgetUsd = Math.max(0, project.budgetUsd - a.totalUsd);
+      if (avgCostPerCompletedTask > 0) {
+        tasksUntilCap = Math.floor(remainingBudgetUsd / avgCostPerCompletedTask);
+      }
+    }
+
+    return {
+      ...a,
+      budgetUsd: project.budgetUsd,
+      completedTasks,
+      avgCostPerCompletedTask,
+      remainingBudgetUsd,
+      tasksUntilCap,
+    };
+  });
+
+  // Pre-run estimate for all not-yet-done tasks in the project.
+  app.get("/api/projects/:id/estimate", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+
+    const settings = repo.getSettings(db) ?? defaultSettings();
+    return estimatePlan(db, id, settings);
+  });
+
   // ── Settings ──
   app.get("/api/settings", async () => {
     const settings = repo.getSettings(db) ?? defaultSettings();
@@ -382,7 +848,27 @@ async function main() {
       riskyChangeRules: body.settings.riskyChangeRules ?? current.riskyChangeRules,
     };
     const saved = repo.upsertSettings(db, merged);
+    configureTelegram(); // apply enable/disable/token/chatId changes live
     return { settings: saved };
+  });
+
+  // Send a one-off test message. Uses saved config unless the body overrides it,
+  // so the user can verify token + chat id before flipping `enabled` on.
+  app.post("/api/telegram/test", async (req, reply) => {
+    const body = (req.body as { token?: string; chatId?: string }) ?? {};
+    const settings = repo.getSettings(db) ?? defaultSettings();
+    const tg = settings.telegram;
+    const tokenVar = tg?.botTokenRef ?? "TELEGRAM_BOT_TOKEN";
+    const token = body.token || tg?.botToken || process.env[tokenVar];
+    const chatId = body.chatId || tg?.chatId;
+    if (!token) return reply.code(400).send({ ok: false, error: "no bot token" });
+    if (!chatId) return reply.code(400).send({ ok: false, error: "no chat id" });
+    const result = await sendTelegramMessage(
+      token,
+      chatId,
+      "✅ Hoopedorc test message — your Telegram is wired up.",
+    );
+    return result;
   });
 
   // ── Notifications ──
@@ -396,14 +882,29 @@ async function main() {
     const body = req.body as { choice: string };
     if (!body.choice) return reply.code(400).send({ error: "choice is required" });
 
-    const notification = repo.respondToNotification(db, id, body.choice);
+    const notification = resolveNotification(id, body.choice);
     if (!notification) return reply.code(404).send({ error: "notification not found" });
 
-    // Unblock the engine if it's waiting on this approval.
-    engine.resolveApproval(id, body.choice);
-    broadcast({ type: "notification", payload: notification });
-
     return { notification };
+  });
+
+  // ── Audit log ──
+  app.get("/api/projects/:id/audit", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    return { entries: repo.getAuditLog(db, id) };
+  });
+
+  // ── Setup / health check ──
+  app.get("/api/setup", async () => {
+    return runSetupChecks();
+  });
+
+  // Live-test every enabled model with a trivial prompt (costs a little).
+  app.post("/api/setup/test-models", async () => {
+    const settings = repo.getSettings(db) ?? defaultSettings();
+    return testModels(settings, ENV.opencodeBaseUrl);
   });
 
   // ── Realtime (WebSocket) ──

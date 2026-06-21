@@ -106,3 +106,17 @@ CREATE TABLE IF NOT EXISTS settings (
   id   INTEGER PRIMARY KEY CHECK (id = 1),
   json TEXT NOT NULL                            -- JSON Settings blob
 );
+
+-- Append-only audit trail: every merge decision, approval, terminal task
+-- transition, and rollback. PRD requires a persisted who/what/when/why trail.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id         TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  task_id    TEXT,
+  ts         TEXT NOT NULL,
+  kind       TEXT NOT NULL,   -- e.g. merge_decision | approval_requested | approval_resolved | task_done | task_failed | rollback
+  actor      TEXT NOT NULL,   -- e.g. validator:deepseek-pro | human | engine
+  summary    TEXT NOT NULL,
+  detail     TEXT             -- optional JSON blob
+);
+CREATE INDEX IF NOT EXISTS idx_audit_project ON audit_log(project_id);

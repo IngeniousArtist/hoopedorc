@@ -1,9 +1,11 @@
 import type {
   LogEvent,
   ModelId,
+  RetryTaskResponse,
   ServerEvent,
   Settings as SettingsType,
   Task,
+  TaskDiffResponse,
   TaskStatus,
 } from "@orc/types";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -30,6 +32,9 @@ export function Board({ projectId }: { projectId: string }) {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [diff, setDiff] = useState<string | null>(null);
 
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
@@ -129,6 +134,68 @@ export function Board({ projectId }: { projectId: string }) {
   }, []);
 
   useWS(projectId, handleWSEvent);
+
+  const handleRollback = async (taskId: string, prNumber: number) => {
+    if (
+      !window.confirm(
+        `Revert PR #${prNumber}? This pushes a revert commit to the default branch.`,
+      )
+    )
+      return;
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      const res = await api<{ task: Task }>("rollbackTask", {
+        params: { id: taskId },
+      });
+      setTasks((prev) =>
+        prev.map((t) => (t.id === taskId ? res.task : t)),
+      );
+      setActionMsg(`Reverted PR #${prNumber}.`);
+    } catch (e) {
+      setActionMsg(String(e));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleRetry = async (taskId: string) => {
+    setActionBusy(true);
+    setActionMsg(null);
+    try {
+      const res = await api<RetryTaskResponse>("retryTask", {
+        params: { id: taskId },
+      });
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? res.task : t)));
+      setActionMsg("Retrying — dispatched a fresh run.");
+    } catch (e) {
+      setActionMsg(String(e));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleViewDiff = async (taskId: string) => {
+    setActionBusy(true);
+    setActionMsg(null);
+    setDiff(null);
+    try {
+      const res = await api<TaskDiffResponse>("taskDiff", {
+        params: { id: taskId },
+      });
+      setDiff(res.diff || "(empty diff)");
+    } catch (e) {
+      setActionMsg(String(e));
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  // Clear the action area when switching tasks.
+  useEffect(() => {
+    setDiff(null);
+    setActionMsg(null);
+  }, [selectedTaskId]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -248,12 +315,67 @@ export function Board({ projectId }: { projectId: string }) {
       </div>
 
       {selectedTask && (
-        <LogPanel
-          logs={logs}
-          loading={logsLoading}
-          taskTitle={selectedTask.title}
-          onClose={() => setSelectedTaskId(null)}
-        />
+        <div className="mt-4 space-y-3">
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3">
+            <span className="text-sm text-neutral-300">
+              {selectedTask.title}
+            </span>
+            {selectedTask.prNumber && (
+              <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-400">
+                PR #{selectedTask.prNumber}
+              </span>
+            )}
+            <div className="ml-auto flex items-center gap-2">
+              {selectedTask.prNumber && (
+                <button
+                  onClick={() => handleViewDiff(selectedTask.id)}
+                  disabled={actionBusy}
+                  className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+                >
+                  View PR diff
+                </button>
+              )}
+              {(selectedTask.status === "failed" ||
+                selectedTask.status === "changes_requested" ||
+                selectedTask.status === "blocked") && (
+                <button
+                  onClick={() => handleRetry(selectedTask.id)}
+                  disabled={actionBusy}
+                  className="rounded border border-blue-800 px-3 py-1 text-xs text-blue-300 hover:bg-blue-950/40 disabled:opacity-50"
+                >
+                  {actionBusy ? "Working…" : "↻ Retry task"}
+                </button>
+              )}
+              {selectedTask.status === "done" && selectedTask.prNumber && (
+                <button
+                  onClick={() =>
+                    handleRollback(selectedTask.id, selectedTask.prNumber!)
+                  }
+                  disabled={actionBusy}
+                  className="rounded border border-amber-800 px-3 py-1 text-xs text-amber-300 hover:bg-amber-950/40 disabled:opacity-50"
+                >
+                  {actionBusy ? "Working…" : "↩ Rollback merge"}
+                </button>
+              )}
+            </div>
+          </div>
+          {actionMsg && (
+            <div className="rounded border border-neutral-800 bg-neutral-900/50 px-4 py-2 text-xs text-neutral-300">
+              {actionMsg}
+            </div>
+          )}
+          {diff && (
+            <pre className="max-h-96 overflow-auto rounded-lg border border-neutral-800 bg-neutral-950 p-3 font-mono text-[11px] leading-relaxed text-neutral-300">
+              {diff}
+            </pre>
+          )}
+          <LogPanel
+            logs={logs}
+            loading={logsLoading}
+            taskTitle={selectedTask.title}
+            onClose={() => setSelectedTaskId(null)}
+          />
+        </div>
       )}
     </div>
   );
