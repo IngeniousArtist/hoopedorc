@@ -1167,23 +1167,30 @@ async function main() {
   });
 
   // ── Realtime (WebSocket) ──
+  // Catch-up snapshot is scoped to the project a client subscribes to (see
+  // WsHub.add) instead of replaying every project's full history on connect.
+  hub.setSnapshotProvider((projectId) => {
+    const project = repo.getProject(db, projectId);
+    if (!project) return [];
+    const events: ServerEvent[] = [
+      { type: "project.updated", payload: project },
+    ];
+    for (const t of repo.getTasks(db, projectId)) {
+      events.push({ type: "task.updated", payload: t });
+      for (const r of repo.getRuns(db, t.id)) {
+        events.push({ type: "run.updated", payload: r });
+      }
+    }
+    return events;
+  });
+
   app.get(WS_PATH, { websocket: true }, (socket) => {
     hub.add(socket);
 
-    // welcome with current state
-    const projects = repo.getProjects(db);
-    for (const p of projects) {
+    // The list of projects is needed up-front (before any subscribe) so the
+    // project switcher can populate. Tasks/runs are deferred to subscribe.
+    for (const p of repo.getProjects(db)) {
       socket.send(JSON.stringify({ type: "project.updated", payload: p }));
-    }
-    for (const p of projects) {
-      const tasks = repo.getTasks(db, p.id);
-      for (const t of tasks) {
-        socket.send(JSON.stringify({ type: "task.updated", payload: t }));
-        const runs = repo.getRuns(db, t.id);
-        for (const r of runs) {
-          socket.send(JSON.stringify({ type: "run.updated", payload: r }));
-        }
-      }
     }
 
     // MOCK mode: synthetic log stream
@@ -1206,6 +1213,20 @@ async function main() {
       }, 2000);
       socket.on("close", () => clearInterval(interval));
     }
+  });
+
+  // Survive stray async errors instead of letting an unattended run die. A
+  // single rejected promise or thrown callback deep in a background task
+  // pipeline should be logged, not take the whole server (and every other
+  // in-flight project) down with it. Orphan recovery handles anything that
+  // was genuinely mid-flight on the next start.
+  process.on("unhandledRejection", (reason) => {
+    app.log.error(
+      `unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`,
+    );
+  });
+  process.on("uncaughtException", (err) => {
+    app.log.error(`uncaughtException: ${err.stack ?? err.message}`);
   });
 
   await app.listen({ port: ENV.port, host: "0.0.0.0" });

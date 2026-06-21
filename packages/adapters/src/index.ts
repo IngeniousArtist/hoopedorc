@@ -167,6 +167,18 @@ export class ClaudeAdapter implements AgentAdapter {
       });
 
       proc.on("close", (code) => {
+        // Flush a final line with no trailing newline. The `result` event
+        // (carrying total_cost_usd + usage) is the LAST line claude emits; if
+        // it isn't newline-terminated it sits unparsed in lineBuf and the run
+        // would otherwise report $0 / 0 tokens.
+        const tail = lineBuf.trim();
+        if (tail) {
+          try {
+            handleEvent(JSON.parse(tail));
+          } catch {
+            /* not JSON */
+          }
+        }
         if (killed || opts.signal?.aborted) {
           resolve({
             ok: false,
@@ -282,6 +294,16 @@ export class OpenCodeAdapter implements AgentAdapter {
       });
 
       proc.on("close", (code) => {
+        // Flush a final line with no trailing newline so a last step-finish
+        // event's cost/tokens aren't dropped (see ClaudeAdapter for detail).
+        const tail = lineBuf.trim();
+        if (tail) {
+          try {
+            handleEvent(JSON.parse(tail));
+          } catch {
+            /* not JSON */
+          }
+        }
         if (killed || opts.signal?.aborted) {
           resolve({
             ok: false,

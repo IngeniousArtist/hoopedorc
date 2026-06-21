@@ -63,7 +63,24 @@ export class EngineRunner {
     const worktrees = new WorktreeManagerImpl();
     const git = new GitServiceImpl();
     const gates = new GateRunnerImpl(worktrees);
-    const validator = new ValidatorImpl(adapterFor, settings);
+    // Record validator spend: validation runs aren't author runs, so they have
+    // no run row — without this their cost never reaches the costs table.
+    const validator = new ValidatorImpl(
+      adapterFor,
+      settings,
+      (model, taskId, costUsd, tokensIn, tokensOut) => {
+        const cost = repo.createCost(this.db, {
+          projectId: project.id,
+          model,
+          taskId,
+          costUsd,
+          tokensIn,
+          tokensOut,
+          ts: new Date().toISOString(),
+        });
+        this.hub.broadcast({ type: "cost.updated", payload: cost });
+      },
+    );
 
     const deps: SchedulerDeps = {
       worktrees,

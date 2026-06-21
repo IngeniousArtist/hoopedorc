@@ -586,22 +586,31 @@ export function getModelRunAverages(
   return out;
 }
 
-export function getModelMonthlyCost(db: Db, model: string): number {
+/**
+ * First instant of the current month in UTC. Costs are stored as UTC ISO
+ * strings (new Date().toISOString()), so the boundary must be UTC too —
+ * a local-time boundary skews the monthly window by the UTC offset (up to a
+ * full day) right at month edges.
+ */
+function firstOfMonthUtc(): string {
   const now = new Date();
-  const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+  ).toISOString();
+}
+
+export function getModelMonthlyCost(db: Db, model: string): number {
   const row = db
     .prepare("SELECT COALESCE(SUM(cost_usd), 0) as total FROM costs WHERE model = ? AND ts >= ?")
-    .get(model, firstOfMonth) as { total: number } | undefined;
+    .get(model, firstOfMonthUtc()) as { total: number } | undefined;
   return row ? Number(row.total) : 0;
 }
 
 /** Total spend this calendar month across all projects and models. */
 export function getGlobalMonthlyCost(db: Db): number {
-  const now = new Date();
-  const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
   const row = db
     .prepare("SELECT COALESCE(SUM(cost_usd), 0) as total FROM costs WHERE ts >= ?")
-    .get(firstOfMonth) as { total: number } | undefined;
+    .get(firstOfMonthUtc()) as { total: number } | undefined;
   return row ? Number(row.total) : 0;
 }
 

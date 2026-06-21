@@ -25,6 +25,7 @@ export { WorktreeManagerImpl } from "./worktree-manager.js";
 export { GitServiceImpl } from "./git-service.js";
 export { GateRunnerImpl } from "./gate-runner.js";
 export { ValidatorImpl, SelfReviewError } from "./validator.js";
+export type { ValidatorCostSink } from "./validator.js";
 export { Orchestrator } from "./orchestrator.js";
 
 /** Callbacks the engine uses to report progress + ask humans for decisions. */

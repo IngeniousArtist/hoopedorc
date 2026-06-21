@@ -73,11 +73,36 @@ export class Orchestrator implements Scheduler {
   private readonly activeTaskIds = new Set<string>();
   private readonly taskAbortControllers = new Map<string, AbortController>();
   private readonly modelActiveCount = new Map<ModelId, number>();
+  /** The model each active task is CURRENTLY running on (tracks fallback
+   *  escalation so modelActiveCount reflects the model actually in use, not
+   *  just the originally-assigned one). */
+  private readonly runningModel = new Map<string, ModelId>();
   /** Tasks already logged as budget-blocked this run, to avoid log spam. */
   private readonly budgetBlockedWarned = new Set<string>();
   private currentTasks: Task[] = [];
 
   constructor(private readonly deps: SchedulerDeps) {}
+
+  private incModel(model: ModelId): void {
+    this.modelActiveCount.set(model, (this.modelActiveCount.get(model) ?? 0) + 1);
+  }
+
+  private decModel(model: ModelId): void {
+    this.modelActiveCount.set(
+      model,
+      Math.max(0, (this.modelActiveCount.get(model) ?? 0) - 1),
+    );
+  }
+
+  /** Move a task's concurrency accounting from its old model to a new one
+   *  when fallback escalation switches the model mid-run. */
+  private switchRunningModel(taskId: string, next: ModelId): void {
+    const prev = this.runningModel.get(taskId);
+    if (prev === next) return;
+    if (prev) this.decModel(prev);
+    this.incModel(next);
+    this.runningModel.set(taskId, next);
+  }
 
   readyTasks(tasks: Task[]): Task[] {
     const done = new Set(
@@ -195,15 +220,17 @@ export class Orchestrator implements Scheduler {
           this.modelActiveCount.get(task.assignedModel) ?? 0;
         if (active >= cfg.maxConcurrent) continue;
 
-        this.modelActiveCount.set(task.assignedModel, active + 1);
+        this.incModel(task.assignedModel);
+        this.runningModel.set(task.id, task.assignedModel);
         this.activeTaskIds.add(task.id);
         dispatched++;
 
         this.executeTask(project, task).finally(() => {
-          this.modelActiveCount.set(
-            task.assignedModel,
-            (this.modelActiveCount.get(task.assignedModel) ?? 1) - 1,
-          );
+          // Decrement whichever model the task was last running on (fallback
+          // escalation may have switched it from task.assignedModel).
+          const ran = this.runningModel.get(task.id) ?? task.assignedModel;
+          this.decModel(ran);
+          this.runningModel.delete(task.id);
           this.activeTaskIds.delete(task.id);
         });
       }
@@ -335,6 +362,7 @@ export class Orchestrator implements Scheduler {
           if (next) {
             fallbackIdx++;
             currentModel = next;
+            this.switchRunningModel(task.id, next);
             if (task.attempts >= task.maxAttempts) task.maxAttempts++;
             this.emit(
               "warn",
@@ -383,6 +411,7 @@ export class Orchestrator implements Scheduler {
           if (next) {
             fallbackIdx++;
             currentModel = next;
+            this.switchRunningModel(task.id, next);
             task.maxAttempts++;
             this.emit(
               "warn",
@@ -439,6 +468,7 @@ export class Orchestrator implements Scheduler {
           if (next) {
             fallbackIdx++;
             currentModel = next;
+            this.switchRunningModel(task.id, next);
             task.maxAttempts++;
             this.emit(
               "warn",
@@ -472,6 +502,7 @@ export class Orchestrator implements Scheduler {
           if (next) {
             fallbackIdx++;
             currentModel = next;
+            this.switchRunningModel(task.id, next);
             task.maxAttempts++;
             this.emit(
               "warn",

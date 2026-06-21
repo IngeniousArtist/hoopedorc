@@ -1,8 +1,20 @@
 import { execSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
 import { minimatch } from "minimatch";
 import type { Project, Task } from "@orc/types";
 import type { WorktreeManager } from "./index.js";
+
+const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
+const DEPS_MARKER = ".hoopedorc-deps-hash";
 
 export class WorktreeManagerImpl implements WorktreeManager {
   async create(
@@ -78,7 +90,66 @@ export class WorktreeManagerImpl implements WorktreeManager {
       { cwd: project.localPath, stdio: "pipe" },
     );
 
+    this.ensureDeps(project, path);
+
     return { branch, path };
+  }
+
+  /**
+   * A fresh `git worktree add` checkout has no node_modules (it's gitignored),
+   * so the pre-merge gates (`npm run build/typecheck/...`) would fail for lack
+   * of deps unless the agent happened to install them. Rather than reinstall
+   * per worktree (minutes each), keep ONE installed node_modules in the
+   * primary clone and symlink it into every worktree. The install only re-runs
+   * when the lockfile (or package.json, if no lockfile) changes — tracked via
+   * a hash marker inside node_modules.
+   *
+   * Caveat: concurrent worktrees share this node_modules, so a task that runs
+   * `npm install <newdep>` mutates it for siblings. New-dependency tasks are
+   * the rare case (and are flagged risky by the merge policy), and scope
+   * serialization keeps most overlap out, so this trade is worth the massive
+   * per-task time saving.
+   */
+  private ensureDeps(project: Project, worktreePath: string): void {
+    const primary = project.localPath;
+    if (!existsSync(join(primary, "package.json"))) return; // not a node project
+
+    try {
+      const lockName = LOCKFILES.find((f) => existsSync(join(primary, f)));
+      const fingerprintFile = lockName ?? "package.json";
+      const want = createHash("sha1")
+        .update(readFileSync(join(primary, fingerprintFile)))
+        .digest("hex");
+
+      const nm = join(primary, "node_modules");
+      const marker = join(nm, DEPS_MARKER);
+      const have = existsSync(marker)
+        ? readFileSync(marker, "utf-8").trim()
+        : null;
+
+      if (!existsSync(marker) || have !== want) {
+        // `npm ci` is faster + reproducible when a lockfile exists; fall back
+        // to `npm install` otherwise. 10-min cap so a hung install can't wedge
+        // the whole run.
+        const cmd = lockName === "package-lock.json" ? "npm ci" : "npm install";
+        execSync(cmd, { cwd: primary, stdio: "pipe", timeout: 10 * 60 * 1000 });
+        // A package.json with no dependencies leaves npm creating no
+        // node_modules at all — make the dir so the marker (and the symlink
+        // target) exist, and so we don't reinstall on every task forever.
+        mkdirSync(nm, { recursive: true });
+        writeFileSync(marker, want);
+      }
+
+      // Symlink the worktree's node_modules at the shared install. Skip if the
+      // checkout somehow already has a real one.
+      const link = join(worktreePath, "node_modules");
+      if (existsSync(nm) && !existsSync(link)) {
+        symlinkSync(nm, link, "dir");
+      }
+    } catch {
+      // Best effort — if install/symlink fails, the gate will surface the
+      // missing-deps error on this task rather than silently wedging the run.
+    }
   }
 
   async remove(project: Project, task: Task): Promise<void> {

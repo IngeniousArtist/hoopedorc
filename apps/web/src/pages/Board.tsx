@@ -43,6 +43,10 @@ export function Board({ projectId }: { projectId: string }) {
   tasksRef.current = tasks;
   const selectedTaskIdRef = useRef(selectedTaskId);
   selectedTaskIdRef.current = selectedTaskId;
+  // handleWSEvent has empty deps, so read projectId through a ref to filter
+  // events without making the callback (and the WS subscription) churn.
+  const projectIdRef = useRef(projectId);
+  projectIdRef.current = projectId;
 
   const selectedTask =
     tasks.find((t) => t.id === selectedTaskId) ?? null;
@@ -131,7 +135,11 @@ export function Board({ projectId }: { projectId: string }) {
         break;
       }
       case "cost.updated": {
-        setCostUsd((c) => c + event.payload.costUsd);
+        // The hub broadcasts to all clients; only count this project's spend
+        // (a concurrently-running project would otherwise inflate the total).
+        if (event.payload.projectId === projectIdRef.current) {
+          setCostUsd((c) => c + event.payload.costUsd);
+        }
         break;
       }
       case "log": {

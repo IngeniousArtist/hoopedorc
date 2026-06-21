@@ -16,10 +16,22 @@ const MAX_DIFF_CHARS = 40_000;
 /** Thrown when the configured validator would review its own author's work. */
 export class SelfReviewError extends Error {}
 
+/** Reports what a validation run cost so the caller can record it. */
+export type ValidatorCostSink = (
+  model: ModelId,
+  taskId: string,
+  costUsd: number,
+  tokensIn: number,
+  tokensOut: number,
+) => void;
+
 export class ValidatorImpl implements Validator {
   constructor(
     private readonly adapterFactory: (modelId: ModelId) => AgentAdapter,
     private readonly settings: Settings,
+    /** Optional: record validator spend (validation runs aren't author runs,
+     *  so they have no run row — without this their cost is untracked). */
+    private readonly onCost?: ValidatorCostSink,
   ) {}
 
   async review(
@@ -53,6 +65,16 @@ export class ValidatorImpl implements Validator {
       cwd,
       onLog: () => {},
     });
+
+    if (result.costUsd > 0) {
+      this.onCost?.(
+        validatorModel,
+        task.id,
+        result.costUsd,
+        result.tokensIn,
+        result.tokensOut,
+      );
+    }
 
     const decision = this.parseDecision(
       result.summary ?? "",
