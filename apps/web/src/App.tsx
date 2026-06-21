@@ -12,6 +12,7 @@ import { Board } from "./pages/Board";
 import { CostView } from "./pages/CostView";
 import { NewProject } from "./pages/NewProject";
 import { Notifications } from "./pages/Notifications";
+import { ProjectsView } from "./pages/ProjectsView";
 import { Settings } from "./pages/Settings";
 import { SetupView } from "./pages/SetupView";
 
@@ -22,13 +23,15 @@ type Page =
   | "notifications"
   | "settings"
   | "setup"
-  | "new-project";
+  | "new-project"
+  | "projects";
 
 const NAV: { page: Page; label: string }[] = [
   { page: "board", label: "Board" },
   { page: "costs", label: "Costs" },
   { page: "audit", label: "Audit" },
   { page: "notifications", label: "Notifications" },
+  { page: "projects", label: "Projects" },
   { page: "settings", label: "Settings" },
   { page: "setup", label: "Setup" },
   { page: "new-project", label: "New Project" },
@@ -76,6 +79,9 @@ export function App() {
           ? prev.map((p) => (p.id === e.payload.id ? e.payload : p))
           : [e.payload, ...prev],
       );
+    } else if (e.type === "project.deleted") {
+      setProjects((prev) => prev.filter((p) => p.id !== e.payload.id));
+      setSelectedProjectId((cur) => (cur === e.payload.id ? "" : cur));
     }
   }, []);
   useWS(selectedProjectId, onWS);
@@ -85,6 +91,13 @@ export function App() {
     setProjects((prev) => [p, ...prev.filter((x) => x.id !== p.id)]);
     setSelectedProjectId(p.id);
   }, []);
+
+  const handleProjectDeleted = useCallback(
+    (id: string) => {
+      setSelectedProjectId((cur) => (cur === id ? "" : cur));
+    },
+    [],
+  );
 
   const needsProject = PROJECT_PAGES.includes(page);
   const hasProject = Boolean(selectedProjectId);
@@ -157,6 +170,13 @@ export function App() {
             )}
             {page === "settings" && <Settings />}
             {page === "setup" && <SetupView />}
+            {page === "projects" && (
+              <ProjectsView
+                selectedProjectId={selectedProjectId}
+                onSelect={setSelectedProjectId}
+                onDeleted={handleProjectDeleted}
+              />
+            )}
             {page === "new-project" && (
               <NewProject onProjectCreated={handleProjectCreated} />
             )}

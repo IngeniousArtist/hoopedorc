@@ -16,6 +16,7 @@ export type ServerEvent =
   | { type: "task.updated"; payload: Task }
   | { type: "run.updated"; payload: Run }
   | { type: "project.updated"; payload: Project }
+  | { type: "project.deleted"; payload: { id: string } }
   | { type: "merge.decision"; payload: MergeDecision }
   | { type: "notification"; payload: Notification }
   | { type: "cost.updated"; payload: CostRecord };

@@ -1,6 +1,7 @@
 import "dotenv/config";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, readdirSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
@@ -19,7 +20,7 @@ import {
   runPlannerDeconstruct,
   type PlanOutput,
 } from "./planner";
-import { createGithubRepo, getPrDiff } from "./github";
+import { createGithubRepo, getPrDiff, slugifyRepoName } from "./github";
 import { checkBudget } from "./budget";
 import { estimatePlan } from "./estimate";
 import { TelegramBot, sendTelegramMessage } from "./telegram";
@@ -284,6 +285,30 @@ async function main() {
   app.get("/api/health", async () => ({ ok: true, mock: ENV.mock }));
 
   // ── Projects ──
+
+  /** Expand a leading `~` to the home dir (shells do this; raw fs calls don't). */
+  function expandHome(p: string): string {
+    if (p === "~") return homedir();
+    if (p.startsWith("~/")) return join(homedir(), p.slice(2));
+    return p;
+  }
+
+  /**
+   * Pick a readable, collision-free local clone dir: a slug of `name` under
+   * `baseDir`, deduped with a numeric suffix against both disk and any other
+   * project's `localPath` (which may not exist on disk yet — clones happen
+   * lazily on first dispatch via GitService.ensureClone).
+   */
+  function uniqueLocalPath(baseDir: string, name: string): string {
+    const slug = slugifyRepoName(name);
+    const taken = new Set(repo.getProjects(db).map((p) => p.localPath));
+    let candidate = join(baseDir, slug);
+    for (let n = 2; existsSync(candidate) || taken.has(candidate); n++) {
+      candidate = join(baseDir, `${slug}-${n}`);
+    }
+    return candidate;
+  }
+
   app.post("/api/projects", async (req, reply) => {
     const body = req.body as {
       name: string;
@@ -292,6 +317,7 @@ async function main() {
       repoName?: string;
       defaultBranch?: string;
       budgetUsd?: number;
+      localPath?: string;
     };
     if (!body.name) {
       return reply.code(400).send({ error: "name is required" });
@@ -313,13 +339,19 @@ async function main() {
         .send({ error: "provide a repoUrl or set createRepo" });
     }
 
+    const settings = repo.getSettings(db) ?? defaultSettings();
+    const baseDir = expandHome(settings.defaultProjectsDir || ENV.reposDir);
+    const localPath = body.localPath?.trim()
+      ? expandHome(body.localPath.trim())
+      : uniqueLocalPath(baseDir, body.name);
+
     const id = crypto.randomUUID();
     const project = repo.createProject(db, {
       id,
       name: body.name,
       repoUrl,
       defaultBranch: body.defaultBranch ?? "main",
-      localPath: join(ENV.reposDir, id),
+      localPath,
       budgetUsd: body.budgetUsd,
       status: "created",
     });
@@ -362,6 +394,41 @@ async function main() {
     const updated = repo.updateProject(db, id, updates as Parameters<typeof repo.updateProject>[2]);
     if (updated) broadcast({ type: "project.updated", payload: updated });
     return { project: updated };
+  });
+
+  app.delete("/api/projects/:id", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    if (engine.isRunning(id)) {
+      return reply
+        .code(409)
+        .send({ error: "project is running — pause it before deleting" });
+    }
+
+    // Best-effort cleanup of the local clone + any leftover task worktrees
+    // (`${localPath}-wt-<taskId>`). The DB delete below is the source of
+    // truth; a failure here just leaves orphaned files on disk.
+    try {
+      if (existsSync(project.localPath)) {
+        rmSync(project.localPath, { recursive: true, force: true });
+      }
+      const parent = dirname(project.localPath);
+      const base = project.localPath.slice(parent.length + 1);
+      if (existsSync(parent)) {
+        for (const entry of readdirSync(parent)) {
+          if (entry.startsWith(`${base}-wt-`)) {
+            rmSync(join(parent, entry), { recursive: true, force: true });
+          }
+        }
+      }
+    } catch (err) {
+      app.log.warn(`could not clean up local files for project ${id}: ${err}`);
+    }
+
+    repo.deleteProject(db, id);
+    broadcast({ type: "project.deleted", payload: { id } });
+    return reply.code(204).send();
   });
 
   app.post("/api/projects/:id/plan", async (req, reply) => {
@@ -601,8 +668,13 @@ async function main() {
       return reply.code(403).send({ error: `budget cap: ${budgetMsg}` });
     }
 
+    // Don't persist a run row here — the engine creates the authoritative one
+    // (id `run-<taskId>-<attempt>`) via SchedulerDeps.events.onRunUpdated as
+    // soon as it starts the author, and that's what gets cost/status updates.
+    // A pre-created row here would just be a second, never-updated orphan.
     const now = new Date().toISOString();
-    const run = repo.createRun(db, {
+    const placeholderRun: import("@orc/types").Run = {
+      id: `run-${task.id}-${task.attempts + 1}`,
       taskId: task.id,
       model: task.assignedModel,
       attempt: task.attempts + 1,
@@ -611,7 +683,7 @@ async function main() {
       costUsd: 0,
       tokensIn: 0,
       tokensOut: 0,
-    });
+    };
 
     repo.updateTask(db, id, {
       status: "in_progress",
@@ -619,14 +691,13 @@ async function main() {
     });
 
     const updatedTask = repo.getTask(db, id)!;
-    broadcast({ type: "run.updated", payload: run });
     broadcast({ type: "task.updated", payload: updatedTask });
 
     // Execute this single task through the engine in the background.
     const project = repo.getProject(db, task.projectId)!;
     void engine.dispatchOne(project, task.id);
 
-    return { run, task: updatedTask };
+    return { run: placeholderRun, task: updatedTask };
   });
 
   app.post("/api/tasks/:id/stop", async (req, reply) => {
@@ -708,10 +779,13 @@ async function main() {
     const budgetMsg = checkBudget(db, task.projectId, task.assignedModel, settings);
     if (budgetMsg) return reply.code(403).send({ error: `budget cap: ${budgetMsg}` });
 
-    // Fresh attempt counter, then dispatch one run through the engine.
-    repo.updateTask(db, id, { status: "ready", attempts: 0 });
+    // Fresh attempt counter, then dispatch one run through the engine. As with
+    // /dispatch, the engine creates the authoritative run row itself — don't
+    // pre-create one here (was leaving a permanently-"running" $0 orphan row).
+    repo.updateTask(db, id, { status: "in_progress", attempts: 1 });
     const now = new Date().toISOString();
-    const run = repo.createRun(db, {
+    const placeholderRun: import("@orc/types").Run = {
+      id: `run-${id}-1`,
       taskId: id,
       model: task.assignedModel,
       attempt: 1,
@@ -720,8 +794,7 @@ async function main() {
       costUsd: 0,
       tokensIn: 0,
       tokensOut: 0,
-    });
-    repo.updateTask(db, id, { status: "in_progress", attempts: 1 });
+    };
     const updatedTask = repo.getTask(db, id)!;
     repo.createAuditEntry(db, {
       projectId: task.projectId,
@@ -730,12 +803,11 @@ async function main() {
       actor: "human",
       summary: `Retried "${task.title}"`,
     });
-    broadcast({ type: "run.updated", payload: run });
     broadcast({ type: "task.updated", payload: updatedTask });
 
     const project = repo.getProject(db, task.projectId)!;
     void engine.dispatchOne(project, id);
-    return { run, task: updatedTask };
+    return { run: placeholderRun, task: updatedTask };
   });
 
   // PR diff for a task (for the in-UI diff viewer).

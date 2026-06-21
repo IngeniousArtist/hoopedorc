@@ -110,6 +110,32 @@ export function updateProject(
   return getProject(db, id);
 }
 
+/**
+ * Delete a project and every row that references it (tasks, runs, logs,
+ * merge decisions, costs, notifications, audit log). SQLite FKs are enforced
+ * (PRAGMA foreign_keys = ON), so children must go first; wrapped in a
+ * transaction so a partial delete can't leave orphans.
+ */
+export function deleteProject(db: Db, id: string): void {
+  const run = db.transaction((projectId: string) => {
+    const taskIds = (
+      db.prepare("SELECT id FROM tasks WHERE project_id = ?").all(projectId) as { id: string }[]
+    ).map((r) => r.id);
+
+    for (const taskId of taskIds) {
+      db.prepare("DELETE FROM logs WHERE task_id = ?").run(taskId);
+      db.prepare("DELETE FROM merge_decisions WHERE task_id = ?").run(taskId);
+      db.prepare("DELETE FROM runs WHERE task_id = ?").run(taskId);
+    }
+    db.prepare("DELETE FROM costs WHERE project_id = ?").run(projectId);
+    db.prepare("DELETE FROM notifications WHERE project_id = ?").run(projectId);
+    db.prepare("DELETE FROM audit_log WHERE project_id = ?").run(projectId);
+    db.prepare("DELETE FROM tasks WHERE project_id = ?").run(projectId);
+    db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
+  });
+  run(id);
+}
+
 // ── Tasks ──
 
 function mapTask(row: Record<string, unknown>): Task {

@@ -25,6 +25,12 @@ export interface CreateProjectRequest {
   repoName?: string;
   defaultBranch?: string; // default "main"
   budgetUsd?: number;
+  /**
+   * Optional explicit local clone directory. If omitted, the server picks one
+   * under Settings.defaultProjectsDir (or ENV.reposDir) named from a slug of
+   * `name`, deduped on collision.
+   */
+  localPath?: string;
 }
 export interface CreateProjectResponse {
   project: Project;
@@ -35,6 +41,10 @@ export interface ListProjectsResponse {
 }
 export interface GetProjectResponse {
   project: Project | null;
+}
+
+export interface DeleteProjectResponse {
+  ok: true;
 }
 
 export interface UpdateProjectRequest {
@@ -288,6 +298,7 @@ export const ROUTES = {
   listProjects: "GET /api/projects",
   getProject: "GET /api/projects/:id",
   updateProject: "PATCH /api/projects/:id",
+  deleteProject: "DELETE /api/projects/:id",
   planProject: "POST /api/projects/:id/plan",
   planChat: "POST /api/projects/:id/plan/chat",
   planDeconstruct: "POST /api/projects/:id/plan/deconstruct",

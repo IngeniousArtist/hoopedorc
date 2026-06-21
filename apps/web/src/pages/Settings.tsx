@@ -117,6 +117,14 @@ export function Settings() {
     setSaved(false);
   }
 
+  function updateDefaultProjectsDir(value: string) {
+    setSettings((prev) =>
+      prev ? { ...prev, defaultProjectsDir: value || undefined } : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
   function updateBudget(value: string) {
     const num = value === "" ? undefined : parseFloat(value);
     setSettings((prev) =>
@@ -380,6 +388,27 @@ export function Settings() {
               {label}
             </label>
           ))}
+        </div>
+      </section>
+
+      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+        <h3 className="text-sm font-medium text-neutral-300">Projects</h3>
+        <div>
+          <label className="mb-1 block text-xs text-neutral-400">
+            Default projects directory
+          </label>
+          <input
+            type="text"
+            value={settings.defaultProjectsDir ?? ""}
+            onChange={(e) => updateDefaultProjectsDir(e.target.value)}
+            placeholder="~/.hoopedorc/repos (default)"
+            className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+          />
+          <p className="mt-1 text-[10px] text-neutral-600">
+            New projects clone here by default (a slug of the project name, e.g.
+            ~/projects/my-app), unless you set a local directory explicitly on
+            New Project.
+          </p>
         </div>
       </section>
 

@@ -268,6 +268,12 @@ export interface Settings {
   globalMonthlyBudgetUsd?: number;
   /** Validator confidence below this => escalate to a human. */
   confidenceThreshold: number;
+  /**
+   * Base directory new project clones live under by default (e.g. ~/projects).
+   * A project's own `localPath` can still override this at creation time.
+   * Falls back to ENV.reposDir (~/.hoopedorc/repos) when unset.
+   */
+  defaultProjectsDir?: string;
   telegram?: {
     enabled: boolean;
     /** Name of the env var holding the token (fallback if botToken is unset). */

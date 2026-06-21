@@ -43,6 +43,7 @@ export function NewProject({
   const [createRepo, setCreateRepo] = useState(true);
   const [repoUrl, setRepoUrl] = useState("");
   const [repoName, setRepoName] = useState("");
+  const [localPath, setLocalPath] = useState("");
   const [defaultBranch, setDefaultBranch] = useState("main");
   const [budgetUsd, setBudgetUsd] = useState("");
   const [creating, setCreating] = useState(false);
@@ -89,6 +90,7 @@ export function NewProject({
           createRepo,
           repoName: createRepo ? repoName || undefined : undefined,
           repoUrl: createRepo ? undefined : repoUrl || undefined,
+          localPath: localPath.trim() || undefined,
           defaultBranch,
           budgetUsd: budgetUsd ? parseFloat(budgetUsd) : undefined,
         },
@@ -316,6 +318,21 @@ export function NewProject({
               />
             </div>
           )}
+
+          <div className="col-span-2">
+            <label className="mb-1 block text-xs text-neutral-400">
+              Local directory (optional — defaults to a slug of the project
+              name under Settings → Default projects directory)
+            </label>
+            <input
+              type="text"
+              value={localPath}
+              onChange={(e) => setLocalPath(e.target.value)}
+              placeholder="e.g. ~/projects/my-app"
+              disabled={!!project}
+              className={inputCls}
+            />
+          </div>
 
           <div>
             <label className="mb-1 block text-xs text-neutral-400">

@@ -97,6 +97,10 @@ export function defaultSettings(): Settings {
       outOfScopeEdits: true,
     },
     confidenceThreshold: 0.7,
+    // Unset by default => falls back to ENV.reposDir at request time. Set from
+    // the Settings UI to point new project clones somewhere readable, e.g.
+    // ~/projects, instead of the opaque ~/.hoopedorc/repos default.
+    defaultProjectsDir: undefined,
     // Token is read from the env var named here, never stored raw. Set the var
     // + chatId and flip enabled to turn the bot on.
     telegram: { enabled: false, botTokenRef: "TELEGRAM_BOT_TOKEN" },
