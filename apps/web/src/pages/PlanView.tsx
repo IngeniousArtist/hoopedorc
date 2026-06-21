@@ -30,6 +30,18 @@ interface UiTask {
   dependsOnKeys: string[];
 }
 
+const PLAN_COMPLETE_TOKEN = "[PLAN_COMPLETE]";
+
+/** Strip the readiness token from a message and return whether it was present. */
+function extractPlanComplete(text: string): { content: string; ready: boolean } {
+  const idx = text.indexOf(PLAN_COMPLETE_TOKEN);
+  if (idx === -1) return { content: text, ready: false };
+  return {
+    content: text.slice(0, idx).trimEnd(),
+    ready: true,
+  };
+}
+
 const newKey = () => crypto.randomUUID();
 
 function uiTasksFromDraft(drafts: DraftTask[]): UiTask[] {
@@ -80,6 +92,7 @@ export function PlanView({
   const [input, setInput] = useState("");
   const [chatting, setChatting] = useState(false);
   const [planCost, setPlanCost] = useState(0);
+  const [plannerReady, setPlannerReady] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Draft plan
@@ -98,6 +111,7 @@ export function PlanView({
     setLoading(true);
     setCommitted(null);
     setError(null);
+    setPlannerReady(false);
     Promise.all([
       api<GetProjectResponse>("getProject", { params: { id: projectId } }),
       api<PlanningSessionResponse>("planSession", { params: { id: projectId } }),
@@ -106,7 +120,14 @@ export function PlanView({
       .then(([projRes, sessionRes, settingsRes]) => {
         setProject(projRes.project ?? null);
         setModels(settingsRes.settings.models);
-        setMessages(sessionRes.messages);
+        // Strip [PLAN_COMPLETE] tokens from restored messages and detect readiness.
+        const cleaned = sessionRes.messages.map((m) => {
+          if (m.role !== "assistant") return m;
+          const { content, ready } = extractPlanComplete(m.content);
+          if (ready) setPlannerReady(true);
+          return { ...m, content };
+        });
+        setMessages(cleaned);
         setPlanCost(sessionRes.planCostUsd);
         if (sessionRes.draftTasks && sessionRes.draftTasks.length > 0) {
           setTasks(uiTasksFromDraft(sessionRes.draftTasks));
@@ -150,12 +171,15 @@ export function PlanView({
     setInput("");
     setChatting(true);
     setError(null);
+    setPlannerReady(false); // reset until Claude confirms again
     try {
       const res = await api<PlanChatResponse>("planChat", {
         params: { id: projectId },
         body: { messages: next },
       });
-      setMessages([...next, { role: "assistant", content: res.reply }]);
+      const { content, ready } = extractPlanComplete(res.reply);
+      if (ready) setPlannerReady(true);
+      setMessages([...next, { role: "assistant", content }]);
       setPlanCost((c) => c + res.costUsd);
     } catch (e) {
       setError(String(e));
@@ -381,17 +405,29 @@ export function PlanView({
           </div>
 
           {messages.some((m) => m.role === "assistant") && (
-            <button
-              onClick={generateTable}
-              disabled={deconstructing}
-              className="rounded bg-green-700 px-4 py-2 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
-            >
-              {deconstructing
-                ? "Deconstructing with Opus…"
-                : tasks
-                  ? "Re-generate task table"
-                  : "Generate task table →"}
-            </button>
+            <div className="space-y-2">
+              {plannerReady && !deconstructing && (
+                <div className="rounded border border-green-700/50 bg-green-900/20 px-3 py-2 text-xs text-green-300">
+                  Claude is done planning — click below to generate the task breakdown.
+                </div>
+              )}
+              <button
+                onClick={generateTable}
+                disabled={deconstructing}
+                className={
+                  "rounded px-4 py-2 text-xs font-medium text-white disabled:opacity-50 " +
+                  (plannerReady && !deconstructing
+                    ? "animate-pulse bg-green-600 hover:bg-green-500"
+                    : "bg-green-700 hover:bg-green-600")
+                }
+              >
+                {deconstructing
+                  ? "Deconstructing with Opus…"
+                  : tasks
+                    ? "Re-generate task table"
+                    : "Generate task table →"}
+              </button>
+            </div>
           )}
         </section>
       )}

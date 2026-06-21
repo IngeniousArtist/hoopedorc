@@ -61,7 +61,12 @@ Talk with the user to shape WHAT to build and how to break it into tasks. Be con
 concrete: propose a small set of dependency-ordered tasks, ask clarifying questions when scope
 is ambiguous, and adapt when the user says things like "split that task", "add tests", or
 "don't touch the DB". Keep replies short — this is a planning chat, not an essay. Do NOT output
-JSON; a separate step turns the agreed plan into a structured task list.`;
+JSON; a separate step turns the agreed plan into a structured task list.
+
+When you are satisfied that the plan is complete — you have no more clarifying questions, no
+outstanding ambiguities, and the scope/tasks are well-defined — end your reply with exactly
+this token on its own line: [PLAN_COMPLETE]
+Only emit [PLAN_COMPLETE] once you are genuinely ready; do not emit it mid-conversation.`;
 
 function buildChatPrompt(messages: PlanChatMessage[], projectName: string): string {
   const transcript = messages

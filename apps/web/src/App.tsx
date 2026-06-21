@@ -47,6 +47,10 @@ const STORAGE_KEY = "hoop.projectId";
 
 export function App() {
   const [page, setPage] = useState<Page>("board");
+  // Once the Plan tab is visited we keep PlanView mounted (hidden behind CSS
+  // display:none when inactive) so any in-flight chat or deconstruct request
+  // finishes even if the user switches tabs before the reply arrives.
+  const [planMounted, setPlanMounted] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () => localStorage.getItem(STORAGE_KEY) ?? "",
@@ -88,6 +92,10 @@ export function App() {
     }
   }, []);
   useWS(selectedProjectId, onWS);
+
+  useEffect(() => {
+    if (page === "plan") setPlanMounted(true);
+  }, [page]);
 
   // A freshly created project becomes the active one, then go straight to Plan.
   const handleProjectCreated = useCallback((p: Project) => {
@@ -167,11 +175,15 @@ export function App() {
               <ProjectHeader key={selectedProject.id} project={selectedProject} />
             )}
             {page === "board" && <Board projectId={selectedProjectId} />}
-            {page === "plan" && (
-              <PlanView
-                projectId={selectedProjectId}
-                onDone={() => setPage("board")}
-              />
+            {/* PlanView stays mounted once first visited so in-flight chat/deconstruct
+                requests survive tab switches. CSS hides it when inactive. */}
+            {planMounted && (
+              <div style={{ display: page === "plan" ? undefined : "none" }}>
+                <PlanView
+                  projectId={selectedProjectId}
+                  onDone={() => setPage("board")}
+                />
+              </div>
             )}
             {page === "costs" && <CostView projectId={selectedProjectId} />}
             {page === "audit" && <AuditView projectId={selectedProjectId} />}
