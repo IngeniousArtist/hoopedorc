@@ -243,6 +243,44 @@ export class GitServiceImpl implements GitService {
     });
   }
 
+  async syncBranchWithMain(
+    project: Project,
+    task: Task,
+  ): Promise<"clean" | "conflict"> {
+    const wt = task.worktreePath;
+    if (!wt || !task.branch) return "clean"; // nothing to sync
+    try {
+      await git(["fetch", "origin", project.defaultBranch], wt);
+    } catch {
+      return "clean"; // can't fetch — let the merge attempt proceed as-is
+    }
+    try {
+      // 3-way merge of latest main into the branch. Exits 0 on a clean merge
+      // OR "already up to date"; non-zero only on a real content conflict.
+      await git(
+        ["merge", "--no-edit", `origin/${project.defaultBranch}`],
+        wt,
+      );
+    } catch {
+      // Genuine conflict — leave a clean tree and report it. The orchestrator
+      // requeues the task for a fresh attempt against the now-current main.
+      try {
+        await git(["merge", "--abort"], wt);
+      } catch {
+        /* nothing to abort */
+      }
+      return "conflict";
+    }
+    // Push the (possibly merge-commit-bearing) branch so the PR is current.
+    // No-op if the merge changed nothing.
+    try {
+      await git(["push", "origin", task.branch], wt);
+    } catch {
+      /* best effort — mergePr re-checks mergeability regardless */
+    }
+    return "clean";
+  }
+
   /** Fetch + checkout + ff-merge the primary clone to origin's default branch.
    *  Caller must hold the repo lock. */
   private async syncPrimary(project: Project): Promise<void> {

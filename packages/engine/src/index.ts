@@ -73,6 +73,19 @@ export interface GitService {
     task: Task,
     prNumber: number,
   ): Promise<void>;
+  /**
+   * Merge the latest default branch into the task's branch (in its worktree)
+   * right before merging the PR, and push. A sibling task may have merged
+   * overlapping files since this branch's no-conflict gate passed, leaving the
+   * PR stale/conflicting at merge time. Git's 3-way merge auto-resolves
+   * non-overlapping changes (the common case: different tasks appending
+   * different lines to a shared entry file). Returns "conflict" only on a
+   * genuine same-line conflict, which the caller handles by retrying.
+   */
+  syncBranchWithMain(
+    project: Project,
+    task: Task,
+  ): Promise<"clean" | "conflict">;
 }
 
 /** Runs the objective, non-AI gates inside a worktree. */

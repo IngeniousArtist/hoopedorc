@@ -66,6 +66,7 @@ function fakeDeps(over: Partial<SchedulerDeps>, merged: number[], changed: strin
       async mergePr(_p, n) { merged.push(n); },
       async revertMerge() {},
       async appendChangelogEntry() {},
+      async syncBranchWithMain() { return "clean" as const; },
     },
     gates: { async run() { return GOOD_GATE; } },
     validator: {

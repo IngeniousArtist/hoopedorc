@@ -79,6 +79,9 @@ export class Orchestrator implements Scheduler {
   private readonly runningModel = new Map<string, ModelId>();
   /** Tasks already logged as budget-blocked this run, to avoid log spam. */
   private readonly budgetBlockedWarned = new Set<string>();
+  /** How many times each task has been requeued for a merge-time conflict,
+   *  so a perpetually-conflicting task can't loop forever. */
+  private readonly mergeConflicts = new Map<string, number>();
   private currentTasks: Task[] = [];
 
   constructor(private readonly deps: SchedulerDeps) {}
@@ -610,6 +613,54 @@ export class Orchestrator implements Scheduler {
             'calling gh with an undefined PR ("gh pr merge undefined").',
           task.id,
         );
+        task.status = "failed";
+        this.deps.events.onTaskUpdated(task);
+        return;
+      }
+
+      // Bring the branch up to date with main before merging. A sibling task
+      // may have merged overlapping files (commonly shared entry-point wiring
+      // like index.html) since this branch's no-conflict gate passed, which
+      // would make `gh pr merge` fail as CONFLICTING. Git auto-resolves
+      // non-overlapping changes; a genuine conflict is recoverable by retrying
+      // against the now-current main, so requeue rather than fail outright.
+      const sync = await this.deps.git.syncBranchWithMain(project, task);
+      if (sync === "conflict") {
+        const n = (this.mergeConflicts.get(task.id) ?? 0) + 1;
+        this.mergeConflicts.set(task.id, n);
+        const MAX_MERGE_RETRIES = 2;
+        if (n <= MAX_MERGE_RETRIES) {
+          this.emit(
+            "warn",
+            "engine",
+            `PR conflicts with ${project.defaultBranch} (a sibling task changed overlapping ` +
+              `files) — requeuing for a fresh attempt against current ${project.defaultBranch} (${n}/${MAX_MERGE_RETRIES}).`,
+            task.id,
+          );
+          // Fresh PR next time; the new worktree branches off current main, so
+          // the work is redone on top of the sibling's changes and merges clean.
+          task.status = "backlog";
+          task.prNumber = undefined;
+          this.deps.events.onTaskUpdated(task);
+          return;
+        }
+        // Exhausted retries — hand to a human instead of looping or silently
+        // failing. (Rare: requires repeated overlapping merges across attempts.)
+        this.emit(
+          "error",
+          "engine",
+          `PR still conflicts with ${project.defaultBranch} after ${MAX_MERGE_RETRIES} retries — needs manual resolution.`,
+          task.id,
+        );
+        const choice = await this.deps.events.requestApproval({
+          taskId: task.id,
+          title: `Merge conflict in ${task.title}`,
+          message:
+            `This task repeatedly conflicts with ${project.defaultBranch} because other tasks ` +
+            `changed the same files. Resolve the PR manually, then reject this to clear it.`,
+          options: ["reject"],
+        });
+        void choice;
         task.status = "failed";
         this.deps.events.onTaskUpdated(task);
         return;
