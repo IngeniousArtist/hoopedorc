@@ -311,7 +311,7 @@ export function PlanView({
             {project.status}
           </span>
         </h2>
-        <span className="text-[11px] text-neutral-500">
+        <span className="text-[11px] text-neutral-400">
           planning cost ${planCost.toFixed(4)}
         </span>
       </div>
@@ -351,7 +351,7 @@ export function PlanView({
 
           <div className="max-h-96 space-y-2 overflow-y-auto rounded border border-neutral-800 bg-neutral-950 p-3">
             {messages.length === 0 && (
-              <p className="text-xs text-neutral-500">
+              <p className="text-xs text-neutral-400">
                 Describe what you want to build. Refine it conversationally
                 ("split that task", "add tests", "don't touch the DB"), then
                 generate the task table below.
@@ -367,14 +367,14 @@ export function PlanView({
                     : "bg-neutral-800/60 text-neutral-200")
                 }
               >
-                <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-400">
                   {m.role === "user" ? "You" : "Claude"}
                 </div>
                 <div className="whitespace-pre-wrap">{m.content}</div>
               </div>
             ))}
             {chatting && (
-              <div className="px-3 py-2 text-xs text-neutral-500">
+              <div className="px-3 py-2 text-xs text-neutral-400">
                 Claude is thinking…
               </div>
             )}
@@ -510,7 +510,7 @@ export function PlanView({
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div>
-                      <label className="mb-1 block text-[10px] uppercase text-neutral-500">
+                      <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                         Difficulty
                       </label>
                       <select
@@ -530,7 +530,7 @@ export function PlanView({
                       </select>
                     </div>
                     <div>
-                      <label className="mb-1 block text-[10px] uppercase text-neutral-500">
+                      <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                         Assigned model
                       </label>
                       <ModelSelect
@@ -542,7 +542,7 @@ export function PlanView({
                       />
                     </div>
                     <div className="col-span-2">
-                      <label className="mb-1 block text-[10px] uppercase text-neutral-500">
+                      <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                         Scope paths (comma-separated globs)
                       </label>
                       <input
@@ -558,7 +558,7 @@ export function PlanView({
                       />
                     </div>
                     <div className="col-span-2">
-                      <label className="mb-1 block text-[10px] uppercase text-neutral-500">
+                      <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                         Acceptance criteria (one per line)
                       </label>
                       <textarea
@@ -573,7 +573,7 @@ export function PlanView({
                       />
                     </div>
                     <div className="col-span-2">
-                      <label className="mb-1 block text-[10px] uppercase text-neutral-500">
+                      <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                         Depends on
                       </label>
                       <div className="flex flex-wrap gap-2">
@@ -626,7 +626,7 @@ export function PlanView({
               >
                 {committing ? "Creating tasks…" : "Approve & Create Tasks"}
               </button>
-              <span className="text-[11px] text-neutral-500">
+              <span className="text-[11px] text-neutral-400">
                 Edits are auto-saved. Tasks appear on the Board after approval.
               </span>
             </div>

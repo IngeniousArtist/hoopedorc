@@ -52,7 +52,7 @@ export function AuditView({ projectId }: { projectId: string }) {
       <h2 className="text-lg font-semibold">Audit Log</h2>
 
       {entries.length === 0 && (
-        <p className="text-sm text-neutral-500">
+        <p className="text-sm text-neutral-400">
           No audit entries yet. Merge decisions, approvals, completions, and
           rollbacks are recorded here as the engine runs.
         </p>
@@ -70,11 +70,11 @@ export function AuditView({ projectId }: { projectId: string }) {
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-sm text-neutral-200">{e.summary}</span>
-                <span className="shrink-0 font-mono text-[10px] text-neutral-500">
+                <span className="shrink-0 font-mono text-[10px] text-neutral-400">
                   {new Date(e.ts).toLocaleString()}
                 </span>
               </div>
-              <div className="mt-1 flex items-center gap-2 text-[11px] text-neutral-500">
+              <div className="mt-1 flex items-center gap-2 text-[11px] text-neutral-400">
                 <span className="rounded bg-neutral-800 px-1.5 py-0.5">
                   {e.kind}
                 </span>

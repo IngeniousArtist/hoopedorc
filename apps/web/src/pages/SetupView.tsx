@@ -51,7 +51,7 @@ export function SetupView() {
         </button>
       </div>
 
-      <p className="text-xs text-neutral-500">
+      <p className="text-xs text-neutral-400">
         These external CLIs must be authenticated before the orchestrator can
         spend money or touch GitHub.
       </p>
@@ -84,7 +84,7 @@ export function SetupView() {
                 />
                 <div className="min-w-0 flex-1">
                   <div className="text-sm text-neutral-200">{c.name}</div>
-                  <div className="mt-0.5 break-words font-mono text-[11px] text-neutral-500">
+                  <div className="mt-0.5 break-words font-mono text-[11px] text-neutral-400">
                     {c.detail}
                   </div>
                 </div>
@@ -101,7 +101,7 @@ export function SetupView() {
             <h3 className="text-sm font-medium text-neutral-300">
               Test each model
             </h3>
-            <p className="text-[11px] text-neutral-500">
+            <p className="text-[11px] text-neutral-400">
               Sends a one-word prompt to every enabled model. Costs a few cents.
             </p>
           </div>
@@ -116,7 +116,7 @@ export function SetupView() {
 
         {modelTest && (
           <>
-            <div className="text-[11px] text-neutral-500">
+            <div className="text-[11px] text-neutral-400">
               Total cost ${modelTest.totalCostUsd.toFixed(4)}
             </div>
             <div className="divide-y divide-neutral-800 rounded border border-neutral-800">
@@ -131,11 +131,11 @@ export function SetupView() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2 text-xs">
                       <span className="text-neutral-200">{r.displayName}</span>
-                      <span className="font-mono text-[11px] text-neutral-500">
+                      <span className="font-mono text-[11px] text-neutral-400">
                         {(r.ms / 1000).toFixed(1)}s · ${r.costUsd.toFixed(4)}
                       </span>
                     </div>
-                    <div className="mt-0.5 break-words font-mono text-[11px] text-neutral-500">
+                    <div className="mt-0.5 break-words font-mono text-[11px] text-neutral-400">
                       {r.ok ? `reply: ${r.reply ?? "(empty)"}` : `error: ${r.error}`}
                     </div>
                   </div>

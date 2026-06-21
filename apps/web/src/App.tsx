@@ -171,7 +171,7 @@ export function App() {
         {needsProject && !hasProject ? (
           <div className="mx-auto max-w-md rounded-lg border border-neutral-800 bg-neutral-900 p-6 text-center">
             <p className="text-sm text-neutral-300">No project selected.</p>
-            <p className="mt-1 text-xs text-neutral-500">
+            <p className="mt-1 text-xs text-neutral-400">
               Create one to get started.
             </p>
             <button

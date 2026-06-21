@@ -47,7 +47,7 @@ export function NewProject({
   return (
     <div className="max-w-xl space-y-6">
       <h2 className="text-lg font-semibold">New Project</h2>
-      <p className="text-xs text-neutral-500">
+      <p className="text-xs text-neutral-400">
         Create the project, then use the{" "}
         <span className="font-medium text-neutral-300">Plan</span> tab to chat
         with Claude and build the task list before starting the run.

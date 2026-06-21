@@ -89,7 +89,7 @@ export function ModelsEditor({
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="mb-1 block text-[10px] uppercase text-neutral-500">
+                <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                   ID
                 </label>
                 <input
@@ -99,7 +99,7 @@ export function ModelsEditor({
                 />
               </div>
               <div>
-                <label className="mb-1 block text-[10px] uppercase text-neutral-500">
+                <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                   Runner
                 </label>
                 <select
@@ -118,7 +118,7 @@ export function ModelsEditor({
               </div>
 
               <div className="col-span-2">
-                <label className="mb-1 block text-[10px] uppercase text-neutral-500">
+                <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                   {m.runner === "claude-code"
                     ? "claude --model (e.g. sonnet / opus)"
                     : "opencode model (provider/model from `opencode models`)"}
@@ -145,7 +145,7 @@ export function ModelsEditor({
               </div>
 
               <div>
-                <label className="mb-1 block text-[10px] uppercase text-neutral-500">
+                <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                   Max concurrent
                 </label>
                 <input
@@ -161,7 +161,7 @@ export function ModelsEditor({
                 />
               </div>
               <div>
-                <label className="mb-1 block text-[10px] uppercase text-neutral-500">
+                <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                   Monthly budget $ (optional)
                 </label>
                 <input
@@ -183,7 +183,7 @@ export function ModelsEditor({
             </div>
 
             <div>
-              <label className="mb-1 block text-[10px] uppercase text-neutral-500">
+              <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                 Roles
               </label>
               <div className="flex flex-wrap gap-2">

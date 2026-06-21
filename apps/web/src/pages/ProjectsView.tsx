@@ -1,6 +1,7 @@
 import type { ListProjectsResponse, Project } from "@orc/types";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
+import { useToast } from "../hooks/useToast";
 
 const STATUS_COLOR: Record<string, string> = {
   created: "bg-neutral-700 text-neutral-200",
@@ -21,6 +22,7 @@ export function ProjectsView({
   onSelect: (id: string) => void;
   onDeleted: (id: string) => void;
 }) {
+  const toast = useToast();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -44,15 +46,16 @@ export function ProjectsView({
   }, [refresh]);
 
   async function deleteProject(id: string) {
+    const name = projects.find((p) => p.id === id)?.name ?? "Project";
     setDeletingId(id);
-    setError(null);
     try {
       await api("deleteProject", { params: { id } });
       setProjects((prev) => prev.filter((p) => p.id !== id));
       setConfirmId(null);
       onDeleted(id);
+      toast(`${name} deleted.`, "success");
     } catch (e) {
-      setError(String(e));
+      toast(String(e), "error");
     } finally {
       setDeletingId(null);
     }
@@ -73,7 +76,7 @@ export function ProjectsView({
       )}
 
       {projects.length === 0 && (
-        <p className="text-sm text-neutral-500">
+        <p className="text-sm text-neutral-400">
           No projects yet — create one from New Project.
         </p>
       )}
@@ -102,10 +105,10 @@ export function ProjectsView({
                     </span>
                   )}
                 </div>
-                <div className="truncate text-[11px] text-neutral-500">
+                <div className="truncate text-[11px] text-neutral-400" title={p.repoUrl}>
                   {p.repoUrl}
                 </div>
-                <div className="truncate font-mono text-[10px] text-neutral-600">
+                <div className="truncate font-mono text-[10px] text-neutral-600" title={p.localPath}>
                   {p.localPath}
                 </div>
               </button>
@@ -118,7 +121,7 @@ export function ProjectsView({
                 {p.status}
               </span>
               {p.budgetUsd != null && (
-                <span className="text-[11px] text-neutral-500">
+                <span className="text-[11px] text-neutral-400">
                   budget ${p.budgetUsd}
                 </span>
               )}

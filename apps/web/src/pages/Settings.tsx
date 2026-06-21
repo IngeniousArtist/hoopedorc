@@ -257,7 +257,7 @@ export function Settings() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {DIFFICULTIES.map((d) => (
               <div key={d}>
-                <label className="mb-1 block text-[10px] text-neutral-500 capitalize">
+                <label className="mb-1 block text-[10px] text-neutral-400 capitalize">
                   {d}
                 </label>
                 <ModelSelect
@@ -286,7 +286,7 @@ export function Settings() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {BY_ROLE_KEYS.map((role) => (
               <div key={role}>
-                <label className="mb-1 block text-[10px] text-neutral-500">
+                <label className="mb-1 block text-[10px] text-neutral-400">
                   {ROLE_LABELS[role]}
                 </label>
                 <ModelSelect
@@ -318,7 +318,7 @@ export function Settings() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {DIFFICULTIES.map((d) => (
               <div key={d}>
-                <label className="mb-1 block text-[10px] text-neutral-500 capitalize">
+                <label className="mb-1 block text-[10px] text-neutral-400 capitalize">
                   {d}
                 </label>
                 <ModelSelect
@@ -452,7 +452,7 @@ export function Settings() {
 
       <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
         <h3 className="text-sm font-medium text-neutral-300">Telegram</h3>
-        <p className="text-[11px] text-neutral-500">
+        <p className="text-[11px] text-neutral-400">
           Create a bot with @BotFather, paste its token + your chat ID below,
           send a test, then enable. Tip: message the bot once with no chat ID
           set and it replies with yours. Approvals + commands are restricted to
@@ -514,7 +514,7 @@ export function Settings() {
         </label>
 
         <details>
-          <summary className="cursor-pointer text-[11px] text-neutral-500">
+          <summary className="cursor-pointer text-[11px] text-neutral-400">
             Advanced: read the token from an env var instead of storing it
           </summary>
           <div className="mt-2">

@@ -37,7 +37,7 @@ export function ModelSelect({
         className={
           "w-full rounded border bg-neutral-900 px-2 py-1 text-xs " +
           (disabled
-            ? "cursor-not-allowed border-neutral-800 text-neutral-500"
+            ? "cursor-not-allowed border-neutral-800 text-neutral-400"
             : isDisabled
               ? "border-amber-600 text-amber-400"
               : "border-neutral-700 text-neutral-200")
@@ -56,7 +56,7 @@ export function ModelSelect({
         )}
       </select>
       {disabled && disabledReason && (
-        <p className="mt-0.5 text-[10px] text-neutral-500">{disabledReason}</p>
+        <p className="mt-0.5 text-[10px] text-neutral-400">{disabledReason}</p>
       )}
       {!disabled && isDisabled && (
         <p className="mt-0.5 text-[10px] text-amber-500">
@@ -64,7 +64,7 @@ export function ModelSelect({
         </p>
       )}
       {!disabled && selected && selected.enabled && (
-        <p className="mt-0.5 text-[10px] text-neutral-500">
+        <p className="mt-0.5 text-[10px] text-neutral-400">
           Roles: {selected.roles.join(", ")}
         </p>
       )}

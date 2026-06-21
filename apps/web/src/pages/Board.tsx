@@ -11,6 +11,7 @@ import type {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useWS } from "../hooks/useWS";
+import { useToast } from "../hooks/useToast";
 import { LogPanel } from "../components/LogPanel";
 import { TaskCard } from "../components/TaskCard";
 
@@ -26,6 +27,7 @@ const COLUMNS: { status: TaskStatus; label: string }[] = [
 ];
 
 export function Board({ projectId }: { projectId: string }) {
+  const toast = useToast();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [settings, setSettings] = useState<SettingsType | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -33,7 +35,6 @@ export function Board({ projectId }: { projectId: string }) {
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
-  const [actionMsg, setActionMsg] = useState<string | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
 
   const tasksRef = useRef(tasks);
@@ -143,7 +144,6 @@ export function Board({ projectId }: { projectId: string }) {
     )
       return;
     setActionBusy(true);
-    setActionMsg(null);
     try {
       const res = await api<{ task: Task }>("rollbackTask", {
         params: { id: taskId },
@@ -151,9 +151,9 @@ export function Board({ projectId }: { projectId: string }) {
       setTasks((prev) =>
         prev.map((t) => (t.id === taskId ? res.task : t)),
       );
-      setActionMsg(`Reverted PR #${prNumber}.`);
+      toast(`Reverted PR #${prNumber}.`, "success");
     } catch (e) {
-      setActionMsg(String(e));
+      toast(String(e), "error");
     } finally {
       setActionBusy(false);
     }
@@ -161,15 +161,14 @@ export function Board({ projectId }: { projectId: string }) {
 
   const handleRetry = async (taskId: string) => {
     setActionBusy(true);
-    setActionMsg(null);
     try {
       const res = await api<RetryTaskResponse>("retryTask", {
         params: { id: taskId },
       });
       setTasks((prev) => prev.map((t) => (t.id === taskId ? res.task : t)));
-      setActionMsg("Retrying — dispatched a fresh run.");
+      toast("Retrying — dispatched a fresh run.", "success");
     } catch (e) {
-      setActionMsg(String(e));
+      toast(String(e), "error");
     } finally {
       setActionBusy(false);
     }
@@ -177,7 +176,6 @@ export function Board({ projectId }: { projectId: string }) {
 
   const handleViewDiff = async (taskId: string) => {
     setActionBusy(true);
-    setActionMsg(null);
     setDiff(null);
     try {
       const res = await api<TaskDiffResponse>("taskDiff", {
@@ -185,16 +183,15 @@ export function Board({ projectId }: { projectId: string }) {
       });
       setDiff(res.diff || "(empty diff)");
     } catch (e) {
-      setActionMsg(String(e));
+      toast(String(e), "error");
     } finally {
       setActionBusy(false);
     }
   };
 
-  // Clear the action area when switching tasks.
+  // Clear the diff view when switching tasks.
   useEffect(() => {
     setDiff(null);
-    setActionMsg(null);
   }, [selectedTaskId]);
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -252,7 +249,7 @@ export function Board({ projectId }: { projectId: string }) {
         body: { assignedModel: model },
       });
     } catch (e) {
-      setError(String(e));
+      toast(String(e), "error");
       setTasks((prev) =>
         prev.map((t) =>
           t.id === taskId
@@ -283,7 +280,7 @@ export function Board({ projectId }: { projectId: string }) {
           >
             <h2 className="mb-3 flex items-center gap-2 text-xs font-medium text-neutral-400 uppercase tracking-wider">
               {col.label}
-              <span className="rounded-full bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-500">
+              <span className="rounded-full bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400">
                 {
                   tasks.filter((t) => t.status === col.status)
                     .length
@@ -362,11 +359,6 @@ export function Board({ projectId }: { projectId: string }) {
               )}
             </div>
           </div>
-          {actionMsg && (
-            <div className="rounded border border-neutral-800 bg-neutral-900/50 px-4 py-2 text-xs text-neutral-300">
-              {actionMsg}
-            </div>
-          )}
           {diff && (
             <pre className="max-h-96 overflow-auto rounded-lg border border-neutral-800 bg-neutral-950 p-3 font-mono text-[11px] leading-relaxed text-neutral-300">
               {diff}

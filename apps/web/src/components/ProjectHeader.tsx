@@ -1,6 +1,7 @@
 import type { Project, RouteKey } from "@orc/types";
 import { useState } from "react";
 import { api } from "../api/client";
+import { useToast } from "../hooks/useToast";
 
 const STATUS_COLOR: Record<string, string> = {
   created: "bg-neutral-700 text-neutral-200",
@@ -15,19 +16,18 @@ const STATUS_COLOR: Record<string, string> = {
 const STARTABLE = ["created", "planned", "paused", "completed", "failed"];
 
 export function ProjectHeader({ project }: { project: Project }) {
+  const toast = useToast();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const origBudget = project.budgetUsd != null ? String(project.budgetUsd) : "";
   const [budget, setBudget] = useState(origBudget);
 
   async function act(route: RouteKey) {
     setBusy(true);
-    setError(null);
     try {
       await api(route, { params: { id: project.id } });
       // status update arrives via WS (project.updated) and re-renders this header.
     } catch (e) {
-      setError(String(e));
+      toast(String(e), "error");
     } finally {
       setBusy(false);
     }
@@ -35,14 +35,14 @@ export function ProjectHeader({ project }: { project: Project }) {
 
   async function saveBudget() {
     setBusy(true);
-    setError(null);
     try {
       await api("updateProject", {
         params: { id: project.id },
         body: { budgetUsd: budget === "" ? null : parseFloat(budget) },
       });
+      toast("Budget saved.", "success");
     } catch (e) {
-      setError(String(e));
+      toast(String(e), "error");
     } finally {
       setBusy(false);
     }
@@ -59,7 +59,7 @@ export function ProjectHeader({ project }: { project: Project }) {
           <div className="text-sm font-medium text-neutral-100">
             {project.name}
           </div>
-          <div className="truncate text-[11px] text-neutral-500">
+          <div className="truncate text-[11px] text-neutral-400" title={project.repoUrl}>
             {project.repoUrl}
             {project.budgetUsd != null && (
               <> · budget ${project.budgetUsd}</>
@@ -96,7 +96,7 @@ export function ProjectHeader({ project }: { project: Project }) {
         </div>
       </div>
 
-      <div className="mt-2 flex items-center gap-2 text-[11px] text-neutral-500">
+      <div className="mt-2 flex items-center gap-2 text-[11px] text-neutral-400">
         <span>Budget $</span>
         <input
           type="number"
@@ -116,10 +116,6 @@ export function ProjectHeader({ project }: { project: Project }) {
         </button>
         {budgetDirty && <span className="text-amber-400">unsaved</span>}
       </div>
-
-      {error && (
-        <div className="mt-2 text-[11px] text-red-400">{error}</div>
-      )}
     </div>
   );
 }

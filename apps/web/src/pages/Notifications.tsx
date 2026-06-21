@@ -99,7 +99,7 @@ export function Notifications({
       </h2>
 
       {notifications.length === 0 && (
-        <div className="text-sm text-neutral-500">
+        <div className="text-sm text-neutral-400">
           No notifications.
         </div>
       )}
@@ -150,7 +150,7 @@ export function Notifications({
               )}
 
             {n.respondedWith && (
-              <div className="mt-3 text-xs text-neutral-500">
+              <div className="mt-3 text-xs text-neutral-400">
                 Responded: {n.respondedWith}
               </div>
             )}

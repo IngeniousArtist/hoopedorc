@@ -62,21 +62,21 @@ export function CostView({ projectId }: { projectId: string }) {
           <div className="text-3xl font-semibold text-neutral-100">
             {usd(a.totalUsd)}
           </div>
-          <div className="mt-1 text-xs text-neutral-500">Total spend</div>
+          <div className="mt-1 text-xs text-neutral-400">Total spend</div>
         </div>
         <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-4">
           <div className="text-3xl font-semibold text-neutral-100">
             {fmtTokens(a.totalTokensIn)}
-            <span className="text-base text-neutral-500"> / </span>
+            <span className="text-base text-neutral-400"> / </span>
             {fmtTokens(a.totalTokensOut)}
           </div>
-          <div className="mt-1 text-xs text-neutral-500">Tokens in / out</div>
+          <div className="mt-1 text-xs text-neutral-400">Tokens in / out</div>
         </div>
         <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-4">
           <div className="text-3xl font-semibold text-neutral-100">
             {a.completedTasks}
           </div>
-          <div className="mt-1 text-xs text-neutral-500">
+          <div className="mt-1 text-xs text-neutral-400">
             tasks done · avg {usd(a.avgCostPerCompletedTask)}/task
           </div>
         </div>
@@ -88,7 +88,7 @@ export function CostView({ projectId }: { projectId: string }) {
             <span className="text-neutral-400">
               Budget {usd(a.totalUsd)} / {usd(a.budgetUsd)}
             </span>
-            <span className="text-neutral-500">
+            <span className="text-neutral-400">
               {a.remainingBudgetUsd != null && (
                 <>{usd(a.remainingBudgetUsd)} left</>
               )}
@@ -143,10 +143,10 @@ export function CostView({ projectId }: { projectId: string }) {
                 key={t.taskId}
                 className="flex items-center gap-2 text-[11px]"
               >
-                <span className="flex-1 truncate text-neutral-300">
+                <span className="flex-1 truncate text-neutral-300" title={t.title}>
                   {t.title}
                 </span>
-                <span className="text-neutral-500">
+                <span className="text-neutral-400">
                   {t.model} → {t.validatorModel}
                 </span>
                 <span className="w-28 text-right font-mono text-neutral-200">
@@ -172,7 +172,7 @@ export function CostView({ projectId }: { projectId: string }) {
           <div className="space-y-1">
             {a.daily.map((d) => (
               <div key={d.date} className="flex items-center gap-2 text-[11px]">
-                <span className="w-20 shrink-0 font-mono text-neutral-500">
+                <span className="w-20 shrink-0 font-mono text-neutral-400">
                   {d.date}
                 </span>
                 <div className="h-3 flex-1 overflow-hidden rounded bg-neutral-800">
@@ -197,7 +197,7 @@ export function CostView({ projectId }: { projectId: string }) {
         </h3>
         <div className="divide-y divide-neutral-800">
           {a.byModel.length === 0 && (
-            <div className="px-4 py-3 text-xs text-neutral-500">No costs yet</div>
+            <div className="px-4 py-3 text-xs text-neutral-400">No costs yet</div>
           )}
           {a.byModel.map((m) => (
             <div
@@ -205,7 +205,7 @@ export function CostView({ projectId }: { projectId: string }) {
               className="flex items-center gap-3 px-4 py-3 text-sm"
             >
               <span className="text-neutral-300">{m.model}</span>
-              <span className="text-[11px] text-neutral-500">
+              <span className="text-[11px] text-neutral-400">
                 {m.runs} run{m.runs === 1 ? "" : "s"} ·{" "}
                 {fmtTokens(m.tokensIn)}/{fmtTokens(m.tokensOut)} tok
               </span>
@@ -229,7 +229,7 @@ export function CostView({ projectId }: { projectId: string }) {
                 key={t.taskId || t.title}
                 className="flex items-center justify-between px-4 py-2 text-xs"
               >
-                <span className="truncate text-neutral-300">{t.title}</span>
+                <span className="truncate text-neutral-300" title={t.title}>{t.title}</span>
                 <span className="ml-3 shrink-0 font-mono text-neutral-200">
                   {usd(t.costUsd)}
                 </span>
