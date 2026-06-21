@@ -1,4 +1,5 @@
-import { execSync } from "node:child_process";
+import { execSync, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -12,6 +13,8 @@ import { dirname, isAbsolute, join } from "node:path";
 import { minimatch } from "minimatch";
 import type { Project, Task } from "@orc/types";
 import type { WorktreeManager } from "./index.js";
+
+const pexecFile = promisify(execFile);
 
 const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
 const DEPS_MARKER = ".hoopedorc-deps-hash";
@@ -99,7 +102,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
     // task's PR and the inScope gate fails it as an out-of-scope change. This
     // is the local safety net; new repos also get a committed .gitignore.
     this.ensureGitExclude(path);
-    this.ensureDeps(project, path);
+    await this.ensureDeps(project, path);
 
     return { branch, path };
   }
@@ -152,7 +155,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
    * serialization keeps most overlap out, so this trade is worth the massive
    * per-task time saving.
    */
-  private ensureDeps(project: Project, worktreePath: string): void {
+  private async ensureDeps(project: Project, worktreePath: string): Promise<void> {
     const primary = project.localPath;
     if (!existsSync(join(primary, "package.json"))) return; // not a node project
 
@@ -171,10 +174,17 @@ export class WorktreeManagerImpl implements WorktreeManager {
 
       if (!existsSync(marker) || have !== want) {
         // `npm ci` is faster + reproducible when a lockfile exists; fall back
-        // to `npm install` otherwise. 10-min cap so a hung install can't wedge
-        // the whole run.
-        const cmd = lockName === "package-lock.json" ? "npm ci" : "npm install";
-        execSync(cmd, { cwd: primary, stdio: "pipe", timeout: 10 * 60 * 1000 });
+        // to `npm install` otherwise. Async (not execSync) so a multi-minute
+        // install doesn't block the server's event loop. 10-min cap so a hung
+        // install can't wedge the run.
+        const args =
+          lockName === "package-lock.json" ? ["ci"] : ["install"];
+        await pexecFile("npm", args, {
+          cwd: primary,
+          timeout: 10 * 60 * 1000,
+          maxBuffer: 32 * 1024 * 1024,
+          env: { ...process.env, PWD: primary },
+        });
         // A package.json with no dependencies leaves npm creating no
         // node_modules at all — make the dir so the marker (and the symlink
         // target) exist, and so we don't reinstall on every task forever.

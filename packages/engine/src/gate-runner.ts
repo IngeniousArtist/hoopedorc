@@ -1,6 +1,13 @@
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { GateResult, Project, Task } from "@orc/types";
 import type { GateRunner, WorktreeManager } from "./index.js";
+
+// Async exec everywhere: gates run npm scripts (up to 2 min each) and git
+// commands. The old execSync versions blocked Node's single event loop for the
+// whole duration, so while ANY task was running its gates the server couldn't
+// answer HTTP/WS — it looked frozen. promisify(execFile) keeps the loop free.
+const pexecFile = promisify(execFile);
 
 export class GateRunnerImpl implements GateRunner {
   constructor(private readonly worktrees: WorktreeManager) {}
@@ -11,17 +18,17 @@ export class GateRunnerImpl implements GateRunner {
       return this.allFail("no worktree path set");
     }
 
-    const typecheck = this.runScript(worktreePath, "typecheck");
-    const lint = this.runScript(worktreePath, "lint");
-    const build = this.runScript(worktreePath, "build");
+    const typecheck = await this.runScript(worktreePath, "typecheck");
+    const lint = await this.runScript(worktreePath, "lint");
+    const build = await this.runScript(worktreePath, "build");
     // Support either a "test" or "tests" npm script; both must pass if present.
-    const testRun = this.runScript(worktreePath, "test");
-    const testsRun = this.runScript(worktreePath, "tests");
+    const testRun = await this.runScript(worktreePath, "test");
+    const testsRun = await this.runScript(worktreePath, "tests");
     const tests = {
       passed: testRun.passed && testsRun.passed,
       output: [testRun.output, testsRun.output].filter(Boolean).join("\n"),
     };
-    const noConflicts = this.checkNoConflicts(project, worktreePath);
+    const noConflicts = await this.checkNoConflicts(project, worktreePath);
     const inScope = await this.worktrees.changedFilesInScope(project, task);
 
     return {
@@ -42,39 +49,56 @@ export class GateRunnerImpl implements GateRunner {
     };
   }
 
-  private runScript(
+  private async runScript(
     cwd: string,
     script: string,
-  ): { passed: boolean; output: string } {
+  ): Promise<{ passed: boolean; output: string }> {
     try {
-      const stdout = execSync(`npm run ${script} --if-present`, {
-        cwd,
-        stdio: "pipe",
-        encoding: "utf-8",
-        timeout: 120_000,
-      });
+      const { stdout } = await pexecFile(
+        "npm",
+        ["run", script, "--if-present"],
+        {
+          cwd,
+          encoding: "utf-8",
+          timeout: 120_000,
+          maxBuffer: 16 * 1024 * 1024,
+          env: { ...process.env, PWD: cwd },
+        },
+      );
       return { passed: true, output: stdout };
     } catch (err: unknown) {
-      const stderr =
-        (err as { stderr?: string }).stderr ??
-        (err as { stdout?: string }).stdout ??
-        (err as { message?: string }).message ??
-        "";
-      const status = (err as { status?: number }).status;
-
-      if (status === null || status === undefined) {
-        return { passed: true, output: `script "${script}" not found — pass with note` };
+      const e = err as {
+        stderr?: string;
+        stdout?: string;
+        message?: string;
+        code?: number | string;
+        killed?: boolean;
+      };
+      const out = e.stderr || e.stdout || e.message || "";
+      // Timed out / hung → a real failure, don't let it pass.
+      if (e.killed) {
+        return { passed: false, output: `script "${script}" timed out` };
       }
-
-      return { passed: false, output: String(stderr) };
+      // Non-numeric code (ENOENT etc.) means the script/tool isn't applicable
+      // — `npm run --if-present` already no-ops missing scripts, so this is the
+      // "nothing to run" case: pass with a note rather than fail the gate.
+      if (typeof e.code !== "number") {
+        return {
+          passed: true,
+          output: `script "${script}" unavailable — ${String(out).slice(0, 200)}`,
+        };
+      }
+      return { passed: false, output: String(out) };
     }
   }
 
-  private checkNoConflicts(project: Project, cwd: string): boolean {
+  private async checkNoConflicts(
+    project: Project,
+    cwd: string,
+  ): Promise<boolean> {
     try {
-      execSync(`git fetch origin "${project.defaultBranch}"`, {
+      await pexecFile("git", ["fetch", "origin", project.defaultBranch], {
         cwd,
-        stdio: "pipe",
         timeout: 30_000,
       });
     } catch {
@@ -86,9 +110,10 @@ export class GateRunnerImpl implements GateRunner {
     // no conflict. A non-zero exit means a real conflict.
     let clean: boolean;
     try {
-      execSync(
-        `git merge --no-commit --no-ff "origin/${project.defaultBranch}"`,
-        { cwd, stdio: "pipe", timeout: 30_000 },
+      await pexecFile(
+        "git",
+        ["merge", "--no-commit", "--no-ff", `origin/${project.defaultBranch}`],
+        { cwd, timeout: 30_000 },
       );
       clean = true;
     } catch {
@@ -96,10 +121,9 @@ export class GateRunnerImpl implements GateRunner {
     }
 
     // Roll back any merge state. When the branch was already up to date there is
-    // no merge in progress, so this fails harmlessly — ignore it. (Aborting
-    // inside the success path is what made a clean branch look like a conflict.)
+    // no merge in progress, so this fails harmlessly — ignore it.
     try {
-      execSync("git merge --abort", { cwd, stdio: "pipe" });
+      await pexecFile("git", ["merge", "--abort"], { cwd });
     } catch {
       /* no merge in progress — nothing to abort */
     }

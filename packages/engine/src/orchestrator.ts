@@ -443,13 +443,27 @@ export class Orchestrator implements Scheduler {
         const gateResult = await this.deps.gates.run(project, task);
         finalGate = gateResult;
 
+        // inScope is deliberately NOT a hard gate. Wiring a new file into an
+        // entry point (e.g. adding <script src="js/game.js"> to index.html) is
+        // legitimate work that often falls outside a task's narrow scopePaths,
+        // and hard-failing it stalls the whole run. Out-of-scope edits are
+        // instead handled as a risky-change flag in canAutoMerge: auto-merged
+        // under fully_autonomous, sent for approval under hard_gate_flag_risky.
+        // The truly objective checks below stay hard gates.
         const gatesPassed =
           gateResult.typecheck &&
           gateResult.lint &&
           gateResult.build &&
           gateResult.tests &&
-          gateResult.noConflicts &&
-          gateResult.inScope;
+          gateResult.noConflicts;
+        if (!gateResult.inScope) {
+          this.emit(
+            "info",
+            "engine",
+            "Task modified files outside its declared scope — allowed by merge policy, flagged for review.",
+            task.id,
+          );
+        }
 
         if (!gatesPassed) {
           fixInstructions = this.buildGateFixInstructions(gateResult);

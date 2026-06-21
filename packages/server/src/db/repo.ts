@@ -388,6 +388,32 @@ export function createLog(
   return { ...l, id } as LogEvent;
 }
 
+/**
+ * Insert many logs in a single transaction. Agent runs stream hundreds of log
+ * lines; one synchronous INSERT per line blocked the event loop (the server
+ * froze). Batching them into one transaction per flush keeps writes cheap.
+ */
+export function createLogs(
+  db: Db,
+  logs: (Omit<LogEvent, "id"> & { id?: string })[],
+): LogEvent[] {
+  const stmt = db.prepare(
+    "INSERT INTO logs (id, run_id, task_id, ts, level, source, message) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  );
+  const out: LogEvent[] = [];
+  const insertAll = db.transaction(
+    (rows: (Omit<LogEvent, "id"> & { id?: string })[]) => {
+      for (const l of rows) {
+        const id = l.id ?? crypto.randomUUID();
+        stmt.run(id, l.runId, l.taskId, l.ts, l.level, l.source, l.message);
+        out.push({ ...l, id } as LogEvent);
+      }
+    },
+  );
+  insertAll(logs);
+  return out;
+}
+
 // ── Merge Decisions ──
 
 function mapMergeDecision(row: Record<string, unknown>): MergeDecision {

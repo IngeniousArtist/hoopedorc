@@ -27,10 +27,48 @@ export class EngineRunner {
   /** Optional second channel (Telegram). Set after construction. */
   private notifier?: ServerNotifier;
 
+  // Buffered log writer: agent runs stream hundreds of lines; writing each one
+  // synchronously to SQLite (+ broadcasting) froze the event loop. We queue
+  // them and flush in one transaction every ~300ms.
+  private logQueue: Parameters<typeof repo.createLogs>[1] = [];
+  private logFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly LOG_FLUSH_MS = 300;
+
   constructor(
     private readonly db: Db,
     private readonly hub: WsHub,
   ) {}
+
+  private enqueueLog(e: Parameters<typeof repo.createLog>[1]): void {
+    this.logQueue.push(e);
+    // Flush sooner if the buffer grows large (a very chatty run), so memory
+    // and UI latency stay bounded.
+    if (this.logQueue.length >= 200) {
+      this.flushLogs();
+      return;
+    }
+    if (!this.logFlushTimer) {
+      this.logFlushTimer = setTimeout(() => this.flushLogs(), EngineRunner.LOG_FLUSH_MS);
+    }
+  }
+
+  private flushLogs(): void {
+    if (this.logFlushTimer) {
+      clearTimeout(this.logFlushTimer);
+      this.logFlushTimer = null;
+    }
+    if (this.logQueue.length === 0) return;
+    const batch = this.logQueue;
+    this.logQueue = [];
+    try {
+      const saved = repo.createLogs(this.db, batch);
+      for (const log of saved) {
+        this.hub.broadcast({ type: "log", payload: log });
+      }
+    } catch {
+      /* a dropped log batch must never break the run */
+    }
+  }
 
   /** Wire an extra notifier (Telegram) for approvals + status pushes. */
   setNotifier(n: ServerNotifier | undefined): void {
@@ -93,10 +131,7 @@ export class EngineRunner {
       getTask: (id) => repo.getTask(this.db, id) ?? undefined,
       checkBudget: (modelId) => checkBudget(this.db, project.id, modelId, settings),
       events: {
-        onLog: (e) => {
-          const log = repo.createLog(this.db, e);
-          this.hub.broadcast({ type: "log", payload: log });
-        },
+        onLog: (e) => this.enqueueLog(e),
         onTaskUpdated: (t) => {
           const prev = repo.getTask(this.db, t.id);
           repo.updateTask(this.db, t.id, {
@@ -238,6 +273,7 @@ export class EngineRunner {
         );
       } finally {
         this.orchestrators.delete(project.id);
+        this.flushLogs(); // write out any buffered tail logs from this run
 
         // Reflect what actually happened, not "completed" by default. The
         // orchestrator's run loop also exits when it simply runs out of
