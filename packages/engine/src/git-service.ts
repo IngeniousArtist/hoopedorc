@@ -23,6 +23,8 @@ function gh(args: string[], cwd?: string): string {
   });
 }
 
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export class GitServiceImpl implements GitService {
   async ensureClone(project: Project): Promise<void> {
     if (existsSync(project.localPath)) {
@@ -83,15 +85,36 @@ export class GitServiceImpl implements GitService {
   }
 
   async mergePr(project: Project, prNumber: number): Promise<void> {
-    gh([
-      "pr",
-      "merge",
-      String(prNumber),
-      "--squash",
-      "--delete-branch",
-      "--repo",
-      project.repoUrl,
-    ]);
+    // GitHub computes a PR's mergeability asynchronously; for the first few
+    // seconds after `gh pr create` it reports UNKNOWN, and `gh pr merge` then
+    // fails with "Pull Request is not mergeable". Poll until GitHub resolves
+    // it before merging. (The noConflicts gate already verified the content
+    // merges cleanly, so UNKNOWN here is the compute race, not a real
+    // conflict.)
+    await this.waitForMergeable(project, prNumber);
+
+    // Even once mergeable, the merge call can still hit a transient API state
+    // — retry a couple of times with a short backoff before giving up.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        gh([
+          "pr",
+          "merge",
+          String(prNumber),
+          "--squash",
+          "--delete-branch",
+          "--repo",
+          project.repoUrl,
+        ]);
+        lastErr = undefined;
+        break;
+      } catch (err) {
+        lastErr = err;
+        await delay(3000);
+      }
+    }
+    if (lastErr) throw lastErr;
 
     // Fast-forward the primary clone's default branch so it never drifts from
     // origin. Nothing checks out this branch directly (each task gets its own
@@ -200,6 +223,43 @@ export class GitServiceImpl implements GitService {
       git(["push", "origin", project.defaultBranch], project.localPath);
     } catch {
       /* best effort — PRD also persists in the DB */
+    }
+  }
+
+  /**
+   * Poll a PR's GitHub-computed mergeability until it's no longer UNKNOWN.
+   * Resolves quietly on MERGEABLE; throws on CONFLICTING (a genuine conflict
+   * the gate's dry-run somehow missed). On persistent UNKNOWN it returns after
+   * the timeout and lets the caller attempt the merge anyway.
+   */
+  private async waitForMergeable(
+    project: Project,
+    prNumber: number,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      let state = "UNKNOWN";
+      try {
+        state = gh([
+          "pr",
+          "view",
+          String(prNumber),
+          "--repo",
+          project.repoUrl,
+          "--json",
+          "mergeable",
+          "--jq",
+          ".mergeable",
+        ]).trim();
+      } catch {
+        /* transient API error — treat as UNKNOWN and retry */
+      }
+      if (state === "MERGEABLE") return;
+      if (state === "CONFLICTING") {
+        throw new Error(
+          `PR #${prNumber} conflicts with ${project.defaultBranch} and can't be auto-merged`,
+        );
+      }
+      await delay(2000); // UNKNOWN — give GitHub a moment to compute
     }
   }
 

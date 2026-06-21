@@ -204,6 +204,18 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 }
 
+/**
+ * Startup races, not model failures — safe to retry the same model. The big
+ * one: `opencode` keeps a shared SQLite session store, so two opencode runs
+ * starting at the same instant (different models dispatched concurrently)
+ * collide with "database is locked" and one dies in <1s. Retrying after a
+ * short stagger clears it, instead of needlessly burning a fallback model.
+ */
+const OPENCODE_TRANSIENT =
+  /database is locked|SQLITE_BUSY|EADDRINUSE|ECONNREFUSED|connection refused/i;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export class OpenCodeAdapter implements AgentAdapter {
   readonly runner = "opencode" as const;
 
@@ -213,6 +225,26 @@ export class OpenCodeAdapter implements AgentAdapter {
   ) {}
 
   async run(opts: AgentRunOptions): Promise<AgentRunResult> {
+    // Retry transient STARTUP races (cost===0 means it died before doing any
+    // billable work, so a retry can't double-charge). Anything that already
+    // incurred cost, or doesn't match a known-transient signature, is returned
+    // as-is for the orchestrator's normal fallback handling.
+    let result: AgentRunResult = { ok: false, exitReason: "error", costUsd: 0, tokensIn: 0, tokensOut: 0 };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      result = await this.runOnce(opts);
+      if (result.ok || opts.signal?.aborted) return result;
+      const transient =
+        result.costUsd === 0 && OPENCODE_TRANSIENT.test(result.summary ?? "");
+      if (!transient) return result;
+      opts.onLog(
+        `[opencode] transient startup error (attempt ${attempt + 1}), retrying…\n`,
+      );
+      await sleep(1500 * (attempt + 1));
+    }
+    return result;
+  }
+
+  private async runOnce(opts: AgentRunOptions): Promise<AgentRunResult> {
     // `opencode run -m provider/model --format json <prompt>` runs the agent to
     // completion and emits JSON events on stdout. We attach to a shared server
     // when one is configured so sessions + cost are centralized.
@@ -236,6 +268,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       let tokensOut = 0;
       let text = "";
       let lineBuf = "";
+      let stderrTail = ""; // kept so run() can detect transient startup races
       let killed = false;
 
       const handleEvent = (obj: Record<string, unknown>) => {
@@ -275,7 +308,13 @@ export class OpenCodeAdapter implements AgentAdapter {
       };
 
       proc.stdout?.on("data", onData);
-      proc.stderr?.on("data", (c: Buffer) => opts.onLog(c.toString("utf8")));
+      proc.stderr?.on("data", (c: Buffer) => {
+        const s = c.toString("utf8");
+        // Keep a bounded tail of stderr so the retry layer can recognize
+        // transient startup errors (e.g. "database is locked").
+        stderrTail = (stderrTail + s).slice(-2000);
+        opts.onLog(s);
+      });
 
       wireAbort(proc, opts.signal, () => {
         killed = true;
@@ -322,7 +361,9 @@ export class OpenCodeAdapter implements AgentAdapter {
           costUsd,
           tokensIn,
           tokensOut,
-          summary: text,
+          // On failure include stderr so the retry layer can spot transient
+          // startup races; on success the model's text is the summary.
+          summary: ok ? text : `${text}\n${stderrTail}`.trim(),
         });
       });
     });

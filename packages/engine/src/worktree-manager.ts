@@ -222,8 +222,13 @@ export class WorktreeManagerImpl implements WorktreeManager {
     const worktreePath = task.worktreePath;
     if (!worktreePath) return [];
     try {
+      // Three-dot diff (merge-base...HEAD) — only THIS branch's own changes.
+      // The two-dot form (origin/main HEAD) also reports files that advanced on
+      // main since this worktree was created, so when a sibling task merges
+      // mid-run those files leak into this task's "changed" set and the inScope
+      // gate fails it for files it never touched.
       const output = execSync(
-        `git diff --name-only origin/${project.defaultBranch} HEAD`,
+        `git diff --name-only origin/${project.defaultBranch}...HEAD`,
         { cwd: worktreePath, stdio: "pipe", encoding: "utf-8" },
       );
       return output

@@ -101,8 +101,10 @@ export class ValidatorImpl implements Validator {
 
   private getDiff(project: Project, cwd: string): string {
     try {
+      // Three-dot (merge-base) diff so the reviewer sees only this task's own
+      // changes, not files that advanced on main since the branch was created.
       const out = execSync(
-        `git diff origin/${project.defaultBranch} HEAD`,
+        `git diff origin/${project.defaultBranch}...HEAD`,
         { cwd, stdio: "pipe", encoding: "utf-8", maxBuffer: 64 * 1024 * 1024 },
       );
       return out.length > MAX_DIFF_CHARS
