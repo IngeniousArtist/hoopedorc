@@ -498,6 +498,15 @@ export class Orchestrator implements Scheduler {
           return;
         }
 
+        // Announce the review — it spawns a separate reviewer model and can run
+        // for minutes; without this the board goes silent and looks frozen.
+        this.emit(
+          "info",
+          "validator",
+          `Reviewing changes with the validator model (this can take a few minutes)…`,
+          task.id,
+        );
+
         let decision: MergeDecision;
         try {
           decision = await this.deps.validator.review(
@@ -505,6 +514,15 @@ export class Orchestrator implements Scheduler {
             task,
             gateResult,
             currentModel,
+            (line) =>
+              this.deps.events.onLog({
+                runId: "",
+                taskId: task.id,
+                ts: new Date().toISOString(),
+                level: "debug",
+                source: "validator",
+                message: line,
+              }),
           );
         } catch (err) {
           if (!(err instanceof SelfReviewError)) throw err;

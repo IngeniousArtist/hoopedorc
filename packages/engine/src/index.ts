@@ -93,6 +93,9 @@ export interface Validator {
     task: Task,
     gate: GateResult,
     authorModel: ModelId,
+    /** Stream the reviewer's output so a multi-minute review isn't silent
+     *  (a silent validator phase makes a task look frozen). */
+    onLog?: (line: string) => void,
   ): Promise<MergeDecision>;
 }
 

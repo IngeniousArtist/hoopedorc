@@ -39,6 +39,7 @@ export class ValidatorImpl implements Validator {
     task: Task,
     gate: GateResult,
     authorModel: ModelId,
+    onLog: (line: string) => void = () => {},
   ): Promise<MergeDecision> {
     const validatorModel =
       this.settings.routing.validatorByDifficulty[task.difficulty];
@@ -63,7 +64,7 @@ export class ValidatorImpl implements Validator {
       model: validatorModel,
       prompt,
       cwd,
-      onLog: () => {},
+      onLog,
     });
 
     if (result.costUsd > 0) {
