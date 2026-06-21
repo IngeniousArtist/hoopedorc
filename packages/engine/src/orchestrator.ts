@@ -346,8 +346,12 @@ export class Orchestrator implements Scheduler {
 
         // Guard: if the author produced no committed changes, there's nothing to
         // open a PR for. `gh pr create` would fail with a cryptic "No commits
-        // between main and <branch>". The usual cause is the agent writing files
-        // outside its worktree (e.g. resolving the wrong project root).
+        // between main and <branch>". This can mean the agent wrote outside its
+        // worktree, but just as often it means a weaker/cheaper model ran out
+        // of steps on a large task (e.g. a scaffold task that needs a dozen
+        // files) and exited cleanly having only run `npm install`. Treat it
+        // like any other recoverable failure — retry, then escalate the
+        // fallback chain — rather than failing outright on the first miss.
         const changed = await this.deps.worktrees.changedFiles(project, task);
         if (changed.length === 0) {
           this.emit(
@@ -357,6 +361,28 @@ export class Orchestrator implements Scheduler {
               `Nothing to commit/PR — check that the agent wrote into the worktree, not elsewhere.`,
             task.id,
           );
+          fixInstructions =
+            "Your previous attempt made no file changes (likely ran out of " +
+            "steps before writing anything, or wrote outside the worktree). " +
+            "This attempt must actually create/modify the files this task " +
+            "requires — verify with `git status` before finishing.";
+
+          if (task.attempts < task.maxAttempts) continue;
+
+          const next = fallbackChain[fallbackIdx + 1];
+          if (next) {
+            fallbackIdx++;
+            currentModel = next;
+            task.maxAttempts++;
+            this.emit(
+              "warn",
+              "engine",
+              `No changes produced, switching to fallback model: ${currentModel}`,
+              task.id,
+            );
+            continue;
+          }
+
           task.status = "failed";
           this.deps.events.onTaskUpdated(task);
           return;

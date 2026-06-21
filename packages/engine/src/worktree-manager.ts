@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { rmSync } from "node:fs";
 import { minimatch } from "minimatch";
 import type { Project, Task } from "@orc/types";
 import type { WorktreeManager } from "./index.js";
@@ -37,6 +38,39 @@ export class WorktreeManagerImpl implements WorktreeManager {
       });
     } catch {
       /* no remote branch by this name — the common case */
+    }
+
+    // Defense in depth, local side: `remove()` (called from executeTask's
+    // finally) only runs if the process stays alive long enough to reach it.
+    // If the server itself dies mid-task — crash, manual kill, a dev-server
+    // reload — the worktree directory is orphaned on disk with nothing to
+    // ever clean it up, and `git worktree add` fails outright with "already
+    // exists" on every subsequent dispatch of this same task, forever.
+    try {
+      execSync(`git worktree remove "${path}" --force`, {
+        cwd: project.localPath,
+        stdio: "pipe",
+      });
+    } catch {
+      /* not a registered worktree — fall through to the raw rmSync below */
+    }
+    try {
+      rmSync(path, { recursive: true, force: true });
+    } catch {
+      /* path didn't exist — the common case */
+    }
+    try {
+      execSync(`git worktree prune`, { cwd: project.localPath, stdio: "pipe" });
+    } catch {
+      /* best effort */
+    }
+    try {
+      execSync(`git branch -D "${branch}"`, {
+        cwd: project.localPath,
+        stdio: "pipe",
+      });
+    } catch {
+      /* branch may not exist locally — the common case */
     }
 
     execSync(
