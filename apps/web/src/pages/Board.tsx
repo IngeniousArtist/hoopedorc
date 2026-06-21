@@ -14,6 +14,7 @@ import { useWS } from "../hooks/useWS";
 import { useToast } from "../hooks/useToast";
 import { LogPanel } from "../components/LogPanel";
 import { TaskCard } from "../components/TaskCard";
+import { BoardSummary } from "../components/BoardSummary";
 
 const COLUMNS: { status: TaskStatus; label: string }[] = [
   { status: "backlog", label: "Backlog" },
@@ -36,6 +37,7 @@ export function Board({ projectId }: { projectId: string }) {
   const [logsLoading, setLogsLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [diff, setDiff] = useState<string | null>(null);
+  const [costUsd, setCostUsd] = useState(0);
 
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
@@ -49,15 +51,19 @@ export function Board({ projectId }: { projectId: string }) {
     let cancelled = false;
     async function load() {
       try {
-        const [tasksRes, settingsRes] = await Promise.all([
+        const [tasksRes, settingsRes, costRes] = await Promise.all([
           api<{ tasks: Task[] }>("listTasks", {
             params: { id: projectId },
           }),
           api<{ settings: SettingsType }>("getSettings"),
+          api<{ totalUsd: number }>("costAnalytics", {
+            params: { id: projectId },
+          }).catch(() => ({ totalUsd: 0 })),
         ]);
         if (cancelled) return;
         setTasks(tasksRes.tasks);
         setSettings(settingsRes.settings);
+        setCostUsd(costRes.totalUsd);
       } catch (e) {
         if (!cancelled) setError(String(e));
       }
@@ -122,6 +128,10 @@ export function Board({ projectId }: { projectId: string }) {
       }
       case "run.updated": {
         /* run status changes may reflect in task state; refetch */
+        break;
+      }
+      case "cost.updated": {
+        setCostUsd((c) => c + event.payload.costUsd);
         break;
       }
       case "log": {
@@ -267,6 +277,8 @@ export function Board({ projectId }: { projectId: string }) {
           {error}
         </div>
       )}
+
+      <BoardSummary tasks={tasks} costUsd={costUsd} />
 
       {/* snap-x makes mobile a one-column-at-a-time swipe; sm: reverts to the
           normal multi-column horizontal scroll once there's room for it. */}

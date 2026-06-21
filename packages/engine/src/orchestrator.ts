@@ -51,8 +51,18 @@ function buildFallbackChain(
   const chain: ModelId[] = [assignedModel];
   const tiers: Difficulty[] = ["easy", "medium", "hard"];
   const start = tiers.indexOf(difficulty);
-  for (let i = start; i < tiers.length; i++) {
-    const m = routing.byDifficulty[tiers[i]!];
+  // Escalate upward first (cheaper -> stronger), same as before. A task
+  // starting at "hard" has no higher tier to escalate to, though — with one
+  // model per tier that left hard-tier tasks with a one-model chain and zero
+  // fallback room. Wrap back through the remaining tiers in descending order
+  // (next-best first) as a last-resort safety net, so every task always has
+  // at least one fallback regardless of where it starts.
+  const order = [
+    ...tiers.slice(start),
+    ...tiers.slice(0, start).reverse(),
+  ];
+  for (const tier of order) {
+    const m = routing.byDifficulty[tier];
     if (m && !chain.includes(m)) chain.push(m);
   }
   return chain;
@@ -545,6 +555,7 @@ export class Orchestrator implements Scheduler {
       const canMerge = await this.canAutoMerge(project, task, finalGate!);
       if (canMerge) {
         await this.deps.git.mergePr(project, task.prNumber!);
+        await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
         task.status = "done";
         this.emit("info", "engine", `Merged: ${task.title}`, task.id);
       } else {
@@ -562,6 +573,7 @@ export class Orchestrator implements Scheduler {
         });
         if (choice === "approve_merge") {
           await this.deps.git.mergePr(project, task.prNumber!);
+          await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
           task.status = "done";
           this.emit("info", "engine", `Merged: ${task.title}`, task.id);
         } else {

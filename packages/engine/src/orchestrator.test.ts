@@ -65,6 +65,7 @@ function fakeDeps(over: Partial<SchedulerDeps>, merged: number[], changed: strin
       async openPr() { return 1; },
       async mergePr(_p, n) { merged.push(n); },
       async revertMerge() {},
+      async appendChangelogEntry() {},
     },
     gates: { async run() { return GOOD_GATE; } },
     validator: {

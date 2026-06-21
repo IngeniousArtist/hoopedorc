@@ -39,10 +39,25 @@ export interface TelegramHandlers {
   onCommand: (cmd: string, args: string[]) => Promise<string> | string;
 }
 
+/** Everything worth telling a human about a task that just finished. */
+export interface TaskDigest {
+  title: string;
+  status: string;
+  difficulty?: string;
+  assignedModel?: string;
+  attempts?: number;
+  maxAttempts?: number;
+  /** One-line summary — the task's own description, or a failure reason. */
+  summary?: string;
+  costUsd?: number;
+  prNumber?: number;
+  prUrl?: string;
+}
+
 /** Outbound surface the engine pushes to. No-ops when Telegram is disabled. */
 export interface ServerNotifier {
   approvalRequested(n: Notification): void;
-  taskStatus(title: string, status: string, extra?: string): void;
+  taskStatus(digest: TaskDigest): void;
   info(text: string): void;
 }
 
@@ -208,10 +223,21 @@ export class TelegramBot implements ServerNotifier {
     });
   }
 
-  taskStatus(title: string, status: string, extra?: string): void {
-    const icon =
-      status === "done" ? "✅" : status === "failed" ? "❌" : "•";
-    void this.send(`${icon} ${title} → ${status}${extra ? ` (${extra})` : ""}`);
+  taskStatus(d: TaskDigest): void {
+    const icon = d.status === "done" ? "✅" : d.status === "failed" ? "❌" : "•";
+    const lines = [`${icon} ${d.title} → ${d.status}`];
+
+    const meta: string[] = [];
+    if (d.assignedModel) meta.push(d.difficulty ? `${d.assignedModel} (${d.difficulty})` : d.assignedModel);
+    if (d.attempts != null && d.maxAttempts != null) meta.push(`${d.attempts}/${d.maxAttempts} attempts`);
+    if (d.costUsd != null) meta.push(`$${d.costUsd.toFixed(4)}`);
+    if (meta.length > 0) lines.push(meta.join(" · "));
+
+    if (d.summary) lines.push(d.summary);
+    if (d.prUrl) lines.push(d.prUrl);
+    else if (d.prNumber) lines.push(`PR #${d.prNumber}`);
+
+    void this.send(lines.join("\n"));
   }
 
   info(text: string): void {

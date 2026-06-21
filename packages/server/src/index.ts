@@ -119,12 +119,51 @@ function materializeTasks(
   );
 }
 
+/**
+ * A standing documentation task: no dependencies, so it dispatches immediately
+ * alongside the first coding tasks instead of waiting for everything else to
+ * land first ("docs while others code"). Scoped to README.md/docs/** so it
+ * can never collide with any coding task's scope.
+ */
+function buildDocsTaskDraft(settings: SettingsType): DraftTask {
+  return {
+    title: "Project documentation",
+    description:
+      "Write thorough project documentation in README.md: what the project does, how to " +
+      "install dependencies, how to run it locally (dev server, build, start/production), " +
+      "and the key dependencies and why they're used. Base this on the PRD and whatever " +
+      "code already exists in the repo when you run — other tasks may still be in progress " +
+      "in parallel, so describe what's planned vs. what's already implemented rather than " +
+      "claiming everything is done. Prefer accuracy over completeness.",
+    difficulty: "easy",
+    role: "docs",
+    acceptanceCriteria: [
+      "README.md exists at the repo root",
+      "README explains what the project does in plain language",
+      "README lists exact install commands",
+      "README lists exact commands to run it locally and to build/start for production",
+      "README lists key dependencies and what each is for",
+    ],
+    dependsOn: [],
+    scopePaths: ["README.md", "docs/**"],
+    assignedModel: pickAssignedModel(settings.routing, "easy", "docs"),
+  };
+}
+
+/** Add a standing docs task unless one already exists (avoid duplicates). */
+function ensureDocsTask<T extends { role?: Task["role"] }>(
+  tasks: T[],
+  docsTask: T,
+): T[] {
+  return tasks.some((t) => t.role === "docs") ? tasks : [...tasks, docsTask];
+}
+
 /** Resolve each draft task's suggested author model for display before commit. */
 function withAssignedModels(
   output: PlanOutput,
   settings: SettingsType,
 ): DraftTask[] {
-  return output.tasks.map((t) => ({
+  const tasks = output.tasks.map((t) => ({
     title: t.title,
     description: t.description,
     difficulty: t.difficulty,
@@ -134,6 +173,11 @@ function withAssignedModels(
     scopePaths: t.scopePaths,
     assignedModel: pickAssignedModel(settings.routing, t.difficulty, t.role),
   }));
+  // Injected here (deconstruct response), not inside materializeTasks/commit —
+  // this way it shows up in the Plan tab's editable review table, where the
+  // user can remove it if they don't want it for a given project. Re-adding
+  // it at commit time would silently override that choice.
+  return ensureDocsTask(tasks, buildDocsTaskDraft(settings));
 }
 
 const gitForPlanning = new GitServiceImpl();
@@ -470,7 +514,10 @@ async function main() {
       const cwd = await resolvePlannerCwd(project);
       const plan = await runPlanner(goal, project.name, cwd, ENV.plannerDeconstructModel);
       prdMarkdown = plan.prdMarkdown;
-      createdTasks.push(...materializeTasks(db, id, plan.tasks, settings));
+      // No review step on this single-shot path, so inject the standing docs
+      // task here directly rather than relying on the Plan tab to add it.
+      const tasksWithDocs = ensureDocsTask(plan.tasks, buildDocsTaskDraft(settings));
+      createdTasks.push(...materializeTasks(db, id, tasksWithDocs, settings));
     } catch (err) {
       // Fallback so planning never hard-fails (e.g. claude unavailable).
       app.log.warn(

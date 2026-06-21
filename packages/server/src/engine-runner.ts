@@ -102,18 +102,28 @@ export class EngineRunner {
             prev?.status !== t.status &&
             (t.status === "done" || t.status === "failed")
           ) {
-            this.notifier?.taskStatus(
-              t.title,
-              t.status,
-              t.prNumber ? `PR #${t.prNumber}` : undefined,
-            );
+            const costUsd = repo
+              .getRuns(this.db, t.id)
+              .reduce((sum, r) => sum + r.costUsd, 0);
+            this.notifier?.taskStatus({
+              title: t.title,
+              status: t.status,
+              difficulty: t.difficulty,
+              assignedModel: t.assignedModel,
+              attempts: t.attempts,
+              maxAttempts: t.maxAttempts,
+              summary: t.description.split("\n")[0],
+              costUsd,
+              prNumber: t.prNumber,
+              prUrl: t.prNumber ? `${project.repoUrl}/pull/${t.prNumber}` : undefined,
+            });
             repo.createAuditEntry(this.db, {
               projectId: project.id,
               taskId: t.id,
               kind: t.status === "done" ? "task_done" : "task_failed",
               actor: "engine",
               summary: `${t.title} → ${t.status}${t.prNumber ? ` (PR #${t.prNumber})` : ""}`,
-              detail: { attempts: t.attempts, prNumber: t.prNumber },
+              detail: { attempts: t.attempts, prNumber: t.prNumber, costUsd },
             });
           }
         },

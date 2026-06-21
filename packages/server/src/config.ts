@@ -70,23 +70,32 @@ export function defaultSettings(): Settings {
     models: DEFAULT_MODELS,
     routing: {
       planner: "claude",
+      // Quality-tiered by difficulty, per the webdev coding leaderboard
+      // (lmarena): GLM 5.2 ranks #2 (1595) — clearly the strongest coder of
+      // the three, but ~3x deepseek-pro's price ($1.40/$4.40 vs $0.43/$0.87
+      // per M tokens). deepseek-pro ranks #23 (1459) — solid mid-tier,
+      // affordable. deepseek-flash is unranked (too cheap/fast a tier to
+      // benchmark) — reserved for genuinely easy work where speed/cost beats
+      // raw capability. Each tier gets a distinct model so the expensive one
+      // (glm) is spent only where it earns its cost, not on routine work.
       byDifficulty: {
         easy: "deepseek-flash",
-        medium: "deepseek-flash",
-        hard: "deepseek-pro",
+        medium: "deepseek-pro",
+        hard: "glm",
       },
       byRole: {
         frontend: "glm",
-        docs: "nex",
+        docs: "grok",
         updates: "grok",
       },
+      // Claude reviews everything: it's never an author model in this
+      // routing (so it never collides with self-review), and it's covered
+      // by the existing Claude subscription rather than metered per-token —
+      // free validation, leaving the full per-token budget for authoring.
       validatorByDifficulty: {
-        easy: "deepseek-pro",
-        medium: "deepseek-pro",
-        // Hard tasks are authored by deepseek-pro (byDifficulty.hard below), so
-        // the validator must be a different model — self-review is forbidden
-        // (validator.ts throws if validatorModel === authorModel).
-        hard: "glm",
+        easy: "claude",
+        medium: "claude",
+        hard: "claude",
       },
     },
     mergePolicy: "hard_gate_flag_risky",

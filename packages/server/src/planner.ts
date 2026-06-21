@@ -40,8 +40,24 @@ const DECONSTRUCT_SHAPE = `Respond with ONLY a JSON object, no markdown fences, 
   ]
 }
 Rules for each task:
-- difficulty: "easy" | "medium" | "hard"
-- role (optional): "frontend" | "docs" | "hard" | "medium" | "updates"
+- difficulty: "easy" | "medium" | "hard" — this directly selects which model authors the
+  task, so calibrate it honestly rather than defaulting everything to "medium":
+  - "easy": small, mechanical, low-risk (config tweaks, simple CRUD, boilerplate, a single
+    isolated component with no tricky logic). Routed to a fast/cheap model — use this
+    whenever the work genuinely doesn't need a strong model, so the team isn't paying for
+    capability it doesn't need.
+  - "medium": the default for most real feature work — a solid mid-tier model.
+  - "hard": genuinely complex logic, tricky state/algorithms, security-sensitive code, or
+    anything where a wrong implementation is costly to unwind. Routed to the strongest (and
+    priciest) model — reserve it for tasks that actually need that strength, not every task
+    that merely sounds important.
+- role (optional): "frontend" | "docs" | "hard" | "medium" | "updates" — overrides the
+  difficulty-based model choice. Use "frontend" for UI-heavy work (component layout,
+  styling, client-side interaction) regardless of difficulty — it's routed to the model
+  that scores best on web-dev coding benchmarks. Don't create a "docs" task yourself: one
+  is added automatically for every project to write the README/setup docs in parallel with
+  coding — only add your own docs-flavored task if the user asked for something beyond
+  standard project documentation (e.g. a specific API reference doc).
 - acceptanceCriteria: concrete, checkable statements
 - dependsOn: indices of earlier tasks that must finish first
 - scopePaths: glob(s) the task is allowed to modify`;

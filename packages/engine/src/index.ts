@@ -60,6 +60,18 @@ export interface GitService {
   openPr(project: Project, task: Task): Promise<number>;
   mergePr(project: Project, prNumber: number): Promise<void>;
   revertMerge(project: Project, prNumber: number): Promise<void>;
+  /**
+   * Append a structured entry to CHANGELOG.md and push it straight to the
+   * default branch. Called right after a successful merge. Deliberately
+   * plain code, not an AI agent call — a changelog line from a task's own
+   * title/description/PR number is mechanical, so spending a model run on
+   * it would just add cost and latency for no quality benefit.
+   */
+  appendChangelogEntry(
+    project: Project,
+    task: Task,
+    prNumber: number,
+  ): Promise<void>;
 }
 
 /** Runs the objective, non-AI gates inside a worktree. */
