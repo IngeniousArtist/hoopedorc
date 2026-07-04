@@ -1,7 +1,9 @@
 import "dotenv/config";
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { promisify } from "node:util";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
@@ -254,6 +256,92 @@ const VALID_REPO_URL =
   /^(https:\/\/github\.com\/[\w.-]+\/[\w.-]+|git@github\.com:[\w.-]+\/[\w.-]+)(\.git)?\/?$/;
 function isValidRepoUrl(url: string): boolean {
   return VALID_REPO_URL.test(url);
+}
+
+const pexecFile = promisify(execFile);
+
+/** The `origin` remote URL of a git working copy, or null if it isn't one
+ *  (no .git, no origin, or git failed for any other reason). */
+async function gitOriginUrl(dir: string): Promise<string | null> {
+  try {
+    const { stdout } = await pexecFile("git", ["remote", "get-url", "origin"], {
+      cwd: dir,
+      encoding: "utf-8",
+    });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** True if `ancestor` is `of` itself or a directory containing it — i.e.
+ *  deleting `ancestor` would also delete `of`. */
+function isPathAncestorOrSame(ancestor: string, of: string): boolean {
+  const a = ancestor.endsWith("/") ? ancestor.slice(0, -1) : ancestor;
+  const b = of.endsWith("/") ? of.slice(0, -1) : of;
+  return b === a || b.startsWith(`${a}/`);
+}
+
+/**
+ * Guard against a project.localPath that would make DELETE /api/projects/:id
+ * (or a future clone) destroy something it shouldn't. `localPath` must
+ * already have `~` expanded to an absolute path.
+ */
+function validateLocalPath(localPath: string): string | null {
+  if (!isAbsolute(localPath)) {
+    return "localPath must be an absolute path";
+  }
+  const resolved = resolve(localPath);
+  const home = homedir();
+  if (resolved === "/") return "localPath cannot be '/'";
+  if (resolved === home) return "localPath cannot be the home directory itself";
+  if (isPathAncestorOrSame(resolved, process.cwd())) {
+    return "localPath cannot be an ancestor of (or the same as) the server's own working directory";
+  }
+  if (isPathAncestorOrSame(resolved, resolve(ENV.reposDir))) {
+    return "localPath cannot be an ancestor of (or the same as) the repos directory";
+  }
+  return null;
+}
+
+/**
+ * A project's localPath either shouldn't exist yet (git clone will create
+ * it), should be empty, or — if the operator points at a directory that
+ * already exists — must already be a clone of the SAME repo. Anything else
+ * (an unrelated project, a home directory full of dotfiles, etc.) is
+ * rejected rather than silently reused (and later, on delete, rm -rf'd).
+ */
+async function localPathOkForClone(
+  localPath: string,
+  repoUrl: string,
+): Promise<string | null> {
+  if (!existsSync(localPath)) return null;
+  if (!statSync(localPath).isDirectory()) {
+    return "localPath already exists and is not a directory";
+  }
+  if (readdirSync(localPath).length === 0) return null;
+
+  const origin = await gitOriginUrl(localPath);
+  if (origin === repoUrl) return null;
+  return origin
+    ? `localPath already exists and is a git clone of a different repository (${origin})`
+    : "localPath already exists, is non-empty, and is not a git clone of this repository";
+}
+
+/**
+ * Whether DELETE /api/projects/:id may rm -rf a project's localPath: only
+ * when it's deep enough to plausibly be a real clone (not e.g. the home
+ * directory itself) AND its origin still matches the project's repoUrl. A
+ * hand-edited localPath pointing anywhere else is left alone; the DB rows
+ * are still deleted, but the operator is warned to clean up manually.
+ */
+async function safeToDeleteLocalPath(
+  localPath: string,
+  repoUrl: string,
+): Promise<boolean> {
+  if (localPath.length <= homedir().length + 1) return false;
+  if (!existsSync(join(localPath, ".git"))) return false;
+  return (await gitOriginUrl(localPath)) === repoUrl;
 }
 
 /** Replace secret fields with SECRET_SENTINEL before a settings object leaves
@@ -541,6 +629,11 @@ async function main() {
       ? expandHome(body.localPath.trim())
       : uniqueLocalPath(baseDir, body.name);
 
+    const pathError = validateLocalPath(localPath);
+    if (pathError) return reply.code(400).send({ error: pathError });
+    const cloneError = await localPathOkForClone(localPath, repoUrl);
+    if (cloneError) return reply.code(400).send({ error: cloneError });
+
     const id = crypto.randomUUID();
     const project = repo.createProject(db, {
       id,
@@ -610,19 +703,28 @@ async function main() {
 
     // Best-effort cleanup of the local clone + any leftover task worktrees
     // (`${localPath}-wt-<taskId>`). The DB delete below is the source of
-    // truth; a failure here just leaves orphaned files on disk.
+    // truth; a failure here just leaves orphaned files on disk. Only ever
+    // rm -rf when localPath still looks like a real, deep-enough clone of
+    // THIS project's repo — a hand-edited localPath (e.g. "~" or "/") is
+    // left untouched rather than wiped.
     try {
-      if (existsSync(project.localPath)) {
+      const exists = existsSync(project.localPath);
+      if (exists && (await safeToDeleteLocalPath(project.localPath, project.repoUrl))) {
         rmSync(project.localPath, { recursive: true, force: true });
-      }
-      const parent = dirname(project.localPath);
-      const base = project.localPath.slice(parent.length + 1);
-      if (existsSync(parent)) {
-        for (const entry of readdirSync(parent)) {
-          if (entry.startsWith(`${base}-wt-`)) {
-            rmSync(join(parent, entry), { recursive: true, force: true });
+        const parent = dirname(project.localPath);
+        const base = project.localPath.slice(parent.length + 1);
+        if (existsSync(parent)) {
+          for (const entry of readdirSync(parent)) {
+            if (entry.startsWith(`${base}-wt-`)) {
+              rmSync(join(parent, entry), { recursive: true, force: true });
+            }
           }
         }
+      } else if (exists) {
+        app.log.warn(
+          `refusing to delete local files for project ${id}: ${project.localPath} ` +
+            `is not a recognized git clone of ${project.repoUrl} — DB rows removed, disk left untouched`,
+        );
       }
     } catch (err) {
       app.log.warn(`could not clean up local files for project ${id}: ${err}`);
