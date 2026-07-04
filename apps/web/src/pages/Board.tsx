@@ -94,27 +94,15 @@ export function Board({ projectId }: { projectId: string }) {
       setLogsLoading(true);
       setLogs([]);
       try {
-        const runsRes = await api<{
-          runs: { id: string }[];
-        }>("listTaskRuns", {
+        // Every onLog emission is keyed by task_id regardless of run, so one
+        // task-scoped call gets full history after a reload — the old
+        // per-run fan-out (GET /api/runs/:id/logs per run) matched nothing
+        // because runId was hardcoded to "" almost everywhere it's written.
+        const res = await api<{ logs: LogEvent[] }>("taskLogs", {
           params: { id: selectedTaskId! },
         });
         if (cancelled) return;
-        const logsResults = await Promise.all(
-          runsRes.runs.map((r) =>
-            api<{ logs: LogEvent[] }>("runLogs", {
-              params: { id: r.id },
-            }).catch(() => ({ logs: [] as LogEvent[] })),
-          ),
-        );
-        if (cancelled) return;
-        const allLogs = logsResults
-          .flatMap((r) => r.logs)
-          .sort(
-            (a, b) =>
-              new Date(a.ts).getTime() - new Date(b.ts).getTime(),
-          );
-        setLogs(allLogs);
+        setLogs(res.logs);
       } catch {
         /* ignore fetch errors for logs */
       } finally {

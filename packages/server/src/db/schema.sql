@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS logs (
   message TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_logs_run ON logs(run_id);
+CREATE INDEX IF NOT EXISTS idx_logs_task ON logs(task_id, ts);
 
 CREATE TABLE IF NOT EXISTS merge_decisions (
   id              TEXT PRIMARY KEY,

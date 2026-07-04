@@ -377,6 +377,38 @@ export function getLogs(db: Db, runId: string): LogEvent[] {
     .map((r) => mapLog(r as Record<string, unknown>));
 }
 
+/**
+ * All logs for a task across every run — every onLog emission is keyed by
+ * task_id regardless of runId, so this (not getLogs by run) is what backs
+ * the Board's history view after a reload. `after` (an ISO timestamp)
+ * fetches only newer rows for incremental polling; either way the result is
+ * capped at `limit` (default 1000) so a very chatty task can't return
+ * megabytes in one call.
+ */
+export function getLogsByTask(
+  db: Db,
+  taskId: string,
+  opts: { after?: string; limit?: number } = {},
+): LogEvent[] {
+  const limit = opts.limit ?? 1000;
+  if (opts.after) {
+    return db
+      .prepare(
+        "SELECT * FROM logs WHERE task_id = ? AND ts > ? ORDER BY ts ASC LIMIT ?",
+      )
+      .all(taskId, opts.after, limit)
+      .map((r) => mapLog(r as Record<string, unknown>));
+  }
+  // Cap via the newest rows first, then re-sort ascending for display —
+  // without the DESC+LIMIT a long-running task's earliest (least useful)
+  // logs would win the cap instead of its most recent ones.
+  return db
+    .prepare("SELECT * FROM logs WHERE task_id = ? ORDER BY ts DESC LIMIT ?")
+    .all(taskId, limit)
+    .map((r) => mapLog(r as Record<string, unknown>))
+    .reverse();
+}
+
 export function createLog(
   db: Db,
   l: Omit<LogEvent, "id"> & { id?: string },
