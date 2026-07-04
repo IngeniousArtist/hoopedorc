@@ -126,6 +126,72 @@ test("a budget cap stops the autonomous loop before dispatching or merging", asy
   );
 });
 
+test("stopTask aborts a running author and the task ends blocked without merging", async () => {
+  const merged: number[] = [];
+  let resolveStarted!: () => void;
+  const started = new Promise<void>((r) => {
+    resolveStarted = r;
+  });
+  const adapter: AgentAdapter = {
+    runner: "opencode",
+    run(opts) {
+      resolveStarted();
+      return new Promise((_resolve, reject) => {
+        opts.signal?.addEventListener("abort", () => {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    },
+  };
+  const deps = fakeDeps({ adapterFor: () => adapter }, merged);
+  const orch = new Orchestrator(deps);
+  const t1 = task("t1");
+
+  const runPromise = orch.start(PROJECT, [t1]);
+  await started;
+  const stopped = orch.stopTask(t1.id);
+  assert.equal(stopped, true, "stopTask should find the active task");
+  await runPromise;
+
+  assert.equal(t1.status, "blocked");
+  assert.equal(merged.length, 0, "nothing should merge after a stop");
+});
+
+test("stopTask on a manually dispatched task (runTask) also aborts and blocks it", async () => {
+  const merged: number[] = [];
+  let resolveStarted!: () => void;
+  const started = new Promise<void>((r) => {
+    resolveStarted = r;
+  });
+  const adapter: AgentAdapter = {
+    runner: "opencode",
+    run(opts) {
+      resolveStarted();
+      return new Promise((_resolve, reject) => {
+        opts.signal?.addEventListener("abort", () => {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    },
+  };
+  const deps = fakeDeps({ adapterFor: () => adapter }, merged);
+  const orch = new Orchestrator(deps);
+  const t1 = task("t1");
+
+  const runPromise = orch.runTask(PROJECT, t1);
+  await started;
+  const stopped = orch.stopTask(t1.id);
+  assert.equal(stopped, true, "stopTask should find a manually-dispatched task too");
+  await runPromise;
+
+  assert.equal(t1.status, "blocked");
+  assert.equal(merged.length, 0);
+});
+
 test("a risky change (new dependency) escalates to a human instead of auto-merging", async () => {
   const merged: number[] = [];
   let asked = false;

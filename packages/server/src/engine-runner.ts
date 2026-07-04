@@ -79,6 +79,18 @@ export class EngineRunner {
     return this.orchestrators.has(projectId);
   }
 
+  /**
+   * Request that an active task stop. Only reaches the autonomous-loop
+   * orchestrator for now — a manually dispatched task (dispatchOne) isn't
+   * tracked anywhere after it starts, so it can't be found here yet; the
+   * caller falls back to a DB-only stop in that case. Returns true if a live
+   * orchestrator actually found and aborted the task.
+   */
+  stopTask(projectId: string, taskId: string): boolean {
+    const orch = this.orchestrators.get(projectId);
+    return orch?.stopTask(taskId) ?? false;
+  }
+
   /** Resolve a human approval requested via events.requestApproval. */
   resolveApproval(notificationId: string, choice: string): boolean {
     const resolver = this.pendingApprovals.get(notificationId);
