@@ -1021,19 +1021,21 @@ async function main() {
       scopePaths?: string[];
     };
 
-    // A task that's actively executing already captured its model/scope for
-    // this run (the fallback chain and worktree are built from them at
-    // dispatch time) — changing them now wouldn't be picked up until the next
-    // attempt at best, and would be confusing mid-flight. Same reasoning
-    // covers status: the only way to affect an in_progress task is Stop
-    // (aborts the live process); a raw status PATCH here would just get
-    // silently overwritten by the engine's own next onTaskUpdated call.
+    // A task that's actively executing (author running, or in_review while
+    // gates/validator run) already captured its model/scope for this run
+    // (the fallback chain and worktree are built from them at dispatch time)
+    // — changing them now wouldn't be picked up until the next attempt at
+    // best, and would be confusing mid-flight. Same reasoning covers status:
+    // the only way to affect a live task is Stop (aborts the process / marks
+    // it to bail at the next stage boundary); a raw status PATCH here would
+    // just get silently overwritten by the engine's own next onTaskUpdated
+    // call.
     if (
-      existing.status === "in_progress" &&
+      (existing.status === "in_progress" || existing.status === "in_review") &&
       (body.status || body.assignedModel || body.scopePaths)
     ) {
       return reply.code(409).send({
-        error: "task is in_progress — use Stop to interrupt it, or wait for this attempt to finish before changing status/model/scope",
+        error: `task is ${existing.status} — use Stop to interrupt it, or wait for this attempt to finish before changing status/model/scope`,
       });
     }
 

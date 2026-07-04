@@ -82,7 +82,7 @@ export function TaskCard({
     >
       <div className="text-sm font-medium">{task.title}</div>
 
-      {task.status === "in_progress" && (
+      {(task.status === "in_progress" || task.status === "in_review") && (
         <div className="mt-1">
           <Heartbeat lastActivityAt={lastActivityAt} />
         </div>
@@ -136,7 +136,7 @@ export function TaskCard({
             onChange={(m) => {
               if (m) onModelChange(m);
             }}
-            disabled={task.status === "in_progress"}
+            disabled={task.status === "in_progress" || task.status === "in_review"}
             disabledReason="Running — wait for this attempt to finish to reassign"
           />
         </div>
