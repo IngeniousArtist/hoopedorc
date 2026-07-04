@@ -958,12 +958,29 @@ async function main() {
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
 
+    // Checked (and engine.start() may still throw the same race) before any
+    // DB write: a manually-dispatched task shares no in-flight state with the
+    // autonomous loop, so starting it on top would let orphan recovery
+    // requeue the "in_progress" task with no active run in the loop's own
+    // memory — two agents on the same branch/worktree.
+    if (engine.hasManualRun(id)) {
+      return reply.code(409).send({
+        error: "a task is being dispatched manually — wait for it to finish (or stop it) before starting the autonomous run",
+      });
+    }
+
+    try {
+      // Run the whole DAG autonomously in the background.
+      await engine.start(project);
+    } catch (err) {
+      return reply.code(409).send({
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     repo.updateProject(db, id, { status: "running" });
     const running = repo.getProject(db, id)!;
     broadcast({ type: "project.updated", payload: running });
-
-    // Run the whole DAG autonomously in the background.
-    await engine.start(running);
     return { project: running };
   });
 

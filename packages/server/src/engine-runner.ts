@@ -23,6 +23,18 @@ import type { ServerNotifier } from "./telegram";
  */
 export class EngineRunner {
   private readonly orchestrators = new Map<string, Orchestrator>();
+  /**
+   * Tracks in-flight manual dispatches (dispatchOne/runTask), keyed by
+   * projectId -> taskId -> the one-off Orchestrator running it. Each of
+   * these spins up its own Orchestrator with empty activeTaskIds/
+   * modelActiveCount, sharing none of the autonomous loop's in-flight state —
+   * without this map neither `start()` nor `stopTask()` can see them at all:
+   * `start()` would boot the autonomous loop right on top of a manual
+   * dispatch (orphan recovery would requeue the "in_progress" task with no
+   * active run in ITS memory -> two agents on the same branch/worktree), and
+   * `stopTask()` could never reach a manually-dispatched task's process.
+   */
+  private readonly manualRuns = new Map<string, Map<string, Orchestrator>>();
   private readonly pendingApprovals = new Map<string, (choice: string) => void>();
   /** Optional second channel (Telegram). Set after construction. */
   private notifier?: ServerNotifier;
@@ -79,16 +91,23 @@ export class EngineRunner {
     return this.orchestrators.has(projectId);
   }
 
+  /** True while a manually-dispatched task is in flight for this project —
+   *  callers must refuse to start the autonomous loop until it clears. */
+  hasManualRun(projectId: string): boolean {
+    return (this.manualRuns.get(projectId)?.size ?? 0) > 0;
+  }
+
   /**
-   * Request that an active task stop. Only reaches the autonomous-loop
-   * orchestrator for now — a manually dispatched task (dispatchOne) isn't
-   * tracked anywhere after it starts, so it can't be found here yet; the
-   * caller falls back to a DB-only stop in that case. Returns true if a live
-   * orchestrator actually found and aborted the task.
+   * Request that an active task stop. Checks the autonomous-loop orchestrator
+   * first, then falls back to a manually-dispatched task's own one-off
+   * orchestrator via manualRuns. Returns true if a live orchestrator actually
+   * found and aborted the task.
    */
   stopTask(projectId: string, taskId: string): boolean {
     const orch = this.orchestrators.get(projectId);
-    return orch?.stopTask(taskId) ?? false;
+    if (orch?.stopTask(taskId)) return true;
+    const manual = this.manualRuns.get(projectId)?.get(taskId);
+    return manual?.stopTask(taskId) ?? false;
   }
 
   /** Resolve a human approval requested via events.requestApproval. */
@@ -269,6 +288,11 @@ export class EngineRunner {
   /** Run the whole project DAG autonomously in the background. */
   async start(project: Project): Promise<void> {
     if (this.orchestrators.has(project.id)) return;
+    if (this.hasManualRun(project.id)) {
+      throw new Error(
+        "a task is being dispatched manually — wait for it to finish (or stop it) before starting the autonomous run",
+      );
+    }
     const orch = this.buildOrchestrator(project);
     this.orchestrators.set(project.id, orch);
 
@@ -335,6 +359,14 @@ export class EngineRunner {
   /** Run a single task through the full pipeline (manual dispatch). */
   async dispatchOne(project: Project, taskId: string): Promise<void> {
     const orch = this.buildOrchestrator(project);
+
+    let projectRuns = this.manualRuns.get(project.id);
+    if (!projectRuns) {
+      projectRuns = new Map();
+      this.manualRuns.set(project.id, projectRuns);
+    }
+    projectRuns.set(taskId, orch);
+
     void (async () => {
       try {
         const git = new GitServiceImpl();
@@ -347,6 +379,10 @@ export class EngineRunner {
           project.id,
           `Dispatch of ${taskId} crashed: ${err instanceof Error ? err.message : String(err)}`,
         );
+      } finally {
+        const runs = this.manualRuns.get(project.id);
+        runs?.delete(taskId);
+        if (runs && runs.size === 0) this.manualRuns.delete(project.id);
       }
     })();
   }
