@@ -156,4 +156,9 @@ export const ENV = {
   // to the nearest `.git`. If a worktree is nested inside this repo, the agent
   // resolves to THIS repo and writes files here instead of the worktree.
   reposDir: process.env.REPOS_DIR ?? join(homedir(), ".hoopedorc", "repos"),
+  // Every agent output line is persisted forever by default, which grows the
+  // logs table unbounded (a few long runs -> hundreds of MB, slowing the WAL
+  // and snapshot queries). Pruned on boot and daily — see pruneLogs() in
+  // db/repo.ts and its callers in index.ts.
+  logRetentionDays: Number(process.env.LOG_RETENTION_DAYS ?? 14),
 };

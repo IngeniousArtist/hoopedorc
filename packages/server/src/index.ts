@@ -381,6 +381,25 @@ async function main() {
     repo.upsertSettings(db, defaultSettings());
   }
 
+  // Every agent output line is persisted forever otherwise — a few long runs
+  // grow the logs table into hundreds of MB, slowing the WAL and snapshot
+  // queries. Prune on boot (an old fat DB shrinks immediately) and again
+  // once a day thereafter; recent history (what GET /api/tasks/:id/logs
+  // actually serves) is unaffected either way.
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+  function pruneOldLogs(): void {
+    try {
+      const deleted = repo.pruneLogs(db, ENV.logRetentionDays);
+      if (deleted > 0) {
+        app.log.info(`pruned ${deleted} old log row(s) (retention: ${ENV.logRetentionDays}d)`);
+      }
+    } catch (err) {
+      app.log.warn(`log pruning failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  pruneOldLogs();
+  setInterval(pruneOldLogs, ONE_DAY_MS).unref();
+
   /** ENV.apiToken wins over the settings-stored one; either enables auth. */
   function getApiToken(): string | undefined {
     return ENV.apiToken || repo.getSettings(db)?.apiToken || undefined;
