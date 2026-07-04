@@ -1,12 +1,13 @@
-import type {
-  LogEvent,
-  ModelId,
-  RetryTaskResponse,
-  ServerEvent,
-  Settings as SettingsType,
-  Task,
-  TaskDiffResponse,
-  TaskStatus,
+import {
+  TASK_STATUSES,
+  type LogEvent,
+  type ModelId,
+  type RetryTaskResponse,
+  type ServerEvent,
+  type Settings as SettingsType,
+  type Task,
+  type TaskDiffResponse,
+  type TaskStatus,
 } from "@orc/types";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
@@ -16,16 +17,23 @@ import { LogPanel } from "../components/LogPanel";
 import { TaskCard } from "../components/TaskCard";
 import { BoardSummary } from "../components/BoardSummary";
 
-const COLUMNS: { status: TaskStatus; label: string }[] = [
-  { status: "backlog", label: "Backlog" },
-  { status: "ready", label: "Ready" },
-  { status: "in_progress", label: "In Progress" },
-  { status: "in_review", label: "In Review" },
-  { status: "changes_requested", label: "Changes Req." },
-  { status: "blocked", label: "Blocked" },
-  { status: "done", label: "Done" },
-  { status: "failed", label: "Failed" },
-];
+// Record so adding a TaskStatus in @orc/types is a compile error here until
+// it gets a label too — the column list itself is derived from TASK_STATUSES
+// (single source of truth shared with the server's PATCH validation) so the
+// two can't silently drift apart.
+const COLUMN_LABELS: Record<TaskStatus, string> = {
+  backlog: "Backlog",
+  ready: "Ready",
+  in_progress: "In Progress",
+  in_review: "In Review",
+  changes_requested: "Changes Req.",
+  blocked: "Blocked",
+  done: "Done",
+  failed: "Failed",
+};
+const COLUMNS: { status: TaskStatus; label: string }[] = TASK_STATUSES.map(
+  (status) => ({ status, label: COLUMN_LABELS[status] }),
+);
 
 export function Board({ projectId }: { projectId: string }) {
   const toast = useToast();
