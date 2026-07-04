@@ -70,7 +70,41 @@ row with correct non-zero durations once terminal). Notable follow-on additions:
 - The Board has no "Stop" button yet — B1 is backend-only (verified via the API);
   F3 (Part 2) is where the UI button gets wired up.
 
-### Phase 3 — S5, B6–B15 (hygiene + rails) — ⬜ not started
+### Phase 3 — S5, B6–B15 (hygiene + rails) — 🟡 IN PROGRESS (batch 1 of 2 done)
+
+Split into two batches (quick independent fixes first, then the meatier ones):
+
+| Item | Status | PR |
+|---|---|---|
+| B6 — `in_review` status never set | ✅ done | [#14](https://github.com/IngeniousArtist/hoopedorc/pull/14) |
+| B8 — Telegram Markdown metachar failures | ✅ done | [#15](https://github.com/IngeniousArtist/hoopedorc/pull/15) |
+| B12 — Risky-file regex false positives | ✅ done | [#16](https://github.com/IngeniousArtist/hoopedorc/pull/16) |
+| B13 — `scopesOverlap` mishandles globs | ✅ done | [#17](https://github.com/IngeniousArtist/hoopedorc/pull/17) |
+| B14 — Unbounded `logs` table growth | ✅ done | [#18](https://github.com/IngeniousArtist/hoopedorc/pull/18) |
+| S5 — Sanitized env for spawned agents | ⬜ not started | batch 2 |
+| B7 — Planner argv E2BIG risk | ⬜ not started | batch 2 |
+| B9 — Mid-run task additions invisible | ⬜ not started | batch 2 |
+| B10 — Zombie approvals after restart | ⬜ not started | batch 2 |
+| B11 — Gates pass vacuously, no scripts | ⬜ not started | batch 2 |
+| B15 — WS broadcasts cross-project | ⬜ not started | batch 2 |
+
+Batch 1 (B6, B8, B12, B13, B14) all merged to `main`; `npm run typecheck`,
+`npm run build`, and `npm test -w @orc/engine` green as of each merge (10/10
+tests, 4 new). B6, B12, and B13 verified with new unit tests; B6 additionally
+live-verified with real model calls (`in_progress → in_review → in_progress`
+on a gate-failure retry, observed via `GET /api/tasks/:id` on a throwaway
+repo); B8 verified with a scripted `fetch` double (no Telegram bot available);
+B14 live-verified against the real server (seeded an old/oversized DB, booted,
+confirmed the exact row counts pruned). Notable finds:
+- B13 surfaced a **second, previously-latent bug** while fixing the first:
+  `Orchestrator.start()`'s dispatch loop computed `activeScopePaths` once per
+  while-iteration and never updated it as tasks were dispatched within the
+  same pass — masked until B13's `scopesOverlap` fix made it observable via a
+  failing integration test. Both are fixed in PR #17.
+- `isAuthOrSecretFile` and `scopesOverlap`/`staticScopePrefix` (B12, B13) are
+  now exported from `orchestrator.ts` specifically so they're directly unit
+  testable — a pattern worth continuing for future pure-logic fixes in this
+  file.
 
 ### Phase 4 — F1, F2, F3, F4 (core product loop) — ⬜ not started
 
@@ -319,7 +353,7 @@ the same enum check to `difficulty`/`role` if you add them to the PATCH body lat
 **Acceptance:** `PATCH {status: "bogus"}` → 400; `PATCH {status: "ready"}` on a
 failed task works; `PATCH {status: "in_progress"}` → 409.
 
-### B6. `in_review` status exists but is never set — dead kanban column — LOW
+### B6. `in_review` status exists but is never set — dead kanban column — LOW — ✅ DONE (PR [#14](https://github.com/IngeniousArtist/hoopedorc/pull/14))
 
 **Where:** `domain.ts` defines `in_review` ("gates + validator running"); the
 orchestrator never assigns it, so the Board column is permanently empty and the
@@ -354,7 +388,7 @@ recent ~50 tasks as an extra bound.
 **Acceptance:** a planning chat with a 300KB transcript completes; adapters still
 pass the existing engine tests and the seed-e2e harness runs.
 
-### B8. Telegram messages with Markdown metacharacters silently fail — LOW
+### B8. Telegram messages with Markdown metacharacters silently fail — LOW — ✅ DONE (PR [#15](https://github.com/IngeniousArtist/hoopedorc/pull/15))
 
 **Where:** `telegram.ts approvalRequested` sends `parse_mode: "Markdown"` with raw
 task titles/messages. A title containing `_`, `*`, `[`, or a backtick makes the Bot
@@ -429,7 +463,7 @@ validator model stands between generated code and auto-merge.
 **Acceptance:** a repo with no scripts + `hard_gate_flag_risky` policy → merge
 requires approval with reason "no objective gates ran"; engine tests green.
 
-### B12. Risky-file regex flags `author.ts`, `token.ts` etc. — LOW (noise)
+### B12. Risky-file regex flags `author.ts`, `token.ts` etc. — LOW (noise) — ✅ DONE (PR [#16](https://github.com/IngeniousArtist/hoopedorc/pull/16))
 
 **Where:** `orchestrator.ts canAutoMerge`:
 `/\.env|auth|secret|credential|token/i.test(f)` matches substrings anywhere in the
@@ -444,7 +478,7 @@ unit tests in the engine test file for `author.ts` (no), `auth.ts` (yes),
 
 **Acceptance:** new unit tests pass; the four existing engine tests stay green.
 
-### B13. `scopesOverlap` mishandles glob patterns — LOW
+### B13. `scopesOverlap` mishandles glob patterns — LOW — ✅ DONE (PR [#17](https://github.com/IngeniousArtist/hoopedorc/pull/17))
 
 **Where:** `orchestrator.ts scopesOverlap` only strips a trailing `/**`; patterns
 like `src/**/*.ts`, `**/*`, `*.md` fall through to literal string compares, so
@@ -460,7 +494,7 @@ true; `["docs/**"]` vs `["src/**"]` → false.
 
 **Acceptance:** new tests pass; a plan with two `**/*` tasks runs them serially.
 
-### B14. Unbounded `logs` table growth — LOW
+### B14. Unbounded `logs` table growth — LOW — ✅ DONE (PR [#18](https://github.com/IngeniousArtist/hoopedorc/pull/18))
 
 **Where:** every agent output line is persisted forever (`logs` table); a few long
 runs → hundreds of MB in SQLite, slowing the WAL and snapshot queries.
@@ -674,7 +708,7 @@ doc first (`docs/specs/sandbox.md`), do not attempt as part of this pass.
 |---|---|---|---|
 | 1 | S1, S2, S3, S4 | Close the injection/exposure holes before anything else touches the network surface. | ✅ done |
 | 2 | B1, B2, B3, B4, B5 | The control-plane bugs users hit daily (stop, logs, double-run, run rows, status). | ✅ done |
-| 3 | S5, B6–B15 | Hygiene + rails; each is small and independent. | ⬜ not started |
+| 3 | S5, B6–B15 | Hygiene + rails; each is small and independent. | 🟡 batch 1/2 done |
 | 4 | F1, F2, F3, F4 | Core product loop: onboard → understand → intervene → observe. | ⬜ not started |
 | 5 | F5, F6, F7, F8 | Away-from-keyboard autonomy story. | ⬜ not started |
 | 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. | ⬜ not started |
