@@ -45,7 +45,30 @@ while implementing this phase (not separate plan items, but relevant to later wo
   `localStorage` and prompts once on a 401; this is a stopgap, not the polished
   onboarding UI — F1 should replace the `window.prompt()` with a real login step.
 
-### Phase 2 — B1, B2, B3, B4, B5 (control-plane bugs) — ⬜ not started
+### Phase 2 — B1, B2, B3, B4, B5 (control-plane bugs) — ✅ DONE
+
+| Item | Status | PR |
+|---|---|---|
+| B1 — Stop didn't stop the running agent | ✅ done | [#8](https://github.com/IngeniousArtist/hoopedorc/pull/8) |
+| B2 — Log history dead after reload (`runId: ""`) | ✅ done | [#9](https://github.com/IngeniousArtist/hoopedorc/pull/9) |
+| B3 — Manual dispatch vs. autonomous loop double-run | ✅ done | [#10](https://github.com/IngeniousArtist/hoopedorc/pull/10) |
+| B4 — Run rows only written at run end | ✅ done | [#11](https://github.com/IngeniousArtist/hoopedorc/pull/11) |
+| B5 — Unvalidated `PATCH /api/tasks/:id` status | ✅ done | [#12](https://github.com/IngeniousArtist/hoopedorc/pull/12) |
+
+All five merged to `main`; `npm run typecheck`, `npm run build`, and
+`npm test -w @orc/engine` green as of each merge (new engine unit tests added for
+B1's stop mechanism and B4's live run row). B1, B3, and B4 were also verified live
+against the real (non-mock) server — B4's live-run-row fix was confirmed with real
+paid model calls (`GET /api/tasks/:id/runs` showing a genuine in-flight `"running"`
+row with correct non-zero durations once terminal). Notable follow-on additions:
+- `TASK_STATUSES` (`@orc/types/domain.ts`) is now the single source of truth for
+  the `TaskStatus` union — reused by both the server's PATCH validation (B5) and
+  the Board's column list, so they can't drift apart.
+- `EngineRunner.manualRuns` (added for B3) also closed a gap B1 had flagged: `stopTask`
+  can now reach a manually-dispatched task's own one-off orchestrator, not just the
+  autonomous-loop one.
+- The Board has no "Stop" button yet — B1 is backend-only (verified via the API);
+  F3 (Part 2) is where the UI button gets wired up.
 
 ### Phase 3 — S5, B6–B15 (hygiene + rails) — ⬜ not started
 
@@ -195,7 +218,7 @@ repo-controlled code on the host, and that a container/sandbox mode is future wo
 **Acceptance:** a task whose author prompt asks the model to `echo $TELEGRAM_BOT_TOKEN`
 gets an empty value; agents and gates still run (verified by the seed-e2e harness).
 
-### B1. "Stop" doesn't stop anything — the agent keeps running and spending — HIGH
+### B1. "Stop" doesn't stop anything — the agent keeps running and spending — HIGH — ✅ DONE (PR [#8](https://github.com/IngeniousArtist/hoopedorc/pull/8))
 
 **Where:** `POST /api/tasks/:id/stop` (`index.ts` ~906) only rewrites DB rows (run →
 `stopped`, task → `blocked`). The actual child process lives in the Orchestrator's
@@ -220,7 +243,7 @@ and overwrites the task status — the user pressed Stop and the PR merged anywa
 gone within ~3s (SIGTERM→SIGKILL path already exists in `wireAbort`), the task ends
 `blocked`, and nothing merges afterwards.
 
-### B2. Run log history is unreadable after reload — every log row has `runId: ""` — HIGH
+### B2. Run log history is unreadable after reload — every log row has `runId: ""` — HIGH — ✅ DONE (PR [#9](https://github.com/IngeniousArtist/hoopedorc/pull/9))
 
 **Where:** every `onLog` emission in `orchestrator.ts` (lines ~522, 760, 811) and
 `validator.ts` (~193) hardcodes `runId: ""`. The Board's history loader
@@ -240,7 +263,7 @@ logs ever show. The `runLogs` endpoint is effectively dead.
 
 **Acceptance:** run a task, reload the page, select the task → historical logs appear.
 
-### B3. Manual dispatch and the autonomous loop can double-run the same task — HIGH
+### B3. Manual dispatch and the autonomous loop can double-run the same task — HIGH — ✅ DONE (PR [#10](https://github.com/IngeniousArtist/hoopedorc/pull/10))
 
 **Where:** `EngineRunner.dispatchOne` builds a throwaway `Orchestrator` that is
 **not** registered in `this.orchestrators`, so `engine.isRunning(projectId)` is
@@ -260,7 +283,7 @@ orchestrator instance, not just the task id).
 **Acceptance:** while a manual dispatch runs, `POST /projects/:id/start` returns 409
 with a clear message; after it finishes, start works.
 
-### B4. Run rows are only written when a run *ends* — no live run, wrong duration — MEDIUM
+### B4. Run rows are only written when a run *ends* — no live run, wrong duration — MEDIUM — ✅ DONE (PR [#11](https://github.com/IngeniousArtist/hoopedorc/pull/11))
 
 **Where:** `Orchestrator.emitRunEvent` (orchestrator.ts ~820) is called once, after
 the adapter returns, with `startedAt` = `endedAt` = now. So while an agent works
@@ -279,7 +302,7 @@ the web app.
 **Acceptance:** during a run, `GET /api/tasks/:id/runs` shows a `running` row;
 after completion the row's `endedAt - startedAt` matches wall-clock (>0).
 
-### B5. `PATCH /api/tasks/:id` accepts any string as `status` — MEDIUM
+### B5. `PATCH /api/tasks/:id` accepts any string as `status` — MEDIUM — ✅ DONE (PR [#12](https://github.com/IngeniousArtist/hoopedorc/pull/12))
 
 **Where:** `index.ts` ~793: `if (body.status) updates.status = body.status` — no
 validation against `TaskStatus`, no guard against nonsensical transitions (e.g.
@@ -650,7 +673,7 @@ doc first (`docs/specs/sandbox.md`), do not attempt as part of this pass.
 | Phase | Items | Rationale | Status |
 |---|---|---|---|
 | 1 | S1, S2, S3, S4 | Close the injection/exposure holes before anything else touches the network surface. | ✅ done |
-| 2 | B1, B2, B3, B4, B5 | The control-plane bugs users hit daily (stop, logs, double-run, run rows, status). | ⬜ not started |
+| 2 | B1, B2, B3, B4, B5 | The control-plane bugs users hit daily (stop, logs, double-run, run rows, status). | ✅ done |
 | 3 | S5, B6–B15 | Hygiene + rails; each is small and independent. | ⬜ not started |
 | 4 | F1, F2, F3, F4 | Core product loop: onboard → understand → intervene → observe. | ⬜ not started |
 | 5 | F5, F6, F7, F8 | Away-from-keyboard autonomy story. | ⬜ not started |
