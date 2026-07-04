@@ -20,9 +20,46 @@ ARCHITECTURE, NEXT_STEPS, CONTRACT). It has two parts:
 
 ---
 
+## Progress
+
+Tracks completion against the **Suggested execution order** table at the bottom of
+this doc. Update this section (and re-check the acceptance criteria) as each phase
+lands — this is the single place to see what's done vs. still open.
+
+### Phase 1 — S1, S2, S3, S4 (injection/exposure holes) — ✅ DONE
+
+| Item | Status | PR |
+|---|---|---|
+| S1 — Command injection via `execSync` | ✅ done | [#3](https://github.com/IngeniousArtist/hoopedorc/pull/3) |
+| S2 — Unauthenticated API, open CORS | ✅ done | [#4](https://github.com/IngeniousArtist/hoopedorc/pull/4) |
+| S3 — Telegram bot token in plaintext | ✅ done | [#5](https://github.com/IngeniousArtist/hoopedorc/pull/5) |
+| S4 — `rm -rf` on arbitrary path | ✅ done | [#6](https://github.com/IngeniousArtist/hoopedorc/pull/6) |
+
+All four merged to `main`; `npm run typecheck`, `npm run build`, and
+`npm test -w @orc/engine` green as of each merge. Notable follow-on additions made
+while implementing this phase (not separate plan items, but relevant to later work):
+- `Settings.apiToken` + a shared `SECRET_SENTINEL` (`@orc/types`) — the mechanism S3
+  needed for Telegram-token redaction, generalized so S2's new `apiToken` secret uses
+  it too. Reuse this sentinel for any future secret field.
+- The web client (`apps/web/src/api/client.ts`) now stores a bearer token in
+  `localStorage` and prompts once on a 401; this is a stopgap, not the polished
+  onboarding UI — F1 should replace the `window.prompt()` with a real login step.
+
+### Phase 2 — B1, B2, B3, B4, B5 (control-plane bugs) — ⬜ not started
+
+### Phase 3 — S5, B6–B15 (hygiene + rails) — ⬜ not started
+
+### Phase 4 — F1, F2, F3, F4 (core product loop) — ⬜ not started
+
+### Phase 5 — F5, F6, F7, F8 (away-from-keyboard autonomy) — ⬜ not started
+
+### Phase 6 — F9, F10, F11, F12 (flexibility, packaging, docs) — ⬜ not started
+
+---
+
 ## Part 1 — Bugs & security (fix first, in this order)
 
-### S1. Command injection via `execSync` string interpolation — CRITICAL
+### S1. Command injection via `execSync` string interpolation — CRITICAL — ✅ DONE (PR [#3](https://github.com/IngeniousArtist/hoopedorc/pull/3))
 
 **Where:** `packages/engine/src/worktree-manager.ts` (7 call sites: lines ~40, 54, 69,
 82, 87, 95, 213, 222, 240) and `packages/engine/src/validator.ts` (`getDiff`, ~line 107).
@@ -56,7 +93,7 @@ worktree manager and validator were never converted.
 project with `defaultBranch: 'main"; touch /tmp/pwned; "'` returns 400; typecheck,
 build, engine tests green.
 
-### S2. Unauthenticated API bound to 0.0.0.0 with reflect-any-origin CORS — CRITICAL
+### S2. Unauthenticated API bound to 0.0.0.0 with reflect-any-origin CORS — CRITICAL — ✅ DONE (PR [#4](https://github.com/IngeniousArtist/hoopedorc/pull/4))
 
 **Where:** `packages/server/src/index.ts` — `app.register(cors, { origin: true })`
 (line ~243) and `app.listen({ port: ENV.port, host: "0.0.0.0" })` (line ~1290).
@@ -91,7 +128,7 @@ and CORS `origin: true` defeats even localhost-only binding.
 from a random origin in the browser gets a CORS error; with `API_TOKEN` set, requests
 without the header get 401, the web UI still works after entering the token.
 
-### S3. Telegram bot token stored and served in plaintext — HIGH
+### S3. Telegram bot token stored and served in plaintext — HIGH — ✅ DONE (PR [#5](https://github.com/IngeniousArtist/hoopedorc/pull/5))
 
 **Where:** `settings.telegram.botToken` is saved raw in the settings JSON
 (`repo.upsertSettings`) and returned verbatim by `GET /api/settings`; the Settings
@@ -113,7 +150,7 @@ read the API (see S2) owns the bot — and the bot can approve risky merges.
 without touching the token field leaves Telegram working; entering a new token
 replaces it.
 
-### S4. `rm -rf` on an arbitrary user-supplied path — HIGH
+### S4. `rm -rf` on an arbitrary user-supplied path — HIGH — ✅ DONE (PR [#6](https://github.com/IngeniousArtist/hoopedorc/pull/6))
 
 **Where:** `POST /api/projects` accepts `body.localPath` (any absolute path, `~`
 expanded); `DELETE /api/projects/:id` then does
@@ -610,14 +647,14 @@ doc first (`docs/specs/sandbox.md`), do not attempt as part of this pass.
 
 ## Suggested execution order
 
-| Phase | Items | Rationale |
-|---|---|---|
-| 1 | S1, S2, S3, S4 | Close the injection/exposure holes before anything else touches the network surface. |
-| 2 | B1, B2, B3, B4, B5 | The control-plane bugs users hit daily (stop, logs, double-run, run rows, status). |
-| 3 | S5, B6–B15 | Hygiene + rails; each is small and independent. |
-| 4 | F1, F2, F3, F4 | Core product loop: onboard → understand → intervene → observe. |
-| 5 | F5, F6, F7, F8 | Away-from-keyboard autonomy story. |
-| 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. |
+| Phase | Items | Rationale | Status |
+|---|---|---|---|
+| 1 | S1, S2, S3, S4 | Close the injection/exposure holes before anything else touches the network surface. | ✅ done |
+| 2 | B1, B2, B3, B4, B5 | The control-plane bugs users hit daily (stop, logs, double-run, run rows, status). | ⬜ not started |
+| 3 | S5, B6–B15 | Hygiene + rails; each is small and independent. | ⬜ not started |
+| 4 | F1, F2, F3, F4 | Core product loop: onboard → understand → intervene → observe. | ⬜ not started |
+| 5 | F5, F6, F7, F8 | Away-from-keyboard autonomy story. | ⬜ not started |
+| 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. | ⬜ not started |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
