@@ -1,11 +1,12 @@
-import type {
-  Difficulty,
-  MergePolicy,
-  ModelId,
-  Role,
-  RoutingPolicy,
-  Settings as SettingsType,
-  TelegramTestResponse,
+import {
+  SECRET_SENTINEL,
+  type Difficulty,
+  type MergePolicy,
+  type ModelId,
+  type Role,
+  type RoutingPolicy,
+  type Settings as SettingsType,
+  type TelegramTestResponse,
 } from "@orc/types";
 import type { ModelConfig } from "@orc/types";
 import { useEffect, useState } from "react";
@@ -112,6 +113,14 @@ export function Settings() {
             },
           }
         : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
+  function updateApiToken(value: string) {
+    setSettings((prev) =>
+      prev ? { ...prev, apiToken: value || undefined } : prev,
     );
     setDirty(true);
     setSaved(false);
@@ -408,6 +417,38 @@ export function Settings() {
             New projects clone here by default (a slug of the project name, e.g.
             ~/projects/my-app), unless you set a local directory explicitly on
             New Project.
+          </p>
+        </div>
+      </section>
+
+      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+        <h3 className="text-sm font-medium text-neutral-300">Security</h3>
+        <div>
+          <label className="mb-1 block text-xs text-neutral-400">
+            API token
+          </label>
+          <input
+            type="password"
+            autoComplete="off"
+            value={
+              settings.apiToken === SECRET_SENTINEL
+                ? ""
+                : (settings.apiToken ?? "")
+            }
+            onChange={(e) => updateApiToken(e.target.value)}
+            placeholder={
+              settings.apiToken === SECRET_SENTINEL
+                ? "token saved — enter to replace"
+                : "unset — API is open to anything reaching this host"
+            }
+            className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+          />
+          <p className="mt-1 text-[10px] text-neutral-600">
+            When set, every request (HTTP and the WebSocket connection) must
+            present this token. Frictionless on localhost by default; required
+            if the server binds beyond localhost (the HOST env var) unless
+            ALLOW_UNAUTHENTICATED=1 is set. The API_TOKEN env var, if present,
+            overrides this.
           </p>
         </div>
       </section>

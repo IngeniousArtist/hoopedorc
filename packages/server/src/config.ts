@@ -119,6 +119,28 @@ export function defaultSettings(): Settings {
 export const ENV = {
   port: Number(process.env.PORT ?? 4317),
   dbPath: process.env.DB_PATH ?? "hoopedorc.db",
+  // Loopback by default — the API is unauthenticated unless apiToken/API_TOKEN
+  // is set (see below), so binding wide open by default would let anything on
+  // the LAN (or any website open in the operator's browser, via CORS) drive
+  // it. Set HOST=0.0.0.0 deliberately for Tailscale/EC2 use.
+  host: process.env.HOST ?? "127.0.0.1",
+  // Extra allowed CORS origins beyond the dev web app's own
+  // (http://localhost:5173, http://127.0.0.1:5173) — comma-separated. Never
+  // reflect-any-origin: that would let any open browser tab call the API.
+  corsOrigins: (process.env.CORS_ORIGINS ?? "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean),
+  // Off by default (frictionless solo localhost use). When set, every
+  // /api/* request (and the /ws upgrade) must present it as
+  // `Authorization: Bearer <token>` (or `?token=` for the WS upgrade, since
+  // browsers can't set headers on the upgrade request). settings.apiToken is
+  // an alternate source (set via the UI once authenticated); this env var
+  // wins if both are present.
+  apiToken: process.env.API_TOKEN || undefined,
+  // Escape hatch to bind non-loopback without a token (e.g. a throwaway
+  // sandbox). Off by default — see the startup guard in index.ts.
+  allowUnauthenticated: process.env.ALLOW_UNAUTHENTICATED === "1",
   // Empty by default => `opencode run` runs standalone. Set OPENCODE_BASE_URL
   // (and run `opencode serve`) only to centralize sessions on one server.
   opencodeBaseUrl: process.env.OPENCODE_BASE_URL ?? "",

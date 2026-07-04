@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ServerEvent } from "@orc/types";
+import { getStoredApiToken } from "../api/client";
 
 /** Reconnect backoff: 1s → 2s → 4s … capped at 15s. */
 const BACKOFF_BASE_MS = 1000;
@@ -26,7 +27,11 @@ export function useWS(
 
     const connect = () => {
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      ws = new WebSocket(`${protocol}//${location.host}/ws`);
+      // Browsers can't set custom headers on a WS upgrade, so the bearer
+      // token (when the server requires one) rides as a query param instead.
+      const token = getStoredApiToken();
+      const url = `${protocol}//${location.host}/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+      ws = new WebSocket(url);
 
       ws.onopen = () => {
         attempts = 0; // reset backoff once a connection succeeds
