@@ -1,4 +1,4 @@
-import { execSync, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import {
@@ -15,6 +15,18 @@ import type { Project, Task } from "@orc/types";
 import type { WorktreeManager } from "./index.js";
 
 const pexecFile = promisify(execFile);
+
+// Argument arrays only, never a shell — otherwise project.defaultBranch and
+// task.branch (both derived from HTTP-supplied fields) could smuggle shell
+// metacharacters into a command. See git-service.ts for the same pattern.
+async function git(args: string[], cwd: string): Promise<string> {
+  const { stdout } = await pexecFile("git", args, {
+    cwd,
+    encoding: "utf-8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return stdout;
+}
 
 const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
 const DEPS_MARKER = ".hoopedorc-deps-hash";
@@ -37,10 +49,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
     // stale local HEAD makes a new task invisible to work that already
     // landed, which is how independent tasks end up colliding on the same
     // files (see e.g. two tasks both creating index.html from scratch).
-    execSync(`git fetch origin "${project.defaultBranch}"`, {
-      cwd: project.localPath,
-      stdio: "pipe",
-    });
+    await git(["fetch", "origin", project.defaultBranch], project.localPath);
 
     // Defense in depth: the branch name is deterministic (orc/<taskId>), so a
     // retried task reuses it. If a prior attempt already pushed to and opened
@@ -51,10 +60,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
     // branch here (best-effort — fine if it doesn't exist) lets that PR's old
     // branch go away cleanly instead of blocking the new push.
     try {
-      execSync(`git push origin --delete "${branch}"`, {
-        cwd: project.localPath,
-        stdio: "pipe",
-      });
+      await git(["push", "origin", "--delete", branch], project.localPath);
     } catch {
       /* no remote branch by this name — the common case */
     }
@@ -66,10 +72,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
     // ever clean it up, and `git worktree add` fails outright with "already
     // exists" on every subsequent dispatch of this same task, forever.
     try {
-      execSync(`git worktree remove "${path}" --force`, {
-        cwd: project.localPath,
-        stdio: "pipe",
-      });
+      await git(["worktree", "remove", path, "--force"], project.localPath);
     } catch {
       /* not a registered worktree — fall through to the raw rmSync below */
     }
@@ -79,29 +82,26 @@ export class WorktreeManagerImpl implements WorktreeManager {
       /* path didn't exist — the common case */
     }
     try {
-      execSync(`git worktree prune`, { cwd: project.localPath, stdio: "pipe" });
+      await git(["worktree", "prune"], project.localPath);
     } catch {
       /* best effort */
     }
     try {
-      execSync(`git branch -D "${branch}"`, {
-        cwd: project.localPath,
-        stdio: "pipe",
-      });
+      await git(["branch", "-D", branch], project.localPath);
     } catch {
       /* branch may not exist locally — the common case */
     }
 
-    execSync(
-      `git worktree add "${path}" -b "${branch}" "origin/${project.defaultBranch}"`,
-      { cwd: project.localPath, stdio: "pipe" },
+    await git(
+      ["worktree", "add", path, "-b", branch, `origin/${project.defaultBranch}`],
+      project.localPath,
     );
 
     // MUST run before ensureDeps drops the node_modules symlink, and before the
     // agent's `git add -A`: otherwise node_modules gets committed into the
     // task's PR and the inScope gate fails it as an out-of-scope change. This
     // is the local safety net; new repos also get a committed .gitignore.
-    this.ensureGitExclude(path);
+    await this.ensureGitExclude(path);
     await this.ensureDeps(project, path);
 
     return { branch, path };
@@ -113,13 +113,11 @@ export class WorktreeManagerImpl implements WorktreeManager {
    * across all worktrees via the common git dir, never committed) so it works
    * even for older projects whose repo has no .gitignore.
    */
-  private ensureGitExclude(cwd: string): void {
+  private async ensureGitExclude(cwd: string): Promise<void> {
     try {
-      const rel = execSync("git rev-parse --git-path info/exclude", {
-        cwd,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      }).trim();
+      const rel = (
+        await git(["rev-parse", "--git-path", "info/exclude"], cwd)
+      ).trim();
       const abs = isAbsolute(rel) ? rel : join(cwd, rel);
 
       let content = "";
@@ -210,19 +208,13 @@ export class WorktreeManagerImpl implements WorktreeManager {
     if (!path || !branch) return;
 
     try {
-      execSync(`git worktree remove "${path}" --force`, {
-        cwd: project.localPath,
-        stdio: "pipe",
-      });
+      await git(["worktree", "remove", path, "--force"], project.localPath);
     } catch {
       /* worktree may already be gone */
     }
 
     try {
-      execSync(`git branch -D "${branch}"`, {
-        cwd: project.localPath,
-        stdio: "pipe",
-      });
+      await git(["branch", "-D", branch], project.localPath);
     } catch {
       /* branch may already be deleted */
     }
@@ -237,9 +229,9 @@ export class WorktreeManagerImpl implements WorktreeManager {
       // main since this worktree was created, so when a sibling task merges
       // mid-run those files leak into this task's "changed" set and the inScope
       // gate fails it for files it never touched.
-      const output = execSync(
-        `git diff --name-only origin/${project.defaultBranch}...HEAD`,
-        { cwd: worktreePath, stdio: "pipe", encoding: "utf-8" },
+      const output = await git(
+        ["diff", "--name-only", `origin/${project.defaultBranch}...HEAD`],
+        worktreePath,
       );
       return output
         .split("\n")
