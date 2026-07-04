@@ -323,7 +323,8 @@ export class EngineRunner {
           (t) =>
             t.status === "backlog" ||
             t.status === "ready" ||
-            t.status === "in_progress",
+            t.status === "in_progress" ||
+            t.status === "in_review",
         );
         const anyFailed = finalTasks.some((t) => t.status === "failed");
         const finalStatus = allDone

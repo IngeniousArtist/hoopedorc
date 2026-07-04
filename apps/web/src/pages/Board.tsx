@@ -169,7 +169,9 @@ export function Board({ projectId }: { projectId: string }) {
 
   // 1s heartbeat ticker — only runs while something is in_progress, so an idle
   // board doesn't re-render needlessly.
-  const hasRunning = tasks.some((t) => t.status === "in_progress");
+  const hasRunning = tasks.some(
+    (t) => t.status === "in_progress" || t.status === "in_review",
+  );
   useEffect(() => {
     if (!hasRunning) return;
     const id = setInterval(() => setNowTick((n) => n + 1), 1000);

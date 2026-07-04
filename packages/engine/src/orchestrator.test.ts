@@ -247,3 +247,50 @@ test("a risky change (new dependency) escalates to a human instead of auto-mergi
   assert.equal(merged.length, 0);
   assert.equal(t1.status, "failed");
 });
+
+test("sets in_review while gates run and back to in_progress on a gate-failure retry", async () => {
+  const merged: number[] = [];
+  const statuses: string[] = [];
+  let gateCalls = 0;
+  const deps = fakeDeps(
+    {
+      gates: {
+        async run() {
+          gateCalls++;
+          // Fail the first attempt's gate, pass the second's.
+          return gateCalls === 1
+            ? { ...GOOD_GATE, typecheck: false, details: { typecheck: "boom" } }
+            : GOOD_GATE;
+        },
+      },
+      events: {
+        onLog() {},
+        onTaskUpdated(t) {
+          statuses.push(t.status);
+        },
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1"); // default maxAttempts: 2
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.equal(t1.status, "done");
+  const reviewIndices = statuses
+    .map((s, i) => (s === "in_review" ? i : -1))
+    .filter((i) => i >= 0);
+  assert.ok(
+    reviewIndices.length >= 2,
+    "should enter in_review once per attempt (failed + retried)",
+  );
+  const between = statuses.slice(reviewIndices[0]! + 1, reviewIndices[1]!);
+  assert.ok(
+    between.includes("in_progress"),
+    "must reset to in_progress before the retry's own in_review, not stay stuck",
+  );
+});

@@ -128,17 +128,18 @@ export class Orchestrator implements Scheduler {
     this.budgetBlockedWarned.clear();
 
     // Orphan recovery: this Orchestrator instance starts with empty
-    // activeTaskIds, so any task already in "in_progress" was left mid-run by
-    // a previous process (crash, restart, deploy) — nothing is actually
-    // working on it. Requeue it as backlog so the scheduler retries it
-    // instead of silently stalling forever (it would never appear in
-    // readyTasks() and would permanently block every task that depends on it).
+    // activeTaskIds, so any task already "in_progress" or "in_review" was
+    // left mid-run by a previous process (crash, restart, deploy) — nothing
+    // is actually working on it. Requeue it as backlog so the scheduler
+    // retries it instead of silently stalling forever (it would never appear
+    // in readyTasks() and would permanently block every task that depends on
+    // it).
     for (const task of tasks) {
-      if (task.status === "in_progress") {
+      if (task.status === "in_progress" || task.status === "in_review") {
         this.emit(
           "warn",
           "engine",
-          `Recovering orphaned task (was in_progress with no active run): ${task.title}`,
+          `Recovering orphaned task (was ${task.status} with no active run): ${task.title}`,
           task.id,
         );
         task.status = "backlog";
@@ -271,7 +272,7 @@ export class Orchestrator implements Scheduler {
 
     for (const task of this.currentTasks) {
       if (
-        task.status === "in_progress" &&
+        (task.status === "in_progress" || task.status === "in_review") &&
         this.activeTaskIds.has(task.id)
       ) {
         task.status = "backlog";
@@ -361,6 +362,14 @@ export class Orchestrator implements Scheduler {
       ) {
         if (this.paused) return;
         if (this.bailIfStopRequested(task)) return;
+
+        // Every new attempt starts a fresh author run — reset from
+        // "in_review" (set below, right before gates) back to
+        // "in_progress" so the board reflects reality instead of leaving a
+        // retry looking like a review is still in progress. A no-op on the
+        // very first attempt (already "in_progress" from before this loop).
+        task.status = "in_progress";
+        this.deps.events.onTaskUpdated(task);
 
         // Stop spending mid-task if a budget cap has since been hit. Checked
         // against currentModel (which may be a fallback by this point), not
@@ -484,6 +493,13 @@ export class Orchestrator implements Scheduler {
           task.prNumber = await this.deps.git.openPr(project, task);
           this.deps.events.onTaskUpdated(task);
         }
+
+        // Gates + validator take minutes; without this the board shows
+        // "In Progress" throughout review with no way to tell dispatch time
+        // from review time. Reset back to "in_progress" at the top of the
+        // next attempt if this one gets retried.
+        task.status = "in_review";
+        this.deps.events.onTaskUpdated(task);
 
         const gateResult = await this.deps.gates.run(project, task);
         finalGate = gateResult;
