@@ -174,6 +174,12 @@ export interface ListRunsResponse {
 export interface RunLogsResponse {
   logs: LogEvent[];
 }
+/** GET /api/tasks/:id/logs — every log for a task across all its runs,
+ *  newest-capped at `limit` (default 1000). Optional `?after=<ISO ts>` for
+ *  incremental polling. */
+export interface TaskLogsResponse {
+  logs: LogEvent[];
+}
 
 export interface CostsResponse {
   totalUsd: number;
@@ -332,6 +338,7 @@ export const ROUTES = {
   stopTask: "POST /api/tasks/:id/stop",
   listTaskRuns: "GET /api/tasks/:id/runs",
   runLogs: "GET /api/runs/:id/logs",
+  taskLogs: "GET /api/tasks/:id/logs",
   costs: "GET /api/projects/:id/costs",
   costAnalytics: "GET /api/projects/:id/analytics",
   estimatePlan: "GET /api/projects/:id/estimate",

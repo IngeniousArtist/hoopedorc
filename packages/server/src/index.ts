@@ -1294,6 +1294,21 @@ async function main() {
     return { logs: repo.getLogs(db, id) };
   });
 
+  // Every onLog emission is keyed by task_id regardless of which run it
+  // belongs to (or whether a run exists yet at all — engine-level logs), so
+  // this is the route that actually backs the Board's log history after a
+  // reload; runLogs above matches nothing for logs written before runId was
+  // populated correctly.
+  app.get("/api/tasks/:id/logs", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    if (!repo.getTask(db, id)) return reply.code(404).send({ error: "task not found" });
+    const query = req.query as { after?: string; limit?: string };
+    const limit = query.limit
+      ? Math.max(1, Math.min(5000, parseInt(query.limit, 10) || 1000))
+      : 1000;
+    return { logs: repo.getLogsByTask(db, id, { after: query.after, limit }) };
+  });
+
   // ── Costs ──
   app.get("/api/projects/:id/costs", async (req, reply) => {
     const { id } = req.params as RouteParams;

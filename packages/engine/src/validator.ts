@@ -195,7 +195,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
     return {
       id: randomUUID(),
       taskId: task.id,
-      runId: "",
+      runId: `run-${task.id}-${task.attempts}`,
       validatorModel: validatorModel as MergeDecision["validatorModel"],
       verdict,
       reasons,

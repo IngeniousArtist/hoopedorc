@@ -564,7 +564,7 @@ export class Orchestrator implements Scheduler {
             currentModel,
             (line) =>
               this.deps.events.onLog({
-                runId: "",
+                runId: `run-${task.id}-${task.attempts}`,
                 taskId: task.id,
                 ts: new Date().toISOString(),
                 level: "debug",
@@ -804,7 +804,7 @@ export class Orchestrator implements Scheduler {
           }
 
           this.deps.events.onLog({
-            runId: "",
+            runId: `run-${task.id}-${task.attempts}`,
             taskId: task.id,
             ts: new Date().toISOString(),
             level: "debug",
