@@ -82,6 +82,10 @@ export class Orchestrator implements Scheduler {
   /** How many times each task has been requeued for a merge-time conflict,
    *  so a perpetually-conflicting task can't loop forever. */
   private readonly mergeConflicts = new Map<string, number>();
+  /** Task ids a human asked to stop. Checked at every stage boundary in
+   *  executeTask so a Stop press can't be silently overtaken by gates
+   *  finishing -> validator -> auto-merge; cleared in executeTask's finally. */
+  private readonly stopRequested = new Set<string>();
   private currentTasks: Task[] = [];
 
   constructor(private readonly deps: SchedulerDeps) {}
@@ -278,10 +282,46 @@ export class Orchestrator implements Scheduler {
     this.emit("info", "engine", "Orchestrator paused", "");
   }
 
+  /**
+   * Request that one active task stop as soon as possible: aborts its live
+   * agent process if the author phase is currently running (the idle/max-run
+   * timers already wire SIGTERM->SIGKILL through AbortController), and marks
+   * it so executeTask bails at the next stage boundary — after the author
+   * run, after gates, before the validator, before merge — instead of
+   * finishing the pipeline and auto-merging behind the user's back. Returns
+   * false if this task isn't active in this orchestrator, so the caller can
+   * fall back to a DB-only stop (nothing was actually running).
+   */
+  stopTask(taskId: string): boolean {
+    if (!this.activeTaskIds.has(taskId)) return false;
+    this.stopRequested.add(taskId);
+    this.taskAbortControllers.get(taskId)?.abort();
+    return true;
+  }
+
+  /** Checked at each stage boundary in executeTask. If a stop was requested
+   *  for this task, mark it blocked and return true so the caller returns
+   *  immediately. */
+  private bailIfStopRequested(task: Task): boolean {
+    if (!this.stopRequested.has(task.id)) return false;
+    task.status = "blocked";
+    this.emit("warn", "engine", "Stopped by user", task.id);
+    this.deps.events.onTaskUpdated(task);
+    return true;
+  }
+
   /** Run a single task through the full pipeline (manual dispatch). */
   async runTask(project: Project, task: Task): Promise<void> {
     this.paused = false;
-    await this.executeTask(project, task);
+    // start()'s loop tracks this in activeTaskIds itself; runTask bypasses
+    // that loop entirely, so stopTask()'s guard would never see this task as
+    // stoppable without tracking it here too.
+    this.activeTaskIds.add(task.id);
+    try {
+      await this.executeTask(project, task);
+    } finally {
+      this.activeTaskIds.delete(task.id);
+    }
   }
 
   private async executeTask(
@@ -320,6 +360,7 @@ export class Orchestrator implements Scheduler {
         task.attempts++
       ) {
         if (this.paused) return;
+        if (this.bailIfStopRequested(task)) return;
 
         // Stop spending mid-task if a budget cap has since been hit. Checked
         // against currentModel (which may be a fallback by this point), not
@@ -351,7 +392,8 @@ export class Orchestrator implements Scheduler {
           fixInstructions,
           currentModel,
         );
-        if (authorResult === null) return;
+        if (this.bailIfStopRequested(task)) return;
+        if (authorResult === null) return; // paused
 
         if (!authorResult.ok) {
           this.emit(
@@ -445,6 +487,7 @@ export class Orchestrator implements Scheduler {
 
         const gateResult = await this.deps.gates.run(project, task);
         finalGate = gateResult;
+        if (this.bailIfStopRequested(task)) return;
 
         // inScope is deliberately NOT a hard gate. Wiring a new file into an
         // entry point (e.g. adding <script src="js/game.js"> to index.html) is
@@ -500,6 +543,8 @@ export class Orchestrator implements Scheduler {
           this.deps.events.onTaskUpdated(task);
           return;
         }
+
+        if (this.bailIfStopRequested(task)) return;
 
         // Announce the review — it spawns a separate reviewer model and can run
         // for minutes; without this the board goes silent and looks frozen.
@@ -603,6 +648,7 @@ export class Orchestrator implements Scheduler {
       }
 
       if (this.paused) return;
+      if (this.bailIfStopRequested(task)) return;
 
       if (task.prNumber == null) {
         this.emit(
@@ -703,6 +749,7 @@ export class Orchestrator implements Scheduler {
       task.status = "failed";
       this.deps.events.onTaskUpdated(task);
     } finally {
+      this.stopRequested.delete(task.id);
       try {
         await this.deps.worktrees.remove(project, task);
       } catch {
@@ -777,7 +824,11 @@ export class Orchestrator implements Scheduler {
         (err as Error).name === "AbortError" ||
         controller.signal.aborted
       ) {
-        if (this.paused) {
+        // Pause and user-stop both abort via this same controller — without
+        // this check a Stop press would be misread as stuck detection and
+        // fed straight into fallback-model escalation instead of actually
+        // stopping the task.
+        if (this.paused || this.stopRequested.has(task.id)) {
           this.emitRunEvent(task, null, "stopped", model);
           return null;
         }

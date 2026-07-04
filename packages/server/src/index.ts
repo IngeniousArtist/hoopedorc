@@ -1109,6 +1109,15 @@ async function main() {
     const task = repo.getTask(db, id);
     if (!task) return reply.code(404).send({ error: "task not found" });
 
+    // Reach into the actual running process first — this is what makes Stop
+    // real instead of just rewriting DB rows the orchestrator overwrites
+    // again once the agent finishes anyway. The DB writes below still run
+    // unconditionally as the fallback for when nothing was actually active
+    // (already terminal, or a race where it finished between the check and
+    // here) — they're idempotent with what the orchestrator itself now does
+    // when it notices the stop request at its next stage boundary.
+    const stoppedLive = engine.stopTask(task.projectId, id);
+
     const runs = repo.getRuns(db, id);
     const activeRun = runs.find((r) => r.status === "running");
     if (activeRun) {
@@ -1127,6 +1136,16 @@ async function main() {
     repo.updateTask(db, id, { status: "blocked" });
     const updatedTask = repo.getTask(db, id)!;
     broadcast({ type: "task.updated", payload: updatedTask });
+
+    repo.createAuditEntry(db, {
+      projectId: task.projectId,
+      taskId: id,
+      kind: "stopped",
+      actor: "human",
+      summary: stoppedLive
+        ? `Stopped "${task.title}" — agent process aborted`
+        : `Stopped "${task.title}" — no active run found, marked blocked`,
+    });
 
     return { task: updatedTask };
   });
