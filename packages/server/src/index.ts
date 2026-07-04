@@ -262,6 +262,10 @@ function redactSettings(settings: SettingsType): SettingsType {
   return {
     ...settings,
     apiToken: settings.apiToken ? SECRET_SENTINEL : undefined,
+    telegram: settings.telegram && {
+      ...settings.telegram,
+      botToken: settings.telegram.botToken ? SECRET_SENTINEL : undefined,
+    },
   };
 }
 
@@ -1248,6 +1252,13 @@ async function main() {
       body.settings.apiToken === SECRET_SENTINEL || !body.settings.apiToken
         ? current.apiToken
         : body.settings.apiToken;
+    if (merged.telegram) {
+      const incomingToken = body.settings.telegram?.botToken;
+      merged.telegram.botToken =
+        incomingToken === SECRET_SENTINEL || !incomingToken
+          ? current.telegram?.botToken
+          : incomingToken;
+    }
 
     // The same model can't author AND validate a difficulty tier — the
     // validator throws "self-review forbidden" the moment a task of that

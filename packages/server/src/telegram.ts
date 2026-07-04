@@ -3,9 +3,12 @@ import type { Notification } from "@orc/types";
 // Dependency-free Telegram bot over the raw Bot API with long-polling
 // (getUpdates). No public webhook, so it works behind Tailscale on EC2.
 //
-// Security: the token is read from an env var named by settings.telegram
-// .botTokenRef (never stored raw). All commands + approvals are restricted to
-// the single configured chat id — approvals merge real code.
+// Security: the token is either read from an env var named by
+// settings.telegram.botTokenRef, or stored raw in settings.telegram.botToken
+// (index.ts prefers the raw value when set). GET/PUT /api/settings redact
+// botToken to a sentinel so it never round-trips over the wire — see
+// redactSettings in index.ts. All commands + approvals are restricted to the
+// single configured chat id — approvals merge real code.
 
 const API = "https://api.telegram.org";
 

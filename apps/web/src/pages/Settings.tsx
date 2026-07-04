@@ -188,9 +188,13 @@ export function Settings() {
     setTelegramTesting(true);
     setTelegramTestMsg(null);
     try {
+      const botToken = settings?.telegram?.botToken;
       const res = await api<TelegramTestResponse>("telegramTest", {
         body: {
-          token: settings?.telegram?.botToken,
+          // A redacted sentinel isn't a real token — omit it so the server
+          // falls back to its own stored token instead of trying to auth
+          // with the literal string "__SET__".
+          token: botToken === SECRET_SENTINEL ? undefined : botToken,
           chatId: settings?.telegram?.chatId,
         },
       });
@@ -508,9 +512,17 @@ export function Settings() {
             <input
               type="password"
               autoComplete="off"
-              value={settings.telegram?.botToken ?? ""}
+              value={
+                settings.telegram?.botToken === SECRET_SENTINEL
+                  ? ""
+                  : (settings.telegram?.botToken ?? "")
+              }
               onChange={(e) => updateTelegramField("botToken", e.target.value)}
-              placeholder="123456789:ABCdef…"
+              placeholder={
+                settings.telegram?.botToken === SECRET_SENTINEL
+                  ? "token saved — enter to replace"
+                  : "123456789:ABCdef…"
+              }
               className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
             />
             <p className="mt-1 text-[10px] text-neutral-600">
