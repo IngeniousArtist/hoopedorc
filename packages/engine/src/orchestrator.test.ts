@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AgentAdapter, AgentRunResult } from "@orc/adapters";
 import type { GateResult, Project, Run, Settings, Task } from "@orc/types";
-import { Orchestrator, isAuthOrSecretFile } from "./orchestrator.js";
+import { Orchestrator, isAuthOrSecretFile, scopesOverlap } from "./orchestrator.js";
 import type { SchedulerDeps } from "./index.js";
 
 function settings(): Settings {
@@ -302,4 +302,64 @@ test("isAuthOrSecretFile matches path segments, not substrings", () => {
   assert.equal(isAuthOrSecretFile("tokenizer.ts"), false, "substring of an unrelated filename");
   assert.equal(isAuthOrSecretFile(".env.local"), true);
   assert.equal(isAuthOrSecretFile("docs/authors.md"), false, "substring of an unrelated filename");
+});
+
+test("scopesOverlap normalizes glob patterns to their static prefix instead of comparing them literally", () => {
+  assert.equal(
+    scopesOverlap(["**/*"], ["docs/**"]),
+    true,
+    "an unscoped **/* pattern can't rule out anything",
+  );
+  assert.equal(
+    scopesOverlap(["src/**/*.ts"], ["src/utils/**"]),
+    true,
+    "src/**/*.ts and src/utils/** share the src prefix",
+  );
+  assert.equal(
+    scopesOverlap(["docs/**"], ["src/**"]),
+    false,
+    "docs/** and src/** are genuinely disjoint",
+  );
+});
+
+test("two independent tasks both scoped **/* run serially, not concurrently", async () => {
+  const merged: number[] = [];
+  let concurrentAuthors = 0;
+  let maxConcurrentAuthors = 0;
+  const deps = fakeDeps(
+    {
+      adapterFor: () => ({
+        runner: "opencode",
+        async run(): Promise<AgentRunResult> {
+          concurrentAuthors++;
+          maxConcurrentAuthors = Math.max(maxConcurrentAuthors, concurrentAuthors);
+          await new Promise((r) => setTimeout(r, 20));
+          concurrentAuthors--;
+          return {
+            ok: true,
+            exitReason: "completed",
+            costUsd: 0.01,
+            tokensIn: 1,
+            tokensOut: 1,
+            summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+          };
+        },
+      }),
+    },
+    merged,
+  );
+  // Same model (maxConcurrent: 2 in the test settings) and no dependsOn
+  // between them — only scope-overlap serialization should stop them
+  // running at the same time.
+  const t1 = task("t1", [], { scopePaths: ["**/*"] });
+  const t2 = task("t2", [], { scopePaths: ["**/*"] });
+  await new Orchestrator(deps).start(PROJECT, [t1, t2]);
+
+  assert.equal(t1.status, "done");
+  assert.equal(t2.status, "done");
+  assert.equal(
+    maxConcurrentAuthors,
+    1,
+    "two **/* -scoped tasks must never author concurrently",
+  );
 });
