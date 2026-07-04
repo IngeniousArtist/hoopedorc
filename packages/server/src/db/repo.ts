@@ -446,6 +446,40 @@ export function createLogs(
   return out;
 }
 
+/**
+ * Keep the logs table bounded: delete rows older than `retentionDays`, then
+ * cap each task at its newest `maxPerTask` rows (a single very chatty task
+ * could otherwise blow well past the age cutoff before it's actually "old").
+ * Called on boot and once a day — see index.ts main(). Returns the number of
+ * rows deleted, for a boot-time log line.
+ */
+export function pruneLogs(
+  db: Db,
+  retentionDays: number,
+  maxPerTask = 2000,
+): number {
+  const cutoff = new Date(
+    Date.now() - retentionDays * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  const byAge = db.prepare("DELETE FROM logs WHERE ts < ?").run(cutoff);
+
+  const overLimit = db
+    .prepare("SELECT task_id FROM logs GROUP BY task_id HAVING COUNT(*) > ?")
+    .all(maxPerTask) as { task_id: string }[];
+
+  const trimTask = db.prepare(
+    `DELETE FROM logs WHERE task_id = ? AND id NOT IN (
+       SELECT id FROM logs WHERE task_id = ? ORDER BY ts DESC LIMIT ?
+     )`,
+  );
+  let byCount = 0;
+  for (const { task_id } of overLimit) {
+    byCount += trimTask.run(task_id, task_id, maxPerTask).changes;
+  }
+
+  return byAge.changes + byCount;
+}
+
 // ── Merge Decisions ──
 
 function mapMergeDecision(row: Record<string, unknown>): MergeDecision {
