@@ -8,7 +8,8 @@ import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import type { Project, ServerEvent, Task } from "@orc/types";
-import { SECRET_SENTINEL, WS_PATH, pickAssignedModel } from "@orc/types";
+import { SECRET_SENTINEL, TASK_STATUSES, WS_PATH, pickAssignedModel } from "@orc/types";
+import type { TaskStatus } from "@orc/types";
 import { GitServiceImpl } from "@orc/engine";
 import { ENV, defaultSettings } from "./config";
 import { seed } from "./mock";
@@ -1023,15 +1024,42 @@ async function main() {
     // A task that's actively executing already captured its model/scope for
     // this run (the fallback chain and worktree are built from them at
     // dispatch time) — changing them now wouldn't be picked up until the next
-    // attempt at best, and would be confusing mid-flight. Reassignment is only
-    // meaningful while the task is still waiting to be dispatched.
+    // attempt at best, and would be confusing mid-flight. Same reasoning
+    // covers status: the only way to affect an in_progress task is Stop
+    // (aborts the live process); a raw status PATCH here would just get
+    // silently overwritten by the engine's own next onTaskUpdated call.
     if (
       existing.status === "in_progress" &&
-      (body.assignedModel || body.scopePaths)
+      (body.status || body.assignedModel || body.scopePaths)
     ) {
       return reply.code(409).send({
-        error: "task is in_progress — pause it or wait for this attempt to finish before reassigning model/scope",
+        error: "task is in_progress — use Stop to interrupt it, or wait for this attempt to finish before changing status/model/scope",
       });
+    }
+
+    if (body.status !== undefined) {
+      if (!TASK_STATUSES.includes(body.status as TaskStatus)) {
+        return reply.code(400).send({
+          error: `invalid status "${body.status}" — must be one of: ${TASK_STATUSES.join(", ")}`,
+        });
+      }
+      // done is a merged/final state — only Rollback (revert the merge) or
+      // Retry (re-run from scratch, which resets status itself) may move a
+      // task off it. A raw PATCH back to e.g. in_progress would let orphan
+      // recovery requeue and re-run work that's already merged to main.
+      if (existing.status === "done") {
+        return reply.code(409).send({
+          error: "task is done — use Rollback to revert the merge or Retry to re-run it, not a direct status change",
+        });
+      }
+      // Every other target (in_progress, in_review, changes_requested, done,
+      // failed) is a state the engine itself assigns as the pipeline
+      // progresses; the only human-meaningful manual transition is requeuing.
+      if (body.status !== "backlog" && body.status !== "ready") {
+        return reply.code(400).send({
+          error: `PATCH can only requeue a task to "backlog" or "ready" — "${body.status}" is set by the engine as the task runs, not by hand`,
+        });
+      }
     }
 
     // The validator must differ from the author or ValidatorImpl.review()

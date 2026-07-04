@@ -70,6 +70,20 @@ export type TaskStatus =
   | "done" // merged to main
   | "failed"; // exhausted retries / hard failure
 
+/** Every value of TaskStatus, in kanban column order. Single source of truth
+ *  for validating PATCH /api/tasks/:id's status field and for building the
+ *  Board's column list, so the two can't silently drift apart. */
+export const TASK_STATUSES: TaskStatus[] = [
+  "backlog",
+  "ready",
+  "in_progress",
+  "in_review",
+  "changes_requested",
+  "blocked",
+  "done",
+  "failed",
+];
+
 export interface Task {
   id: string;
   projectId: string;
