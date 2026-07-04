@@ -37,6 +37,20 @@ function scopesOverlap(a: string[], b: string[]): boolean {
   return false;
 }
 
+// Matches path *segments*, not substrings: `(^|\/)` anchors the start of a
+// segment and `(\/|\.|$)` anchors its end, so `src/author.ts`, `tokenizer.ts`,
+// and `docs/authors.md` don't trip this (the words just happen to contain
+// "auth"/"token" as a substring) while `auth.ts`, `src/auth/login.ts`, and
+// `.env.local` do.
+const RISKY_AUTH_OR_SECRET_FILE =
+  /(^|\/)\.env(\.|$)|(^|\/)(auth|secrets?|credentials?|tokens?)(\/|\.|$)/i;
+
+/** True if `path` looks like an auth/secrets file by path segment (not a
+ *  substring match) — exported for unit tests. */
+export function isAuthOrSecretFile(path: string): boolean {
+  return RISKY_AUTH_OR_SECRET_FILE.test(path);
+}
+
 /**
  * Build the auto-escalation fallback chain for a task. Starts with the
  * task's assigned model, then escalates through difficulty tiers (easy →
@@ -990,7 +1004,7 @@ export class Orchestrator implements Scheduler {
     }
     if (
       riskyChangeRules.authOrSecrets &&
-      files.some((f) => /\.env|auth|secret|credential|token/i.test(f))
+      files.some((f) => isAuthOrSecretFile(f))
     ) {
       this.emit("warn", "engine", "Risky: auth/secret change detected", task.id);
       return false;
