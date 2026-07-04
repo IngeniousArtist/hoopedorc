@@ -238,6 +238,24 @@ function buildPriorContext(db: Db, project: Project): string | undefined {
     .join("\n\n");
 }
 
+// Branch names flow unsanitized into `git` argv (worktree-manager.ts,
+// validator.ts) — arg arrays there mean no shell metacharacters can execute,
+// but a leading `-` could still be parsed as a git flag rather than a
+// refname. Keep the charset tight to plausible ref names.
+const VALID_BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
+function isValidBranchName(branch: string): boolean {
+  return VALID_BRANCH_NAME.test(branch) && !branch.startsWith("-");
+}
+
+// repoUrl is passed to `git clone` and `gh --repo` (git-service.ts,
+// github.ts) — restrict to the two shapes those CLIs expect so a value like
+// `--upload-pack=...` can't be smuggled in as a flag.
+const VALID_REPO_URL =
+  /^(https:\/\/github\.com\/[\w.-]+\/[\w.-]+|git@github\.com:[\w.-]+\/[\w.-]+)(\.git)?\/?$/;
+function isValidRepoUrl(url: string): boolean {
+  return VALID_REPO_URL.test(url);
+}
+
 async function main() {
   const app = Fastify({ logger: true });
   await app.register(cors, { origin: true });
@@ -440,6 +458,18 @@ async function main() {
       return reply
         .code(400)
         .send({ error: "provide a repoUrl or set createRepo" });
+    } else if (!isValidRepoUrl(body.repoUrl.trim())) {
+      return reply.code(400).send({
+        error:
+          "repoUrl must be https://github.com/<owner>/<repo> or git@github.com:<owner>/<repo>",
+      });
+    }
+
+    const defaultBranch = body.defaultBranch?.trim() || "main";
+    if (!isValidBranchName(defaultBranch)) {
+      return reply.code(400).send({
+        error: "defaultBranch may only contain letters, digits, '.', '_', '/', '-', and must not start with '-'",
+      });
     }
 
     const settings = repo.getSettings(db) ?? defaultSettings();
@@ -453,7 +483,7 @@ async function main() {
       id,
       name: body.name,
       repoUrl,
-      defaultBranch: body.defaultBranch ?? "main",
+      defaultBranch,
       localPath,
       budgetUsd: body.budgetUsd,
       status: "created",
@@ -486,7 +516,13 @@ async function main() {
     const updates: Record<string, unknown> = {};
     if (typeof body.name === "string" && body.name.trim()) updates.name = body.name.trim();
     if (typeof body.defaultBranch === "string" && body.defaultBranch.trim()) {
-      updates.defaultBranch = body.defaultBranch.trim();
+      const defaultBranch = body.defaultBranch.trim();
+      if (!isValidBranchName(defaultBranch)) {
+        return reply.code(400).send({
+          error: "defaultBranch may only contain letters, digits, '.', '_', '/', '-', and must not start with '-'",
+        });
+      }
+      updates.defaultBranch = defaultBranch;
     }
     // null clears the cap; a number sets it; undefined leaves it unchanged.
     if (body.budgetUsd === null) updates.budgetUsd = undefined;

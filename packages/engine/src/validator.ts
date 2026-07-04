@@ -1,4 +1,5 @@
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import type {
   GateResult,
@@ -10,6 +11,8 @@ import type {
 } from "@orc/types";
 import type { AgentAdapter } from "@orc/adapters";
 import type { Validator } from "./index.js";
+
+const pexecFile = promisify(execFile);
 
 const MAX_DIFF_CHARS = 40_000;
 
@@ -56,7 +59,7 @@ export class ValidatorImpl implements Validator {
     }
 
     const cwd = task.worktreePath ?? project.localPath;
-    const diff = this.getDiff(project, cwd);
+    const diff = await this.getDiff(project, cwd);
     const adapter = this.adapterFactory(validatorModel);
     const prompt = this.buildReviewPrompt(task, gate, diff);
 
@@ -100,13 +103,15 @@ export class ValidatorImpl implements Validator {
     return decision;
   }
 
-  private getDiff(project: Project, cwd: string): string {
+  private async getDiff(project: Project, cwd: string): Promise<string> {
     try {
       // Three-dot (merge-base) diff so the reviewer sees only this task's own
       // changes, not files that advanced on main since the branch was created.
-      const out = execSync(
-        `git diff origin/${project.defaultBranch}...HEAD`,
-        { cwd, stdio: "pipe", encoding: "utf-8", maxBuffer: 64 * 1024 * 1024 },
+      // Argument array, no shell — project.defaultBranch is HTTP-supplied.
+      const { stdout: out } = await pexecFile(
+        "git",
+        ["diff", `origin/${project.defaultBranch}...HEAD`],
+        { cwd, encoding: "utf-8", maxBuffer: 64 * 1024 * 1024 },
       );
       return out.length > MAX_DIFF_CHARS
         ? out.slice(0, MAX_DIFF_CHARS) + "\n... (diff truncated)"
