@@ -255,6 +255,14 @@ export interface RoutingPolicy {
   validatorByDifficulty: Record<Difficulty, ModelId>;
 }
 
+/**
+ * Placeholder the server substitutes for a secret's real value on read
+ * (GET/PUT /api/settings), so a settings payload never round-trips it back
+ * over the wire. Sending this value back on save leaves the stored secret
+ * untouched instead of overwriting it with the literal sentinel.
+ */
+export const SECRET_SENTINEL = "__SET__";
+
 /** Global, persisted settings. */
 export interface Settings {
   models: ModelConfig[];
@@ -289,6 +297,13 @@ export interface Settings {
     botToken?: string;
     chatId?: string;
   };
+  /**
+   * Bearer token required on every /api/* request (and as a `?token=` query
+   * param on the /ws upgrade) when set. `API_TOKEN` env wins over this if
+   * both are present. Required whenever HOST is bound to a non-loopback
+   * address unless ALLOW_UNAUTHENTICATED=1. Redacted on GET /api/settings.
+   */
+  apiToken?: string;
 }
 
 /**

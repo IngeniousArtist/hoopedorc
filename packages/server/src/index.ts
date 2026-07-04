@@ -6,7 +6,7 @@ import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import type { Project, ServerEvent, Task } from "@orc/types";
-import { WS_PATH, pickAssignedModel } from "@orc/types";
+import { SECRET_SENTINEL, WS_PATH, pickAssignedModel } from "@orc/types";
 import { GitServiceImpl } from "@orc/engine";
 import { ENV, defaultSettings } from "./config";
 import { seed } from "./mock";
@@ -256,9 +256,27 @@ function isValidRepoUrl(url: string): boolean {
   return VALID_REPO_URL.test(url);
 }
 
+/** Replace secret fields with SECRET_SENTINEL before a settings object leaves
+ *  the server (GET or PUT response). */
+function redactSettings(settings: SettingsType): SettingsType {
+  return {
+    ...settings,
+    apiToken: settings.apiToken ? SECRET_SENTINEL : undefined,
+  };
+}
+
 async function main() {
   const app = Fastify({ logger: true });
-  await app.register(cors, { origin: true });
+
+  // Allowlist only — the dev web app's own origins plus any operator-added
+  // CORS_ORIGINS. `origin: true` (reflect-any-origin) would let ANY website
+  // open in the operator's browser call this API. Once the server serves the
+  // built web app itself (F10), production traffic is same-origin and this
+  // allowlist stops mattering.
+  const DEV_WEB_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"];
+  await app.register(cors, {
+    origin: [...DEV_WEB_ORIGINS, ...ENV.corsOrigins],
+  });
   await app.register(websocket);
 
   const db = setupDb();
@@ -269,6 +287,47 @@ async function main() {
   if (!repo.getSettings(db)) {
     repo.upsertSettings(db, defaultSettings());
   }
+
+  /** ENV.apiToken wins over the settings-stored one; either enables auth. */
+  function getApiToken(): string | undefined {
+    return ENV.apiToken || repo.getSettings(db)?.apiToken || undefined;
+  }
+
+  // Refuse to come up wide-open-and-unauthenticated: if HOST is bound beyond
+  // loopback, either a token must gate the API or the operator must
+  // explicitly opt into ALLOW_UNAUTHENTICATED=1 (e.g. a throwaway sandbox).
+  const isLoopbackHost = ENV.host === "127.0.0.1" || ENV.host === "localhost";
+  if (!isLoopbackHost && !getApiToken() && !ENV.allowUnauthenticated) {
+    app.log.error(
+      `HOST=${ENV.host} exposes the API beyond localhost with no API_TOKEN set. ` +
+        `Set API_TOKEN (or settings.apiToken) to require auth, or set ` +
+        `ALLOW_UNAUTHENTICATED=1 to start anyway (not recommended).`,
+    );
+    process.exit(1);
+  }
+
+  // Bearer-token auth (off by default). Skips /api/health so uptime checks
+  // never need the token. The /ws upgrade takes it as `?token=` since
+  // browsers can't set custom headers on a WebSocket handshake.
+  app.addHook("onRequest", async (req, reply) => {
+    const token = getApiToken();
+    if (!token) return; // auth disabled — default, loopback-only use
+
+    const url = req.raw.url ?? "";
+    if (url === "/api/health" || url.startsWith("/api/health?")) return;
+
+    const isApi = url.startsWith("/api/");
+    const isWs = url === WS_PATH || url.startsWith(`${WS_PATH}?`);
+    if (!isApi && !isWs) return;
+
+    const header = req.headers.authorization;
+    const bearer = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
+    const queryToken = isWs ? (req.query as { token?: string }).token : undefined;
+
+    if (bearer !== token && queryToken !== token) {
+      return reply.code(401).send({ error: "unauthorized" });
+    }
+  });
 
   function broadcast(e: ServerEvent) {
     hub.broadcast(e);
@@ -1168,7 +1227,7 @@ async function main() {
   // ── Settings ──
   app.get("/api/settings", async () => {
     const settings = repo.getSettings(db) ?? defaultSettings();
-    return { settings };
+    return { settings: redactSettings(settings) };
   });
 
   app.put("/api/settings", async (req, reply) => {
@@ -1183,6 +1242,12 @@ async function main() {
       models: body.settings.models ?? current.models,
       riskyChangeRules: body.settings.riskyChangeRules ?? current.riskyChangeRules,
     };
+    // A round-tripped sentinel (or a field the client never touched) must
+    // never overwrite the real stored secret.
+    merged.apiToken =
+      body.settings.apiToken === SECRET_SENTINEL || !body.settings.apiToken
+        ? current.apiToken
+        : body.settings.apiToken;
 
     // The same model can't author AND validate a difficulty tier — the
     // validator throws "self-review forbidden" the moment a task of that
@@ -1202,7 +1267,7 @@ async function main() {
 
     const saved = repo.upsertSettings(db, merged);
     configureTelegram(); // apply enable/disable/token/chatId changes live
-    return { settings: saved };
+    return { settings: redactSettings(saved) };
   });
 
   // Send a one-off test message. Uses saved config unless the body overrides it,
@@ -1323,8 +1388,10 @@ async function main() {
     app.log.error(`uncaughtException: ${err.stack ?? err.message}`);
   });
 
-  await app.listen({ port: ENV.port, host: "0.0.0.0" });
-  app.log.info(`hoopedorc server up on :${ENV.port} (mock=${ENV.mock})`);
+  await app.listen({ port: ENV.port, host: ENV.host });
+  app.log.info(
+    `hoopedorc server up on ${ENV.host}:${ENV.port} (mock=${ENV.mock})`,
+  );
 
   // Resume-on-boot. A project's status lives in the DB but the orchestrator
   // driving it lives only in this process's memory. So if the server restarts
