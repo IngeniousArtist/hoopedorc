@@ -1089,23 +1089,11 @@ async function main() {
       return reply.code(403).send({ error: `budget cap: ${budgetMsg}` });
     }
 
-    // Don't persist a run row here — the engine creates the authoritative one
-    // (id `run-<taskId>-<attempt>`) via SchedulerDeps.events.onRunUpdated as
-    // soon as it starts the author, and that's what gets cost/status updates.
-    // A pre-created row here would just be a second, never-updated orphan.
-    const now = new Date().toISOString();
-    const placeholderRun: import("@orc/types").Run = {
-      id: `run-${task.id}-${task.attempts + 1}`,
-      taskId: task.id,
-      model: task.assignedModel,
-      attempt: task.attempts + 1,
-      status: "running",
-      startedAt: now,
-      costUsd: 0,
-      tokensIn: 0,
-      tokensOut: 0,
-    };
-
+    // Don't persist a run row here — the engine emits the authoritative one
+    // itself (status "running", real startedAt) the moment it starts the
+    // author, via SchedulerDeps.events.onRunUpdated; the client picks it up
+    // over WS a moment later. A pre-created row here would just be a second,
+    // never-updated orphan with no real startedAt.
     repo.updateTask(db, id, {
       status: "in_progress",
       attempts: task.attempts + 1,
@@ -1118,7 +1106,7 @@ async function main() {
     const project = repo.getProject(db, task.projectId)!;
     void engine.dispatchOne(project, task.id);
 
-    return { run: placeholderRun, task: updatedTask };
+    return { task: updatedTask };
   });
 
   app.post("/api/tasks/:id/stop", async (req, reply) => {
@@ -1248,18 +1236,6 @@ async function main() {
         worktreePath: null,
       } as Record<string, unknown> as Parameters<typeof repo.updateTask>[2],
     );
-    const now = new Date().toISOString();
-    const placeholderRun: import("@orc/types").Run = {
-      id: `run-${id}-1`,
-      taskId: id,
-      model: task.assignedModel,
-      attempt: 1,
-      status: "running",
-      startedAt: now,
-      costUsd: 0,
-      tokensIn: 0,
-      tokensOut: 0,
-    };
     const updatedTask = repo.getTask(db, id)!;
     repo.createAuditEntry(db, {
       projectId: task.projectId,
@@ -1272,7 +1248,7 @@ async function main() {
 
     const project = repo.getProject(db, task.projectId)!;
     void engine.dispatchOne(project, id);
-    return { run: placeholderRun, task: updatedTask };
+    return { task: updatedTask };
   });
 
   // PR diff for a task (for the in-UI diff viewer).

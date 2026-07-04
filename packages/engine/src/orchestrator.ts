@@ -785,6 +785,15 @@ export class Orchestrator implements Scheduler {
       }
     }, 1000);
 
+    // Surface the run the instant it starts, not just when it ends —
+    // without this there's no run row at all while the agent works (the
+    // board can't show a "running" attempt, and durations always read 0
+    // since start/end were previously stamped from the same Date.now()
+    // after the fact). Held here so every terminal emit below reports the
+    // true elapsed time instead of a fresh (and wrong) timestamp.
+    const startedAt = new Date().toISOString();
+    this.emitRunEvent(task, null, "running", model, startedAt);
+
     try {
       const result = await adapter.run({
         model,
@@ -817,7 +826,7 @@ export class Orchestrator implements Scheduler {
       // adapter.run() can resolve with ok:false (e.g. exitReason "killed" from
       // an internal timeout) without throwing — label the run row to match,
       // not unconditionally "passed".
-      this.emitRunEvent(task, result, result.ok ? "passed" : "failed", model);
+      this.emitRunEvent(task, result, result.ok ? "passed" : "failed", model, startedAt);
       return result;
     } catch (err: unknown) {
       if (
@@ -829,7 +838,7 @@ export class Orchestrator implements Scheduler {
         // fed straight into fallback-model escalation instead of actually
         // stopping the task.
         if (this.paused || this.stopRequested.has(task.id)) {
-          this.emitRunEvent(task, null, "stopped", model);
+          this.emitRunEvent(task, null, "stopped", model, startedAt);
           return null;
         }
 
@@ -841,7 +850,7 @@ export class Orchestrator implements Scheduler {
           tokensOut: 0,
           summary: "Run killed by stuck detection",
         };
-        this.emitRunEvent(task, stuckResult, "failed", model);
+        this.emitRunEvent(task, stuckResult, "failed", model, startedAt);
         return stuckResult;
       }
       throw err;
@@ -872,7 +881,8 @@ export class Orchestrator implements Scheduler {
     task: Task,
     result: AgentRunResult | null,
     status: RunStatus,
-    model?: ModelId,
+    model: ModelId | undefined,
+    startedAt: string,
   ): void {
     const run: Run = {
       id: `run-${task.id}-${task.attempts}`,
@@ -880,8 +890,11 @@ export class Orchestrator implements Scheduler {
       model: model ?? task.assignedModel,
       attempt: task.attempts,
       status,
-      startedAt: new Date().toISOString(),
-      endedAt: new Date().toISOString(),
+      startedAt,
+      // Only a terminal status has actually ended — leaving this unset on
+      // the initial "running" emit is what lets GET /api/tasks/:id/runs show
+      // a live in-progress row instead of one that looks instantly finished.
+      endedAt: status === "running" ? undefined : new Date().toISOString(),
       exitReason: result?.exitReason,
       costUsd: result?.costUsd ?? 0,
       tokensIn: result?.tokensIn ?? 0,

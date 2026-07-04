@@ -153,13 +153,18 @@ export interface UpdateTaskResponse {
   task: Task;
 }
 
+/**
+ * No `run` field: dispatchOne runs in the background, so a run row (if one
+ * even exists yet — the author phase hasn't necessarily started) can't be
+ * returned synchronously here. The engine emits the authoritative run event
+ * (status "running", real startedAt) the moment the author phase begins; the
+ * client picks it up via the `run.updated` WS event moments later.
+ */
 export interface DispatchTaskResponse {
-  run: Run;
   task: Task;
 }
 
 export interface RetryTaskResponse {
-  run: Run;
   task: Task;
 }
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AgentAdapter, AgentRunResult } from "@orc/adapters";
-import type { GateResult, Project, Settings, Task } from "@orc/types";
+import type { GateResult, Project, Run, Settings, Task } from "@orc/types";
 import { Orchestrator } from "./orchestrator.js";
 import type { SchedulerDeps } from "./index.js";
 
@@ -91,6 +91,41 @@ test("drives a 2-task DAG to done and merges both, respecting dependency order",
   assert.equal(t1.status, "done");
   assert.equal(t2.status, "done");
   assert.equal(merged.length, 2);
+});
+
+test("emits a live 'running' run row before the terminal one, sharing the same startedAt", async () => {
+  const merged: number[] = [];
+  const runs: Run[] = [];
+  const deps = fakeDeps(
+    {
+      events: {
+        onLog() {},
+        onTaskUpdated() {},
+        onRunUpdated(r) {
+          runs.push(r);
+        },
+        onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  const authorRuns = runs.filter((r) => r.id === "run-t1-1");
+  assert.equal(authorRuns.length, 2, "expected a running row then a terminal row");
+  assert.equal(authorRuns[0]!.status, "running");
+  assert.equal(authorRuns[0]!.endedAt, undefined, "no run row should look instantly finished");
+  assert.equal(authorRuns[1]!.status, "passed");
+  assert.equal(
+    authorRuns[0]!.startedAt,
+    authorRuns[1]!.startedAt,
+    "the terminal emit must preserve the original startedAt, not a fresh one",
+  );
+  assert.ok(authorRuns[1]!.endedAt, "the terminal emit sets endedAt");
 });
 
 test("a budget cap stops the autonomous loop before dispatching or merging", async () => {
