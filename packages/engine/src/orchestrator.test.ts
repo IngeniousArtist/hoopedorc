@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AgentAdapter, AgentRunResult } from "@orc/adapters";
 import type { GateResult, Project, Run, Settings, Task } from "@orc/types";
-import { Orchestrator } from "./orchestrator.js";
+import { Orchestrator, isAuthOrSecretFile } from "./orchestrator.js";
 import type { SchedulerDeps } from "./index.js";
 
 function settings(): Settings {
@@ -293,4 +293,13 @@ test("sets in_review while gates run and back to in_progress on a gate-failure r
     between.includes("in_progress"),
     "must reset to in_progress before the retry's own in_review, not stay stuck",
   );
+});
+
+test("isAuthOrSecretFile matches path segments, not substrings", () => {
+  assert.equal(isAuthOrSecretFile("author.ts"), false, "substring of an unrelated filename");
+  assert.equal(isAuthOrSecretFile("auth.ts"), true);
+  assert.equal(isAuthOrSecretFile("src/auth/login.ts"), true);
+  assert.equal(isAuthOrSecretFile("tokenizer.ts"), false, "substring of an unrelated filename");
+  assert.equal(isAuthOrSecretFile(".env.local"), true);
+  assert.equal(isAuthOrSecretFile("docs/authors.md"), false, "substring of an unrelated filename");
 });
