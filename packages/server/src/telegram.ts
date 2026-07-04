@@ -88,11 +88,17 @@ export class TelegramBot implements ServerNotifier {
     private readonly log: (msg: string) => void = () => {},
   ) {}
 
+  /**
+   * Returns `error` (Telegram's own description, e.g. "Bad Request: can't
+   * parse entities") instead of swallowing it, so callers that need to know
+   * *why* a send failed — not just that it did — can react (see
+   * approvalRequested's Markdown-then-plain-text retry below).
+   */
   private async tg<T = unknown>(
     method: string,
     body: Record<string, unknown>,
     signal?: AbortSignal,
-  ): Promise<T | null> {
+  ): Promise<{ ok: boolean; result: T | null; error?: string }> {
     try {
       const res = await fetch(`${API}/bot${this.token}/${method}`, {
         method: "POST",
@@ -100,13 +106,18 @@ export class TelegramBot implements ServerNotifier {
         body: JSON.stringify(body),
         signal,
       });
-      const json = (await res.json()) as { ok: boolean; result?: T };
-      return json.ok ? (json.result ?? null) : null;
+      const json = (await res.json()) as {
+        ok: boolean;
+        result?: T;
+        description?: string;
+      };
+      if (json.ok) return { ok: true, result: json.result ?? null };
+      return { ok: false, result: null, error: json.description ?? "request failed" };
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         this.log(`[telegram] ${method} failed: ${(err as Error).message}`);
       }
-      return null;
+      return { ok: false, result: null, error: (err as Error).message };
     }
   }
 
@@ -126,7 +137,7 @@ export class TelegramBot implements ServerNotifier {
 
   private async loop(): Promise<void> {
     while (this.running) {
-      const updates = await this.tg<TgUpdate[]>(
+      const { result: updates } = await this.tg<TgUpdate[]>(
         "getUpdates",
         { offset: this.offset, timeout: 30 },
         this.abort?.signal,
@@ -211,19 +222,56 @@ export class TelegramBot implements ServerNotifier {
   approvalRequested(n: Notification): void {
     if (!this.chatId) return;
     const options = n.options ?? ["approve", "reject"];
-    void this.tg("sendMessage", {
+    const replyMarkup = {
+      inline_keyboard: [
+        options.map((opt) => ({
+          text: opt,
+          callback_data: `appr:${n.id}:${opt}`,
+        })),
+      ],
+    };
+    void this.sendApproval(
+      `🔔 *Approval needed*\n${n.title}\n\n${n.message}`,
+      replyMarkup,
+      n.id,
+    );
+  }
+
+  /**
+   * A title/message containing an unescaped Markdown metacharacter (`_`,
+   * `*`, `[`, a backtick…) makes the Bot API reject the whole message when
+   * sent with parse_mode: "Markdown" — silently, from the caller's point of
+   * view, since nothing awaited the old fire-and-forget send. That left an
+   * unattended run stalled waiting for an approval the user never saw. Retry
+   * once as plain text (no parse_mode, so metacharacters can't break
+   * parsing) instead of just giving up.
+   */
+  private async sendApproval(
+    text: string,
+    replyMarkup: Record<string, unknown>,
+    notificationId: string,
+  ): Promise<void> {
+    const first = await this.tg("sendMessage", {
       chat_id: this.chatId,
-      text: `🔔 *Approval needed*\n${n.title}\n\n${n.message}`,
+      text,
       parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          options.map((opt) => ({
-            text: opt,
-            callback_data: `appr:${n.id}:${opt}`,
-          })),
-        ],
-      },
+      reply_markup: replyMarkup,
     });
+    if (first.ok) return;
+
+    this.log(
+      `[telegram] approval ${notificationId} Markdown send failed (${first.error}) — resending as plain text`,
+    );
+    const retry = await this.tg("sendMessage", {
+      chat_id: this.chatId,
+      text,
+      reply_markup: replyMarkup,
+    });
+    if (!retry.ok) {
+      this.log(
+        `[telegram] approval ${notificationId} plain-text resend also failed: ${retry.error}`,
+      );
+    }
   }
 
   taskStatus(d: TaskDigest): void {
