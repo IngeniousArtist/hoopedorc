@@ -43,6 +43,26 @@ npm run dev
 - `claude` (Claude Code) logged in with your Pro subscription
 - `gh` CLI authenticated (`gh auth status`)
 
+## Security
+
+The server binds to `127.0.0.1` and is unauthenticated by default (frictionless
+solo localhost use). If you expose it beyond localhost (e.g. `HOST=0.0.0.0` over
+Tailscale), set `API_TOKEN` so every request requires
+`Authorization: Bearer <token>` — the server refuses to start otherwise. See
+`.env.example` for `HOST`, `CORS_ORIGINS`, `API_TOKEN`, `ALLOW_UNAUTHENTICATED`.
+
+Secrets (the Telegram bot token, the API token itself) are stored in the local
+SQLite DB and redacted (`"__SET__"` sentinel) on every read from the settings API
+— they never round-trip back to the browser. Gate scripts and spawned agents
+still run directly on this host with your full shell environment and CLI auth
+(`gh`, `claude`, `opencode`) — don't run untrusted repos through it.
+
+## Status
+
+This is under active development against a living fix/feature list — see
+[`docs/PRODUCTIZATION_PLAN.md`](docs/PRODUCTIZATION_PLAN.md) (progress table near
+the top) for what's been fixed, what's in flight, and what's next.
+
 ## The rules every module follows
 
 1. **The contract is `@orc/types`.** Don't change it without coordinating — it's shared.
