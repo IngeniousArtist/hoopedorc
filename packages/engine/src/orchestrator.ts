@@ -18,19 +18,44 @@ import { SelfReviewError } from "./validator.js";
 import type { EngineEvents, Scheduler, SchedulerDeps } from "./index.js";
 
 /**
+ * Reduce a glob pattern to its static (non-wildcard) prefix, trailing slash
+ * stripped: `src/**\/*.ts` -> "src", `**\/*` -> "", `docs/**` -> "docs". The
+ * old approach only ever stripped a trailing `/**`, so any pattern with a
+ * glob char *before* the end — `src/**\/*.ts`, `**\/*`, `*.md` — fell through
+ * untouched and compared as a literal string, which almost never matches
+ * anything. An empty prefix means "no determinable static root" (matches
+ * everything), the correct conservative reading for the least-scoped
+ * (riskiest) patterns like the planner's `**\/*` fallback. Exported for unit
+ * tests.
+ */
+export function staticScopePrefix(pattern: string): string {
+  const idx = pattern.search(/[*?[]/);
+  const prefix = idx === -1 ? pattern : pattern.slice(0, idx);
+  return prefix.replace(/\/$/, "");
+}
+
+/**
  * Returns true if the two scope-path arrays share at least one overlapping
  * file or directory prefix. Used to detect when concurrent tasks would write
  * to the same files and need to be serialized.
  * Empty arrays mean "no restriction" and are treated as non-overlapping so
- * unrestricted tasks don't block each other unnecessarily.
+ * unrestricted tasks don't block each other unnecessarily. An empty static
+ * prefix on either side (e.g. from `**\/*`) means that side can't rule out
+ * any file, so it overlaps with everything.
  */
-function scopesOverlap(a: string[], b: string[]): boolean {
+export function scopesOverlap(a: string[], b: string[]): boolean {
   if (a.length === 0 || b.length === 0) return false;
   for (const pa of a) {
-    const na = pa.replace(/\/?\*\*$/, "").replace(/\/$/, "");
+    const na = staticScopePrefix(pa);
     for (const pb of b) {
-      const nb = pb.replace(/\/?\*\*$/, "").replace(/\/$/, "");
-      if (na === nb || na.startsWith(nb + "/") || nb.startsWith(na + "/"))
+      const nb = staticScopePrefix(pb);
+      if (
+        na === "" ||
+        nb === "" ||
+        na === nb ||
+        na.startsWith(nb + "/") ||
+        nb.startsWith(na + "/")
+      )
         return true;
     }
   }
@@ -170,7 +195,11 @@ export class Orchestrator implements Scheduler {
         break;
       }
 
-      // Collect scope paths of all currently running tasks for overlap detection.
+      // Scope paths of all currently running tasks, for overlap detection.
+      // Mutable: appended to as each task is dispatched below so two
+      // overlapping tasks considered in the SAME pass over `ready` can't
+      // both slip through — the second must see the first's scope even
+      // though this array started the pass before either was active.
       const activeScopePaths = [...this.activeTaskIds].flatMap(
         (id) => this.currentTasks.find((t) => t.id === id)?.scopePaths ?? [],
       );
@@ -245,6 +274,7 @@ export class Orchestrator implements Scheduler {
         this.incModel(task.assignedModel);
         this.runningModel.set(task.id, task.assignedModel);
         this.activeTaskIds.add(task.id);
+        activeScopePaths.push(...task.scopePaths);
         dispatched++;
 
         this.executeTask(project, task).finally(() => {
