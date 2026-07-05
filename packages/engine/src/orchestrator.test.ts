@@ -324,6 +324,32 @@ test("sets in_review while gates run and back to in_progress on a gate-failure r
   );
 });
 
+test("a task added mid-run (not in the array start() was given) is picked up via getTasks, no restart needed", async () => {
+  const merged: number[] = [];
+  const t1 = task("t1", [], { scopePaths: ["src/a/**"] });
+  const t2 = task("t2", [], { scopePaths: ["src/b/**"] });
+  let getTasksCalls = 0;
+  const deps = fakeDeps(
+    {
+      // t2 only "exists in the DB" from the second poll onward — simulates
+      // plan/commit writing a new task row while the autonomous loop (which
+      // was started with just [t1]) is already running.
+      getTasks: () => {
+        getTasksCalls++;
+        return getTasksCalls <= 1 ? [t1] : [t1, t2];
+      },
+    },
+    merged,
+  );
+  // t2 is deliberately NOT in the array passed to start().
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.ok(getTasksCalls > 1, "sanity: reconcile polled more than once");
+  assert.equal(t1.status, "done");
+  assert.equal(t2.status, "done");
+  assert.equal(merged.length, 2);
+});
+
 test("isAuthOrSecretFile matches path segments, not substrings", () => {
   assert.equal(isAuthOrSecretFile("author.ts"), false, "substring of an unrelated filename");
   assert.equal(isAuthOrSecretFile("auth.ts"), true);

@@ -150,6 +150,42 @@ export class Orchestrator implements Scheduler {
     this.runningModel.set(taskId, next);
   }
 
+  /**
+   * Sync `currentTasks` (the same array `start()`'s loop iterates) against
+   * the DB: append any task committed there that this orchestrator has never
+   * seen (B9 — `plan/commit` while the loop is running previously wrote task
+   * rows the loop's fixed array never grew to include), and adopt field
+   * changes — including status — for any task NOT in `activeTaskIds`. Active
+   * tasks are skipped: `executeTask` is concurrently mutating that exact Task
+   * object in memory, and a DB read here can lag behind it, so overwriting
+   * would clobber in-progress state (attempts, worktreePath, mid-run status
+   * transitions) with a stale snapshot.
+   */
+  private reconcileTasks(): void {
+    const fresh = this.deps.getTasks?.();
+    if (!fresh) return;
+
+    const freshById = new Map(fresh.map((t) => [t.id, t]));
+    for (const f of fresh) {
+      if (!this.currentTasks.some((t) => t.id === f.id)) {
+        this.currentTasks.push(f);
+        this.emit(
+          "info",
+          "engine",
+          `Picked up new task added mid-run: ${f.title}`,
+          f.id,
+        );
+      }
+    }
+
+    for (const t of this.currentTasks) {
+      if (this.activeTaskIds.has(t.id)) continue;
+      const f = freshById.get(t.id);
+      if (!f) continue; // deleted from the DB since we last saw it — keep as-is
+      Object.assign(t, f);
+    }
+  }
+
   readyTasks(tasks: Task[]): Task[] {
     const done = new Set(
       tasks.filter((t) => t.status === "done").map((t) => t.id),
@@ -189,6 +225,7 @@ export class Orchestrator implements Scheduler {
     this.emit("info", "engine", "Orchestrator starting", "");
 
     while (!this.paused) {
+      this.reconcileTasks();
       const ready = this.readyTasks(tasks);
 
       if (ready.length === 0 && this.activeTaskIds.size === 0) {
@@ -208,20 +245,6 @@ export class Orchestrator implements Scheduler {
       for (const task of ready) {
         if (this.paused) break;
         if (this.activeTaskIds.has(task.id)) continue;
-
-        // Pick up edits made through the UI (e.g. reassigning the model on a
-        // backlog task in the kanban board) while this task was still
-        // waiting. `tasks` was loaded once at start() and never otherwise
-        // re-synced with the DB, so without this a model change on a
-        // not-yet-dispatched task would silently be ignored.
-        const fresh = this.deps.getTask?.(task.id);
-        if (fresh) {
-          task.assignedModel = fresh.assignedModel;
-          task.scopePaths = fresh.scopePaths;
-          task.acceptanceCriteria = fresh.acceptanceCriteria;
-          task.title = fresh.title;
-          task.description = fresh.description;
-        }
 
         // Scope-overlap serialization: hold this task back if any active task
         // writes to the same files. It will be dispatched once the conflicting

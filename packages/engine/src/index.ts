@@ -124,13 +124,16 @@ export interface SchedulerDeps {
   /** Base URL of the running `opencode serve` instance (for opencode adapters). */
   opencodeBaseUrl: string;
   /**
-   * Re-fetches a task's current DB row. Consulted right before dispatching a
-   * backlog/ready task so edits made through the UI (e.g. reassigning the
-   * model in the kanban board) while the task was waiting are honored instead
-   * of silently dispatching with whatever was loaded at orchestrator start.
-   * Optional; if omitted, the task is dispatched as originally loaded.
+   * Re-fetches every task row for the project. Consulted at the top of each
+   * pass of the autonomous loop so it reconciles against the DB: tasks
+   * committed mid-run (e.g. via plan/commit while this project's loop is
+   * already running — see B9) are picked up without restarting the run, and
+   * field edits made through the UI (reassigning a model, editing scope,
+   * PATCHing status) on any task this orchestrator isn't actively running are
+   * adopted instead of silently ignored. Optional; if omitted, the loop only
+   * ever sees the task list it was started with.
    */
-  getTask?: (id: string) => Task | undefined;
+  getTasks?: () => Task[];
   /**
    * Returns a reason string if running `modelId` would exceed a budget cap, or
    * `null` if within budget. Consulted before dispatching each task and before
