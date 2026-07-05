@@ -110,7 +110,16 @@ export function SetupView({
 
       <p className="text-xs text-neutral-400">
         These external CLIs must be authenticated before the orchestrator can
-        spend money or touch GitHub.
+        spend money or touch GitHub. See{" "}
+        <a
+          href="https://github.com/IngeniousArtist/hoopedorc/blob/main/docs/USER_GUIDE.md"
+          target="_blank"
+          rel="noreferrer"
+          className="text-blue-400 hover:underline"
+        >
+          the User Guide ↗
+        </a>{" "}
+        for install steps, a first-project walkthrough, and troubleshooting.
       </p>
 
       {error && <div className="text-sm text-red-400">Error: {error}</div>}
