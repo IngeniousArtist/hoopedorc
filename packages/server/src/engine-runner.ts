@@ -72,13 +72,18 @@ export class EngineRunner {
   /**
    * Tracks in-flight manual dispatches (dispatchOne/runTask), keyed by
    * projectId -> taskId -> the one-off Orchestrator running it. Each of
-   * these spins up its own Orchestrator with empty activeTaskIds/
-   * modelActiveCount, sharing none of the autonomous loop's in-flight state —
-   * without this map neither `start()` nor `stopTask()` can see them at all:
-   * `start()` would boot the autonomous loop right on top of a manual
-   * dispatch (orphan recovery would requeue the "in_progress" task with no
-   * active run in ITS memory -> two agents on the same branch/worktree), and
-   * `stopTask()` could never reach a manually-dispatched task's process.
+   * these spins up its own Orchestrator with an empty `activeTaskIds`,
+   * sharing none of the autonomous loop's in-flight state — without this map
+   * neither `start()` nor `stopTask()` can see them at all: `start()` would
+   * boot the autonomous loop right on top of a manual dispatch (orphan
+   * recovery would requeue the "in_progress" task with no active run in ITS
+   * memory -> two agents on the same branch/worktree), and `stopTask()`
+   * could never reach a manually-dispatched task's process. (Note: unlike
+   * `activeTaskIds`, per-model concurrency accounting IS shared across every
+   * Orchestrator this class builds — see `modelActiveCount` below — though
+   * manual dispatch's own `runTask` path bypasses the dispatch-loop's
+   * maxConcurrent check entirely and so never contributes to that count
+   * either way; a manually-dispatched task is simply not capacity-limited.)
    */
   private readonly manualRuns = new Map<string, Map<string, Orchestrator>>();
   private readonly pendingApprovals = new Map<string, (choice: string) => void>();
@@ -94,6 +99,16 @@ export class EngineRunner {
    */
   private readonly coolingDown = new Map<ModelId, number>();
   private static readonly COOLDOWN_MS = 5 * 60 * 1000;
+
+  /**
+   * F12: per-model in-flight dispatch counts, shared across every project's
+   * Orchestrator (wired in via SchedulerDeps.getModelActive/incModelActive/
+   * decModelActive in buildOrchestrator below) so `ModelConfig.maxConcurrent`
+   * is a true global cap. Before this, each project built its own Orchestrator
+   * with its own private count, so two concurrently-running projects could
+   * each dispatch up to `maxConcurrent` copies of the same model at once.
+   */
+  private readonly modelActiveCount = new Map<ModelId, number>();
 
   // Buffered log writer: agent runs stream hundreds of lines; writing each one
   // synchronously to SQLite (+ broadcasting) froze the event loop. We queue
@@ -261,6 +276,14 @@ export class EngineRunner {
       getTasks: () => repo.getTasks(this.db, project.id),
       checkBudget: (modelId) => checkBudget(this.db, project.id, modelId, settings),
       checkModelCooldown: (modelId) => this.checkModelCooldown(modelId),
+      getModelActive: (modelId) => this.modelActiveCount.get(modelId) ?? 0,
+      incModelActive: (modelId) =>
+        this.modelActiveCount.set(modelId, (this.modelActiveCount.get(modelId) ?? 0) + 1),
+      decModelActive: (modelId) =>
+        this.modelActiveCount.set(
+          modelId,
+          Math.max(0, (this.modelActiveCount.get(modelId) ?? 0) - 1),
+        ),
       events: {
         onLog: (e) => this.enqueueLog(e),
         onTaskUpdated: (t) => {

@@ -1,22 +1,27 @@
 # Changelog
 
 All notable changes to Hoopedorc are recorded here. Format loosely follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project isn't
-tagging releases on a regular cadence yet, so entries are grouped by the
-productization phases tracked in `docs/PRODUCTIZATION_PLAN.md` rather than by
-date-stamped version numbers.
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.1.0] — 2026-07-05
 
-### Added — F11: docs for other users
-- `docs/USER_GUIDE.md` — what it is, install + prerequisites (per-model
-  subscriptions, `opencode auth login`), a first-project walkthrough, the
-  safety model, remote setup over Tailscale, and a troubleshooting table
-  built from real failure modes hit during development. Linked from the
-  README and the app's Setup page.
+The productization pass (`docs/PRODUCTIZATION_PLAN.md`) is complete as of
+this tag: every security/bug item (Part 1) and every product feature (Part
+2, F1–F12) is done. This is the first tagged version.
 
-## Phase 6 (in progress) — flexibility, packaging, docs
+## Phase 6 — flexibility, packaging, docs (F9–F12)
 
+- **F12 — Multi-project run queue.** `ModelConfig.maxConcurrent` was only
+  ever enforced per-`Orchestrator`-instance, so two concurrently-running
+  projects could each dispatch `maxConcurrent` copies of the same model at
+  once — now a shared registry (`EngineRunner` wires one counter into every
+  project's Orchestrator) makes it a true global cap. Fixed a correctness
+  gap this surfaced: the dispatch loop could prematurely wind a run down
+  when a task was blocked by *another* project's in-flight dispatch rather
+  than its own. The Projects page also gained inline Start/Pause per row.
+- **F11 — Docs for other users.** New `docs/USER_GUIDE.md`: what it is,
+  install/prereqs, a first-project tutorial, the safety model, remote
+  Tailscale setup, and a troubleshooting table from real failure modes.
 - **F10 — Packaging & deployment.** The server now serves the built web app
   itself (`apps/web/dist`) once it exists — one process, one port, no CORS
   needed in production. `npm run start`/`npm run setup`, a `hoopedorc` CLI,

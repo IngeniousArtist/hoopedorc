@@ -451,6 +451,62 @@ test("project.config.mergePolicy overrides the global Settings.mergePolicy (F9)"
   assert.equal(merged.length, 1, "the project override should have allowed an auto-merge");
 });
 
+test("F12: a shared model-concurrency registry enforces maxConcurrent across two separate Orchestrator instances", async () => {
+  // Simulates EngineRunner wiring the same counter into every project's
+  // Orchestrator via deps.getModelActive/incModelActive/decModelActive.
+  // Without sharing, each Orchestrator's own local count starts at 0, so two
+  // "projects" could each run maxConcurrent copies of the same model at once.
+  const shared = new Map<string, number>();
+  const getModelActive = (m: string) => shared.get(m) ?? 0;
+  const incModelActive = (m: string) => shared.set(m, (shared.get(m) ?? 0) + 1);
+  const decModelActive = (m: string) =>
+    shared.set(m, Math.max(0, (shared.get(m) ?? 0) - 1));
+
+  let concurrentAuthors = 0;
+  let maxConcurrentAuthors = 0;
+  const blockingAdapter: AgentAdapter = {
+    runner: "opencode",
+    async run(): Promise<AgentRunResult> {
+      concurrentAuthors++;
+      maxConcurrentAuthors = Math.max(maxConcurrentAuthors, concurrentAuthors);
+      await new Promise((r) => setTimeout(r, 30));
+      concurrentAuthors--;
+      return {
+        ok: true, exitReason: "completed", costUsd: 0.01, tokensIn: 1, tokensOut: 1,
+        summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+      };
+    },
+  };
+
+  const mergedA: number[] = [];
+  const mergedB: number[] = [];
+  const depsA = fakeDeps(
+    { adapterFor: () => blockingAdapter, getModelActive, incModelActive, decModelActive },
+    mergedA,
+  );
+  const depsB = fakeDeps(
+    { adapterFor: () => blockingAdapter, getModelActive, incModelActive, decModelActive },
+    mergedB,
+  );
+
+  // deepseek-pro has maxConcurrent: 1 in the shared test settings() fixture.
+  const t1 = task("proj-a-t1", [], { assignedModel: "deepseek-pro" });
+  const t2 = task("proj-b-t1", [], { assignedModel: "deepseek-pro" });
+
+  await Promise.all([
+    new Orchestrator(depsA).start(PROJECT, [t1]),
+    new Orchestrator(depsB).start(PROJECT, [t2]),
+  ]);
+
+  assert.equal(t1.status, "done");
+  assert.equal(t2.status, "done");
+  assert.equal(
+    maxConcurrentAuthors,
+    1,
+    "the shared registry should serialize two projects dispatching the same maxConcurrent:1 model",
+  );
+});
+
 test("isAuthOrSecretFile matches path segments, not substrings", () => {
   assert.equal(isAuthOrSecretFile("author.ts"), false, "substring of an unrelated filename");
   assert.equal(isAuthOrSecretFile("auth.ts"), true);

@@ -151,6 +151,16 @@ export interface SchedulerDeps {
    * no cooldown is applied.
    */
   checkModelCooldown?: (modelId: ModelId) => string | null;
+  /**
+   * F12: shared per-model concurrency accounting, so `ModelConfig.maxConcurrent`
+   * holds across every concurrently-running project, not just within one
+   * Orchestrator instance. `EngineRunner` wires all three to one `Map` shared
+   * by every project's Orchestrator; if omitted (e.g. unit tests), the
+   * Orchestrator falls back to counting only its own dispatches.
+   */
+  getModelActive?: (modelId: ModelId) => number;
+  incModelActive?: (modelId: ModelId) => void;
+  decModelActive?: (modelId: ModelId) => void;
 }
 
 export interface Scheduler {
