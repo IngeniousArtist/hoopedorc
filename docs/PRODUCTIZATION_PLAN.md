@@ -2,13 +2,18 @@
 
 **Audience: the implementing model (Sonnet).** This doc was produced by a full read of
 the codebase (all of `packages/*` and `apps/web`) plus the existing docs (PRD,
-ARCHITECTURE, NEXT_STEPS, CONTRACT). It has two parts:
+ARCHITECTURE, NEXT_STEPS, CONTRACT). It has three parts:
 
 - **Part 1 — Fix first**: real bugs and security issues found in the current code,
   ordered by severity, each with a concrete fix. Do these before any Part 2 feature.
 - **Part 2 — Productization features**: what to build to turn this into a polished,
   robust product for developers who hold multiple model subscriptions and want to run
   coding agents in parallel (autonomous runs, remote updates, mid-run intervention).
+- **Part 3 — Review-pass fixes & next features** (added 2026-07-05 after Parts 1–2
+  completed, from an independent audit of the merged code by a second model): five
+  fixes for defects the audit confirmed in the shipped Phase 6 work, then a second
+  feature wave. Same rules, same workflow. Fable will re-verify each item after it
+  merges, so keep verification evidence in the PR descriptions.
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
@@ -325,6 +330,27 @@ script exists, so the old `ran` flag (inferred from a thrown error) was
 silently always `true` on success in every real repo, only ever
 "working" in mocked tests. Fixed by checking `package.json` directly
 (`hasNpmScript`) instead of inferring presence from npm's exit behavior.
+
+### Phase 7 — B16–B19, S6 (review-pass fixes) — ⬜ not started
+
+| Item | Status | PR |
+|---|---|---|
+| B16 — Dockerfile build stage certainly fails (missing COPYs) | ⬜ | |
+| B17 — Configured-but-missing gate script silently passes | ⬜ | |
+| B18 — Capacity-blocked project waits silently | ⬜ | |
+| B19 — Manual dispatch invisible to the global model cap | ⬜ | |
+| S6 — Auth polish: real login screen, constant-time compare, doc note | ⬜ | |
+
+### Phase 8 — F14–F17 (+F18 doc, F19 optional) — ⬜ not started
+
+| Item | Status | PR |
+|---|---|---|
+| F14 — CI for this repo (GitHub Actions) | ⬜ | |
+| F15 — "Wait for GitHub checks" merge gate | ⬜ | |
+| F16 — Subscription quota awareness | ⬜ | |
+| F17 — DB backup rotation | ⬜ | |
+| F18 — Sandbox design doc (docs only) | ⬜ | |
+| F19 — Scheduled runs (optional, LOW) | ⬜ | |
 
 ---
 
@@ -916,6 +942,319 @@ doc first (`docs/specs/sandbox.md`), do not attempt as part of this pass.
 
 ---
 
+## Part 3 — Review-pass fixes & next features (Fable audit, 2026-07-05)
+
+Produced by independently auditing the merged Phase 6 code (PRs #37–#40) plus
+the surrounding areas it touches — every "Problem" below was confirmed against
+the actual code on `main` at `v0.1.0`, not inferred from the progress notes.
+
+**Workflow (same as Parts 1–2, plus):**
+- One branch/PR per item (or a small coherent batch), item IDs in commit
+  messages, update the Phase 7/8 tables in the Progress section as you land.
+- Verification bar is unchanged: typecheck/build/engine+adapter tests green,
+  and live verification against a real (non-mock) server for anything with a
+  runtime surface. **Put the verification evidence in the PR description** —
+  Fable re-verifies each item after merge and will use those as the checklist.
+- For browser verification: the Chrome extension tool has TWO connected
+  browsers on this account. Call `list_connected_browsers` first and select
+  the **macOS one marked `isLocal: true`** ("Browser 1") — the other is a
+  remote Windows browser that cannot reach this Mac's localhost and produces
+  misleading "Frame with ID 0 is showing error page" errors on every call.
+
+### B16. Dockerfile build stage certainly fails — HIGH (broken artifact)
+
+**Where:** `deploy/Dockerfile` lines 8–12.
+
+**Problem:** every workspace `tsconfig.json` (all five: types, adapters,
+engine, server, web) contains `"extends": "../../tsconfig.base.json"`, but the
+build stage only copies `package*.json`, `packages/`, and `apps/` — so
+`RUN npm run build` fails on the missing base tsconfig. Separately, the root
+`package.json` declares `"bin": { "hoopedorc": "./bin/hoopedorc.mjs" }` and a
+`setup` script pointing at `scripts/init.mjs`; neither `bin/` nor `scripts/`
+is copied, and `npm ci` errors (ENOENT) when linking a declared bin whose file
+doesn't exist — so even the install step is at risk, not just the build. This
+was shipped labeled "unverified reference" but it is *deterministically*
+broken, which is worse than unverified.
+
+**Fix:** in the build stage, before `RUN npm ci`, add:
+```dockerfile
+COPY tsconfig.base.json ./
+COPY bin ./bin
+COPY scripts ./scripts
+```
+
+**Acceptance (no Docker daemon on this machine — simulate the build context):**
+copy *exactly* the paths the Dockerfile COPYs (after the fix) into a fresh temp
+dir — `package.json`, `package-lock.json`, `tsconfig.base.json`, `bin/`,
+`scripts/`, `packages/`, `apps/` and nothing else (no root `node_modules`, no
+`.env`, no `docs/`) — then run `npm ci && npm run build` inside it. Both must
+succeed. Delete the temp dir after.
+
+### B17. A configured-but-missing gate script silently passes — HIGH (safety rail gap)
+
+**Where:** `packages/engine/src/gate-runner.ts` — `runGate()` (~line 55) and
+the `gates?.testScript` string branch of `runTestsGate()` (~line 76).
+
+**Problem:** F9's override plumbing routes `runGate(cwd, slot, override)` →
+`runScript(cwd, override || slot)`, and `runScript` returns
+`{ passed: true, ran: false }` when `hasNpmScript()` doesn't find the script.
+That behavior is *correct* for the default slot names (it's the B11 vacuous
+mechanism: repo simply has no "lint" script → nothing to run → vacuous check
+catches the aggregate). But an **explicitly configured** override that names a
+missing script — a typo (`"tc:strict"` vs `"tc-strict"`), or the repo renaming
+its scripts later — silently passes the gate with `ran: false`, and the
+vacuous check only fires if *all four* gates ran nothing. Contrast:
+`testCommand` already fails loudly when its command doesn't exist, with a
+comment explaining exactly this reasoning ("explicitly configured by the
+operator, so any failure … is a real gate failure"). The same rule must apply
+to explicit script-name overrides.
+
+**Fix:**
+1. In `runGate()`: when `typeof scriptOverride === "string"` and
+   `!hasNpmScript(cwd, scriptOverride)` → return
+   `{ passed: false, ran: true, output: 'configured gate script "<name>" not found in package.json' }`.
+2. Same guard in `runTestsGate()`'s `gates?.testScript` string branch before
+   it calls `runScript`.
+3. **Do NOT touch the default-slot path.** A missing *default* script
+   ("typecheck"/"lint"/"build"/"test"/"tests" with no override) must keep
+   returning `{ passed: true, ran: false }` — that is the vacuous-gate
+   machinery and existing tests depend on it.
+
+**Acceptance:** new unit tests in `gate-runner.test.ts`: (a) override →
+missing script fails the gate with "not found" in the output; (b) testScript
+override → missing script fails the tests gate; (c) the existing default-slot
+tests (missing default scripts pass with `ran: false`, vacuous aggregate) stay
+green untouched.
+
+### B18. A capacity-blocked project waits in total silence — MEDIUM (observability)
+
+**Where:** `packages/engine/src/orchestrator.ts` — the
+`active >= cfg.maxConcurrent` skip (~line 362) that F12 gave the
+`blockedByCapacity` flag.
+
+**Problem:** budget blocks and cooldown blocks each emit a warn-once log
+(`budgetBlockedWarned` / `cooldownBlockedWarned`); the capacity skip emits
+nothing. Post-F12 the cap is global, so a project can now sit polling at 250ms
+for *minutes* waiting on another project's model slot with zero log lines —
+on the Board it is indistinguishable from a hang.
+
+**Fix:** mirror the existing pattern exactly: add
+`private readonly capacityBlockedWarned = new Set<string>();`, clear it in
+`start()` alongside the other two `.clear()` calls, emit warn-once
+(`"Model at capacity (in use by another task or project), holding: <model>"`,
+level `"warn"`, source `"engine"`, with the task id) when the capacity skip
+fires, and `capacityBlockedWarned.delete(task.id)` on the dispatch path right
+where the budget/cooldown warned-sets are deleted.
+
+**Acceptance:** unit test: shared-registry deps hooks pre-loaded at the cap →
+loop runs several passes → exactly one capacity warn log for the task; then
+`decModelActive` mid-test → task dispatches and completes.
+
+### B19. Manual dispatch is invisible to the global model cap — MEDIUM
+
+**Where:** `packages/engine/src/orchestrator.ts` `runTask()` (~line 472);
+stale doc-comment on `manualRuns` in `packages/server/src/engine-runner.ts`.
+
+**Problem:** `runTask` (the `/dispatch` path) never calls
+`incModel`/`decModel`, so a manually-dispatched task doesn't count toward the
+shared F12 registry — an autonomous loop will happily dispatch `maxConcurrent`
+*more* copies of the same model on top of it. The F12 PR documented this as
+intentional; on reflection it's half-right: a manual dispatch *shouldn't be
+blocked* by the cap (an explicit human action must not silently queue), but it
+*must be visible* to everyone else's capacity accounting.
+
+**Fix:** in `runTask`, before `executeTask`:
+`this.incModel(task.assignedModel); this.runningModel.set(task.id, task.assignedModel);`
+— and in the `finally`, replicate `start()`'s dispatch-finally exactly
+(fallback escalation can switch the model mid-run, so decrement
+`this.runningModel.get(task.id) ?? task.assignedModel`, then delete from
+`runningModel` and `activeTaskIds`). Do **not** add a capacity *check* to
+`runTask` — count it, don't block it. Update the `manualRuns` doc-comment in
+`engine-runner.ts`, which currently states manual runs "never contribute to
+that count" — after this fix they do.
+
+**Known-and-accepted (do not "fix", just leave this note):** fallback
+escalation (`switchRunningModel`) increments the next model without checking
+its cap — a task already in flight escalating to a busy model may transiently
+exceed the cap. Blocking mid-task on capacity would risk deadlock; the
+transient overshoot is the lesser evil.
+
+**Acceptance:** unit test: `runTask` holds model X (blocking adapter,
+`maxConcurrent: 1`, shared registry hooks) → a second Orchestrator's `start()`
+with a ready task on X does not author until the manual run resolves; both
+finish `done`.
+
+### S6. Auth polish: real login screen, constant-time compare, doc note — MEDIUM
+
+**Where:** `apps/web/src/api/client.ts` (~line 71: `window.prompt`),
+`packages/server/src/index.ts` auth hook (~line 560: `bearer !== token`),
+`docs/USER_GUIDE.md` (Remote setup section).
+
+**Problem:** three leftovers. (1) The `window.prompt()` token entry was
+explicitly flagged back in S2's notes as a stopgap "F1 should replace" — F1
+never did. (2) The bearer comparison uses `!==`, not a constant-time compare
+(low risk behind Tailscale, but it's a one-liner to do right). (3) When
+`API_TOKEN` is set, the SPA shell + JS assets are still served without auth
+(only `/api/*` and `/ws` are guarded) — this is *by design* (the shell
+contains no data) but is documented nowhere.
+
+**Fix:**
+1. **Login screen.** New `apps/web/src/components/TokenGate.tsx`: a small
+   centered card (token password-input, error line, submit) in the app's
+   existing dark style. `client.ts`: replace the `window.prompt` block with a
+   registered handler — `export function setUnauthorizedHandler(h: () => Promise<string | null>)`;
+   on 401, `await` the handler, store the token (same localStorage key,
+   `"hoopedorc.apiToken"`), retry once; a second 401 after retry surfaces as a
+   normal error (the handler shows it and re-asks on the next call). `App.tsx`
+   registers a handler that renders TokenGate and resolves with the entered
+   token. **Constraints:** (a) when auth is off — the default — nothing may
+   render or flash: TokenGate appears only after a real 401; (b) no WS changes
+   needed — `useWS` already reads `getStoredApiToken()` on every reconnect
+   attempt and backoff-retries, so it picks up the new token by itself
+   (verify this during live-testing, don't re-implement it); (c) after this,
+   `grep -r "window.prompt" apps/web/src` must return nothing.
+2. **Constant-time compare.** In the server auth hook, compare via
+   `node:crypto`'s `timingSafeEqual` on UTF-8 buffers with a length guard
+   (length mismatch → reject without calling timingSafeEqual, which throws on
+   unequal lengths). Apply to both the bearer header and the `?token=` query
+   param paths.
+3. **Docs.** One short paragraph in USER_GUIDE's Remote setup: the app shell
+   itself is served without a token; all data still requires one.
+
+**Acceptance:** live-verified in a real browser against a real server booted
+with `API_TOKEN=...`: first load shows the in-app TokenGate (no browser
+prompt); wrong token → inline error, stays on the gate; correct token → app
+loads fully *including live WS events* (start a project or trigger any WS
+event to prove the socket authenticated); with auth off, the gate never
+appears. Typecheck/build green.
+
+### F14. CI for this repo — GitHub Actions (highest leverage, do first in Phase 8)
+
+The repo has **zero CI** — every "green" claim in Phases 1–6 was a local run.
+Ironic, given the product's premise is enforcing gates.
+
+- New `.github/workflows/ci.yml`: trigger on `pull_request` and on `push` to
+  `main`. Single job on `ubuntu-latest`: `actions/checkout@v4`,
+  `actions/setup-node@v4` with `node-version: 22` and `cache: npm`, then
+  `npm ci`, `npm run typecheck`, `npm run build`, `npm test -w @orc/engine`,
+  `npm test -w @orc/adapters`. No secrets are needed (nothing in the test
+  suites touches a real model or GitHub).
+- Do **not** add a Docker build step (B16 makes the Dockerfile buildable in
+  principle, but there's no need to spend CI minutes proving it every PR).
+- Note: engine tests spawn real `npm`/`git` subprocesses (gate-runner tests
+  create temp repos) — both exist on ubuntu-latest runners; no extra setup.
+
+**Acceptance:** the workflow runs green on its own PR (visible via
+`gh pr checks`). After merge, `main` shows a green check.
+
+### F15. "Wait for GitHub checks" merge gate (old P2 roadmap item)
+
+Local gates can't see the target repo's own CI. Add an **opt-in, per-project**
+gate that holds an auto-merge until the PR's GitHub checks pass.
+
+- **Types:** `ProjectConfig` gains `requireGithubChecks?: boolean` and
+  `githubChecksTimeoutMin?: number` (default 15). Extend `parseProjectConfig`
+  in `packages/server/src/index.ts` (boolean; integer 1–120) and the
+  `ProjectConfigFields` Advanced accordion (checkbox + number input). Update
+  CONTRACT.md's ProjectConfig paragraph.
+- **Engine:** `GitService` gains
+  `waitForChecks(project, prNumber, timeoutMs): Promise<"passed" | "failed" | "none" | "timeout">`,
+  implemented in `git-service.ts` with `gh pr checks <n> --repo <owner/repo>`
+  polled every ~15s (execFile arg arrays, as everywhere else in that file).
+  **Before writing it, verify the installed `gh`'s actual behavior by hand**
+  (`gh pr checks --help`, and run it against a real PR): exit 0 = all checks
+  passed; non-zero = failing OR still pending (parse stdout to tell them
+  apart); and the no-checks-configured case prints a distinctive
+  "no checks reported" style message — map that to `"none"`. Do not trust
+  this paragraph over the real CLI: check first, as B7/F9 did.
+- **Orchestrator:** in `executeTask`, after the validator approves and before
+  the merge (near the `canAutoMerge` call, ~line 856): if
+  `project.config?.requireGithubChecks`, await `waitForChecks`. `"passed"` /
+  `"none"` → proceed. `"failed"` / `"timeout"` → do NOT merge; route into the
+  existing `requestApproval` escalation with the reason ("GitHub checks
+  failed" / "timed out after Nmin") so a human decides. **While polling, emit
+  an info log line per poll** ("Waiting for GitHub checks (Xm)…") — the stuck-
+  task detector watches log activity, and a silent multi-minute wait would
+  trip it (verify against `STUCK_DETECTION` in orchestrator.ts).
+- Also honor B1: check `bailIfStopRequested` after the wait returns.
+
+**Acceptance:** engine unit test with a fake GitService covering all four
+outcomes (merge proceeds on passed/none; escalates on failed/timeout; nothing
+merges after a Stop during the wait). Live verification: optional but ideal —
+one run against the throwaway repo with a trivial always-pass workflow.
+
+### F16. Subscription quota awareness (the multi-subscription feature)
+
+Rate-limit cooldowns (F6) react *after* a model starts failing. Subscriptions
+have known windows — Claude Pro's usage caps being the motivating case — so
+let the operator declare them and route around exhaustion *before* burning
+attempts.
+
+- **Types:** `ModelConfig` gains
+  `quota?: { windowHours: number; maxRuns?: number; maxCostUsd?: number }`
+  (at least one of maxRuns/maxCostUsd must be set for the quota to mean
+  anything — validate on settings save). CONTRACT.md note.
+- **Server:** `EngineRunner.checkModelQuota(modelId): string | null` — if the
+  model's config has a quota, count its runs (`runs` table, `started_at >=`
+  now − window) and sum its cost (`costs` table, same window) **across all
+  projects**, and return a reason string when either limit is met.
+- **Engine:** new optional `SchedulerDeps.checkModelQuota?` hook. Consult it
+  in **both** places `checkBudget` is consulted (the dispatch loop ~line 319
+  AND the retry/attempt path ~line 502) with identical skip-don't-fail,
+  warn-once semantics — new `quotaBlockedWarned` set following the exact
+  budget/cooldown pattern (including B18's `.clear()` in `start()` and
+  `.delete()` on dispatch).
+- **UI:** three small inputs in Settings' ModelsEditor per model (window
+  hours, max runs, max cost). Skip dashboards for now; enforcement first.
+  (Optional nice-to-have: show "N runs / $X used this window" in SetupView's
+  model-health panel — only if cheap.)
+
+**Acceptance:** engine unit test (hook returns a reason → task skipped, warn
+logged once, dispatches after the hook returns null). Server-side standalone
+script (the established `as any` pattern against a real in-memory SQLite DB):
+seed runs/costs rows inside and outside the window, assert the window math —
+runs-limit, cost-limit, and no-quota-configured cases.
+
+### F17. DB backup rotation
+
+`deploy/README.md` says "back it up"; nothing does.
+
+- New `packages/server/src/db/backup.ts`: `runBackup(db, dbPath)` — skip
+  entirely when the DB is in-memory (`:memory:`) or `ENV.mock`; otherwise use
+  better-sqlite3's built-in online backup API (`db.backup(destPath)`, returns
+  a promise — **check the installed version's API signature** in
+  `node_modules/better-sqlite3/lib` before writing) into
+  `DB_BACKUP_DIR` (env; default: `<dirname(dbPath)>/backups/`), filename
+  `hoopedorc-YYYY-MM-DD-HHmm.db`; `mkdir -p` the dir; prune to the newest
+  `DB_BACKUP_KEEP` (env, default 7).
+- Wire in `main()` next to the log-prune scheduling: run on boot + every 24h
+  (`setInterval(...).unref()`), try/catch with a warn log — a failed backup
+  must never crash the server.
+- Add the two env vars to `.env.example` + ENV in `config.ts`.
+
+**Acceptance:** boot with a file DB → a backup file appears with today's
+timestamp; pre-seed 9 dummy older backup files → pruned to 7 (newest kept);
+mock/in-memory boot creates nothing.
+
+### F18. Sandbox design doc — docs only, no code
+
+Write `docs/specs/sandbox.md` fleshing out F13: goals/non-goals, the
+authenticated-CLIs-inside-a-container problem (incl. the F10 finding that
+Claude Code's login lives in the macOS Keychain → `ANTHROPIC_API_KEY` is the
+only container path and bills differently), worktree mount model, network
+policy, env sanitization inside vs outside, gates in-container, and a phased
+rollout (gates-only sandbox first, agents later). Link it from F13's entry
+above and from the README security section. **No implementation.**
+
+### F19. Scheduled runs — OPTIONAL, LOW (skip unless told otherwise)
+
+Cron-style "start project X every night" for maintenance tasks. Only worth it
+after F14–F17; needs either a tiny cron-parse dep or a deliberately dumb
+interval scheduler. Don't build this without an explicit go-ahead — listed so
+it isn't forgotten.
+
+---
+
 ## Suggested execution order
 
 | Phase | Items | Rationale | Status |
@@ -926,13 +1265,14 @@ doc first (`docs/specs/sandbox.md`), do not attempt as part of this pass.
 | 4 | F1, F2, F3, F4 | Core product loop: onboard → understand → intervene → observe. | ✅ done |
 | 5 | F5, F6, F7, F8 | Away-from-keyboard autonomy story. | ✅ done |
 | 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. | ✅ done |
+| 7 | B16, B17, B18, B19, S6 | Review-pass fixes: confirmed defects in the shipped Phase 6 work. Fix before Phase 8. | ⬜ not started |
+| 8 | F14, F15, F16, F17, F18 (F19 optional) | Second feature wave: CI first (F14 — every later PR benefits), then external-CI gate, quota awareness, backups, sandbox doc. | ⬜ not started |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
 
-**All six phases are now complete — every item in Part 1 (security/bugs) and
-Part 2 (product features) of this plan is done.** What's left is explicitly
-out of scope for this pass: F13 (sandbox mode) is future work, noted but not
-attempted (see its entry above). Any further work should start from a fresh
-read of the current codebase rather than this plan, which has served its
-purpose.
+Parts 1 and 2 (Phases 1–6) are fully done and tagged `v0.1.0`. Part 3
+(Phases 7–8) is the active work: fixes first, then features, F14 (CI) as the
+very first Phase 8 item so every subsequent PR runs under it. F13 remains
+future work — F18 covers its design doc only. Fable independently re-verifies
+each Part 3 item after merge; keep verification evidence in PR descriptions.
