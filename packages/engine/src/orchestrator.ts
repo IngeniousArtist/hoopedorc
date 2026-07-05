@@ -1096,7 +1096,10 @@ export class Orchestrator implements Scheduler {
     task: Task,
     gate: GateResult,
   ): Promise<boolean> {
-    const { mergePolicy, riskyChangeRules } = this.deps.settings;
+    // F9: a project can override the global merge policy (e.g. "always_ask"
+    // for a sensitive repo, or "fully_autonomous" for a low-stakes one).
+    const mergePolicy = project.config?.mergePolicy ?? this.deps.settings.mergePolicy;
+    const { riskyChangeRules } = this.deps.settings;
 
     if (mergePolicy === "fully_autonomous") return true;
     if (mergePolicy === "always_ask") return false;

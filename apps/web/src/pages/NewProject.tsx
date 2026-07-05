@@ -1,6 +1,11 @@
 import type { CreateProjectResponse } from "@orc/types";
 import { useState } from "react";
 import { api } from "../api/client";
+import {
+  EMPTY_PROJECT_CONFIG_FORM,
+  ProjectConfigFields,
+  projectConfigFromForm,
+} from "../components/ProjectConfigFields";
 
 export function NewProject({
   onProjectCreated,
@@ -14,6 +19,7 @@ export function NewProject({
   const [localPath, setLocalPath] = useState("");
   const [defaultBranch, setDefaultBranch] = useState("main");
   const [budgetUsd, setBudgetUsd] = useState("");
+  const [configForm, setConfigForm] = useState(EMPTY_PROJECT_CONFIG_FORM);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,6 +37,7 @@ export function NewProject({
           localPath: localPath.trim() || undefined,
           defaultBranch,
           budgetUsd: budgetUsd ? parseFloat(budgetUsd) : undefined,
+          config: projectConfigFromForm(configForm),
         },
       });
       onProjectCreated?.(res.project);
@@ -159,6 +166,8 @@ export function NewProject({
             />
           </div>
         </div>
+
+        <ProjectConfigFields form={configForm} onChange={setConfigForm} />
 
         <button
           onClick={createProject}

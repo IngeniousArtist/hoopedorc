@@ -10,6 +10,7 @@ import type {
   ModelId,
   Notification,
   Project,
+  ProjectConfig,
   Role,
   Run,
   Settings,
@@ -32,6 +33,8 @@ export interface CreateProjectRequest {
    * `name`, deduped on collision.
    */
   localPath?: string;
+  /** Per-project gate/retry/merge-policy overrides (F9). */
+  config?: ProjectConfig;
 }
 export interface CreateProjectResponse {
   project: Project;
@@ -53,6 +56,8 @@ export interface UpdateProjectRequest {
   /** number to set, null to clear the cap. */
   budgetUsd?: number | null;
   defaultBranch?: string;
+  /** Object to set, null to clear (F9). Omit to leave unchanged. */
+  config?: ProjectConfig | null;
 }
 export interface UpdateProjectResponse {
   project: Project;

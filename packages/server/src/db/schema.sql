@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS projects (
   planning_messages     TEXT,   -- JSON PlanChatMessage[]
   planning_prd          TEXT,   -- PRD markdown from last deconstruct
   planning_draft_tasks  TEXT,   -- JSON DraftTask[] from last deconstruct (user-editable)
+  config                TEXT,   -- JSON ProjectConfig (F9): gate/retry/merge-policy overrides
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL
 );

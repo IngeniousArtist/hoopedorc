@@ -34,6 +34,8 @@ export function initDb(path: string = ENV.dbPath): Db {
     "ALTER TABLE runs ADD COLUMN project_id TEXT",
     "ALTER TABLE logs ADD COLUMN project_id TEXT",
     "ALTER TABLE merge_decisions ADD COLUMN project_id TEXT",
+    // F9: per-project gate/retry/merge-policy overrides.
+    "ALTER TABLE projects ADD COLUMN config TEXT",
   ]) {
     try { db.exec(col); } catch { /* column already exists */ }
   }

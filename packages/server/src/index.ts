@@ -7,7 +7,16 @@ import { promisify } from "node:util";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
-import type { Difficulty, ModelId, Project, Role, ServerEvent, Task } from "@orc/types";
+import type {
+  Difficulty,
+  MergePolicy,
+  ModelId,
+  Project,
+  ProjectConfig,
+  Role,
+  ServerEvent,
+  Task,
+} from "@orc/types";
 import { SECRET_SENTINEL, TASK_STATUSES, WS_PATH, pickAssignedModel } from "@orc/types";
 import type { TaskStatus } from "@orc/types";
 import { GitServiceImpl } from "@orc/engine";
@@ -97,7 +106,7 @@ type MaterializableTask = {
  */
 function materializeTasks(
   db: Db,
-  projectId: string,
+  project: Project,
   drafts: MaterializableTask[],
   settings: SettingsType,
 ): Task[] {
@@ -105,7 +114,7 @@ function materializeTasks(
   return drafts.map((pt, i) =>
     repo.createTask(db, {
       id: ids[i]!,
-      projectId,
+      projectId: project.id,
       title: pt.title,
       description: pt.description,
       difficulty: pt.difficulty,
@@ -118,7 +127,7 @@ function materializeTasks(
       role: pt.role,
       scopePaths: pt.scopePaths,
       attempts: 0,
-      maxAttempts: 3,
+      maxAttempts: defaultMaxAttempts(project),
     }),
   );
 }
@@ -272,6 +281,79 @@ function isValidRepoUrl(url: string): boolean {
 }
 
 const pexecFile = promisify(execFile);
+
+const VALID_MERGE_POLICIES: MergePolicy[] = [
+  "hard_gate_flag_risky",
+  "fully_autonomous",
+  "always_ask",
+];
+
+/**
+ * Validate + normalize a project's config override (F9). Gate script names
+ * and testCommand ride into `execFile` arg arrays downstream (gate-runner.ts)
+ * — no shell involved — so validation here is about sane values, not
+ * injection. Returns `{ error }` on the first bad field, or `{ value }`
+ * (possibly `undefined`, meaning "no config") otherwise.
+ */
+function parseProjectConfig(
+  input: unknown,
+): { error: string } | { value: ProjectConfig | undefined } {
+  if (input == null) return { value: undefined };
+  if (typeof input !== "object") return { error: "config must be an object" };
+  const raw = input as Record<string, unknown>;
+  const value: ProjectConfig = {};
+
+  if (raw.maxAttempts !== undefined) {
+    const n = raw.maxAttempts;
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 20) {
+      return { error: "config.maxAttempts must be an integer between 1 and 20" };
+    }
+    value.maxAttempts = n;
+  }
+
+  if (raw.mergePolicy !== undefined) {
+    if (!VALID_MERGE_POLICIES.includes(raw.mergePolicy as MergePolicy)) {
+      return { error: `config.mergePolicy must be one of: ${VALID_MERGE_POLICIES.join(", ")}` };
+    }
+    value.mergePolicy = raw.mergePolicy as MergePolicy;
+  }
+
+  if (raw.gates !== undefined) {
+    if (typeof raw.gates !== "object" || raw.gates === null) {
+      return { error: "config.gates must be an object" };
+    }
+    const g = raw.gates as Record<string, unknown>;
+    const gates: NonNullable<ProjectConfig["gates"]> = {};
+    for (const key of ["typecheckScript", "lintScript", "buildScript", "testScript"] as const) {
+      const v = g[key];
+      if (v === undefined) continue;
+      if (v === false) {
+        gates[key] = false;
+        continue;
+      }
+      if (typeof v === "string" && v.trim().length > 0 && v.length <= 100) {
+        gates[key] = v.trim();
+        continue;
+      }
+      return { error: `config.gates.${key} must be a non-empty script name (<=100 chars) or false` };
+    }
+    if (g.testCommand !== undefined) {
+      if (typeof g.testCommand !== "string" || g.testCommand.length > 500) {
+        return { error: "config.gates.testCommand must be a string (<=500 chars)" };
+      }
+      const trimmed = g.testCommand.trim();
+      if (trimmed) gates.testCommand = trimmed;
+    }
+    if (Object.keys(gates).length > 0) value.gates = gates;
+  }
+
+  return { value: Object.keys(value).length > 0 ? value : undefined };
+}
+
+/** A project's own maxAttempts override (F9), or the engine-wide default. */
+function defaultMaxAttempts(project: Project): number {
+  return project.config?.maxAttempts ?? 3;
+}
 
 /** The `origin` remote URL of a git working copy, or null if it isn't one
  *  (no .git, no origin, or git failed for any other reason). */
@@ -656,9 +738,15 @@ async function main() {
       defaultBranch?: string;
       budgetUsd?: number;
       localPath?: string;
+      config?: unknown;
     };
     if (!body.name) {
       return reply.code(400).send({ error: "name is required" });
+    }
+
+    const configResult = parseProjectConfig(body.config);
+    if ("error" in configResult) {
+      return reply.code(400).send({ error: configResult.error });
     }
 
     let repoUrl = body.repoUrl ?? "https://github.com/placeholder/repo";
@@ -708,6 +796,7 @@ async function main() {
       defaultBranch,
       localPath,
       budgetUsd: body.budgetUsd,
+      config: configResult.value,
       status: "created",
     });
     broadcast({ type: "project.updated", payload: project });
@@ -734,6 +823,7 @@ async function main() {
       name?: string;
       budgetUsd?: number | null;
       defaultBranch?: string;
+      config?: unknown;
     };
     const updates: Record<string, unknown> = {};
     if (typeof body.name === "string" && body.name.trim()) updates.name = body.name.trim();
@@ -750,6 +840,15 @@ async function main() {
     if (body.budgetUsd === null) updates.budgetUsd = undefined;
     else if (typeof body.budgetUsd === "number" && body.budgetUsd >= 0) {
       updates.budgetUsd = body.budgetUsd;
+    }
+    // null clears the config override; an object replaces it wholesale;
+    // undefined (the key absent) leaves it unchanged.
+    if (body.config !== undefined) {
+      const configResult = parseProjectConfig(body.config);
+      if ("error" in configResult) {
+        return reply.code(400).send({ error: configResult.error });
+      }
+      updates.config = configResult.value;
     }
 
     const updated = repo.updateProject(db, id, updates as Parameters<typeof repo.updateProject>[2]);
@@ -827,7 +926,7 @@ async function main() {
       // No review step on this single-shot path, so inject the standing docs
       // task here directly rather than relying on the Plan tab to add it.
       const tasksWithDocs = ensureDocsTask(plan.tasks, buildDocsTaskDraft(settings));
-      createdTasks.push(...materializeTasks(db, id, tasksWithDocs, settings));
+      createdTasks.push(...materializeTasks(db, project, tasksWithDocs, settings));
     } catch (err) {
       // Fallback so planning never hard-fails (e.g. claude unavailable).
       app.log.warn(
@@ -846,7 +945,7 @@ async function main() {
         assignedModel: pickAssignedModel(settings.routing, "easy"),
         scopePaths: ["**/*"],
         attempts: 0,
-        maxAttempts: 3,
+        maxAttempts: defaultMaxAttempts(project),
       });
       const t2 = repo.createTask(db, {
         id: crypto.randomUUID(),
@@ -860,7 +959,7 @@ async function main() {
         assignedModel: pickAssignedModel(settings.routing, "medium"),
         scopePaths: ["**/*"],
         attempts: 0,
-        maxAttempts: 3,
+        maxAttempts: defaultMaxAttempts(project),
       });
       createdTasks.push(t1, t2);
     }
@@ -991,7 +1090,7 @@ async function main() {
 
     repo.updateProject(db, id, { status: "planning" });
     const settings = repo.getSettings(db) ?? defaultSettings();
-    const created = materializeTasks(db, id, body.tasks, settings);
+    const created = materializeTasks(db, project, body.tasks, settings);
 
     // Persist the committed PRD so the next planning iteration (and the user)
     // can see what this project set out to build. Stored in the DB (reliable
@@ -1126,7 +1225,7 @@ async function main() {
       role,
       scopePaths: body.scopePaths?.length ? body.scopePaths : ["**/*"],
       attempts: 0,
-      maxAttempts: 3,
+      maxAttempts: defaultMaxAttempts(project),
     });
 
     repo.createAuditEntry(db, {

@@ -229,9 +229,39 @@ reimplementations. Notable finds/decisions:
   updates-role model for natural language" toggle — explicitly optional, and
   the plan itself says the mechanical digest must not depend on a model.
 
-### Phase 6 — F9, F10, F11, F12 (flexibility, packaging, docs) — ⬜ not started
+### Phase 6 — F9, F10, F11, F12 (flexibility, packaging, docs) — 🔄 in progress
 
-### Phase 6 — F9, F10, F11, F12 (flexibility, packaging, docs) — ⬜ not started
+| Item | Status | PR |
+|---|---|---|
+| F9 — Project templates & per-project gate config | ✅ done | [#37](https://github.com/IngeniousArtist/hoopedorc/pull/37) |
+| F10 — Packaging & deployment | ⬜ not started | |
+| F11 — Docs for other users | ⬜ not started | |
+| F12 — Multi-project run queue | ⬜ not started | |
+
+F9 merged to `main`; `npm run typecheck`, `npm run build`, `npm test -w
+@orc/engine` (20/20, 5 new), and `npm test -w @orc/adapters` (4/4) green.
+New `Project.config` (`ProjectConfig`) holds per-project gate script
+overrides (or `false` to skip a gate), a free-form `testCommand` for
+non-npm stacks (execFile, no shell), a `maxAttempts` default for tasks
+created in that project, and a `mergePolicy` override — all optional, so an
+unset project behaves exactly as before. `GateRunnerImpl` reads
+`project.config.gates` directly (it already receives `project` via
+`.run(project, task)`, so no `SchedulerDeps.gateConfig` plumbing was needed
+— a deliberate simplification vs. the plan's original wording);
+`canAutoMerge` resolves `project.config?.mergePolicy` before falling back to
+`Settings.mergePolicy`. New shared `ProjectConfigFields` "Advanced" accordion
+used by both `NewProject` (create) and `ProjectHeader` (post-creation edit,
+budget-row-style dirty-check + save). Live-verified against a real
+(non-mock) server via curl + sqlite3: config round-trips on create/GET,
+invalid values 400, PATCH updates/null-clears it, maxAttempts default
+applies correctly with and without an override, and an old pre-F9 DB
+migrates cleanly. Notable find: writing real (non-mocked) tests for the
+gate overrides surfaced a genuine pre-existing bug in B11's vacuous-gate
+detection — `npm run <script> --if-present` exits 0 whether or not the
+script exists, so the old `ran` flag (inferred from a thrown error) was
+silently always `true` on success in every real repo, only ever
+"working" in mocked tests. Fixed by checking `package.json` directly
+(`hasNpmScript`) instead of inferring presence from npm's exit behavior.
 
 ---
 
