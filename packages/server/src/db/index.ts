@@ -30,6 +30,10 @@ export function initDb(path: string = ENV.dbPath): Db {
     "ALTER TABLE projects ADD COLUMN planning_draft_tasks TEXT",
     "ALTER TABLE projects ADD COLUMN prd TEXT",
     "ALTER TABLE tasks ADD COLUMN role TEXT",
+    // B15: scope WS broadcasts per project — these need a project_id to key on.
+    "ALTER TABLE runs ADD COLUMN project_id TEXT",
+    "ALTER TABLE logs ADD COLUMN project_id TEXT",
+    "ALTER TABLE merge_decisions ADD COLUMN project_id TEXT",
   ]) {
     try { db.exec(col); } catch { /* column already exists */ }
   }

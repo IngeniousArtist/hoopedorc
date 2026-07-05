@@ -44,6 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
 
 CREATE TABLE IF NOT EXISTS runs (
   id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL DEFAULT '',
   task_id     TEXT NOT NULL REFERENCES tasks(id),
   model       TEXT NOT NULL,
   attempt     INTEGER NOT NULL,
@@ -58,19 +59,21 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id);
 
 CREATE TABLE IF NOT EXISTS logs (
-  id      TEXT PRIMARY KEY,
-  run_id  TEXT NOT NULL,
-  task_id TEXT NOT NULL,
-  ts      TEXT NOT NULL,
-  level   TEXT NOT NULL,
-  source  TEXT NOT NULL,
-  message TEXT NOT NULL
+  id         TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL DEFAULT '',
+  run_id     TEXT NOT NULL,
+  task_id    TEXT NOT NULL,
+  ts         TEXT NOT NULL,
+  level      TEXT NOT NULL,
+  source     TEXT NOT NULL,
+  message    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_logs_run ON logs(run_id);
 CREATE INDEX IF NOT EXISTS idx_logs_task ON logs(task_id, ts);
 
 CREATE TABLE IF NOT EXISTS merge_decisions (
   id              TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL DEFAULT '',
   task_id         TEXT NOT NULL,
   run_id          TEXT NOT NULL,
   validator_model TEXT NOT NULL,

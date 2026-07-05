@@ -144,6 +144,9 @@ export type RunStatus = "running" | "passed" | "failed" | "stopped";
 /** A single execution of one task by one model. */
 export interface Run {
   id: string;
+  /** Which project this run belongs to — lets the WS hub scope run.updated
+   *  broadcasts to clients subscribed to this project (see B15). */
+  projectId: string;
   taskId: string;
   model: ModelId;
   attempt: number;
@@ -161,6 +164,9 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export interface LogEvent {
   id: string;
+  /** Which project this log line belongs to — lets the WS hub scope log
+   *  broadcasts to clients subscribed to this project (see B15). */
+  projectId: string;
   runId: string;
   taskId: string;
   ts: string;
@@ -194,6 +200,10 @@ export type MergeVerdict = "approve" | "request_changes" | "escalate";
 
 export interface MergeDecision {
   id: string;
+  /** Which project this decision belongs to — lets the WS hub scope
+   *  merge.decision broadcasts to clients subscribed to this project (see
+   *  B15). */
+  projectId: string;
   taskId: string;
   runId: string;
   validatorModel: ModelId;

@@ -275,6 +275,7 @@ export class EngineRunner {
 
   private logError(projectId: string, message: string): void {
     const log = repo.createLog(this.db, {
+      projectId,
       runId: "",
       taskId: "",
       ts: new Date().toISOString(),

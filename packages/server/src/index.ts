@@ -1604,6 +1604,7 @@ async function main() {
           type: "log",
           payload: {
             id: crypto.randomUUID(),
+            projectId: "proj-hoopedorc",
             runId: "run-mock",
             taskId: tasks[0]?.id ?? "t1",
             ts: new Date().toISOString(),

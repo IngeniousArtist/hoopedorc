@@ -6,6 +6,37 @@ type Client = {
   projectId?: string;
 };
 
+/**
+ * Which project an event belongs to, for broadcast scoping (B15) —
+ * `undefined` for the event types treated as global (see broadcast()).
+ */
+function eventProjectId(event: ServerEvent): string | undefined {
+  switch (event.type) {
+    case "log":
+    case "task.updated":
+    case "run.updated":
+    case "cost.updated":
+    case "merge.decision":
+      return event.payload.projectId;
+    case "project.updated":
+    case "project.deleted":
+      return event.payload.id;
+    case "notification":
+      return undefined;
+  }
+}
+
+/** Broadcast to every client regardless of subscription: project-level
+ *  events (useful even to a client that hasn't picked a project yet, e.g. a
+ *  projects list page) and notifications (the "needs you" channel). */
+function isGlobalEvent(event: ServerEvent): boolean {
+  return (
+    event.type === "project.updated" ||
+    event.type === "project.deleted" ||
+    event.type === "notification"
+  );
+}
+
 export class WsHub {
   private clients = new Set<Client>();
 
@@ -53,12 +84,17 @@ export class WsHub {
 
   broadcast(event: ServerEvent): void {
     const payload = JSON.stringify(event);
+    const global = isGlobalEvent(event);
+    const scopeId = eventProjectId(event);
     for (const client of this.clients) {
-      if (
-        client.ws.readyState === 1 // WebSocket.OPEN
-      ) {
-        client.ws.send(payload);
-      }
+      if (client.ws.readyState !== 1 /* WebSocket.OPEN */) continue;
+      // Project-scoped events (logs, task/run updates, merge decisions, cost)
+      // only go to clients subscribed to that same project — previously every
+      // client got every project's events and relied on client-side filtering,
+      // which meant N running projects meant N× the WS traffic per tab and a
+      // (harmless today, but latent) cross-project log/task-id collision risk.
+      if (!global && client.projectId !== scopeId) continue;
+      client.ws.send(payload);
     }
   }
 }

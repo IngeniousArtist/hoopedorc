@@ -82,6 +82,7 @@ export class ValidatorImpl implements Validator {
 
     const decision = this.parseDecision(
       result.summary ?? "",
+      project,
       task,
       gate,
       validatorModel,
@@ -156,6 +157,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 
   private parseDecision(
     raw: string,
+    project: Project,
     task: Task,
     gate: GateResult,
     validatorModel: string,
@@ -194,6 +196,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 
     return {
       id: randomUUID(),
+      projectId: project.id,
       taskId: task.id,
       runId: `run-${task.id}-${task.attempts}`,
       validatorModel: validatorModel as MergeDecision["validatorModel"],
