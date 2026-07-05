@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { sanitizedEnv } from "@orc/adapters";
 import type { GateResult, Project, Task } from "@orc/types";
 import type { GateRunner, WorktreeManager } from "./index.js";
 
@@ -68,7 +69,7 @@ export class GateRunnerImpl implements GateRunner {
           encoding: "utf-8",
           timeout: 120_000,
           maxBuffer: 16 * 1024 * 1024,
-          env: { ...process.env, PWD: cwd },
+          env: sanitizedEnv({ PWD: cwd }),
         },
       );
       return { passed: true, ran: true, output: stdout };

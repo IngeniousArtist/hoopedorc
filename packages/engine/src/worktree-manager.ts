@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { minimatch } from "minimatch";
+import { sanitizedEnv } from "@orc/adapters";
 import type { Project, Task } from "@orc/types";
 import type { WorktreeManager } from "./index.js";
 
@@ -181,7 +182,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
           cwd: primary,
           timeout: 10 * 60 * 1000,
           maxBuffer: 32 * 1024 * 1024,
-          env: { ...process.env, PWD: primary },
+          env: sanitizedEnv({ PWD: primary }),
         });
         // A package.json with no dependencies leaves npm creating no
         // node_modules at all — make the dir so the marker (and the symlink

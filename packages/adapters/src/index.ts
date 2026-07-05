@@ -11,6 +11,9 @@
 
 import { spawn } from "node:child_process";
 import type { ModelConfig, ModelId } from "@orc/types";
+import { sanitizedEnv } from "./env.js";
+
+export { sanitizedEnv } from "./env.js";
 
 export interface AgentRunOptions {
   model: ModelId;
@@ -94,7 +97,7 @@ export class ClaudeAdapter implements AgentAdapter {
         // agent runs in the server's launch directory instead of the worktree.
         {
           cwd: opts.cwd,
-          env: { ...process.env, PWD: opts.cwd },
+          env: sanitizedEnv({ PWD: opts.cwd }),
           stdio: ["ignore", "pipe", "pipe"],
         },
       );
@@ -259,7 +262,7 @@ export class OpenCodeAdapter implements AgentAdapter {
         // $PWD env var, and `opencode run` resolves its working directory from
         // $PWD (verified). Without this it runs in the server's launch directory
         // and writes files there instead of the task worktree.
-        env: { ...process.env, PWD: opts.cwd },
+        env: sanitizedEnv({ PWD: opts.cwd }),
         stdio: ["ignore", "pipe", "pipe"],
       });
 
