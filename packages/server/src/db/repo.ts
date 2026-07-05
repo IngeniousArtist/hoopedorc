@@ -725,6 +725,13 @@ function mapNotification(row: Record<string, unknown>): Notification {
   };
 }
 
+export function getNotification(db: Db, id: string): Notification | null {
+  const row = db.prepare("SELECT * FROM notifications WHERE id = ?").get(id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? mapNotification(row) : null;
+}
+
 export function getNotifications(db: Db, projectId?: string): Notification[] {
   let rows: Record<string, unknown>[];
   if (projectId) {
@@ -772,6 +779,31 @@ export function respondToNotification(
     | Record<string, unknown>
     | undefined;
   return row ? mapNotification(row) : null;
+}
+
+/**
+ * The literal `responded_with` value stamped on every still-pending
+ * approval at boot (B10) — the process that would have resolved them (the
+ * `EngineRunner.pendingApprovals` promise) died with the previous process,
+ * so nothing is actually waiting on them anymore.
+ */
+export const EXPIRED_RESTART = "expired_restart";
+
+/**
+ * On boot, mark every still-unresolved approval notification as expired: the
+ * in-memory resolver each was blocking on lived only in the previous
+ * process, so after a restart there is nothing left to unblock even though
+ * the notification still looks live (dead Approve/Reject buttons in the UI
+ * and in any already-sent Telegram message). Returns the number of rows
+ * updated.
+ */
+export function expireStaleApprovals(db: Db): number {
+  const result = db
+    .prepare(
+      "UPDATE notifications SET responded_with = ? WHERE requires_approval = 1 AND responded_with IS NULL",
+    )
+    .run(EXPIRED_RESTART);
+  return result.changes;
 }
 
 // ── Audit log ──
