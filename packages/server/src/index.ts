@@ -1642,12 +1642,68 @@ async function main() {
   // Live-test every enabled model with a trivial prompt (costs a little).
   app.post("/api/setup/test-models", async () => {
     const settings = repo.getSettings(db) ?? defaultSettings();
-    return testModels(settings, ENV.opencodeBaseUrl);
+    const result = await testModels(settings, ENV.opencodeBaseUrl);
+    // F6: persist each result so the health panel has a "last check" column
+    // that survives a reload, not just whatever's in this response.
+    const ts = new Date().toISOString();
+    for (const r of result.results) {
+      repo.createModelCheck(db, {
+        modelId: r.id,
+        displayName: r.displayName,
+        ok: r.ok,
+        costUsd: r.costUsd,
+        ms: r.ms,
+        reply: r.reply,
+        error: r.error,
+        ts,
+      });
+    }
+    return result;
   });
 
   // Full opencode model roster, for the onboarding wizard's model-mapping step.
   app.get("/api/setup/models", async () => {
     return getModelRoster();
+  });
+
+  // Per-model observability for the multi-subscription audience (F6): last
+  // health check, rolling failure rate + median duration from real runs, and
+  // whether the model is currently cooling down from a rate limit.
+  app.get("/api/setup/model-health", async () => {
+    const settings = repo.getSettings(db) ?? defaultSettings();
+    const latestChecks = new Map(
+      repo.getLatestModelChecks(db).map((c) => [c.modelId, c]),
+    );
+    const runStats = new Map(
+      repo.getModelRunStats(db).map((s) => [s.model, s]),
+    );
+
+    const models = settings.models.map((m) => {
+      const check = latestChecks.get(m.id);
+      const stats = runStats.get(m.id);
+      const coolingUntil = engine.getCoolingDownUntil(m.id);
+      return {
+        id: m.id,
+        displayName: m.displayName,
+        enabled: m.enabled,
+        lastCheck: check
+          ? {
+              ok: check.ok,
+              ts: check.ts,
+              ms: check.ms,
+              costUsd: check.costUsd,
+              reply: check.reply,
+              error: check.error,
+            }
+          : undefined,
+        totalRuns: stats?.totalRuns ?? 0,
+        failedRuns: stats?.failedRuns ?? 0,
+        medianDurationMs: stats?.medianDurationMs ?? null,
+        coolingDownUntil: coolingUntil ? new Date(coolingUntil).toISOString() : undefined,
+      };
+    });
+
+    return { models };
   });
 
   // ── Realtime (WebSocket) ──

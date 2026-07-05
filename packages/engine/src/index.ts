@@ -141,6 +141,16 @@ export interface SchedulerDeps {
    * if omitted, no budget enforcement is applied.
    */
   checkBudget?: (modelId: ModelId) => string | null;
+  /**
+   * F6: returns a reason string if `modelId` is currently "cooling down"
+   * after a rate-limit-shaped failure (see @orc/adapters' classifyFailure),
+   * or `null` otherwise. Consulted only when picking a *new* task to
+   * dispatch — like checkBudget, a ready task whose assigned model is
+   * cooling down is skipped (not failed) so it dispatches once the window
+   * passes, or once reassigned to a different model. Optional; if omitted,
+   * no cooldown is applied.
+   */
+  checkModelCooldown?: (modelId: ModelId) => string | null;
 }
 
 export interface Scheduler {

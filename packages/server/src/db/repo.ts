@@ -857,6 +857,123 @@ export function getAuditLog(db: Db, projectId: string): AuditEntry[] {
     .map((r) => mapAudit(r as Record<string, unknown>));
 }
 
+// ── Model health (F6) ──
+
+export interface ModelCheckRecord {
+  id: string;
+  modelId: string;
+  displayName: string;
+  ok: boolean;
+  costUsd: number;
+  ms: number;
+  reply?: string;
+  error?: string;
+  ts: string;
+}
+
+function mapModelCheck(row: Record<string, unknown>): ModelCheckRecord {
+  return {
+    id: asStr(row.id),
+    modelId: asStr(row.model_id),
+    displayName: asStr(row.display_name),
+    ok: Number(row.ok) === 1,
+    costUsd: Number(row.cost_usd),
+    ms: Number(row.ms),
+    reply: row.reply ? asStr(row.reply) : undefined,
+    error: row.error ? asStr(row.error) : undefined,
+    ts: asStr(row.ts),
+  };
+}
+
+export function createModelCheck(
+  db: Db,
+  c: Omit<ModelCheckRecord, "id"> & { id?: string },
+): ModelCheckRecord {
+  const id = c.id ?? crypto.randomUUID();
+  db.prepare(
+    `INSERT INTO model_checks (id, model_id, display_name, ok, cost_usd, ms, reply, error, ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    c.modelId,
+    c.displayName,
+    c.ok ? 1 : 0,
+    c.costUsd,
+    c.ms,
+    c.reply ?? null,
+    c.error ?? null,
+    c.ts,
+  );
+  return { ...c, id };
+}
+
+/** The single most recent check per model_id — the health panel's "last
+ *  check" column. */
+export function getLatestModelChecks(db: Db): ModelCheckRecord[] {
+  const rows = db
+    .prepare(
+      `SELECT mc.* FROM model_checks mc
+       INNER JOIN (
+         SELECT model_id, MAX(ts) AS max_ts FROM model_checks GROUP BY model_id
+       ) latest ON mc.model_id = latest.model_id AND mc.ts = latest.max_ts`,
+    )
+    .all() as Record<string, unknown>[];
+  return rows.map(mapModelCheck);
+}
+
+export interface ModelRunStats {
+  model: string;
+  totalRuns: number;
+  failedRuns: number;
+  /** null when no run has an ended_at yet (nothing to measure). */
+  medianDurationMs: number | null;
+}
+
+/**
+ * Rolling failure rate + median duration per model, from every completed run
+ * ever recorded — cross-project, since a model's reliability isn't a
+ * per-project property.
+ */
+export function getModelRunStats(db: Db): ModelRunStats[] {
+  const rows = db
+    .prepare(
+      `SELECT model, exit_reason, started_at, ended_at FROM runs WHERE ended_at IS NOT NULL`,
+    )
+    .all() as {
+    model: string;
+    exit_reason: string | null;
+    started_at: string;
+    ended_at: string;
+  }[];
+
+  const byModel = new Map<
+    string,
+    { total: number; failed: number; durations: number[] }
+  >();
+  for (const r of rows) {
+    const entry = byModel.get(r.model) ?? { total: 0, failed: 0, durations: [] };
+    entry.total++;
+    if (
+      r.exit_reason === "error" ||
+      r.exit_reason === "stuck" ||
+      r.exit_reason === "rate_limited"
+    ) {
+      entry.failed++;
+    }
+    const ms = new Date(r.ended_at).getTime() - new Date(r.started_at).getTime();
+    if (ms >= 0) entry.durations.push(ms);
+    byModel.set(r.model, entry);
+  }
+
+  return Array.from(byModel.entries()).map(([model, e]) => {
+    const sorted = [...e.durations].sort((a, b) => a - b);
+    const medianDurationMs = sorted.length
+      ? sorted[Math.floor(sorted.length / 2)]!
+      : null;
+    return { model, totalRuns: e.total, failedRuns: e.failed, medianDurationMs };
+  });
+}
+
 // ── Settings ──
 
 export function getSettings(db: Db): Settings | null {

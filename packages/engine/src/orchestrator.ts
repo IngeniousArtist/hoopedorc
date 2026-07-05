@@ -118,6 +118,8 @@ export class Orchestrator implements Scheduler {
   private readonly runningModel = new Map<string, ModelId>();
   /** Tasks already logged as budget-blocked this run, to avoid log spam. */
   private readonly budgetBlockedWarned = new Set<string>();
+  /** Tasks already logged as cooldown-blocked this run, to avoid log spam. */
+  private readonly cooldownBlockedWarned = new Set<string>();
   /** How many times each task has been requeued for a merge-time conflict,
    *  so a perpetually-conflicting task can't loop forever. */
   private readonly mergeConflicts = new Map<string, number>();
@@ -212,6 +214,7 @@ export class Orchestrator implements Scheduler {
     this.projectId = project.id;
     this.currentTasks = tasks;
     this.budgetBlockedWarned.clear();
+    this.cooldownBlockedWarned.clear();
 
     // Orphan recovery: this Orchestrator instance starts with empty
     // activeTaskIds, so any task already "in_progress" or "in_review" was
@@ -305,6 +308,24 @@ export class Orchestrator implements Scheduler {
           continue;
         }
         this.budgetBlockedWarned.delete(task.id);
+
+        // F6: skip (don't fail) a task whose assigned model is cooling down
+        // from a rate-limit-shaped failure — same "hold, don't burn an
+        // attempt" treatment as the budget guard above.
+        const cooldownMsg = this.deps.checkModelCooldown?.(task.assignedModel) ?? null;
+        if (cooldownMsg) {
+          if (!this.cooldownBlockedWarned.has(task.id)) {
+            this.cooldownBlockedWarned.add(task.id);
+            this.emit(
+              "warn",
+              "engine",
+              `Model cooling down, not dispatching: ${cooldownMsg}`,
+              task.id,
+            );
+          }
+          continue;
+        }
+        this.cooldownBlockedWarned.delete(task.id);
 
         const active =
           this.modelActiveCount.get(task.assignedModel) ?? 0;

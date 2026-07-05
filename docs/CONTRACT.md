@@ -40,6 +40,7 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 | `GET /api/notifications` | → `ListNotificationsResponse` |
 | `POST /api/notifications/:id/respond` | `RespondNotificationRequest` → `{ ok }` |
 | `GET /api/setup/models` | → `ModelRosterResponse` |
+| `GET /api/setup/model-health` | → `ModelHealthResponse` |
 
 ## WebSocket (`@orc/types/ws.ts`, `WS_PATH = /ws`)
 Server → client `ServerEvent`: `log`, `task.updated`, `run.updated`,

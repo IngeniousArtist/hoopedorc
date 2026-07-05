@@ -39,6 +39,16 @@ export class EngineRunner {
   /** Optional second channel (Telegram). Set after construction. */
   private notifier?: ServerNotifier;
 
+  /**
+   * F6: model id -> cooldown expiry (ms epoch), set when an adapter run
+   * fails with exitReason "rate_limited" (see @orc/adapters' classifyFailure).
+   * Consulted by every project's Orchestrator via checkModelCooldown below —
+   * cross-project, since a rate limit on a model's API key applies globally,
+   * not per-project.
+   */
+  private readonly coolingDown = new Map<ModelId, number>();
+  private static readonly COOLDOWN_MS = 5 * 60 * 1000;
+
   // Buffered log writer: agent runs stream hundreds of lines; writing each one
   // synchronously to SQLite (+ broadcasting) froze the event loop. We queue
   // them and flush in one transaction every ~300ms.
@@ -85,6 +95,24 @@ export class EngineRunner {
   /** Wire an extra notifier (Telegram) for approvals + status pushes. */
   setNotifier(n: ServerNotifier | undefined): void {
     this.notifier = n;
+  }
+
+  /** Returns a reason string while `modelId` is cooling down, else null —
+   *  wired into every Orchestrator as SchedulerDeps.checkModelCooldown. */
+  checkModelCooldown(modelId: ModelId): string | null {
+    const until = this.coolingDown.get(modelId);
+    if (!until) return null;
+    if (until <= Date.now()) {
+      this.coolingDown.delete(modelId);
+      return null;
+    }
+    return `rate-limited, cooling down for ~${Math.ceil((until - Date.now()) / 60_000)}m more`;
+  }
+
+  /** For the model-health panel (F6) — current cooldown expiry, if any. */
+  getCoolingDownUntil(modelId: ModelId): number | undefined {
+    const until = this.coolingDown.get(modelId);
+    return until && until > Date.now() ? until : undefined;
   }
 
   isRunning(projectId: string): boolean {
@@ -161,6 +189,7 @@ export class EngineRunner {
       opencodeBaseUrl: ENV.opencodeBaseUrl,
       getTasks: () => repo.getTasks(this.db, project.id),
       checkBudget: (modelId) => checkBudget(this.db, project.id, modelId, settings),
+      checkModelCooldown: (modelId) => this.checkModelCooldown(modelId),
       events: {
         onLog: (e) => this.enqueueLog(e),
         onTaskUpdated: (t) => {
@@ -226,6 +255,13 @@ export class EngineRunner {
         onRunUpdated: (r) => {
           if (repo.getRun(this.db, r.id)) repo.updateRun(this.db, r.id, r);
           else repo.createRun(this.db, r);
+          if (r.exitReason === "rate_limited") {
+            this.coolingDown.set(r.model, Date.now() + EngineRunner.COOLDOWN_MS);
+            this.logError(
+              project.id,
+              `${r.model} looks rate-limited — cooling down for ${EngineRunner.COOLDOWN_MS / 60_000}m`,
+            );
+          }
           if (r.costUsd > 0) {
             const cost = repo.createCost(this.db, {
               projectId: project.id,
