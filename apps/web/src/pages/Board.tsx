@@ -1,5 +1,6 @@
 import {
   TASK_STATUSES,
+  type EstimateResponse,
   type LogEvent,
   type ModelId,
   type RetryTaskResponse,
@@ -8,6 +9,7 @@ import {
   type StopTaskResponse,
   type Task,
   type TaskDiffResponse,
+  type TaskEstimate,
   type TaskStatus,
 } from "@orc/types";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -69,6 +71,8 @@ export function Board({
   // card so a slow click can't fire the request twice.
   const [stoppingIds, setStoppingIds] = useState<Set<string>>(new Set());
   const [showAddTask, setShowAddTask] = useState(false);
+  // F7: taskId -> pre-run cost estimate, for the Ready column's "~$0.03" chip.
+  const [estimates, setEstimates] = useState<Record<string, TaskEstimate>>({});
 
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
@@ -81,6 +85,17 @@ export function Board({
 
   const selectedTask =
     tasks.find((t) => t.id === selectedTaskId) ?? null;
+
+  const fetchEstimates = useCallback(async () => {
+    try {
+      const res = await api<EstimateResponse>("estimatePlan", {
+        params: { id: projectId },
+      });
+      setEstimates(Object.fromEntries(res.tasks.map((t) => [t.taskId, t])));
+    } catch {
+      /* non-critical — the chip just doesn't show */
+    }
+  }, [projectId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,6 +115,7 @@ export function Board({
         setSettings(settingsRes.settings);
         setCostUsd(costRes.totalUsd);
         setBudgetUsd(costRes.budgetUsd);
+        fetchEstimates();
       } catch (e) {
         if (!cancelled) setError(String(e));
       }
@@ -155,6 +171,10 @@ export function Board({
           );
           // Seed/refresh the heartbeat (covers a freshly-dispatched task).
           markActivity(updated.id);
+          // F7: a status change can move a task off the non-terminal set the
+          // estimate is computed over (or change what's left to run) — cheap
+          // enough to just refetch rather than try to patch it in place.
+          fetchEstimates();
           break;
         }
         case "run.updated": {
@@ -180,7 +200,7 @@ export function Board({
         }
       }
     },
-    [markActivity],
+    [markActivity, fetchEstimates],
   );
 
   useWS(projectId, handleWSEvent);
@@ -412,6 +432,7 @@ export function Board({
                     allTasks={tasks}
                     models={settings?.models ?? []}
                     lastActivityAt={activity[t.id]}
+                    estimate={estimates[t.id]}
                     onModelChange={(m) =>
                       handleModelChange(t.id, m)
                     }

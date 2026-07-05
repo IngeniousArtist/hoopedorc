@@ -8,11 +8,11 @@ import {
 } from "@orc/engine";
 import { makeAdapter, type AgentAdapter } from "@orc/adapters";
 import type { ModelId, Project } from "@orc/types";
-import { ENV } from "./config";
+import { ENV, defaultSettings } from "./config";
 import type { Db } from "./db/index";
 import * as repo from "./db/repo";
 import type { WsHub } from "./ws-hub";
-import { checkBudget } from "./budget";
+import { checkBudget, checkBudgetThresholds } from "./budget";
 import type { ServerNotifier } from "./telegram";
 
 /**
@@ -97,6 +97,30 @@ export class EngineRunner {
     this.notifier = n;
   }
 
+  /**
+   * F7: checks project + global monthly spend against the 50%/80% soft
+   * thresholds and pushes (WS notification + Telegram) any newly crossed
+   * one, recording it so it only fires once. Called right after every cost
+   * record is created, from all three places one gets created (author run,
+   * validator run, planner spend).
+   */
+  checkAndPushBudgetAlerts(projectId: string): void {
+    const settings = repo.getSettings(this.db) ?? defaultSettings();
+    const alerts = checkBudgetThresholds(this.db, projectId, settings);
+    for (const alert of alerts) {
+      const notif = repo.createNotification(this.db, {
+        projectId,
+        severity: "warn",
+        title: `Budget alert: ${alert.threshold}%`,
+        message: alert.message,
+        requiresApproval: false,
+      });
+      this.hub.broadcast({ type: "notification", payload: notif });
+      this.notifier?.info(`⚠️ ${alert.message}`);
+      repo.recordBudgetAlert(this.db, alert.scope, alert.threshold);
+    }
+  }
+
   /** Returns a reason string while `modelId` is cooling down, else null —
    *  wired into every Orchestrator as SchedulerDeps.checkModelCooldown. */
   checkModelCooldown(modelId: ModelId): string | null {
@@ -176,6 +200,7 @@ export class EngineRunner {
           ts: new Date().toISOString(),
         });
         this.hub.broadcast({ type: "cost.updated", payload: cost });
+        this.checkAndPushBudgetAlerts(project.id);
       },
     );
 
@@ -274,6 +299,7 @@ export class EngineRunner {
               ts: new Date().toISOString(),
             });
             this.hub.broadcast({ type: "cost.updated", payload: cost });
+            this.checkAndPushBudgetAlerts(project.id);
           }
           this.hub.broadcast({
             type: "run.updated",

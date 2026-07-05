@@ -518,6 +518,7 @@ async function main() {
       ts: new Date().toISOString(),
     });
     broadcast({ type: "cost.updated", payload: cost });
+    engine.checkAndPushBudgetAlerts(projectId);
   }
 
   // ── Telegram (optional second channel) ──
@@ -753,6 +754,10 @@ async function main() {
 
     const updated = repo.updateProject(db, id, updates as Parameters<typeof repo.updateProject>[2]);
     if (updated) broadcast({ type: "project.updated", payload: updated });
+    // F7: a changed budget cap re-arms the 50%/80% alerts for this project —
+    // otherwise raising the cap after hitting 80% would permanently silence
+    // future warnings even once spend climbs back past the same thresholds.
+    if ("budgetUsd" in updates) repo.clearBudgetAlerts(db, `project:${id}`);
     return { project: updated };
   });
 

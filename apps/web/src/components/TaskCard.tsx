@@ -1,4 +1,4 @@
-import type { ModelConfig, ModelId, Task } from "@orc/types";
+import type { ModelConfig, ModelId, Task, TaskEstimate } from "@orc/types";
 import { ModelSelect } from "./ModelSelect";
 
 // Mirrors STUCK_DETECTION.idleMs in @orc/engine: if the model emits no output
@@ -48,6 +48,7 @@ export function TaskCard({
   allTasks,
   models,
   lastActivityAt,
+  estimate,
   onModelChange,
   onClick,
   onStop,
@@ -57,6 +58,8 @@ export function TaskCard({
   allTasks: Task[];
   models: ModelConfig[];
   lastActivityAt?: number;
+  /** F7 — pre-run cost estimate, shown as a "~$0.03" chip on Ready cards only. */
+  estimate?: TaskEstimate;
   onModelChange?: (m: ModelId) => void;
   onClick?: () => void;
   /** F3 — "Stop this task" on a running card. Omitted while a stop is
@@ -126,6 +129,23 @@ export function TaskCard({
         {task.attempts > 0 && (
           <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-400">
             {task.attempts}/{task.maxAttempts}
+          </span>
+        )}
+        {task.status === "ready" && estimate && (
+          <span
+            className={
+              "rounded px-1.5 py-0.5 " +
+              (estimate.hasHistory
+                ? "bg-neutral-800 text-neutral-400"
+                : "bg-neutral-800 text-neutral-500 italic")
+            }
+            title={
+              estimate.hasHistory
+                ? `Based on historical spend — up to $${estimate.highUsd.toFixed(2)} across all attempts`
+                : "Low confidence — no run history yet for this model"
+            }
+          >
+            ~${estimate.expectedUsd.toFixed(2)}
           </span>
         )}
       </div>
