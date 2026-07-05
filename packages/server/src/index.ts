@@ -28,7 +28,7 @@ import { createGithubRepo, getPrDiff, slugifyRepoName } from "./github";
 import { checkBudget } from "./budget";
 import { estimatePlan } from "./estimate";
 import { TelegramBot, sendTelegramMessage } from "./telegram";
-import { runSetupChecks, testModels } from "./setup";
+import { getModelRoster, runSetupChecks, testModels } from "./setup";
 import type {
   DraftTask,
   Notification,
@@ -1567,6 +1567,11 @@ async function main() {
   app.post("/api/setup/test-models", async () => {
     const settings = repo.getSettings(db) ?? defaultSettings();
     return testModels(settings, ENV.opencodeBaseUrl);
+  });
+
+  // Full opencode model roster, for the onboarding wizard's model-mapping step.
+  app.get("/api/setup/models", async () => {
+    return getModelRoster();
   });
 
   // ── Realtime (WebSocket) ──

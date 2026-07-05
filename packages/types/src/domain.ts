@@ -313,6 +313,9 @@ export interface Settings {
    * — auto-merge is refused and the task escalates to human approval.
    */
   allowVacuousGates?: boolean;
+  /** Set once the first-run onboarding wizard (Welcome) completes. Absence
+   *  (combined with zero projects) is what routes a fresh install there. */
+  onboardedAt?: string;
   globalMonthlyBudgetUsd?: number;
   /** Validator confidence below this => escalate to a human. */
   confidenceThreshold: number;

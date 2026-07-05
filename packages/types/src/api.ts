@@ -292,6 +292,11 @@ export interface TestModelsResponse {
   totalCostUsd: number;
 }
 
+/** Every model id `opencode models` reports as installed/authenticated. */
+export interface ModelRosterResponse {
+  models: string[];
+}
+
 /** Send a one-off Telegram test message. Uses saved config unless overridden. */
 export interface TelegramTestRequest {
   token?: string;
@@ -355,6 +360,7 @@ export const ROUTES = {
   auditLog: "GET /api/projects/:id/audit",
   rollbackTask: "POST /api/tasks/:id/rollback",
   setupHealth: "GET /api/setup",
+  setupModels: "GET /api/setup/models",
   testModels: "POST /api/setup/test-models",
 } as const;
 
