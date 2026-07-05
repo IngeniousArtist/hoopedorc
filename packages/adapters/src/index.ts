@@ -29,12 +29,24 @@ export interface AgentRunOptions {
 
 export interface AgentRunResult {
   ok: boolean;
-  exitReason: "completed" | "error" | "killed" | "stuck";
+  exitReason: "completed" | "error" | "killed" | "stuck" | "rate_limited";
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
   /** The model's final text output (used by the Validator). */
   summary?: string;
+}
+
+// F6: a failure whose output looks like a rate limit gets its own exitReason
+// instead of the generic "error" — EngineRunner watches for this on
+// run.updated events and marks the model "cooling down" for a few minutes so
+// the orchestrator's dispatch loop routes new work to a fallback instead of
+// burning attempts against a model that's about to reject them anyway.
+const RATE_LIMIT_PATTERN = /rate.?limit|429|too many requests|quota/i;
+
+/** Exported for unit testing — see index.test.ts. */
+export function classifyFailure(summary: string): "error" | "rate_limited" {
+  return RATE_LIMIT_PATTERN.test(summary) ? "rate_limited" : "error";
 }
 
 export interface AgentAdapter {
@@ -199,13 +211,14 @@ export class ClaudeAdapter implements AgentAdapter {
           return;
         }
         const ok = code === 0;
+        const finalSummary = resultText || assistantText;
         resolve({
           ok,
-          exitReason: ok ? "completed" : "error",
+          exitReason: ok ? "completed" : classifyFailure(finalSummary),
           costUsd,
           tokensIn,
           tokensOut,
-          summary: resultText || assistantText,
+          summary: finalSummary,
         });
       });
     });
@@ -366,15 +379,16 @@ export class OpenCodeAdapter implements AgentAdapter {
           return;
         }
         const ok = code === 0;
+        // On failure include stderr so the retry layer can spot transient
+        // startup races; on success the model's text is the summary.
+        const finalSummary = ok ? text : `${text}\n${stderrTail}`.trim();
         resolve({
           ok,
-          exitReason: ok ? "completed" : "error",
+          exitReason: ok ? "completed" : classifyFailure(finalSummary),
           costUsd,
           tokensIn,
           tokensOut,
-          // On failure include stderr so the retry layer can spot transient
-          // startup races; on success the model's text is the summary.
-          summary: ok ? text : `${text}\n${stderrTail}`.trim(),
+          summary: finalSummary,
         });
       });
     });

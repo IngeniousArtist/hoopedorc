@@ -110,6 +110,22 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at        TEXT NOT NULL
 );
 
+-- F6: one row per "Test models" click per model — the health panel's
+-- "last check" column. Not pruned (small, low-volume — a handful of manual
+-- clicks, unlike the logs table B14 had to bound).
+CREATE TABLE IF NOT EXISTS model_checks (
+  id           TEXT PRIMARY KEY,
+  model_id     TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  ok           INTEGER NOT NULL,
+  cost_usd     REAL NOT NULL DEFAULT 0,
+  ms           INTEGER NOT NULL DEFAULT 0,
+  reply        TEXT,
+  error        TEXT,
+  ts           TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_checks_model ON model_checks(model_id, ts);
+
 CREATE TABLE IF NOT EXISTS settings (
   id   INTEGER PRIMARY KEY CHECK (id = 1),
   json TEXT NOT NULL                            -- JSON Settings blob

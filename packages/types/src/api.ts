@@ -334,6 +334,31 @@ export interface TestModelsResponse {
   totalCostUsd: number;
 }
 
+/** Per-model observability for the multi-subscription audience (F6). */
+export interface ModelHealthEntry {
+  id: ModelId;
+  displayName: string;
+  enabled: boolean;
+  /** Most recent "Test models" result for this model, if it's ever been run. */
+  lastCheck?: {
+    ok: boolean;
+    ts: string;
+    ms: number;
+    costUsd: number;
+    reply?: string;
+    error?: string;
+  };
+  /** From every completed run ever recorded, across all projects. */
+  totalRuns: number;
+  failedRuns: number;
+  medianDurationMs: number | null;
+  /** ISO timestamp; present only while a rate-limit cooldown is active. */
+  coolingDownUntil?: string;
+}
+export interface ModelHealthResponse {
+  models: ModelHealthEntry[];
+}
+
 /** Every model id `opencode models` reports as installed/authenticated. */
 export interface ModelRosterResponse {
   models: string[];
@@ -405,6 +430,7 @@ export const ROUTES = {
   taskDecisions: "GET /api/tasks/:id/decisions",
   setupHealth: "GET /api/setup",
   setupModels: "GET /api/setup/models",
+  modelHealth: "GET /api/setup/model-health",
   testModels: "POST /api/setup/test-models",
 } as const;
 

@@ -161,6 +161,39 @@ test("a budget cap stops the autonomous loop before dispatching or merging", asy
   );
 });
 
+test("a cooling-down model is skipped at dispatch instead of burning an attempt", async () => {
+  const merged: number[] = [];
+  const logs: { level: string; message: string }[] = [];
+  let authorRuns = 0;
+  const deps = fakeDeps(
+    {
+      checkModelCooldown: (m) => (m === "deepseek-flash" ? "cooling down for 3m" : null),
+      adapterFor: () => ({
+        runner: "opencode",
+        async run() {
+          authorRuns++;
+          return { ok: true, exitReason: "completed", costUsd: 0.01, tokensIn: 1, tokensOut: 1, summary: "" };
+        },
+      }),
+      events: {
+        onLog(e) { logs.push({ level: e.level, message: e.message }); },
+        onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() { return "reject"; },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1"); // default assignedModel: "deepseek-flash"
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+  assert.equal(authorRuns, 0, "no model should run while its assigned model is cooling down");
+  assert.equal(merged.length, 0);
+  assert.notEqual(t1.status, "done");
+  assert.ok(
+    logs.some((l) => l.level === "warn" && /Model cooling down/.test(l.message)),
+    "should emit a cooldown warn log",
+  );
+});
+
 test("stopTask aborts a running author and the task ends blocked without merging", async () => {
   const merged: number[] = [];
   let resolveStarted!: () => void;

@@ -1,6 +1,30 @@
-import type { SetupHealthResponse, TestModelsResponse } from "@orc/types";
+import type {
+  ModelHealthResponse,
+  SetupHealthResponse,
+  TestModelsResponse,
+} from "@orc/types";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
+
+function timeAgo(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const min = Math.floor(ms / 60_000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.floor(hr / 24)}d ago`;
+}
+
+function fmtDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  // Round the total first, then split — rounding the remainder independently
+  // can produce "9m 60s" instead of "10m 0s" right at a minute boundary.
+  const totalSeconds = Math.round(ms / 1000);
+  return totalSeconds < 60
+    ? `${totalSeconds}s`
+    : `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
+}
 
 export function SetupView({
   onRerunSetup,
@@ -13,6 +37,19 @@ export function SetupView({
   const [error, setError] = useState<string | null>(null);
   const [modelTest, setModelTest] = useState<TestModelsResponse | null>(null);
   const [testing, setTesting] = useState(false);
+  const [modelHealth, setModelHealth] = useState<ModelHealthResponse | null>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+
+  const fetchModelHealth = useCallback(async () => {
+    setHealthLoading(true);
+    try {
+      setModelHealth(await api<ModelHealthResponse>("modelHealth"));
+    } catch {
+      /* non-critical panel — leave stale/empty rather than surfacing an error */
+    } finally {
+      setHealthLoading(false);
+    }
+  }, []);
 
   const check = useCallback(async () => {
     setLoading(true);
@@ -32,16 +69,21 @@ export function SetupView({
     setModelTest(null);
     try {
       setModelTest(await api<TestModelsResponse>("testModels"));
+      fetchModelHealth(); // results just got persisted server-side — refresh
     } catch (e) {
       setError(String(e));
     } finally {
       setTesting(false);
     }
-  }, []);
+  }, [fetchModelHealth]);
 
   useEffect(() => {
     check();
   }, [check]);
+
+  useEffect(() => {
+    fetchModelHealth();
+  }, [fetchModelHealth]);
 
   return (
     <div className="max-w-2xl space-y-4">
@@ -158,6 +200,75 @@ export function SetupView({
               ))}
             </div>
           </>
+        )}
+      </div>
+
+      {/* Model health (F6) */}
+      <div className="space-y-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium text-neutral-300">
+              Model Health
+            </h3>
+            <p className="text-[11px] text-neutral-400">
+              Reliability across every run ever recorded — for juggling
+              several model subscriptions at once.
+            </p>
+          </div>
+          <button
+            onClick={fetchModelHealth}
+            disabled={healthLoading}
+            className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+          >
+            {healthLoading ? "…" : "Refresh"}
+          </button>
+        </div>
+
+        {modelHealth && modelHealth.models.length > 0 && (
+          <div className="divide-y divide-neutral-800 rounded border border-neutral-800">
+            {modelHealth.models.map((m) => {
+              const failureRate =
+                m.totalRuns > 0
+                  ? Math.round((m.failedRuns / m.totalRuns) * 100)
+                  : null;
+              return (
+                <div key={m.id} className="space-y-1 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={
+                        "text-xs font-medium " +
+                        (m.enabled ? "text-neutral-200" : "text-neutral-500")
+                      }
+                    >
+                      {m.displayName}
+                      {!m.enabled && " (disabled)"}
+                    </span>
+                    {m.coolingDownUntil && (
+                      <span className="rounded bg-amber-900/50 px-1.5 py-0.5 text-[10px] text-amber-300">
+                        cooling down
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-neutral-400">
+                    {m.lastCheck ? (
+                      <span className={m.lastCheck.ok ? "text-green-400" : "text-red-400"}>
+                        last check {m.lastCheck.ok ? "✓" : "✗"} · {timeAgo(m.lastCheck.ts)}
+                      </span>
+                    ) : (
+                      <span>never tested</span>
+                    )}
+                    <span>
+                      {m.totalRuns} run{m.totalRuns === 1 ? "" : "s"}
+                      {failureRate !== null && ` · ${failureRate}% failed`}
+                    </span>
+                    {m.medianDurationMs != null && (
+                      <span>median {fmtDuration(m.medianDurationMs)}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>
