@@ -287,6 +287,8 @@ export function updateTask(
 function mapRun(row: Record<string, unknown>): Run {
   return {
     id: asStr(row.id),
+    // Pre-B15 rows (migrated via ALTER TABLE, no backfill) have NULL here.
+    projectId: row.project_id ? asStr(row.project_id) : "",
     taskId: asStr(row.task_id),
     model: asStr(row.model) as Run["model"],
     attempt: Number(row.attempt),
@@ -320,9 +322,9 @@ export function createRun(
 ): Run {
   const id = r.id ?? crypto.randomUUID();
   db.prepare(
-    `INSERT INTO runs (id, task_id, model, attempt, status, started_at, cost_usd, tokens_in, tokens_out)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, r.taskId, r.model, r.attempt, r.status, r.startedAt, r.costUsd, r.tokensIn, r.tokensOut);
+    `INSERT INTO runs (id, project_id, task_id, model, attempt, status, started_at, cost_usd, tokens_in, tokens_out)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, r.projectId, r.taskId, r.model, r.attempt, r.status, r.startedAt, r.costUsd, r.tokensIn, r.tokensOut);
   return getRun(db, id)!;
 }
 
@@ -361,6 +363,8 @@ export function updateRun(
 function mapLog(row: Record<string, unknown>): LogEvent {
   return {
     id: asStr(row.id),
+    // Pre-B15 rows (migrated via ALTER TABLE, no backfill) have NULL here.
+    projectId: row.project_id ? asStr(row.project_id) : "",
     runId: asStr(row.run_id),
     taskId: asStr(row.task_id),
     ts: asStr(row.ts),
@@ -415,8 +419,8 @@ export function createLog(
 ): LogEvent {
   const id = l.id ?? crypto.randomUUID();
   db.prepare(
-    "INSERT INTO logs (id, run_id, task_id, ts, level, source, message) VALUES (?, ?, ?, ?, ?, ?, ?)",
-  ).run(id, l.runId, l.taskId, l.ts, l.level, l.source, l.message);
+    "INSERT INTO logs (id, project_id, run_id, task_id, ts, level, source, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(id, l.projectId, l.runId, l.taskId, l.ts, l.level, l.source, l.message);
   return { ...l, id } as LogEvent;
 }
 
@@ -430,14 +434,14 @@ export function createLogs(
   logs: (Omit<LogEvent, "id"> & { id?: string })[],
 ): LogEvent[] {
   const stmt = db.prepare(
-    "INSERT INTO logs (id, run_id, task_id, ts, level, source, message) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO logs (id, project_id, run_id, task_id, ts, level, source, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
   );
   const out: LogEvent[] = [];
   const insertAll = db.transaction(
     (rows: (Omit<LogEvent, "id"> & { id?: string })[]) => {
       for (const l of rows) {
         const id = l.id ?? crypto.randomUUID();
-        stmt.run(id, l.runId, l.taskId, l.ts, l.level, l.source, l.message);
+        stmt.run(id, l.projectId, l.runId, l.taskId, l.ts, l.level, l.source, l.message);
         out.push({ ...l, id } as LogEvent);
       }
     },
@@ -485,6 +489,8 @@ export function pruneLogs(
 function mapMergeDecision(row: Record<string, unknown>): MergeDecision {
   return {
     id: asStr(row.id),
+    // Pre-B15 rows (migrated via ALTER TABLE, no backfill) have NULL here.
+    projectId: row.project_id ? asStr(row.project_id) : "",
     taskId: asStr(row.task_id),
     runId: asStr(row.run_id),
     validatorModel: asStr(row.validator_model) as MergeDecision["validatorModel"],
@@ -508,10 +514,11 @@ export function createMergeDecision(
   d: MergeDecision,
 ): MergeDecision {
   db.prepare(
-    `INSERT INTO merge_decisions (id, task_id, run_id, validator_model, verdict, reasons, confidence, gate, ts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO merge_decisions (id, project_id, task_id, run_id, validator_model, verdict, reasons, confidence, gate, ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     d.id,
+    d.projectId,
     d.taskId,
     d.runId,
     d.validatorModel,

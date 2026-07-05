@@ -126,6 +126,11 @@ export class Orchestrator implements Scheduler {
    *  finishing -> validator -> auto-merge; cleared in executeTask's finally. */
   private readonly stopRequested = new Set<string>();
   private currentTasks: Task[] = [];
+  /** Set at the top of start()/runTask() — this Orchestrator instance only
+   *  ever drives one project for its whole lifetime (EngineRunner builds a
+   *  fresh one per project), so this is threaded onto every LogEvent/Run
+   *  emitted from here instead of needing a project param everywhere. */
+  private projectId = "";
 
   constructor(private readonly deps: SchedulerDeps) {}
 
@@ -199,6 +204,7 @@ export class Orchestrator implements Scheduler {
 
   async start(project: Project, tasks: Task[]): Promise<void> {
     this.paused = false;
+    this.projectId = project.id;
     this.currentTasks = tasks;
     this.budgetBlockedWarned.clear();
 
@@ -381,6 +387,7 @@ export class Orchestrator implements Scheduler {
   /** Run a single task through the full pipeline (manual dispatch). */
   async runTask(project: Project, task: Task): Promise<void> {
     this.paused = false;
+    this.projectId = project.id;
     // start()'s loop tracks this in activeTaskIds itself; runTask bypasses
     // that loop entirely, so stopTask()'s guard would never see this task as
     // stoppable without tracking it here too.
@@ -647,6 +654,7 @@ export class Orchestrator implements Scheduler {
             currentModel,
             (line) =>
               this.deps.events.onLog({
+                projectId: this.projectId,
                 runId: `run-${task.id}-${task.attempts}`,
                 taskId: task.id,
                 ts: new Date().toISOString(),
@@ -896,6 +904,7 @@ export class Orchestrator implements Scheduler {
           }
 
           this.deps.events.onLog({
+            projectId: this.projectId,
             runId: `run-${task.id}-${task.attempts}`,
             taskId: task.id,
             ts: new Date().toISOString(),
@@ -951,6 +960,7 @@ export class Orchestrator implements Scheduler {
     taskId: string,
   ): void {
     this.deps.events.onLog({
+      projectId: this.projectId,
       runId: "",
       taskId,
       ts: new Date().toISOString(),
@@ -969,6 +979,7 @@ export class Orchestrator implements Scheduler {
   ): void {
     const run: Run = {
       id: `run-${task.id}-${task.attempts}`,
+      projectId: this.projectId,
       taskId: task.id,
       model: model ?? task.assignedModel,
       attempt: task.attempts,

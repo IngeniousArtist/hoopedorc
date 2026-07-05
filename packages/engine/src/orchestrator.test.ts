@@ -70,8 +70,8 @@ function fakeDeps(over: Partial<SchedulerDeps>, merged: number[], changed: strin
     },
     gates: { async run() { return GOOD_GATE; } },
     validator: {
-      async review(_p, t, g) {
-        return { id: "d", taskId: t.id, runId: "", validatorModel: "deepseek-pro",
+      async review(p, t, g) {
+        return { id: "d", projectId: p.id, taskId: t.id, runId: "", validatorModel: "deepseek-pro",
           verdict: "approve", reasons: ["ok"], confidence: 0.95, gate: g, ts: "" };
       },
     },

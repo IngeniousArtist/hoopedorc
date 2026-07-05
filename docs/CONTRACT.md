@@ -43,6 +43,12 @@ Server → client `ServerEvent`: `log`, `task.updated`, `run.updated`,
 `project.updated`, `merge.decision`, `notification`, `cost.updated`.
 Client → server `ClientEvent`: `subscribe`, `unsubscribe`, `ping`.
 
+Broadcast scoping: `log`/`task.updated`/`run.updated`/`merge.decision`/
+`cost.updated` only reach clients currently `subscribe`d to that event's
+`projectId` (`LogEvent`/`Run`/`MergeDecision` all carry one). `project.updated`,
+`project.deleted`, and `notification` are global — every connected client gets
+them regardless of subscription.
+
 ## Conventions
 - IDs are strings; timestamps are ISO 8601 strings.
 - Array-ish DB columns are JSON-encoded (`depends_on`, `acceptance_criteria`,
