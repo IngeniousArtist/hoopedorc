@@ -70,7 +70,7 @@ row with correct non-zero durations once terminal). Notable follow-on additions:
 - The Board has no "Stop" button yet — B1 is backend-only (verified via the API);
   F3 (Part 2) is where the UI button gets wired up.
 
-### Phase 3 — S5, B6–B15 (hygiene + rails) — 🟡 IN PROGRESS (batch 1 of 2 done)
+### Phase 3 — S5, B6–B15 (hygiene + rails) — ✅ DONE
 
 Split into two batches (quick independent fixes first, then the meatier ones):
 
@@ -81,14 +81,14 @@ Split into two batches (quick independent fixes first, then the meatier ones):
 | B12 — Risky-file regex false positives | ✅ done | [#16](https://github.com/IngeniousArtist/hoopedorc/pull/16) |
 | B13 — `scopesOverlap` mishandles globs | ✅ done | [#17](https://github.com/IngeniousArtist/hoopedorc/pull/17) |
 | B14 — Unbounded `logs` table growth | ✅ done | [#18](https://github.com/IngeniousArtist/hoopedorc/pull/18) |
-| S5 — Sanitized env for spawned agents | ⬜ not started | batch 2 |
-| B7 — Planner argv E2BIG risk | ⬜ not started | batch 2 |
-| B9 — Mid-run task additions invisible | ⬜ not started | batch 2 |
-| B10 — Zombie approvals after restart | ⬜ not started | batch 2 |
-| B11 — Gates pass vacuously, no scripts | ⬜ not started | batch 2 |
-| B15 — WS broadcasts cross-project | ⬜ not started | batch 2 |
+| B11 — Gates pass vacuously, no scripts | ✅ done | [#20](https://github.com/IngeniousArtist/hoopedorc/pull/20) |
+| S5 — Sanitized env for spawned agents | ✅ done | [#21](https://github.com/IngeniousArtist/hoopedorc/pull/21) |
+| B7 — Planner argv E2BIG risk | ✅ done | [#22](https://github.com/IngeniousArtist/hoopedorc/pull/22) |
+| B9 — Mid-run task additions invisible | ✅ done | [#23](https://github.com/IngeniousArtist/hoopedorc/pull/23) |
+| B10 — Zombie approvals after restart | ✅ done | [#24](https://github.com/IngeniousArtist/hoopedorc/pull/24) |
+| B15 — WS broadcasts cross-project | ✅ done | [#25](https://github.com/IngeniousArtist/hoopedorc/pull/25) |
 
-Batch 1 (B6, B8, B12, B13, B14) all merged to `main`; `npm run typecheck`,
+Batch 1 (B6, B8, B12, B13, B14) merged first; `npm run typecheck`,
 `npm run build`, and `npm test -w @orc/engine` green as of each merge (10/10
 tests, 4 new). B6, B12, and B13 verified with new unit tests; B6 additionally
 live-verified with real model calls (`in_progress → in_review → in_progress`
@@ -105,6 +105,36 @@ confirmed the exact row counts pruned). Notable finds:
   now exported from `orchestrator.ts` specifically so they're directly unit
   testable — a pattern worth continuing for future pure-logic fixes in this
   file.
+
+Batch 2 (B11, S5, B7, B9, B10, B15) all merged to `main`; `npm run typecheck`,
+`npm run build`, `npm test -w @orc/engine` (13/13, 3 new), and
+`npm test -w @orc/adapters` (2/2, new — the package had no test script before
+S5) green as of each merge. B11 and B9 verified with new unit tests; S5
+verified with new unit tests plus reasoning about real CLI/gate-script
+behavior; B7's stdin-vs-argv switch was live-verified directly against the
+installed `claude`/`opencode` CLIs (piped stdin genuinely used as the prompt,
+not ignored) rather than through the full seed-e2e harness; B10 and B15 were
+both live-verified against the real (non-mock) server — B10 by seeding a
+zombie approval and confirming the boot-time expiry + 410 response; B15 by
+subscribing three raw WS clients to different projects and confirming a
+`task.updated` broadcast only reached the one subscribed to the matching
+project. Notable finds/decisions:
+- B11 fixed the root cause too, not just the symptom: appended a standing
+  instruction to the planner's deconstruct prompt so a brand-new project's
+  first scaffold task sets up real `test`/`build`/`lint`/`typecheck` scripts,
+  instead of only detecting the vacuous-gate state after the fact.
+- B9's fix replaced the older single-task `SchedulerDeps.getTask` refresh
+  hook entirely with a broader `getTasks` reconciliation run at the top of
+  every loop pass — one mechanism now covers both "new task appeared" and
+  "a known task's fields changed," including `status` (which the old hook
+  never adopted).
+- B15 required adding `projectId` to `Run`/`LogEvent`/`MergeDecision` (a
+  schema migration via the existing `ALTER TABLE` list in `db/index.ts`) since
+  those three `ServerEvent` payloads were the only ones that didn't already
+  carry one.
+- Did not add a Board warning banner for B11's vacuous-gate case — the web
+  app has no plumbing yet to surface `GateResult`/`MergeDecision` per task at
+  all; that's squarely F2's "Review tab" scope.
 
 ### Phase 4 — F1, F2, F3, F4 (core product loop) — ⬜ not started
 
@@ -708,7 +738,7 @@ doc first (`docs/specs/sandbox.md`), do not attempt as part of this pass.
 |---|---|---|---|
 | 1 | S1, S2, S3, S4 | Close the injection/exposure holes before anything else touches the network surface. | ✅ done |
 | 2 | B1, B2, B3, B4, B5 | The control-plane bugs users hit daily (stop, logs, double-run, run rows, status). | ✅ done |
-| 3 | S5, B6–B15 | Hygiene + rails; each is small and independent. | 🟡 batch 1/2 done |
+| 3 | S5, B6–B15 | Hygiene + rails; each is small and independent. | ✅ done |
 | 4 | F1, F2, F3, F4 | Core product loop: onboard → understand → intervene → observe. | ⬜ not started |
 | 5 | F5, F6, F7, F8 | Away-from-keyboard autonomy story. | ⬜ not started |
 | 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. | ⬜ not started |
