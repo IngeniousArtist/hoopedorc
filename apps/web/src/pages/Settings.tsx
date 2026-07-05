@@ -9,6 +9,7 @@ import {
 import type { ModelConfig } from "@orc/types";
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
+import { useBrowserNotify } from "../hooks/useBrowserNotify";
 import { ModelsEditor } from "../components/ModelsEditor";
 import { RoutingEditor } from "../components/RoutingEditor";
 
@@ -29,6 +30,7 @@ const RISKY_RULES: {
 ];
 
 export function Settings() {
+  const browserNotify = useBrowserNotify();
   const [settings, setSettings] = useState<SettingsType | null>(
     null,
   );
@@ -155,6 +157,19 @@ export function Settings() {
               ...(prev.telegram ?? { enabled: false }),
               [field]: value || undefined,
             },
+          }
+        : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
+  function updateTelegramDigest(digest: NonNullable<SettingsType["telegram"]>["digest"]) {
+    setSettings((prev) =>
+      prev
+        ? {
+            ...prev,
+            telegram: { ...(prev.telegram ?? { enabled: false }), digest },
           }
         : prev,
     );
@@ -367,6 +382,34 @@ export function Settings() {
         </div>
       </section>
 
+      <section className="space-y-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+        <h3 className="text-sm font-medium text-neutral-300">
+          Browser Notifications
+        </h3>
+        <p className="text-[11px] text-neutral-400">
+          Fires a native browser notification for approvals and task failures
+          while this tab is hidden — no need to keep it in the foreground.
+        </p>
+        {!browserNotify.supported ? (
+          <p className="text-[11px] text-amber-400">
+            Not supported in this browser.
+          </p>
+        ) : browserNotify.permission === "granted" ? (
+          <p className="text-[11px] text-green-400">Enabled.</p>
+        ) : browserNotify.permission === "denied" ? (
+          <p className="text-[11px] text-red-400">
+            Blocked — re-enable it from your browser's site settings.
+          </p>
+        ) : (
+          <button
+            onClick={() => browserNotify.requestPermission()}
+            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500"
+          >
+            Enable browser notifications
+          </button>
+        )}
+      </section>
+
       <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
         <h3 className="text-sm font-medium text-neutral-300">Telegram</h3>
         <p className="text-[11px] text-neutral-400">
@@ -437,6 +480,25 @@ export function Settings() {
           />
           Enable Telegram notifications
         </label>
+
+        <div>
+          <label className="mb-1 block text-xs text-neutral-400">
+            Task-status digest
+          </label>
+          <select
+            value={settings.telegram?.digest ?? "terminal"}
+            onChange={(e) =>
+              updateTelegramDigest(
+                e.target.value as NonNullable<SettingsType["telegram"]>["digest"],
+              )
+            }
+            className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 sm:w-auto"
+          >
+            <option value="terminal">Terminal only — done/failed (default)</option>
+            <option value="all">All — every status change, incl. in-progress</option>
+            <option value="off">Off — approvals only, no status chatter</option>
+          </select>
+        </div>
 
         <details>
           <summary className="cursor-pointer text-[11px] text-neutral-400">

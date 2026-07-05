@@ -336,6 +336,14 @@ export interface Settings {
      */
     botToken?: string;
     chatId?: string;
+    /**
+     * How much task-status chatter Telegram sees. "terminal" (default, unset
+     * counts as this) pushes only done/failed transitions; "all" also pushes
+     * every intermediate status change (in_progress, in_review, etc.); "off"
+     * suppresses task-status pushes entirely. Approval requests always go out
+     * regardless of this setting — they're action-required, not chatter.
+     */
+    digest?: "off" | "terminal" | "all";
   };
   /**
    * Bearer token required on every /api/* request (and as a `?token=` query

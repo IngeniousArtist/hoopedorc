@@ -7,6 +7,7 @@ import type {
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api/client";
 import { useWS } from "./hooks/useWS";
+import { useBrowserNotify } from "./hooks/useBrowserNotify";
 import { ProjectHeader } from "./components/ProjectHeader";
 import { AuditView } from "./pages/AuditView";
 import { Board } from "./pages/Board";
@@ -105,18 +106,34 @@ export function App() {
   }, [selectedProjectId]);
 
   // Keep names/status fresh as the engine runs (update existing entries in place).
-  const onWS = useCallback((e: ServerEvent) => {
-    if (e.type === "project.updated") {
-      setProjects((prev) =>
-        prev.some((p) => p.id === e.payload.id)
-          ? prev.map((p) => (p.id === e.payload.id ? e.payload : p))
-          : [e.payload, ...prev],
-      );
-    } else if (e.type === "project.deleted") {
-      setProjects((prev) => prev.filter((p) => p.id !== e.payload.id));
-      setSelectedProjectId((cur) => (cur === e.payload.id ? "" : cur));
-    }
-  }, []);
+  const { notify } = useBrowserNotify();
+
+  const onWS = useCallback(
+    (e: ServerEvent) => {
+      if (e.type === "project.updated") {
+        setProjects((prev) =>
+          prev.some((p) => p.id === e.payload.id)
+            ? prev.map((p) => (p.id === e.payload.id ? e.payload : p))
+            : [e.payload, ...prev],
+        );
+      } else if (e.type === "project.deleted") {
+        setProjects((prev) => prev.filter((p) => p.id !== e.payload.id));
+        setSelectedProjectId((cur) => (cur === e.payload.id ? "" : cur));
+      } else if (
+        // Global (B15) — reaches every client regardless of which project
+        // tab is open, matching "action needed" mattering everywhere.
+        e.type === "notification" &&
+        e.payload.severity === "action_required"
+      ) {
+        notify(e.payload.title, { body: e.payload.message });
+      } else if (e.type === "task.updated" && e.payload.status === "failed") {
+        notify(`Task failed: ${e.payload.title}`, {
+          body: e.payload.description.split("\n")[0],
+        });
+      }
+    },
+    [notify],
+  );
   useWS(selectedProjectId, onWS);
 
   useEffect(() => {
