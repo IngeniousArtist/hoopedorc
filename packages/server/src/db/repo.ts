@@ -857,6 +857,31 @@ export function getAuditLog(db: Db, projectId: string): AuditEntry[] {
     .map((r) => mapAudit(r as Record<string, unknown>));
 }
 
+// ── Budget alerts (F7) ──
+
+/** True if this (scope, threshold) pair has already been alerted on. */
+export function hasBudgetAlert(db: Db, scope: string, threshold: number): boolean {
+  return Boolean(
+    db
+      .prepare("SELECT 1 FROM budget_alerts WHERE scope = ? AND threshold = ?")
+      .get(scope, threshold),
+  );
+}
+
+/** Idempotent — a duplicate (scope, threshold) is silently ignored thanks to
+ *  the unique index, so a racing double-check can't double-record. */
+export function recordBudgetAlert(db: Db, scope: string, threshold: number): void {
+  db.prepare(
+    "INSERT OR IGNORE INTO budget_alerts (id, scope, threshold, ts) VALUES (?, ?, ?, ?)",
+  ).run(crypto.randomUUID(), scope, threshold, new Date().toISOString());
+}
+
+/** Re-arms a scope's thresholds — called when a project's budget cap itself
+ *  changes, so raising it doesn't permanently silence future alerts. */
+export function clearBudgetAlerts(db: Db, scope: string): void {
+  db.prepare("DELETE FROM budget_alerts WHERE scope = ?").run(scope);
+}
+
 // ── Model health (F6) ──
 
 export interface ModelCheckRecord {

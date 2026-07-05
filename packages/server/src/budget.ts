@@ -48,3 +48,65 @@ export function checkBudget(
 
   return null;
 }
+
+/** F7's soft-rail thresholds — checked independently, so both can fire for
+ *  the same cost event (e.g. a run that pushes spend past 80% also crossed
+ *  50% if it hadn't already). */
+export const BUDGET_ALERT_THRESHOLDS = [50, 80] as const;
+
+export interface BudgetAlert {
+  scope: string;
+  threshold: (typeof BUDGET_ALERT_THRESHOLDS)[number];
+  message: string;
+}
+
+/**
+ * Returns every soft threshold newly crossed since the last check — the
+ * caller pushes each (WS + Telegram) and only then calls
+ * repo.recordBudgetAlert, so a failed push can be retried on the next cost
+ * event instead of being silently marked as sent. Pure read: never records
+ * anything itself.
+ */
+export function checkBudgetThresholds(
+  db: Db,
+  projectId: string,
+  settings: Settings,
+): BudgetAlert[] {
+  const alerts: BudgetAlert[] = [];
+
+  const project = repo.getProject(db, projectId);
+  if (project?.budgetUsd) {
+    const { totalUsd } = repo.getCostSummary(db, projectId);
+    const pct = (totalUsd / project.budgetUsd) * 100;
+    const scope = `project:${projectId}`;
+    for (const threshold of BUDGET_ALERT_THRESHOLDS) {
+      if (pct >= threshold && !repo.hasBudgetAlert(db, scope, threshold)) {
+        alerts.push({
+          scope,
+          threshold,
+          message: `${project.name}: ${threshold}% of its $${project.budgetUsd} budget spent ($${totalUsd.toFixed(2)})`,
+        });
+      }
+    }
+  }
+
+  if (settings.globalMonthlyBudgetUsd) {
+    const globalMonthly = repo.getGlobalMonthlyCost(db);
+    const pct = (globalMonthly / settings.globalMonthlyBudgetUsd) * 100;
+    // Baking the calendar month into the scope key re-arms both thresholds
+    // automatically at the start of each month, matching how the budget
+    // itself is month-scoped (getGlobalMonthlyCost) — no explicit reset needed.
+    const scope = `global:${new Date().toISOString().slice(0, 7)}`;
+    for (const threshold of BUDGET_ALERT_THRESHOLDS) {
+      if (pct >= threshold && !repo.hasBudgetAlert(db, scope, threshold)) {
+        alerts.push({
+          scope,
+          threshold,
+          message: `${threshold}% of this month's $${settings.globalMonthlyBudgetUsd} global budget spent ($${globalMonthly.toFixed(2)})`,
+        });
+      }
+    }
+  }
+
+  return alerts;
+}

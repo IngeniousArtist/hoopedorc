@@ -97,6 +97,18 @@ CREATE TABLE IF NOT EXISTS costs (
 );
 CREATE INDEX IF NOT EXISTS idx_costs_project ON costs(project_id);
 
+-- F7: which soft budget thresholds (50/80%) have already been alerted on, so
+-- each only pushes once. `scope` is `project:<id>` (lifetime spend) or
+-- `global:<YYYY-MM>` (global scope is naturally month-scoped by baking the
+-- month into the key, so a new month re-arms both thresholds automatically).
+CREATE TABLE IF NOT EXISTS budget_alerts (
+  id        TEXT PRIMARY KEY,
+  scope     TEXT NOT NULL,
+  threshold INTEGER NOT NULL,
+  ts        TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_budget_alerts_scope_threshold ON budget_alerts(scope, threshold);
+
 CREATE TABLE IF NOT EXISTS notifications (
   id                TEXT PRIMARY KEY,
   project_id        TEXT NOT NULL,
