@@ -136,7 +136,49 @@ project. Notable finds/decisions:
   app has no plumbing yet to surface `GateResult`/`MergeDecision` per task at
   all; that's squarely F2's "Review tab" scope.
 
-### Phase 4 — F1, F2, F3, F4 (core product loop) — ⬜ not started
+### Phase 4 — F1, F2, F3, F4 (core product loop) — ✅ DONE
+
+| Item | Status | PR |
+|---|---|---|
+| F1 — First-run onboarding wizard | ✅ done | [#27](https://github.com/IngeniousArtist/hoopedorc/pull/27) |
+| F2 — Task detail drawer | ✅ done | [#28](https://github.com/IngeniousArtist/hoopedorc/pull/28) |
+| F3 — Mid-run control | ✅ done | [#29](https://github.com/IngeniousArtist/hoopedorc/pull/29) |
+| F4 — Live mission control strip | ✅ done | [#30](https://github.com/IngeniousArtist/hoopedorc/pull/30) |
+
+All four merged to `main`; `npm run typecheck`, `npm run build`, and
+`npm test -w @orc/engine` (14/14, 1 new) green as of each merge. Every item was
+live-verified in a real browser against a real (non-mock) server seeded
+directly via SQLite for the specific scenario each feature needed (empty DB
+for F1's onboarding gate; a task with real runs + merge decisions for F2's
+tabs; a running project + an in-flight task for F3's stop/add-task/pause
+controls; active tasks + budget + a pending approval for F4's strip) — not
+just typechecked. Notable finds/decisions:
+- F1: extracted `RoutingEditor` out of `Settings.tsx` into a shared component
+  (now used by both Settings and the wizard) instead of duplicating ~110
+  lines; added a new `GET /api/setup/models` endpoint (shells `opencode
+  models`) so the model-mapping step offers a real datalist instead of a
+  blind text field.
+- F2: `LogPanel.tsx` was repurposed into just the log list (no outer
+  fixed-shell/close-button) since `TaskDrawer` now owns that shell across all
+  four tabs. New `GET /api/tasks/:id/decisions` route — the repo function
+  (`getMergeDecisions`) already existed, just wasn't wired to a route.
+- F3: "Reprioritize via drag" needed zero new code — the Board's existing
+  generic drag-and-drop plus B5's PATCH validation already implemented it.
+  New `Orchestrator.pause(project, { drain? })`: drain mode forces the
+  dispatch loop's `ready` list empty instead of aborting, letting active
+  tasks finish naturally; `EngineRunner.pause` only removes the orchestrator
+  from its map for the non-drain case, so a second Start can't race in while
+  a drain is still finishing. Live testing caught and fixed a real bug: the
+  Stop confirm/toast text said "requeued to backlog" but the actual behavior
+  is "moved to Blocked".
+- F4: reused `TaskCard`'s `Heartbeat`/`agoLabel` (now exported) instead of
+  duplicating elapsed-time formatting; `Board.tsx`'s existing `costAnalytics`
+  fetch already returned `budgetUsd`, just wasn't being read — no new
+  request needed for the budget bar.
+
+Next up per the plan's execution order: **Phase 5 = F5-F8** (away-from-
+keyboard autonomy: browser notifications, model health/cooldown, soft budget
+rails, run report cards).
 
 ### Phase 5 — F5, F6, F7, F8 (away-from-keyboard autonomy) — ⬜ not started
 
@@ -739,7 +781,7 @@ doc first (`docs/specs/sandbox.md`), do not attempt as part of this pass.
 | 1 | S1, S2, S3, S4 | Close the injection/exposure holes before anything else touches the network surface. | ✅ done |
 | 2 | B1, B2, B3, B4, B5 | The control-plane bugs users hit daily (stop, logs, double-run, run rows, status). | ✅ done |
 | 3 | S5, B6–B15 | Hygiene + rails; each is small and independent. | ✅ done |
-| 4 | F1, F2, F3, F4 | Core product loop: onboard → understand → intervene → observe. | ⬜ not started |
+| 4 | F1, F2, F3, F4 | Core product loop: onboard → understand → intervene → observe. | ✅ done |
 | 5 | F5, F6, F7, F8 | Away-from-keyboard autonomy story. | ⬜ not started |
 | 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. | ⬜ not started |
 
