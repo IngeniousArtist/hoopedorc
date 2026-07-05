@@ -10,6 +10,8 @@ const KIND_ICON: Record<string, string> = {
   task_done: "🟢",
   task_failed: "🔴",
   rollback: "↩️",
+  task_added: "➕",
+  stopped: "⏹️",
 };
 
 export function AuditView({ projectId }: { projectId: string }) {

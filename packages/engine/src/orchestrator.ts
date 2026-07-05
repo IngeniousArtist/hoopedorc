@@ -131,6 +131,10 @@ export class Orchestrator implements Scheduler {
    *  fresh one per project), so this is threaded onto every LogEvent/Run
    *  emitted from here instead of needing a project param everywhere. */
   private projectId = "";
+  /** F3's "Pause (finish current tasks)" mode: stop dispatching new ready
+   *  tasks but let whatever is already in activeTaskIds run to completion,
+   *  instead of pause()'s usual immediate abort. Reset at the top of start(). */
+  private draining = false;
 
   constructor(private readonly deps: SchedulerDeps) {}
 
@@ -204,6 +208,7 @@ export class Orchestrator implements Scheduler {
 
   async start(project: Project, tasks: Task[]): Promise<void> {
     this.paused = false;
+    this.draining = false;
     this.projectId = project.id;
     this.currentTasks = tasks;
     this.budgetBlockedWarned.clear();
@@ -232,7 +237,12 @@ export class Orchestrator implements Scheduler {
 
     while (!this.paused) {
       this.reconcileTasks();
-      const ready = this.readyTasks(tasks);
+      // Draining: never pick up new work, but leave activeTaskIds alone so
+      // whatever's already running finishes normally. Forcing `ready` empty
+      // means `dispatched` stays 0 every pass below, which the existing
+      // "nothing dispatched" branches already turn into a 250ms poll while
+      // active tasks remain, then a break once the last one finishes.
+      const ready = this.draining ? [] : this.readyTasks(tasks);
 
       if (ready.length === 0 && this.activeTaskIds.size === 0) {
         break;
@@ -331,7 +341,26 @@ export class Orchestrator implements Scheduler {
     this.emit("info", "engine", "Orchestrator finished", "");
   }
 
-  async pause(_project: Project): Promise<void> {
+  async pause(
+    _project: Project,
+    opts: { drain?: boolean } = {},
+  ): Promise<void> {
+    if (opts.drain) {
+      // Let whatever's already running finish: don't touch paused, abort
+      // controllers, or active tasks' status — just stop the dispatch loop
+      // from picking up new work (see the `ready` computation in start()).
+      // The loop keeps iterating and start()'s promise doesn't resolve until
+      // activeTaskIds actually empties out.
+      this.draining = true;
+      this.emit(
+        "info",
+        "engine",
+        "Draining — finishing active tasks, no new work will be dispatched",
+        "",
+      );
+      return;
+    }
+
     this.paused = true;
 
     for (const [, ctrl] of this.taskAbortControllers) {

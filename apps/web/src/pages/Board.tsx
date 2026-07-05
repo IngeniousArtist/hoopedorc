@@ -5,6 +5,7 @@ import {
   type RetryTaskResponse,
   type ServerEvent,
   type Settings as SettingsType,
+  type StopTaskResponse,
   type Task,
   type TaskDiffResponse,
   type TaskStatus,
@@ -16,6 +17,7 @@ import { useToast } from "../hooks/useToast";
 import { TaskDrawer } from "../components/TaskDrawer";
 import { TaskCard } from "../components/TaskCard";
 import { BoardSummary } from "../components/BoardSummary";
+import { AddTaskForm } from "../components/AddTaskForm";
 
 // Record so adding a TaskStatus in @orc/types is a compile error here until
 // it gets a label too — the column list itself is derived from TASK_STATUSES
@@ -58,6 +60,10 @@ export function Board({
   // Re-render once a second so the heartbeat's "Ns ago" + color stay current
   // even when no new events arrive. Only ticks while a task is in_progress.
   const [, setNowTick] = useState(0);
+  // F3: tasks with a stop request in flight — hides the Stop button on that
+  // card so a slow click can't fire the request twice.
+  const [stoppingIds, setStoppingIds] = useState<Set<string>>(new Set());
+  const [showAddTask, setShowAddTask] = useState(false);
 
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
@@ -222,6 +228,31 @@ export function Board({
     }
   };
 
+  const handleStop = async (taskId: string) => {
+    setStoppingIds((prev) => new Set(prev).add(taskId));
+    try {
+      const res = await api<StopTaskResponse>("stopTask", {
+        params: { id: taskId },
+      });
+      setTasks((prev) => prev.map((t) => (t.id === taskId ? res.task : t)));
+      toast("Stopped — task moved to Blocked.", "success");
+    } catch (e) {
+      toast(String(e), "error");
+    } finally {
+      setStoppingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
+    }
+  };
+
+  const handleTaskAdded = (t: Task) => {
+    setTasks((prev) => [...prev, t]);
+    setShowAddTask(false);
+    toast(`Added "${t.title}".`, "success");
+  };
+
   const handleViewDiff = async (taskId: string) => {
     setActionBusy(true);
     setDiff(null);
@@ -318,6 +349,24 @@ export function Board({
 
       <BoardSummary tasks={tasks} costUsd={costUsd} />
 
+      <div className="mb-4">
+        {showAddTask ? (
+          <AddTaskForm
+            projectId={projectId}
+            tasks={tasks}
+            onCreated={handleTaskAdded}
+            onCancel={() => setShowAddTask(false)}
+          />
+        ) : (
+          <button
+            onClick={() => setShowAddTask(true)}
+            className="rounded border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800"
+          >
+            + Add task
+          </button>
+        )}
+      </div>
+
       {/* snap-x makes mobile a one-column-at-a-time swipe; sm: reverts to the
           normal multi-column horizontal scroll once there's room for it. */}
       <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-4 sm:snap-none">
@@ -356,6 +405,11 @@ export function Board({
                           ? null
                           : t.id,
                       )
+                    }
+                    onStop={
+                      stoppingIds.has(t.id)
+                        ? undefined
+                        : () => handleStop(t.id)
                     }
                     isSelected={selectedTaskId === t.id}
                   />

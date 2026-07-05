@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
-import type { Project, ServerEvent, Task } from "@orc/types";
+import type { Difficulty, ModelId, Project, Role, ServerEvent, Task } from "@orc/types";
 import { SECRET_SENTINEL, TASK_STATUSES, WS_PATH, pickAssignedModel } from "@orc/types";
 import type { TaskStatus } from "@orc/types";
 import { GitServiceImpl } from "@orc/engine";
@@ -1054,7 +1054,8 @@ async function main() {
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
 
-    await engine.pause(project);
+    const body = (req.body as { drain?: boolean } | undefined) ?? {};
+    await engine.pause(project, { drain: body.drain });
     repo.updateProject(db, id, { status: "paused" });
     broadcast({ type: "project.updated", payload: repo.getProject(db, id)! });
     return { project: repo.getProject(db, id)! };
@@ -1064,6 +1065,75 @@ async function main() {
   app.get("/api/projects/:id/tasks", async (req) => {
     const { id } = req.params as RouteParams;
     return { tasks: repo.getTasks(db, id) };
+  });
+
+  // Materialize a single new task (F3 — "add a task while running"). B9's
+  // Orchestrator.reconcileTasks() picks this up live if the project's
+  // autonomous loop is already running; otherwise it just sits in
+  // backlog/ready until the next Start.
+  app.post("/api/projects/:id/tasks", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+
+    const body = req.body as {
+      title?: string;
+      description?: string;
+      difficulty?: string;
+      role?: string;
+      acceptanceCriteria?: string[];
+      dependsOn?: string[];
+      scopePaths?: string[];
+      assignedModel?: string;
+    };
+    const title = body.title?.trim();
+    if (!title) return reply.code(400).send({ error: "title is required" });
+
+    const difficulty = body.difficulty ?? "medium";
+    if (!["easy", "medium", "hard"].includes(difficulty)) {
+      return reply.code(400).send({ error: `invalid difficulty "${difficulty}"` });
+    }
+
+    const dependsOn = body.dependsOn ?? [];
+    const existingIds = new Set(repo.getTasks(db, id).map((t) => t.id));
+    const badDep = dependsOn.find((d) => !existingIds.has(d));
+    if (badDep) {
+      return reply.code(400).send({ error: `dependsOn references unknown task "${badDep}"` });
+    }
+
+    const settings = repo.getSettings(db) ?? defaultSettings();
+    const difficultyTyped = difficulty as Difficulty;
+    const role = body.role as Role | undefined;
+    const assignedModel =
+      (body.assignedModel as ModelId | undefined) ??
+      pickAssignedModel(settings.routing, difficultyTyped, role);
+
+    const task = repo.createTask(db, {
+      id: crypto.randomUUID(),
+      projectId: id,
+      title,
+      description: body.description ?? "",
+      difficulty: difficultyTyped,
+      status: dependsOn.length === 0 ? "ready" : "backlog",
+      dependsOn,
+      acceptanceCriteria: body.acceptanceCriteria ?? [],
+      assignedModel,
+      role,
+      scopePaths: body.scopePaths?.length ? body.scopePaths : ["**/*"],
+      attempts: 0,
+      maxAttempts: 3,
+    });
+
+    repo.createAuditEntry(db, {
+      projectId: id,
+      taskId: task.id,
+      kind: "task_added",
+      actor: "human",
+      summary: `Added task: ${task.title}`,
+    });
+
+    broadcast({ type: "task.updated", payload: task });
+    return { task };
   });
 
   app.get("/api/tasks/:id", async (req, reply) => {
