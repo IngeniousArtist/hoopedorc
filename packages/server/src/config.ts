@@ -105,6 +105,7 @@ export function defaultSettings(): Settings {
       authOrSecrets: true,
       outOfScopeEdits: true,
     },
+    allowVacuousGates: false,
     confidenceThreshold: 0.7,
     // Unset by default => falls back to ENV.reposDir at request time. Set from
     // the Settings UI to point new project clones somewhere readable, e.g.

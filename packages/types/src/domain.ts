@@ -179,6 +179,13 @@ export interface GateResult {
   noConflicts: boolean;
   /** True only if the run modified files within task.scopePaths. */
   inScope: boolean;
+  /**
+   * True when typecheck/lint/build/tests all had no script to run (a
+   * script-less repo, e.g. a brand-new scaffold) — every gate "passed" only
+   * because nothing objective ran. Treated as risky by canAutoMerge unless
+   * `Settings.allowVacuousGates` is on.
+   */
+  vacuous?: boolean;
   /** gate name -> output/summary, for logs + the audit trail. */
   details: Record<string, string>;
 }
@@ -290,6 +297,12 @@ export interface Settings {
     authOrSecrets: boolean;
     outOfScopeEdits: boolean;
   };
+  /**
+   * When false (default), a gate result where typecheck/lint/build/tests all
+   * had no script to run (nothing objective actually ran) is treated as risky
+   * — auto-merge is refused and the task escalates to human approval.
+   */
+  allowVacuousGates?: boolean;
   globalMonthlyBudgetUsd?: number;
   /** Validator confidence below this => escalate to a human. */
   confidenceThreshold: number;

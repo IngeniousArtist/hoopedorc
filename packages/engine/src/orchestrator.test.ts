@@ -248,6 +248,35 @@ test("a risky change (new dependency) escalates to a human instead of auto-mergi
   assert.equal(t1.status, "failed");
 });
 
+test("a vacuous gate result (no scripts ran) escalates to a human instead of auto-merging", async () => {
+  const merged: number[] = [];
+  let asked = false;
+  const deps = fakeDeps({
+    gates: { async run() { return { ...GOOD_GATE, vacuous: true }; } },
+    events: {
+      onLog() {}, onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+      async requestApproval() { asked = true; return "reject"; },
+    },
+  }, merged);
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+  assert.equal(asked, true);
+  assert.equal(merged.length, 0);
+  assert.equal(t1.status, "failed");
+});
+
+test("a vacuous gate result auto-merges when settings.allowVacuousGates is on", async () => {
+  const merged: number[] = [];
+  const deps = fakeDeps({
+    settings: { ...settings(), allowVacuousGates: true },
+    gates: { async run() { return { ...GOOD_GATE, vacuous: true }; } },
+  }, merged);
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+  assert.equal(merged.length, 1);
+  assert.equal(t1.status, "done");
+});
+
 test("sets in_review while gates run and back to in_progress on a gate-failure retry", async () => {
   const merged: number[] = [];
   const statuses: string[] = [];
