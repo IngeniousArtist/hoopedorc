@@ -1,9 +1,7 @@
 import {
   SECRET_SENTINEL,
-  type Difficulty,
   type MergePolicy,
   type ModelId,
-  type Role,
   type RoutingPolicy,
   type Settings as SettingsType,
   type TelegramTestResponse,
@@ -11,28 +9,8 @@ import {
 import type { ModelConfig } from "@orc/types";
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
-import { ModelSelect } from "../components/ModelSelect";
 import { ModelsEditor } from "../components/ModelsEditor";
-
-const DIFFICULTIES: Difficulty[] = ["easy", "medium", "hard"];
-
-const ROLE_LABELS: Record<Role, string> = {
-  planner: "Planner",
-  frontend: "Frontend",
-  hard: "Hard tasks",
-  medium: "Medium tasks",
-  docs: "Documentation",
-  validator: "Validator",
-  updates: "Updates",
-};
-
-const BY_ROLE_KEYS: Role[] = [
-  "frontend",
-  "hard",
-  "medium",
-  "docs",
-  "updates",
-];
+import { RoutingEditor } from "../components/RoutingEditor";
 
 const MERGE_POLICY_LABELS: Record<MergePolicy, string> = {
   hard_gate_flag_risky: "Hard gates, flag risky",
@@ -244,117 +222,11 @@ export function Settings() {
 
       <ModelsEditor models={settings.models} onChange={updateModels} />
 
-      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <h3 className="text-sm font-medium text-neutral-300">
-          Model Routing
-        </h3>
-
-        <div>
-          <label className="mb-1 block text-xs text-neutral-400">
-            Planner
-          </label>
-          <ModelSelect
-            value={settings.routing.planner}
-            models={enabledModels}
-            onChange={(m) => {
-              if (m)
-                updateRouting((r) => ({ ...r, planner: m }));
-            }}
-          />
-        </div>
-
-        <div>
-          <label className="mb-2 block text-xs text-neutral-400">
-            Author by difficulty
-          </label>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {DIFFICULTIES.map((d) => (
-              <div key={d}>
-                <label className="mb-1 block text-[10px] text-neutral-400 capitalize">
-                  {d}
-                </label>
-                <ModelSelect
-                  value={settings.routing.byDifficulty[d]}
-                  models={enabledModels}
-                  onChange={(m) => {
-                    if (m)
-                      updateRouting((r) => ({
-                        ...r,
-                        byDifficulty: {
-                          ...r.byDifficulty,
-                          [d]: m,
-                        },
-                      }));
-                  }}
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <label className="mb-2 block text-xs text-neutral-400">
-            Role overrides (optional)
-          </label>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {BY_ROLE_KEYS.map((role) => (
-              <div key={role}>
-                <label className="mb-1 block text-[10px] text-neutral-400">
-                  {ROLE_LABELS[role]}
-                </label>
-                <ModelSelect
-                  value={settings.routing.byRole[role]}
-                  models={enabledModels}
-                  onChange={(m) => {
-                    updateRouting((r) => {
-                      const next = { ...r.byRole };
-                      if (m) {
-                        next[role] = m;
-                      } else {
-                        delete next[role];
-                      }
-                      return { ...r, byRole: next };
-                    });
-                  }}
-                  allowEmpty
-                  emptyLabel="(use difficulty)"
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <label className="mb-2 block text-xs text-neutral-400">
-            Validator by difficulty
-          </label>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {DIFFICULTIES.map((d) => (
-              <div key={d}>
-                <label className="mb-1 block text-[10px] text-neutral-400 capitalize">
-                  {d}
-                </label>
-                <ModelSelect
-                  value={
-                    settings.routing.validatorByDifficulty[d]
-                  }
-                  models={enabledModels}
-                  onChange={(m) => {
-                    if (m)
-                      updateRouting((r) => ({
-                        ...r,
-                        validatorByDifficulty: {
-                          ...r.validatorByDifficulty,
-                          [d]: m,
-                        },
-                      }));
-                  }}
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
+      <RoutingEditor
+        routing={settings.routing}
+        models={enabledModels}
+        onChange={updateRouting}
+      />
 
       <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
         <h3 className="text-sm font-medium text-neutral-300">

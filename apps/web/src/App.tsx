@@ -2,6 +2,7 @@ import type {
   ListProjectsResponse,
   Project,
   ServerEvent,
+  Settings as SettingsType,
 } from "@orc/types";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api/client";
@@ -16,6 +17,7 @@ import { PlanView } from "./pages/PlanView";
 import { ProjectsView } from "./pages/ProjectsView";
 import { Settings } from "./pages/Settings";
 import { SetupView } from "./pages/SetupView";
+import { Welcome } from "./pages/Welcome";
 
 type Page =
   | "board"
@@ -26,7 +28,10 @@ type Page =
   | "settings"
   | "setup"
   | "new-project"
-  | "projects";
+  | "projects"
+  // Not a nav tab — only reached via the first-run auto-redirect (F1) or
+  // SetupView's "Re-run setup" link.
+  | "welcome";
 
 const NAV: { page: Page; label: string }[] = [
   { page: "board", label: "Board" },
@@ -52,9 +57,15 @@ export function App() {
   // finishes even if the user switches tabs before the reply arrives.
   const [planMounted, setPlanMounted] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () => localStorage.getItem(STORAGE_KEY) ?? "",
   );
+  // F1: whether to auto-redirect to the onboarding wizard is decided once,
+  // right after the first settings+projects load — re-checking on every
+  // render would yank the user back to Welcome if they navigate away from it
+  // before creating a project.
+  const [onboardingChecked, setOnboardingChecked] = useState(false);
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -67,12 +78,27 @@ export function App() {
       );
     } catch {
       /* ignore — server may be starting */
+    } finally {
+      setProjectsLoaded(true);
     }
   }, []);
 
   useEffect(() => {
     refreshProjects();
   }, [refreshProjects]);
+
+  useEffect(() => {
+    if (onboardingChecked || !projectsLoaded) return;
+    setOnboardingChecked(true);
+    if (projects.length > 0) return;
+    api<{ settings: SettingsType }>("getSettings")
+      .then((r) => {
+        if (!r.settings.onboardedAt) setPage("welcome");
+      })
+      .catch(() => {
+        /* server may be starting — leave the user on Board, not stuck */
+      });
+  }, [onboardingChecked, projectsLoaded, projects.length]);
 
   useEffect(() => {
     if (selectedProjectId) localStorage.setItem(STORAGE_KEY, selectedProjectId);
@@ -203,7 +229,9 @@ export function App() {
               <Notifications projectId={selectedProjectId} />
             )}
             {page === "settings" && <Settings />}
-            {page === "setup" && <SetupView />}
+            {page === "setup" && (
+              <SetupView onRerunSetup={() => setPage("welcome")} />
+            )}
             {page === "projects" && (
               <ProjectsView
                 selectedProjectId={selectedProjectId}
@@ -214,6 +242,7 @@ export function App() {
             {page === "new-project" && (
               <NewProject onProjectCreated={handleProjectCreated} />
             )}
+            {page === "welcome" && <Welcome onDone={handleProjectCreated} />}
           </>
         )}
       </main>

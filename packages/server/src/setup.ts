@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { makeAdapter } from "@orc/adapters";
 import type {
+  ModelRosterResponse,
   ModelTestResult,
   Settings,
   SetupCheck,
@@ -58,6 +59,25 @@ export async function runSetupChecks(): Promise<SetupHealthResponse> {
     }),
   ]);
   return { checks, allOk: checks.every((c) => c.ok) };
+}
+
+/**
+ * The full `provider/model` roster `opencode models` reports as installed —
+ * every id the onboarding wizard's model-mapping step can offer instead of
+ * having the user type an id blind. Empty on failure (e.g. opencode not
+ * installed yet) rather than throwing, since this is advisory only.
+ */
+export async function getModelRoster(): Promise<ModelRosterResponse> {
+  try {
+    const { stdout } = await pexec("opencode", ["models"], { timeout: 20_000 });
+    const models = stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    return { models };
+  } catch {
+    return { models: [] };
+  }
 }
 
 /**

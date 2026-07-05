@@ -37,6 +37,7 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 | `PUT /api/settings` | `UpdateSettingsRequest` → `UpdateSettingsResponse` |
 | `GET /api/notifications` | → `ListNotificationsResponse` |
 | `POST /api/notifications/:id/respond` | `RespondNotificationRequest` → `{ ok }` |
+| `GET /api/setup/models` | → `ModelRosterResponse` |
 
 ## WebSocket (`@orc/types/ws.ts`, `WS_PATH = /ws`)
 Server → client `ServerEvent`: `log`, `task.updated`, `run.updated`,

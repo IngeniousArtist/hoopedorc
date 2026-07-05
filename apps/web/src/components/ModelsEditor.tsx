@@ -22,9 +22,15 @@ const inputCls =
 export function ModelsEditor({
   models,
   onChange,
+  roster,
 }: {
   models: ModelConfig[];
   onChange: (models: ModelConfig[]) => void;
+  /** Real `opencode models` output, offered as a datalist on the opencode
+   *  model field so mapping a model is picking from a real id instead of
+   *  typing one blind (F1's onboarding wizard passes this; Settings doesn't
+   *  need to). */
+  roster?: string[];
 }) {
   function patch(idx: number, partial: Partial<ModelConfig>) {
     onChange(models.map((m, i) => (i === idx ? { ...m, ...partial } : m)));
@@ -139,6 +145,7 @@ export function ModelsEditor({
                       patch(idx, { opencodeModel: e.target.value || undefined })
                     }
                     placeholder="deepseek/deepseek-v4-flash"
+                    list={roster?.length ? "opencode-model-roster" : undefined}
                     className={inputCls + " font-mono"}
                   />
                 )}
@@ -218,6 +225,13 @@ export function ModelsEditor({
         Changing an ID that's referenced in Routing above will require
         re-selecting the model there. Save applies all changes.
       </p>
+      {roster?.length ? (
+        <datalist id="opencode-model-roster">
+          {roster.map((id) => (
+            <option key={id} value={id} />
+          ))}
+        </datalist>
+      ) : null}
     </section>
   );
 }

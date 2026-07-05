@@ -2,7 +2,12 @@ import type { SetupHealthResponse, TestModelsResponse } from "@orc/types";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 
-export function SetupView() {
+export function SetupView({
+  onRerunSetup,
+}: {
+  /** Jump back into the first-run onboarding wizard (F1) on demand. */
+  onRerunSetup?: () => void;
+}) {
   const [health, setHealth] = useState<SetupHealthResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,13 +47,23 @@ export function SetupView() {
     <div className="max-w-2xl space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Setup &amp; Health</h2>
-        <button
-          onClick={check}
-          disabled={loading}
-          className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
-        >
-          {loading ? "Checking…" : "Re-check"}
-        </button>
+        <div className="flex items-center gap-2">
+          {onRerunSetup && (
+            <button
+              onClick={onRerunSetup}
+              className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+            >
+              Re-run setup wizard
+            </button>
+          )}
+          <button
+            onClick={check}
+            disabled={loading}
+            className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+          >
+            {loading ? "Checking…" : "Re-check"}
+          </button>
+        </div>
       </div>
 
       <p className="text-xs text-neutral-400">
