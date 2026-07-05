@@ -26,10 +26,15 @@ export class GateRunnerImpl implements GateRunner {
     const testsRun = await this.runScript(worktreePath, "tests");
     const tests = {
       passed: testRun.passed && testsRun.passed,
+      ran: testRun.ran || testsRun.ran,
       output: [testRun.output, testsRun.output].filter(Boolean).join("\n"),
     };
     const noConflicts = await this.checkNoConflicts(project, worktreePath);
     const inScope = await this.worktrees.changedFilesInScope(project, task);
+    // Every objective gate was a no-op (script-less repo, e.g. a brand-new
+    // scaffold) — nothing actually verified this change; canAutoMerge treats
+    // this as risky unless the operator opted in.
+    const vacuous = !typecheck.ran && !lint.ran && !build.ran && !tests.ran;
 
     return {
       typecheck: typecheck.passed,
@@ -38,6 +43,7 @@ export class GateRunnerImpl implements GateRunner {
       tests: tests.passed,
       noConflicts,
       inScope,
+      vacuous,
       details: {
         typecheck: typecheck.output,
         lint: lint.output,
@@ -52,7 +58,7 @@ export class GateRunnerImpl implements GateRunner {
   private async runScript(
     cwd: string,
     script: string,
-  ): Promise<{ passed: boolean; output: string }> {
+  ): Promise<{ passed: boolean; ran: boolean; output: string }> {
     try {
       const { stdout } = await pexecFile(
         "npm",
@@ -65,7 +71,7 @@ export class GateRunnerImpl implements GateRunner {
           env: { ...process.env, PWD: cwd },
         },
       );
-      return { passed: true, output: stdout };
+      return { passed: true, ran: true, output: stdout };
     } catch (err: unknown) {
       const e = err as {
         stderr?: string;
@@ -77,7 +83,7 @@ export class GateRunnerImpl implements GateRunner {
       const out = e.stderr || e.stdout || e.message || "";
       // Timed out / hung → a real failure, don't let it pass.
       if (e.killed) {
-        return { passed: false, output: `script "${script}" timed out` };
+        return { passed: false, ran: true, output: `script "${script}" timed out` };
       }
       // Non-numeric code (ENOENT etc.) means the script/tool isn't applicable
       // — `npm run --if-present` already no-ops missing scripts, so this is the
@@ -85,10 +91,11 @@ export class GateRunnerImpl implements GateRunner {
       if (typeof e.code !== "number") {
         return {
           passed: true,
+          ran: false,
           output: `script "${script}" unavailable — ${String(out).slice(0, 200)}`,
         };
       }
-      return { passed: false, output: String(out) };
+      return { passed: false, ran: true, output: String(out) };
     }
   }
 

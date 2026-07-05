@@ -1020,6 +1020,16 @@ export class Orchestrator implements Scheduler {
     // hard_gate_flag_risky: auto-merge unless a risky-change rule trips.
     if (riskyChangeRules.outOfScopeEdits && !gate.inScope) return false;
 
+    if (gate.vacuous && !this.deps.settings.allowVacuousGates) {
+      this.emit(
+        "warn",
+        "engine",
+        "Risky: no objective gates ran (repo has no typecheck/lint/build/test scripts)",
+        task.id,
+      );
+      return false;
+    }
+
     const files = await this.deps.worktrees.changedFiles(project, task);
     if (riskyChangeRules.dbSchema && files.some((f) => /\.sql$|migrations?\//i.test(f))) {
       this.emit("warn", "engine", "Risky: DB/schema change detected", task.id);

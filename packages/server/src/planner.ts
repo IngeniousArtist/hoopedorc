@@ -62,11 +62,26 @@ Rules for each task:
 - dependsOn: indices of earlier tasks that must finish first
 - scopePaths: glob(s) the task is allowed to modify`;
 
+// Auto-merge's objective gates (typecheck/lint/build/test) are just
+// `npm run <script> --if-present` — a repo with none of those scripts passes
+// every gate vacuously, leaving only the validator model between generated
+// code and a merge. Brand-new repos start from a script-less package.json
+// (see createGithubRepo), so without this instruction every fresh project's
+// first task would ship with zero real gates.
+const SCAFFOLD_INSTRUCTION = `
+This is a brand-new project with no existing code. Make the FIRST task in your task list a
+scaffold task that sets up the project skeleton AND real \`package.json\` scripts — \`test\`,
+\`build\`, \`lint\`, \`typecheck\` — appropriate to whatever stack you choose. These scripts are
+the objective safety gates every later task's changes are checked against; a scaffold with no
+scripts means nothing is ever actually verified before auto-merge. Its acceptanceCriteria must
+include a criterion equivalent to "npm test runs real tests and passes".`;
+
 function buildPrompt(goal: string, projectName: string): string {
   return `You are the planning agent for an autonomous multi-model coding team.
 Plan the project "${projectName}" for this goal:
 
 ${goal}
+${SCAFFOLD_INSTRUCTION}
 
 Produce a short PRD and break the work into a dependency-ordered task DAG.
 ${DECONSTRUCT_SHAPE}`;
@@ -146,6 +161,7 @@ Your working directory is the project's actual cloned repository. If it already 
 use your file tools to check real file paths and existing structure before writing scopePaths —
 each task's scopePaths must match files/globs that actually make sense for this repo, not
 invented paths. For a brand-new/empty project, plan from the conversation alone.
+${priorContext ? "" : SCAFFOLD_INSTRUCTION}
 ${priorContextBlock(priorContext)}
 ## Planning conversation
 ${transcript}
