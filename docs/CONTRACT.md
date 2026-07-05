@@ -6,11 +6,19 @@ it — all three modules depend on it.**
 
 ## Domain types (`@orc/types/domain.ts`)
 `ModelId`, `Role`, `RunnerKind`, `ModelConfig`, `Difficulty`, `TaskStatus`,
-`Task`, `Project`, `Run`, `LogEvent`, `GateResult`, `MergeDecision`,
+`Task`, `Project`, `ProjectConfig`, `Run`, `LogEvent`, `GateResult`, `MergeDecision`,
 `Notification`, `CostRecord`, `RoutingPolicy`, `Settings`, and the
 `pickAssignedModel(routing, difficulty, role?)` helper. Read the file — it is the
 source of truth. `Settings.routing` is what the Settings UI exposes as per-job
 model selectors (planner, by-difficulty, by-role, validator).
+
+`Project.config` (`ProjectConfig`, F9) holds per-project overrides — gate
+script names (or `false` to skip a gate), a free-form `testCommand` for
+non-npm stacks (run via `execFile`, no shell), a `maxAttempts` default applied
+to tasks created in that project, and a `mergePolicy` override. All fields
+optional; an unset project behaves exactly as it did before F9. Set via
+`config` on `CreateProjectRequest`/`UpdateProjectRequest` (`null` on update
+clears it).
 
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.

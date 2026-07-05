@@ -2,6 +2,7 @@ import type { Project, RouteKey } from "@orc/types";
 import { useState } from "react";
 import { api } from "../api/client";
 import { useToast } from "../hooks/useToast";
+import { ProjectConfigFields, projectConfigFromForm, projectConfigToForm } from "./ProjectConfigFields";
 
 const STATUS_COLOR: Record<string, string> = {
   created: "bg-neutral-700 text-neutral-200",
@@ -20,6 +21,8 @@ export function ProjectHeader({ project }: { project: Project }) {
   const [busy, setBusy] = useState(false);
   const origBudget = project.budgetUsd != null ? String(project.budgetUsd) : "";
   const [budget, setBudget] = useState(origBudget);
+  const origConfigForm = projectConfigToForm(project.config);
+  const [configForm, setConfigForm] = useState(origConfigForm);
 
   async function act(route: RouteKey, body?: unknown) {
     setBusy(true);
@@ -58,9 +61,25 @@ export function ProjectHeader({ project }: { project: Project }) {
     }
   }
 
+  async function saveConfig() {
+    setBusy(true);
+    try {
+      await api("updateProject", {
+        params: { id: project.id },
+        body: { config: projectConfigFromForm(configForm) ?? null },
+      });
+      toast("Advanced settings saved.", "success");
+    } catch (e) {
+      toast(String(e), "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const running = project.status === "running";
   const startLabel = project.status === "paused" ? "Resume" : "Start";
   const budgetDirty = budget !== origBudget;
+  const configDirty = JSON.stringify(configForm) !== JSON.stringify(origConfigForm);
 
   return (
     <div className="mb-4 rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3">
@@ -136,6 +155,22 @@ export function ProjectHeader({ project }: { project: Project }) {
           Save
         </button>
         {budgetDirty && <span className="text-amber-400">unsaved</span>}
+      </div>
+
+      <div className="mt-2">
+        <ProjectConfigFields form={configForm} onChange={setConfigForm} />
+        {configDirty && (
+          <div className="mt-1 flex items-center gap-2 text-[11px]">
+            <button
+              onClick={saveConfig}
+              disabled={busy}
+              className="rounded border border-neutral-700 px-2 py-0.5 text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
+            >
+              Save advanced settings
+            </button>
+            <span className="text-amber-400">unsaved</span>
+          </div>
+        )}
       </div>
     </div>
   );

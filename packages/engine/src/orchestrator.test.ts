@@ -439,6 +439,18 @@ test("a task added mid-run (not in the array start() was given) is picked up via
   assert.equal(merged.length, 2);
 });
 
+test("project.config.mergePolicy overrides the global Settings.mergePolicy (F9)", async () => {
+  // Global policy is "always_ask" (never auto-merge), but this project opts
+  // into "fully_autonomous" — the project-level override must win.
+  const merged: number[] = [];
+  const deps = fakeDeps({ settings: { ...settings(), mergePolicy: "always_ask" } }, merged);
+  const project: Project = { ...PROJECT, config: { mergePolicy: "fully_autonomous" } };
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(project, [t1]);
+  assert.equal(t1.status, "done");
+  assert.equal(merged.length, 1, "the project override should have allowed an auto-merge");
+});
+
 test("isAuthOrSecretFile matches path segments, not substrings", () => {
   assert.equal(isAuthOrSecretFile("author.ts"), false, "substring of an unrelated filename");
   assert.equal(isAuthOrSecretFile("auth.ts"), true);

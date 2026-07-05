@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { sanitizedEnv } from "@orc/adapters";
-import type { GateResult, Project, Task } from "@orc/types";
+import type { GateResult, Project, ProjectConfig, Task } from "@orc/types";
 import type { GateRunner, WorktreeManager } from "./index.js";
 
 // Async exec everywhere: gates run npm scripts (up to 2 min each) and git
@@ -9,6 +11,29 @@ import type { GateRunner, WorktreeManager } from "./index.js";
 // whole duration, so while ANY task was running its gates the server couldn't
 // answer HTTP/WS — it looked frozen. promisify(execFile) keeps the loop free.
 const pexecFile = promisify(execFile);
+
+/**
+ * Whether `cwd`'s package.json declares a non-empty npm script named
+ * `script`. `npm run <script> --if-present` exits 0 whether or not the
+ * script exists (verified directly against the installed npm) — it does NOT
+ * throw for a missing script the way earlier code here assumed, so relying
+ * on a thrown error to detect "nothing to run" silently defeated vacuous-gate
+ * detection (B11) for every real repo. Checking package.json directly is
+ * unambiguous.
+ */
+function hasNpmScript(cwd: string, script: string): boolean {
+  try {
+    const pkgPath = join(cwd, "package.json");
+    if (!existsSync(pkgPath)) return false;
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+      scripts?: Record<string, unknown>;
+    };
+    const cmd = pkg.scripts?.[script];
+    return typeof cmd === "string" && cmd.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
 
 export class GateRunnerImpl implements GateRunner {
   constructor(private readonly worktrees: WorktreeManager) {}
@@ -19,17 +44,11 @@ export class GateRunnerImpl implements GateRunner {
       return this.allFail("no worktree path set");
     }
 
-    const typecheck = await this.runScript(worktreePath, "typecheck");
-    const lint = await this.runScript(worktreePath, "lint");
-    const build = await this.runScript(worktreePath, "build");
-    // Support either a "test" or "tests" npm script; both must pass if present.
-    const testRun = await this.runScript(worktreePath, "test");
-    const testsRun = await this.runScript(worktreePath, "tests");
-    const tests = {
-      passed: testRun.passed && testsRun.passed,
-      ran: testRun.ran || testsRun.ran,
-      output: [testRun.output, testsRun.output].filter(Boolean).join("\n"),
-    };
+    const gates = project.config?.gates;
+    const typecheck = await this.runGate(worktreePath, "typecheck", gates?.typecheckScript);
+    const lint = await this.runGate(worktreePath, "lint", gates?.lintScript);
+    const build = await this.runGate(worktreePath, "build", gates?.buildScript);
+    const tests = await this.runTestsGate(worktreePath, gates);
     const noConflicts = await this.checkNoConflicts(project, worktreePath);
     const inScope = await this.worktrees.changedFilesInScope(project, task);
     // Every objective gate was a no-op (script-less repo, e.g. a brand-new
@@ -56,10 +75,81 @@ export class GateRunnerImpl implements GateRunner {
     };
   }
 
+  /** typecheck/lint/build: run the configured script name (or the slot's
+   *  default), or skip entirely when the override is `false`. */
+  private async runGate(
+    cwd: string,
+    slot: string,
+    scriptOverride: string | false | undefined,
+  ): Promise<{ passed: boolean; ran: boolean; output: string }> {
+    if (scriptOverride === false) {
+      return { passed: true, ran: false, output: `gate "${slot}" disabled by project config` };
+    }
+    return this.runScript(cwd, scriptOverride || slot);
+  }
+
+  private async runTestsGate(
+    cwd: string,
+    gates: ProjectConfig["gates"] | undefined,
+  ): Promise<{ passed: boolean; ran: boolean; output: string }> {
+    if (gates?.testScript === false) {
+      return { passed: true, ran: false, output: 'gate "test" disabled by project config' };
+    }
+    if (gates?.testCommand) {
+      return this.runCommand(cwd, gates.testCommand);
+    }
+    if (gates?.testScript) {
+      return this.runScript(cwd, gates.testScript);
+    }
+    // Default: support either a "test" or "tests" npm script; both must pass if present.
+    const testRun = await this.runScript(cwd, "test");
+    const testsRun = await this.runScript(cwd, "tests");
+    return {
+      passed: testRun.passed && testsRun.passed,
+      ran: testRun.ran || testsRun.ran,
+      output: [testRun.output, testsRun.output].filter(Boolean).join("\n"),
+    };
+  }
+
+  /**
+   * Run a free-form command (F9's non-npm test override) directly via
+   * execFile — split on whitespace, no shell, so quoting/pipes aren't
+   * supported. Unlike runScript's "--if-present" no-op path, this command was
+   * explicitly configured by the operator, so any failure (including "the
+   * command doesn't exist") is a real gate failure, not a silent pass.
+   */
+  private async runCommand(
+    cwd: string,
+    command: string,
+  ): Promise<{ passed: boolean; ran: boolean; output: string }> {
+    const [cmd, ...args] = command.trim().split(/\s+/).filter(Boolean);
+    if (!cmd) return { passed: true, ran: false, output: "empty testCommand" };
+    try {
+      const { stdout } = await pexecFile(cmd, args, {
+        cwd,
+        encoding: "utf-8",
+        timeout: 120_000,
+        maxBuffer: 16 * 1024 * 1024,
+        env: sanitizedEnv({ PWD: cwd }),
+      });
+      return { passed: true, ran: true, output: stdout };
+    } catch (err: unknown) {
+      const e = err as { stderr?: string; stdout?: string; message?: string; killed?: boolean };
+      const out = e.stderr || e.stdout || e.message || "";
+      if (e.killed) {
+        return { passed: false, ran: true, output: `command "${command}" timed out` };
+      }
+      return { passed: false, ran: true, output: String(out) };
+    }
+  }
+
   private async runScript(
     cwd: string,
     script: string,
   ): Promise<{ passed: boolean; ran: boolean; output: string }> {
+    if (!hasNpmScript(cwd, script)) {
+      return { passed: true, ran: false, output: `script "${script}" not defined in package.json` };
+    }
     try {
       const { stdout } = await pexecFile(
         "npm",
@@ -86,9 +176,10 @@ export class GateRunnerImpl implements GateRunner {
       if (e.killed) {
         return { passed: false, ran: true, output: `script "${script}" timed out` };
       }
-      // Non-numeric code (ENOENT etc.) means the script/tool isn't applicable
-      // — `npm run --if-present` already no-ops missing scripts, so this is the
-      // "nothing to run" case: pass with a note rather than fail the gate.
+      // Non-numeric code (ENOENT etc.) at this point means npm itself (or the
+      // script's own tool) couldn't be spawned, not that the script is
+      // missing (hasNpmScript already confirmed it's declared) — treat it as
+      // "nothing to run" rather than failing the gate outright.
       if (typeof e.code !== "number") {
         return {
           passed: true,

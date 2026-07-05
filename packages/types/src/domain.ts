@@ -135,8 +135,46 @@ export interface Project {
    *  (v2) can be given what the project already set out to build. */
   prd?: string;
   budgetUsd?: number; // hard cap for the whole project run
+  /** Per-project overrides (F9) — gate scripts, retry budget, merge policy.
+   *  All optional; omitted fields keep the global/default behavior. */
+  config?: ProjectConfig;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Per-project overrides (F9). Exists because repos vary: a non-npm stack
+ * needs a different test invocation, a monorepo might name its scripts
+ * "type-check" instead of "typecheck", and some projects want a stricter
+ * (or looser) merge policy / attempt budget than the operator's global
+ * defaults. Every field is optional — an unset project keeps behaving
+ * exactly as it did before F9.
+ */
+export interface ProjectConfig {
+  gates?: {
+    /**
+     * npm script name to run for each gate slot; falls back to the slot's
+     * own name ("typecheck"/"lint"/"build"/"test") when unset. Set to
+     * `false` to skip that gate entirely — it also won't count toward
+     * `GateResult.vacuous` (a deliberately-skipped gate isn't "nothing ran").
+     */
+    typecheckScript?: string | false;
+    lintScript?: string | false;
+    buildScript?: string | false;
+    testScript?: string | false;
+    /**
+     * Free-form command for the test gate on non-npm stacks (e.g.
+     * "pytest -q", "cargo test"). Split on whitespace and run directly via
+     * `execFile` — no shell, so quoting/pipes aren't supported. Takes
+     * priority over `testScript` when set.
+     */
+    testCommand?: string;
+  };
+  /** Default Task.maxAttempts for tasks created in this project. Falls back
+   *  to the engine-wide default (3) when unset. */
+  maxAttempts?: number;
+  /** Overrides Settings.mergePolicy for this project's auto-merge decisions. */
+  mergePolicy?: MergePolicy;
 }
 
 export type RunStatus = "running" | "passed" | "failed" | "stopped";

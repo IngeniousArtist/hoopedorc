@@ -7,6 +7,7 @@ import type {
   Notification,
   PlanChatMessage,
   Project,
+  ProjectConfig,
   Run,
   Settings,
   Task,
@@ -36,25 +37,25 @@ function mapProject(row: Record<string, unknown>): Project {
     prdPath: row.prd_path ? asStr(row.prd_path) : undefined,
     prd: row.prd ? asStr(row.prd) : undefined,
     budgetUsd: row.budget_usd != null ? Number(row.budget_usd) : undefined,
+    config: row.config ? json<ProjectConfig>(row.config) : undefined,
     createdAt: asStr(row.created_at),
     updatedAt: asStr(row.updated_at),
   };
 }
 
+const PROJECT_COLUMNS =
+  "id, name, repo_url, default_branch, local_path, status, prd_path, prd, budget_usd, config, created_at, updated_at";
+
 export function getProjects(db: Db): Project[] {
   return db
-    .prepare(
-      "SELECT id, name, repo_url, default_branch, local_path, status, prd_path, prd, budget_usd, created_at, updated_at FROM projects ORDER BY created_at DESC",
-    )
+    .prepare(`SELECT ${PROJECT_COLUMNS} FROM projects ORDER BY created_at DESC`)
     .all()
     .map((r) => mapProject(r as Record<string, unknown>));
 }
 
 export function getProject(db: Db, id: string): Project | null {
   const row = db
-    .prepare(
-      "SELECT id, name, repo_url, default_branch, local_path, status, prd_path, prd, budget_usd, created_at, updated_at FROM projects WHERE id = ?",
-    )
+    .prepare(`SELECT ${PROJECT_COLUMNS} FROM projects WHERE id = ?`)
     .get(id) as Record<string, unknown> | undefined;
   return row ? mapProject(row) : null;
 }
@@ -65,8 +66,8 @@ export function createProject(
 ): Project {
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO projects (id, name, repo_url, default_branch, local_path, status, prd_path, budget_usd, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO projects (id, name, repo_url, default_branch, local_path, status, prd_path, budget_usd, config, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     p.id,
     p.name,
@@ -76,6 +77,7 @@ export function createProject(
     p.status,
     p.prdPath ?? null,
     p.budgetUsd ?? null,
+    p.config ? JSON.stringify(p.config) : null,
     now,
     now,
   );
@@ -100,12 +102,14 @@ export function updateProject(
     prdPath: "prd_path",
     prd: "prd",
     budgetUsd: "budget_usd",
+    config: "config",
   };
 
   for (const [key, col] of Object.entries(colMap)) {
     if (key in updates) {
       set.push(`${col} = ?`);
-      vals.push((updates as Record<string, unknown>)[key] ?? null);
+      const v = (updates as Record<string, unknown>)[key];
+      vals.push(key === "config" ? (v ? JSON.stringify(v) : null) : (v ?? null));
     }
   }
 

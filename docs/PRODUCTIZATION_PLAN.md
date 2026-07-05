@@ -231,8 +231,6 @@ reimplementations. Notable finds/decisions:
 
 ### Phase 6 — F9, F10, F11, F12 (flexibility, packaging, docs) — ⬜ not started
 
-### Phase 6 — F9, F10, F11, F12 (flexibility, packaging, docs) — ⬜ not started
-
 ---
 
 ## Part 1 — Bugs & security (fix first, in this order)
