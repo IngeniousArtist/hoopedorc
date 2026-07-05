@@ -1,0 +1,27 @@
+# Reference only — see deploy/README.md for why native + systemd is the
+# primary path, and for the auth caveats this mounting glosses over
+# (in particular: Claude Code's login lives in the macOS Keychain, which is
+# NOT accessible from a Linux container at all — use ANTHROPIC_API_KEY in
+# .env instead of trying to mount claude's config).
+services:
+  hoopedorc:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "4317:4317"
+    env_file:
+      - ../.env
+    volumes:
+      - hoopedorc-data:/data
+      # gh: omit this and set GH_TOKEN in .env instead if you'd rather not
+      # mount host config into the container.
+      - ~/.config/gh:/root/.config/gh:ro
+      # opencode: verified on macOS to hold auth.json/account.json here;
+      # confirm the path on your own host (`opencode auth list`) if this
+      # doesn't match.
+      - ~/.local/share/opencode:/root/.local/share/opencode
+    restart: unless-stopped
+
+volumes:
+  hoopedorc-data:

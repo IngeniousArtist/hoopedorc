@@ -11,12 +11,17 @@
   "engines": {
     "node": ">=20"
   },
+  "bin": {
+    "hoopedorc": "./bin/hoopedorc.mjs"
+  },
   "scripts": {
     "build": "npm run build -w @orc/types && npm run build -w @orc/adapters && npm run build -w @orc/engine && npm run build -w @orc/server && npm run build -w @orc/web",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "dev": "concurrently -n types,adapters,engine,server,web -c blue,cyan,yellow,green,magenta \"npm:dev -w @orc/types\" \"npm:dev -w @orc/adapters\" \"npm:dev -w @orc/engine\" \"npm:dev -w @orc/server\" \"npm:dev -w @orc/web\"",
     "mock": "concurrently -n mock-api,web -c green,magenta \"MOCK=1 npm run dev -w @orc/server\" \"npm run dev -w @orc/web\"",
-    "db:init": "npm run db:init -w @orc/server"
+    "db:init": "npm run db:init -w @orc/server",
+    "setup": "node scripts/init.mjs",
+    "start": "npm run build && npm run start -w @orc/server"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",
