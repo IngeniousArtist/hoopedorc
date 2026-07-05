@@ -216,6 +216,7 @@ export function App() {
               <Board
                 projectId={selectedProjectId}
                 repoUrl={selectedProject?.repoUrl}
+                onViewNotifications={() => setPage("notifications")}
               />
             )}
             {/* PlanView stays mounted once first visited so in-flight chat/deconstruct

@@ -6,14 +6,15 @@ import { ModelSelect } from "./ModelSelect";
 // amber as a task approaches this so you can see it going quiet before the kill.
 const IDLE_LIMIT_MS = 6 * 60 * 1000;
 
-function agoLabel(ms: number): string {
+export function agoLabel(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s ago`;
   return `${Math.floor(s / 60)}m ${s % 60}s ago`;
 }
 
-/** Live "is the model still working" heartbeat for an in-progress task. */
-function Heartbeat({ lastActivityAt }: { lastActivityAt?: number }) {
+/** Live "is the model still working" heartbeat for an in-progress task.
+ *  Exported for reuse by MissionControl (F4)'s active-agent rows. */
+export function Heartbeat({ lastActivityAt }: { lastActivityAt?: number }) {
   if (lastActivityAt == null) {
     return (
       <span className="flex items-center gap-1 text-[10px] text-neutral-400">
