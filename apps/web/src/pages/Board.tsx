@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useWS } from "../hooks/useWS";
 import { useToast } from "../hooks/useToast";
-import { LogPanel } from "../components/LogPanel";
+import { TaskDrawer } from "../components/TaskDrawer";
 import { TaskCard } from "../components/TaskCard";
 import { BoardSummary } from "../components/BoardSummary";
 
@@ -35,7 +35,13 @@ const COLUMNS: { status: TaskStatus; label: string }[] = TASK_STATUSES.map(
   (status) => ({ status, label: COLUMN_LABELS[status] }),
 );
 
-export function Board({ projectId }: { projectId: string }) {
+export function Board({
+  projectId,
+  repoUrl,
+}: {
+  projectId: string;
+  repoUrl?: string;
+}) {
   const toast = useToast();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [settings, setSettings] = useState<SettingsType | null>(null);
@@ -360,62 +366,21 @@ export function Board({ projectId }: { projectId: string }) {
       </div>
 
       {selectedTask && (
-        <div className="mt-4 space-y-3">
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3">
-            <span className="text-sm text-neutral-300">
-              {selectedTask.title}
-            </span>
-            {selectedTask.prNumber && (
-              <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-400">
-                PR #{selectedTask.prNumber}
-              </span>
-            )}
-            <div className="ml-auto flex items-center gap-2">
-              {selectedTask.prNumber && (
-                <button
-                  onClick={() => handleViewDiff(selectedTask.id)}
-                  disabled={actionBusy}
-                  className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
-                >
-                  View PR diff
-                </button>
-              )}
-              {(selectedTask.status === "failed" ||
-                selectedTask.status === "changes_requested" ||
-                selectedTask.status === "blocked") && (
-                <button
-                  onClick={() => handleRetry(selectedTask.id)}
-                  disabled={actionBusy}
-                  className="rounded border border-blue-800 px-3 py-1 text-xs text-blue-300 hover:bg-blue-950/40 disabled:opacity-50"
-                >
-                  {actionBusy ? "Working…" : "↻ Retry task"}
-                </button>
-              )}
-              {selectedTask.status === "done" && selectedTask.prNumber && (
-                <button
-                  onClick={() =>
-                    handleRollback(selectedTask.id, selectedTask.prNumber!)
-                  }
-                  disabled={actionBusy}
-                  className="rounded border border-amber-800 px-3 py-1 text-xs text-amber-300 hover:bg-amber-950/40 disabled:opacity-50"
-                >
-                  {actionBusy ? "Working…" : "↩ Rollback merge"}
-                </button>
-              )}
-            </div>
-          </div>
-          {diff && (
-            <pre className="max-h-96 overflow-auto rounded-lg border border-neutral-800 bg-neutral-950 p-3 font-mono text-[11px] leading-relaxed text-neutral-300">
-              {diff}
-            </pre>
-          )}
-          <LogPanel
-            logs={logs}
-            loading={logsLoading}
-            taskTitle={selectedTask.title}
-            onClose={() => setSelectedTaskId(null)}
-          />
-        </div>
+        <TaskDrawer
+          task={selectedTask}
+          models={settings?.models ?? []}
+          repoUrl={repoUrl}
+          logs={logs}
+          logsLoading={logsLoading}
+          diff={diff}
+          actionBusy={actionBusy}
+          onClose={() => setSelectedTaskId(null)}
+          onViewDiff={() => handleViewDiff(selectedTask.id)}
+          onRetry={() => handleRetry(selectedTask.id)}
+          onRollback={() =>
+            handleRollback(selectedTask.id, selectedTask.prNumber!)
+          }
+        />
       )}
     </div>
   );
