@@ -36,8 +36,16 @@ export async function sendTelegramMessage(
 
 /** What the server wires the bot up to (engine + db live in index.ts). */
 export interface TelegramHandlers {
-  /** A human tapped Approve/Reject on an approval message. */
-  onApproval: (notificationId: string, choice: string) => Promise<void> | void;
+  /**
+   * A human tapped Approve/Reject on an approval message. Returns false when
+   * nothing was actually waiting on this approval anymore (B10 — e.g. the
+   * server restarted since the message was sent) so the bot can tell the
+   * human it expired instead of claiming their tap took effect.
+   */
+  onApproval: (
+    notificationId: string,
+    choice: string,
+  ) => Promise<boolean> | boolean;
   /** A slash command arrived; return the reply text. */
   onCommand: (cmd: string, args: string[]) => Promise<string> | string;
 }
@@ -170,16 +178,20 @@ export class TelegramBot implements ServerNotifier {
       if (this.allowed(cq.message?.chat.id) && data.startsWith("appr:")) {
         const [, notificationId, choice] = data.split(":");
         if (notificationId && choice) {
-          await this.handlers.onApproval(notificationId, choice);
+          const resolved = await this.handlers.onApproval(notificationId, choice);
           await this.tg("answerCallbackQuery", {
             callback_query_id: cq.id,
-            text: `Recorded: ${choice}`,
+            text: resolved
+              ? `Recorded: ${choice}`
+              : "Expired — no longer pending",
           });
           if (cq.message) {
             await this.tg("editMessageText", {
               chat_id: cq.message.chat.id,
               message_id: cq.message.message_id,
-              text: `✅ ${choice.toUpperCase()} recorded.`,
+              text: resolved
+                ? `✅ ${choice.toUpperCase()} recorded.`
+                : `⚠️ Expired — the task will re-request approval if it's still needed.`,
             });
           }
         }

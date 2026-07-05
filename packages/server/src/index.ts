@@ -31,6 +31,7 @@ import { TelegramBot, sendTelegramMessage } from "./telegram";
 import { runSetupChecks, testModels } from "./setup";
 import type {
   DraftTask,
+  Notification,
   PlanChatMessage,
   Settings as SettingsType,
 } from "@orc/types";
@@ -411,6 +412,16 @@ async function main() {
   pruneOldLogs();
   setInterval(pruneOldLogs, ONE_DAY_MS).unref();
 
+  // Zombie approvals (B10): any approval-notification still unresolved from
+  // before this boot has no live resolver anymore (EngineRunner.pendingApprovals
+  // lived only in the previous process's memory) — stamp them expired now, before
+  // resume-on-boot re-dispatches running projects, so the UI/Telegram never show
+  // dead Approve/Reject controls for them.
+  const expiredApprovals = repo.expireStaleApprovals(db);
+  if (expiredApprovals > 0) {
+    app.log.info(`expired ${expiredApprovals} stale approval notification(s) from before this boot`);
+  }
+
   /** ENV.apiToken wins over the settings-stored one; either enables auth. */
   function getApiToken(): string | undefined {
     return ENV.apiToken || repo.getSettings(db)?.apiToken || undefined;
@@ -456,11 +467,34 @@ async function main() {
     hub.broadcast(e);
   }
 
-  /** Resolve a pending approval from any channel (HTTP or Telegram). */
-  function resolveNotification(id: string, choice: string) {
+  /**
+   * Resolve a pending approval from any channel (HTTP or Telegram). `resolved`
+   * is false when no in-memory resolver was found for this notification id —
+   * always the case for a B10 zombie (server restarted since it was created,
+   * so nothing is actually waiting on it anymore) — in which case the DB is
+   * left as-is (already stamped `expired_restart` from boot) rather than
+   * overwriting that with the human's choice, which would misleadingly read
+   * as a real response having taken effect.
+   */
+  function resolveNotification(
+    id: string,
+    choice: string,
+  ): { notification: Notification; resolved: boolean } | null {
+    const resolved = engine.resolveApproval(id, choice);
+    if (!resolved) {
+      const notification = repo.getNotification(db, id);
+      if (!notification) return null;
+      repo.createAuditEntry(db, {
+        projectId: notification.projectId,
+        taskId: notification.taskId,
+        kind: "approval_resolved",
+        actor: "human",
+        summary: `${notification.title} → ${choice} (expired — no active run was waiting on it)`,
+      });
+      return { notification, resolved: false };
+    }
     const notification = repo.respondToNotification(db, id, choice);
     if (!notification) return null;
-    engine.resolveApproval(id, choice);
     repo.createAuditEntry(db, {
       projectId: notification.projectId,
       taskId: notification.taskId,
@@ -469,7 +503,7 @@ async function main() {
       summary: `${notification.title} → ${choice}`,
     });
     broadcast({ type: "notification", payload: notification });
-    return notification;
+    return { notification, resolved: true };
   }
 
   /** Record + broadcast planner spend so it counts against the project budget. */
@@ -572,7 +606,7 @@ async function main() {
       tg.chatId ?? "",
       {
         onApproval: (id, choice) => {
-          resolveNotification(id, choice);
+          return resolveNotification(id, choice)?.resolved ?? false;
         },
         onCommand: telegramCommand,
       },
@@ -1500,10 +1534,20 @@ async function main() {
     const body = req.body as { choice: string };
     if (!body.choice) return reply.code(400).send({ error: "choice is required" });
 
-    const notification = resolveNotification(id, body.choice);
-    if (!notification) return reply.code(404).send({ error: "notification not found" });
+    const result = resolveNotification(id, body.choice);
+    if (!result) return reply.code(404).send({ error: "notification not found" });
+    if (!result.resolved) {
+      // B10: no in-memory resolver was waiting (the run that requested this
+      // approval — if any — died with a previous server process). Say so
+      // explicitly rather than returning 200 as if the choice took effect.
+      return reply.code(410).send({
+        notification: result.notification,
+        error:
+          "approval expired — the task will re-request approval if it's still needed",
+      });
+    }
 
-    return { notification };
+    return { notification: result.notification };
   });
 
   // ── Audit log ──

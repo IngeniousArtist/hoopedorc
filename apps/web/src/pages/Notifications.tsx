@@ -149,7 +149,12 @@ export function Notifications({
                 </div>
               )}
 
-            {n.respondedWith && (
+            {n.respondedWith === "expired_restart" && (
+              <div className="mt-3 text-xs text-amber-500">
+                Expired — the server restarted while this was pending
+              </div>
+            )}
+            {n.respondedWith && n.respondedWith !== "expired_restart" && (
               <div className="mt-3 text-xs text-neutral-400">
                 Responded: {n.respondedWith}
               </div>
