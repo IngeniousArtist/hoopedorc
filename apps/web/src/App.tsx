@@ -212,7 +212,12 @@ export function App() {
             {needsProject && selectedProject && (
               <ProjectHeader key={selectedProject.id} project={selectedProject} />
             )}
-            {page === "board" && <Board projectId={selectedProjectId} />}
+            {page === "board" && (
+              <Board
+                projectId={selectedProjectId}
+                repoUrl={selectedProject?.repoUrl}
+              />
+            )}
             {/* PlanView stays mounted once first visited so in-flight chat/deconstruct
                 requests survive tab switches. CSS hides it when inactive. */}
             {planMounted && (

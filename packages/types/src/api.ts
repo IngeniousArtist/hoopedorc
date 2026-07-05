@@ -6,6 +6,7 @@ import type {
   CostRecord,
   Difficulty,
   LogEvent,
+  MergeDecision,
   ModelId,
   Notification,
   Project,
@@ -266,6 +267,12 @@ export interface RollbackTaskResponse {
   task: Task;
 }
 
+/** Every validator verdict recorded for a task, newest first — the Review
+ *  tab's source of "latest GateResult" (decisions[0].gate) and history. */
+export interface TaskDecisionsResponse {
+  decisions: MergeDecision[];
+}
+
 /** One setup/health probe (gh / claude / opencode auth). */
 export interface SetupCheck {
   name: string;
@@ -359,6 +366,7 @@ export const ROUTES = {
   respondNotification: "POST /api/notifications/:id/respond",
   auditLog: "GET /api/projects/:id/audit",
   rollbackTask: "POST /api/tasks/:id/rollback",
+  taskDecisions: "GET /api/tasks/:id/decisions",
   setupHealth: "GET /api/setup",
   setupModels: "GET /api/setup/models",
   testModels: "POST /api/setup/test-models",

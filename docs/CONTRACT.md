@@ -30,6 +30,7 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 | `POST /api/tasks/:id/dispatch` | → `DispatchTaskResponse` |
 | `POST /api/tasks/:id/stop` | → `{ ok }` |
 | `GET /api/tasks/:id/runs` | → `ListRunsResponse` |
+| `GET /api/tasks/:id/decisions` | → `TaskDecisionsResponse` |
 | `GET /api/runs/:id/logs` | → `RunLogsResponse` |
 | `GET /api/tasks/:id/logs` | `?after=<ISO ts>&limit=<n>` → `TaskLogsResponse` |
 | `GET /api/projects/:id/costs` | → `CostsResponse` |

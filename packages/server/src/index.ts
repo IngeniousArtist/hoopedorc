@@ -1376,6 +1376,12 @@ async function main() {
     return { runs: repo.getRuns(db, id) };
   });
 
+  // Every validator verdict for a task, newest first (F2's Review tab).
+  app.get("/api/tasks/:id/decisions", async (req) => {
+    const { id } = req.params as RouteParams;
+    return { decisions: repo.getMergeDecisions(db, id) };
+  });
+
   app.get("/api/runs/:id/logs", async (req) => {
     const { id } = req.params as RouteParams;
     return { logs: repo.getLogs(db, id) };
