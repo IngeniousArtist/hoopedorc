@@ -235,8 +235,22 @@ reimplementations. Notable finds/decisions:
 |---|---|---|
 | F9 — Project templates & per-project gate config | ✅ done | [#37](https://github.com/IngeniousArtist/hoopedorc/pull/37) |
 | F10 — Packaging & deployment | ✅ done | [#38](https://github.com/IngeniousArtist/hoopedorc/pull/38) |
-| F11 — Docs for other users | ⬜ not started | |
+| F11 — Docs for other users | ✅ done | [#39](https://github.com/IngeniousArtist/hoopedorc/pull/39) |
 | F12 — Multi-project run queue | ⬜ not started | |
+
+F11 merged to `main`; `npm run typecheck`/`npm run build` (`@orc/web`)
+green. New `docs/USER_GUIDE.md` covers what it is, install/prereqs (which
+subscription each specialist model needs, `opencode auth login`), a
+first-project tutorial, the safety model, remote Tailscale setup, and a
+troubleshooting table drawn from real failure modes hit during development
+(the historic PWD/worktree bug, `opencode`'s "database is locked"
+collision-retry, vacuous gates, a misconfigured self-review validator, and
+F10's Keychain/Docker auth caveat). Linked from the README and the app's
+Setup page. Browser live-verification was attempted but the Chrome
+extension tool errored at the frame level regardless of URL (confirmed via
+curl that the dev server itself served fine) — for this one, a single
+external link with no new logic, typecheck+build+code review stood in for
+a screenshot.
 
 F10 merged to `main`; `npm run typecheck`/`npm run build` green,
 `npm test -w @orc/engine` (20/20) / `-w @orc/adapters` (4/4) unaffected. The
