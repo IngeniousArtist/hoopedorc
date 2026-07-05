@@ -18,6 +18,7 @@ import { TaskDrawer } from "../components/TaskDrawer";
 import { TaskCard } from "../components/TaskCard";
 import { BoardSummary } from "../components/BoardSummary";
 import { AddTaskForm } from "../components/AddTaskForm";
+import { MissionControl } from "../components/MissionControl";
 
 // Record so adding a TaskStatus in @orc/types is a compile error here until
 // it gets a label too — the column list itself is derived from TASK_STATUSES
@@ -40,9 +41,12 @@ const COLUMNS: { status: TaskStatus; label: string }[] = TASK_STATUSES.map(
 export function Board({
   projectId,
   repoUrl,
+  onViewNotifications,
 }: {
   projectId: string;
   repoUrl?: string;
+  /** F4's mission-control strip deep-links its pending-approvals count here. */
+  onViewNotifications?: () => void;
 }) {
   const toast = useToast();
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -54,6 +58,7 @@ export function Board({
   const [actionBusy, setActionBusy] = useState(false);
   const [diff, setDiff] = useState<string | null>(null);
   const [costUsd, setCostUsd] = useState(0);
+  const [budgetUsd, setBudgetUsd] = useState<number | undefined>(undefined);
   // Per-task "last time we heard anything" (client receive time, so it's
   // immune to server clock skew). Drives the live heartbeat on running cards.
   const [activity, setActivity] = useState<Record<string, number>>({});
@@ -86,14 +91,15 @@ export function Board({
             params: { id: projectId },
           }),
           api<{ settings: SettingsType }>("getSettings"),
-          api<{ totalUsd: number }>("costAnalytics", {
+          api<{ totalUsd: number; budgetUsd?: number }>("costAnalytics", {
             params: { id: projectId },
-          }).catch(() => ({ totalUsd: 0 })),
+          }).catch(() => ({ totalUsd: 0, budgetUsd: undefined })),
         ]);
         if (cancelled) return;
         setTasks(tasksRes.tasks);
         setSettings(settingsRes.settings);
         setCostUsd(costRes.totalUsd);
+        setBudgetUsd(costRes.budgetUsd);
       } catch (e) {
         if (!cancelled) setError(String(e));
       }
@@ -348,6 +354,16 @@ export function Board({
       )}
 
       <BoardSummary tasks={tasks} costUsd={costUsd} />
+
+      <MissionControl
+        projectId={projectId}
+        tasks={tasks}
+        models={settings?.models ?? []}
+        activity={activity}
+        costUsd={costUsd}
+        budgetUsd={budgetUsd}
+        onViewNotifications={() => onViewNotifications?.()}
+      />
 
       <div className="mb-4">
         {showAddTask ? (
