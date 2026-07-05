@@ -49,6 +49,7 @@ export function TaskCard({
   lastActivityAt,
   onModelChange,
   onClick,
+  onStop,
   isSelected,
 }: {
   task: Task;
@@ -57,6 +58,10 @@ export function TaskCard({
   lastActivityAt?: number;
   onModelChange?: (m: ModelId) => void;
   onClick?: () => void;
+  /** F3 — "Stop this task" on a running card. Omitted while a stop is
+   *  already in flight for this task, so the button just disappears rather
+   *  than allowing a double-click. */
+  onStop?: () => void;
   isSelected?: boolean;
 }) {
   const depTasks = task.dependsOn
@@ -83,8 +88,21 @@ export function TaskCard({
       <div className="text-sm font-medium">{task.title}</div>
 
       {(task.status === "in_progress" || task.status === "in_review") && (
-        <div className="mt-1">
+        <div className="mt-1 flex items-center justify-between gap-2">
           <Heartbeat lastActivityAt={lastActivityAt} />
+          {onStop && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                if (window.confirm(`Stop "${task.title}"? The agent process will be killed and the task moved to Blocked.`)) {
+                  onStop();
+                }
+              }}
+              className="shrink-0 rounded border border-red-900 px-1.5 py-0.5 text-[10px] text-red-400 hover:bg-red-950/50"
+            >
+              Stop
+            </button>
+          )}
         </div>
       )}
 

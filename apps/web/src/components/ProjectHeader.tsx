@@ -21,15 +21,25 @@ export function ProjectHeader({ project }: { project: Project }) {
   const origBudget = project.budgetUsd != null ? String(project.budgetUsd) : "";
   const [budget, setBudget] = useState(origBudget);
 
-  async function act(route: RouteKey) {
+  async function act(route: RouteKey, body?: unknown) {
     setBusy(true);
     try {
-      await api(route, { params: { id: project.id } });
+      await api(route, { params: { id: project.id }, body });
       // status update arrives via WS (project.updated) and re-renders this header.
     } catch (e) {
       toast(String(e), "error");
     } finally {
       setBusy(false);
+    }
+  }
+
+  function stopNow() {
+    if (
+      window.confirm(
+        "Stop now? Any task currently running will be aborted and requeued to backlog.",
+      )
+    ) {
+      act("pauseProject", { drain: false });
     }
   }
 
@@ -77,13 +87,24 @@ export function ProjectHeader({ project }: { project: Project }) {
 
         <div className="ml-auto flex items-center gap-2">
           {running ? (
-            <button
-              onClick={() => act("pauseProject")}
-              disabled={busy}
-              className="rounded border border-amber-800 px-3 py-1 text-xs text-amber-300 hover:bg-amber-950/40 disabled:opacity-50"
-            >
-              {busy ? "…" : "Pause"}
-            </button>
+            <>
+              <button
+                onClick={() => act("pauseProject", { drain: true })}
+                disabled={busy}
+                className="rounded border border-amber-800 px-3 py-1 text-xs text-amber-300 hover:bg-amber-950/40 disabled:opacity-50"
+                title="Stop dispatching new tasks; let anything already running finish"
+              >
+                {busy ? "…" : "Pause (finish current)"}
+              </button>
+              <button
+                onClick={stopNow}
+                disabled={busy}
+                className="rounded border border-red-800 px-3 py-1 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-50"
+                title="Abort any running task immediately and requeue it to backlog"
+              >
+                {busy ? "…" : "Stop now"}
+              </button>
+            </>
           ) : (
             <button
               onClick={() => act("startProject")}

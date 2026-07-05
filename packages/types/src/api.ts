@@ -58,6 +58,16 @@ export interface UpdateProjectResponse {
   project: Project;
 }
 
+/**
+ * F3's two pause modes. `drain: true` ("Pause — finish current tasks") lets
+ * already-dispatched tasks run to completion and just stops picking up new
+ * ready work; omitted/false ("Stop now") is the original hard-stop behavior
+ * — abort every active task immediately and requeue it to backlog.
+ */
+export interface PauseProjectRequest {
+  drain?: boolean;
+}
+
 export interface PlanProjectRequest {
   /** Free-text goal/feature description handed to the planner (Claude). */
   goal: string;
@@ -144,6 +154,27 @@ export interface GetTaskResponse {
   task: Task | null;
 }
 
+/**
+ * Materialize a single new task on a project (F3 — "add a task while
+ * running"). Unlike DraftTask.dependsOn (indices into a batch being planned),
+ * `dependsOn` here references real, already-existing task ids in this
+ * project, since exactly one task is being added.
+ */
+export interface AddTaskRequest {
+  title: string;
+  description?: string;
+  difficulty?: Difficulty;
+  role?: Role;
+  acceptanceCriteria?: string[];
+  dependsOn?: string[];
+  scopePaths?: string[];
+  /** Defaults to routing's pick for the given difficulty/role if omitted. */
+  assignedModel?: ModelId;
+}
+export interface AddTaskResponse {
+  task: Task;
+}
+
 export interface UpdateTaskRequest {
   status?: TaskStatus;
   assignedModel?: ModelId;
@@ -166,6 +197,10 @@ export interface DispatchTaskResponse {
 }
 
 export interface RetryTaskResponse {
+  task: Task;
+}
+
+export interface StopTaskResponse {
   task: Task;
 }
 
@@ -347,6 +382,7 @@ export const ROUTES = {
   startProject: "POST /api/projects/:id/start",
   pauseProject: "POST /api/projects/:id/pause",
   listTasks: "GET /api/projects/:id/tasks",
+  addTask: "POST /api/projects/:id/tasks",
   getTask: "GET /api/tasks/:id",
   updateTask: "PATCH /api/tasks/:id",
   dispatchTask: "POST /api/tasks/:id/dispatch",

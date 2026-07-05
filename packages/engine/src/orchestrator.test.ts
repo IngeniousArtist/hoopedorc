@@ -227,6 +227,62 @@ test("stopTask on a manually dispatched task (runTask) also aborts and blocks it
   assert.equal(merged.length, 0);
 });
 
+test("pause({ drain: true }) lets the active task finish but stops new dispatch", async () => {
+  const merged: number[] = [];
+  let resolveStarted!: () => void;
+  const started = new Promise<void>((r) => {
+    resolveStarted = r;
+  });
+  let resolveRun!: (v: AgentRunResult) => void;
+  const runResult = new Promise<AgentRunResult>((r) => {
+    resolveRun = r;
+  });
+  const adapter: AgentAdapter = {
+    runner: "opencode",
+    run() {
+      resolveStarted();
+      return runResult;
+    },
+  };
+  const deps = fakeDeps({ adapterFor: () => adapter }, merged);
+  const orch = new Orchestrator(deps);
+  const t1 = task("t1");
+  // t2 depends on t1, so it only becomes ready once t1 finishes — this is
+  // what actually exercises draining (t1 and t2 would otherwise both be
+  // ready and get dispatched together in start()'s very first pass, before
+  // the test ever gets a chance to call pause()).
+  const t2 = task("t2", [t1.id], { status: "backlog" });
+
+  const runPromise = orch.start(PROJECT, [t1, t2]);
+  await started;
+  assert.equal(t1.status, "in_progress");
+
+  await orch.pause(PROJECT, { drain: true });
+  assert.equal(
+    t1.status,
+    "in_progress",
+    "draining must not reset the active task's status the way a hard stop would",
+  );
+
+  resolveRun({
+    ok: true,
+    exitReason: "completed",
+    costUsd: 0.01,
+    tokensIn: 1,
+    tokensOut: 1,
+    summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+  });
+  await runPromise;
+
+  assert.equal(t1.status, "done");
+  assert.equal(merged.length, 1, "only t1 should have merged");
+  assert.equal(
+    t2.status,
+    "backlog",
+    "t2 became ready only once t1 finished mid-drain, and must still not be dispatched",
+  );
+});
+
 test("a risky change (new dependency) escalates to a human instead of auto-merging", async () => {
   const merged: number[] = [];
   let asked = false;

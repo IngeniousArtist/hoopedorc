@@ -23,8 +23,9 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 | `GET /api/projects/:id` | → `GetProjectResponse` |
 | `POST /api/projects/:id/plan` | `PlanProjectRequest` → `PlanProjectResponse` |
 | `POST /api/projects/:id/start` | → `{ ok }` |
-| `POST /api/projects/:id/pause` | → `{ ok }` |
+| `POST /api/projects/:id/pause` | `PauseProjectRequest` (optional) → `{ ok }` |
 | `GET /api/projects/:id/tasks` | → `ListTasksResponse` |
+| `POST /api/projects/:id/tasks` | `AddTaskRequest` → `AddTaskResponse` |
 | `GET /api/tasks/:id` | → `GetTaskResponse` |
 | `PATCH /api/tasks/:id` | `UpdateTaskRequest` → `UpdateTaskResponse` |
 | `POST /api/tasks/:id/dispatch` | → `DispatchTaskResponse` |

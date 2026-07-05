@@ -145,7 +145,9 @@ export interface SchedulerDeps {
 
 export interface Scheduler {
   start(project: Project, tasks: Task[]): Promise<void>;
-  pause(project: Project): Promise<void>;
+  /** `{ drain: true }` (F3) lets already-active tasks finish instead of
+   *  aborting them immediately. */
+  pause(project: Project, opts?: { drain?: boolean }): Promise<void>;
   /** Tasks whose dependsOn are all `done` and are still in `backlog`. */
   readyTasks(tasks: Task[]): Task[];
 }

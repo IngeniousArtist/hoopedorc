@@ -389,11 +389,19 @@ export class EngineRunner {
     })();
   }
 
-  async pause(project: Project): Promise<void> {
+  async pause(project: Project, opts: { drain?: boolean } = {}): Promise<void> {
     const orch = this.orchestrators.get(project.id);
     if (!orch) return;
-    await orch.pause(project);
-    this.orchestrators.delete(project.id);
+    await orch.pause(project, opts);
+    // Hard stop: pause() already aborted/requeued everything and start()'s
+    // loop has already exited by the time this returns, so it's safe to drop
+    // the registration now. Drain: start()'s background loop (below) is
+    // still running, waiting for active tasks to finish — its own `finally`
+    // deletes this entry once that's genuinely done. Deleting it here too
+    // would let a second Start race in while tasks are still draining.
+    if (!opts.drain) {
+      this.orchestrators.delete(project.id);
+    }
   }
 
   /** Revert a merged PR on the project's default branch (one-click rollback). */
