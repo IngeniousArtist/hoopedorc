@@ -583,6 +583,17 @@ export function getCostSummary(
   return { totalUsd, byModel };
 }
 
+/** Total spend on a project since a given ISO timestamp — used by F8's run
+ *  summary to report just this run's spend, not the project's lifetime total. */
+export function getCostSince(db: Db, projectId: string, sinceIso: string): number {
+  const row = db
+    .prepare(
+      "SELECT COALESCE(SUM(cost_usd), 0) as total FROM costs WHERE project_id = ? AND ts >= ?",
+    )
+    .get(projectId, sinceIso) as { total: number } | undefined;
+  return row ? Number(row.total) : 0;
+}
+
 export interface ModelCostRow {
   model: string;
   costUsd: number;
