@@ -54,8 +54,15 @@ Tailscale), set `API_TOKEN` so every request requires
 Secrets (the Telegram bot token, the API token itself) are stored in the local
 SQLite DB and redacted (`"__SET__"` sentinel) on every read from the settings API
 — they never round-trip back to the browser. Gate scripts and spawned agents
-still run directly on this host with your full shell environment and CLI auth
-(`gh`, `claude`, `opencode`) — don't run untrusted repos through it.
+still run **directly on this host** with your CLI auth (`gh`, `claude`,
+`opencode`) — don't run untrusted repos through it. Their environment is
+stripped of anything secret-shaped (`sanitizedEnv()` in `@orc/adapters`, keyed
+off `/TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL|TELEGRAM/i`) before spawn, so a
+prompt-injected agent or a hostile `npm test` script in the repo being worked
+on can't read your Telegram token or provider API keys — but they still run
+with real filesystem/network access on your machine, since a repo's own
+`test`/`build` scripts are executed as-is (there's no sandbox yet; see F13 in
+the productization plan).
 
 ## Status
 
