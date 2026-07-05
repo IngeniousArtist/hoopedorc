@@ -78,9 +78,13 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async run(opts: AgentRunOptions): Promise<AgentRunResult> {
     return new Promise((resolve) => {
+      // Prompt goes on stdin, not argv: a task's full instructions (description
+      // + acceptance criteria + fix instructions from a prior failed attempt)
+      // can be large enough to hit macOS's ~1MB total argv cap. `claude -p`
+      // with no positional prompt reads from stdin (verified against the real
+      // CLI, both --output-format json and stream-json).
       const args = [
         "-p",
-        opts.prompt,
         "--output-format",
         "stream-json",
         "--verbose",
@@ -98,9 +102,10 @@ export class ClaudeAdapter implements AgentAdapter {
         {
           cwd: opts.cwd,
           env: sanitizedEnv({ PWD: opts.cwd }),
-          stdio: ["ignore", "pipe", "pipe"],
+          stdio: ["pipe", "pipe", "pipe"],
         },
       );
+      proc.stdin?.end(opts.prompt);
 
       let costUsd = 0;
       let tokensIn = 0;
@@ -248,12 +253,14 @@ export class OpenCodeAdapter implements AgentAdapter {
   }
 
   private async runOnce(opts: AgentRunOptions): Promise<AgentRunResult> {
-    // `opencode run -m provider/model --format json <prompt>` runs the agent to
+    // `opencode run -m provider/model --format json` runs the agent to
     // completion and emits JSON events on stdout. We attach to a shared server
-    // when one is configured so sessions + cost are centralized.
+    // when one is configured so sessions + cost are centralized. The message
+    // goes on stdin rather than as a trailing positional arg — `opencode run`
+    // with no positional message reads it from stdin (verified against the
+    // real CLI) — so a large task prompt can't hit macOS's ~1MB argv cap.
     const args = ["run", "-m", this.opencodeModel, "--format", "json"];
     if (this.baseUrl) args.push("--attach", this.baseUrl);
-    args.push(opts.prompt);
 
     return new Promise((resolve) => {
       const proc = spawn("opencode", args, {
@@ -263,8 +270,9 @@ export class OpenCodeAdapter implements AgentAdapter {
         // $PWD (verified). Without this it runs in the server's launch directory
         // and writes files there instead of the task worktree.
         env: sanitizedEnv({ PWD: opts.cwd }),
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
       });
+      proc.stdin?.end(opts.prompt);
 
       let costUsd = 0;
       let tokensIn = 0;

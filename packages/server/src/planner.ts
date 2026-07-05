@@ -187,9 +187,14 @@ function runClaudeJson(
   model?: string,
 ): Promise<ClaudeJsonResult> {
   return new Promise((resolve, reject) => {
-    const args = ["-p", prompt, "--output-format", "json"];
+    // Prompt goes on stdin, not argv: a long planning chat (full transcript +
+    // prior-context inlined) can exceed macOS's ~1MB total argv cap and fail
+    // with a cryptic spawn error. `claude -p` with no positional prompt reads
+    // from stdin (verified against the real CLI).
+    const args = ["-p", "--output-format", "json"];
     if (model) args.push("--model", model);
-    const proc = spawn("claude", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn("claude", args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    proc.stdin?.end(prompt);
     let out = "";
     let err = "";
     const timer = setTimeout(() => {
