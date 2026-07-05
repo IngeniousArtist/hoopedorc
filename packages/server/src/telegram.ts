@@ -65,9 +65,20 @@ export interface TaskDigest {
   prUrl?: string;
 }
 
+/**
+ * Extra context for an approval message so the user can decide from the
+ * phone alone, without opening the app — the PR to look at and why the
+ * validator flagged it.
+ */
+export interface ApprovalContext {
+  prUrl?: string;
+  /** Top validator reasons from the most recent review, if any. */
+  reasons?: string[];
+}
+
 /** Outbound surface the engine pushes to. No-ops when Telegram is disabled. */
 export interface ServerNotifier {
-  approvalRequested(n: Notification): void;
+  approvalRequested(n: Notification, context?: ApprovalContext): void;
   taskStatus(digest: TaskDigest): void;
   info(text: string): void;
 }
@@ -231,7 +242,7 @@ export class TelegramBot implements ServerNotifier {
 
   // ── ServerNotifier ──
 
-  approvalRequested(n: Notification): void {
+  approvalRequested(n: Notification, context?: ApprovalContext): void {
     if (!this.chatId) return;
     const options = n.options ?? ["approve", "reject"];
     const replyMarkup = {
@@ -242,11 +253,18 @@ export class TelegramBot implements ServerNotifier {
         })),
       ],
     };
-    void this.sendApproval(
-      `🔔 *Approval needed*\n${n.title}\n\n${n.message}`,
-      replyMarkup,
-      n.id,
-    );
+    const lines = [`🔔 *Approval needed*`, n.title, "", n.message];
+    if (context?.reasons?.length) {
+      lines.push(
+        "",
+        "Validator reasons:",
+        ...context.reasons.slice(0, 3).map((r) => `- ${r}`),
+      );
+    }
+    if (context?.prUrl) {
+      lines.push("", context.prUrl);
+    }
+    void this.sendApproval(lines.join("\n"), replyMarkup, n.id);
   }
 
   /**

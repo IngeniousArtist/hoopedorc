@@ -180,34 +180,47 @@ export class EngineRunner {
             type: "task.updated",
             payload: repo.getTask(this.db, t.id) ?? t,
           });
-          // Push terminal transitions to Telegram + audit log (once).
-          if (
-            prev?.status !== t.status &&
-            (t.status === "done" || t.status === "failed")
-          ) {
-            const costUsd = repo
-              .getRuns(this.db, t.id)
-              .reduce((sum, r) => sum + r.costUsd, 0);
-            this.notifier?.taskStatus({
-              title: t.title,
-              status: t.status,
-              difficulty: t.difficulty,
-              assignedModel: t.assignedModel,
-              attempts: t.attempts,
-              maxAttempts: t.maxAttempts,
-              summary: t.description.split("\n")[0],
-              costUsd,
-              prNumber: t.prNumber,
-              prUrl: t.prNumber ? `${project.repoUrl}/pull/${t.prNumber}` : undefined,
-            });
-            repo.createAuditEntry(this.db, {
-              projectId: project.id,
-              taskId: t.id,
-              kind: t.status === "done" ? "task_done" : "task_failed",
-              actor: "engine",
-              summary: `${t.title} → ${t.status}${t.prNumber ? ` (PR #${t.prNumber})` : ""}`,
-              detail: { attempts: t.attempts, prNumber: t.prNumber, costUsd },
-            });
+          // F5: settings.telegram.digest controls how much of this reaches
+          // Telegram. "terminal" (default/unset) = done/failed only (the
+          // original behavior); "all" also pushes every intermediate status
+          // change; "off" suppresses task-status pushes entirely. The audit
+          // log entry for a terminal transition is unconditional either way
+          // — it's a permanent record, not chatter.
+          if (prev?.status !== t.status) {
+            const isTerminal = t.status === "done" || t.status === "failed";
+            const digest = settings.telegram?.digest ?? "terminal";
+            const shouldPush =
+              digest !== "off" && (isTerminal || digest === "all");
+            const costUsd =
+              shouldPush || isTerminal
+                ? repo.getRuns(this.db, t.id).reduce((sum, r) => sum + r.costUsd, 0)
+                : 0;
+
+            if (shouldPush) {
+              this.notifier?.taskStatus({
+                title: t.title,
+                status: t.status,
+                difficulty: t.difficulty,
+                assignedModel: t.assignedModel,
+                attempts: t.attempts,
+                maxAttempts: t.maxAttempts,
+                summary: t.description.split("\n")[0],
+                costUsd,
+                prNumber: t.prNumber,
+                prUrl: t.prNumber ? `${project.repoUrl}/pull/${t.prNumber}` : undefined,
+              });
+            }
+
+            if (isTerminal) {
+              repo.createAuditEntry(this.db, {
+                projectId: project.id,
+                taskId: t.id,
+                kind: t.status === "done" ? "task_done" : "task_failed",
+                actor: "engine",
+                summary: `${t.title} → ${t.status}${t.prNumber ? ` (PR #${t.prNumber})` : ""}`,
+                detail: { attempts: t.attempts, prNumber: t.prNumber, costUsd },
+              });
+            }
           }
         },
         onRunUpdated: (r) => {
@@ -262,7 +275,19 @@ export class EngineRunner {
             detail: { message: args.message, options: args.options },
           });
           this.hub.broadcast({ type: "notification", payload: notif });
-          this.notifier?.approvalRequested(notif);
+          // F5: give Telegram enough to decide from the phone alone — the PR
+          // to look at and why the validator flagged it, not just the
+          // generic title/message every approval already carries.
+          const approvalTask = repo.getTask(this.db, args.taskId);
+          const prUrl =
+            approvalTask?.prNumber != null
+              ? `${project.repoUrl}/pull/${approvalTask.prNumber}`
+              : undefined;
+          const latestDecision = repo.getMergeDecisions(this.db, args.taskId)[0];
+          this.notifier?.approvalRequested(notif, {
+            prUrl,
+            reasons: latestDecision?.reasons,
+          });
           return new Promise<string>((resolve) => {
             this.pendingApprovals.set(notif.id, resolve);
           });
