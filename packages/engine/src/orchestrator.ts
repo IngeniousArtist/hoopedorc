@@ -111,9 +111,18 @@ export class Orchestrator implements Scheduler {
   private paused = false;
   private readonly activeTaskIds = new Set<string>();
   private readonly taskAbortControllers = new Map<string, AbortController>();
-  private readonly modelActiveCount = new Map<ModelId, number>();
+  /**
+   * F12: falls back to a per-instance count only when `deps` doesn't supply
+   * a shared registry (e.g. unit tests). In production, `EngineRunner` wires
+   * `deps.getModelActive`/`incModelActive`/`decModelActive` to ONE shared
+   * `Map` reused by every project's Orchestrator, so `maxConcurrent` is a
+   * true global cap — before this, each project's own Orchestrator counted
+   * independently, so two projects could each run `maxConcurrent` copies of
+   * the same model at once.
+   */
+  private readonly localModelActiveCount = new Map<ModelId, number>();
   /** The model each active task is CURRENTLY running on (tracks fallback
-   *  escalation so modelActiveCount reflects the model actually in use, not
+   *  escalation so the active count reflects the model actually in use, not
    *  just the originally-assigned one). */
   private readonly runningModel = new Map<string, ModelId>();
   /** Tasks already logged as budget-blocked this run, to avoid log spam. */
@@ -140,14 +149,27 @@ export class Orchestrator implements Scheduler {
 
   constructor(private readonly deps: SchedulerDeps) {}
 
+  private getModelActive(model: ModelId): number {
+    if (this.deps.getModelActive) return this.deps.getModelActive(model);
+    return this.localModelActiveCount.get(model) ?? 0;
+  }
+
   private incModel(model: ModelId): void {
-    this.modelActiveCount.set(model, (this.modelActiveCount.get(model) ?? 0) + 1);
+    if (this.deps.incModelActive) {
+      this.deps.incModelActive(model);
+      return;
+    }
+    this.localModelActiveCount.set(model, (this.localModelActiveCount.get(model) ?? 0) + 1);
   }
 
   private decModel(model: ModelId): void {
-    this.modelActiveCount.set(
+    if (this.deps.decModelActive) {
+      this.deps.decModelActive(model);
+      return;
+    }
+    this.localModelActiveCount.set(
       model,
-      Math.max(0, (this.modelActiveCount.get(model) ?? 0) - 1),
+      Math.max(0, (this.localModelActiveCount.get(model) ?? 0) - 1),
     );
   }
 
@@ -261,6 +283,16 @@ export class Orchestrator implements Scheduler {
       );
 
       let dispatched = 0;
+      // F12: true if a ready task was held back purely by the shared
+      // per-model concurrency cap (not budget/cooldown/scope). Unlike a
+      // budget or cooldown block — which only clears via an external action
+      // (raising a cap, waiting out a timer) and is fine to wind the run down
+      // for — a concurrency block can clear the moment ANOTHER project's
+      // Orchestrator finishes its own dispatch of the same model, entirely
+      // outside this instance's `activeTaskIds`. Without this, the "nothing
+      // dispatched and nothing of mine is active" break below would end the
+      // run right when the other project's task is about to free up the slot.
+      let blockedByCapacity = false;
       for (const task of ready) {
         if (this.paused) break;
         if (this.activeTaskIds.has(task.id)) continue;
@@ -327,9 +359,11 @@ export class Orchestrator implements Scheduler {
         }
         this.cooldownBlockedWarned.delete(task.id);
 
-        const active =
-          this.modelActiveCount.get(task.assignedModel) ?? 0;
-        if (active >= cfg.maxConcurrent) continue;
+        const active = this.getModelActive(task.assignedModel);
+        if (active >= cfg.maxConcurrent) {
+          blockedByCapacity = true;
+          continue;
+        }
 
         this.incModel(task.assignedModel);
         this.runningModel.set(task.id, task.assignedModel);
@@ -347,7 +381,7 @@ export class Orchestrator implements Scheduler {
         });
       }
 
-      if (dispatched === 0 && this.activeTaskIds.size > 0) {
+      if (dispatched === 0 && (this.activeTaskIds.size > 0 || blockedByCapacity)) {
         await new Promise((r) => setTimeout(r, 250));
         continue;
       }

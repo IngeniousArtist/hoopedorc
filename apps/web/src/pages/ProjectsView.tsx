@@ -1,4 +1,4 @@
-import type { ListProjectsResponse, Project } from "@orc/types";
+import type { ListProjectsResponse, Project, RouteKey } from "@orc/types";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useToast } from "../hooks/useToast";
@@ -12,6 +12,10 @@ const STATUS_COLOR: Record<string, string> = {
   completed: "bg-neutral-700 text-neutral-300",
   failed: "bg-red-900/60 text-red-300",
 };
+
+/** F12: statuses from which Start makes sense — mirrors ProjectHeader's
+ *  own STARTABLE list so the two inline controls stay consistent. */
+const STARTABLE = ["created", "planned", "paused", "completed", "failed"];
 
 export function ProjectsView({
   selectedProjectId,
@@ -28,6 +32,7 @@ export function ProjectsView({
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -44,6 +49,20 @@ export function ProjectsView({
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  /** Inline Start/Pause (F12) — re-fetches the list afterward so the status
+   *  badge updates immediately; this view doesn't otherwise subscribe to WS. */
+  async function act(id: string, route: RouteKey, body?: unknown) {
+    setBusyId(id);
+    try {
+      await api(route, { params: { id }, body });
+      await refresh();
+    } catch (e) {
+      toast(String(e), "error");
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   async function deleteProject(id: string) {
     const name = projects.find((p) => p.id === id)?.name ?? "Project";
@@ -124,6 +143,25 @@ export function ProjectsView({
                 <span className="text-[11px] text-neutral-400">
                   budget ${p.budgetUsd}
                 </span>
+              )}
+
+              {p.status === "running" ? (
+                <button
+                  onClick={() => act(p.id, "pauseProject", { drain: false })}
+                  disabled={busyId === p.id}
+                  title="Abort any running task immediately and requeue it to backlog"
+                  className="rounded border border-amber-800 px-2 py-1 text-[11px] text-amber-300 hover:bg-amber-950/40 disabled:opacity-50"
+                >
+                  {busyId === p.id ? "…" : "⏸ Pause"}
+                </button>
+              ) : (
+                <button
+                  onClick={() => act(p.id, "startProject")}
+                  disabled={busyId === p.id || !STARTABLE.includes(p.status)}
+                  className="rounded bg-green-700 px-2 py-1 text-[11px] font-medium text-white hover:bg-green-600 disabled:opacity-50"
+                >
+                  {busyId === p.id ? "…" : p.status === "paused" ? "▶ Resume" : "▶ Start"}
+                </button>
               )}
 
               {confirmId === p.id ? (
