@@ -159,7 +159,7 @@ export class EngineRunner {
       settings,
       adapterFor,
       opencodeBaseUrl: ENV.opencodeBaseUrl,
-      getTask: (id) => repo.getTask(this.db, id) ?? undefined,
+      getTasks: () => repo.getTasks(this.db, project.id),
       checkBudget: (modelId) => checkBudget(this.db, project.id, modelId, settings),
       events: {
         onLog: (e) => this.enqueueLog(e),
