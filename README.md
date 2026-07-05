@@ -20,7 +20,7 @@ packages/
 apps/
   web/        @orc/web        — React kanban UI + live logs + settings          [owner: glm]
 docs/
-  PRD.md, ARCHITECTURE.md, CONTRACT.md, specs/*.md
+  USER_GUIDE.md, PRD.md, ARCHITECTURE.md, CONTRACT.md, specs/*.md
 deploy/       systemd unit + Dockerfile/compose (see deploy/README.md)
 bin/          `hoopedorc` CLI (start|init)
 scripts/      npm run setup's implementation (scripts/init.mjs)
@@ -44,7 +44,9 @@ npm run dev
 npm run start        # or: hoopedorc start (if installed/linked — see bin/)
 ```
 
-See [`deploy/`](deploy/) for systemd/Docker deployment notes.
+See [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) for a full walkthrough (first
+project, the safety model, remote setup, troubleshooting) and
+[`deploy/`](deploy/) for systemd/Docker deployment notes.
 
 ## Prereqs
 

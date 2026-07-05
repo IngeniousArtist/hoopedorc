@@ -1,0 +1,173 @@
+# User Guide
+
+This doc is for using Hoopedorc, not building it — see the main
+[README](../README.md) and [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) if you
+want the contributor/internals view instead.
+
+## What it is
+
+Hoopedorc is a self-hosted orchestrator that runs a small team of AI coding
+models against one of your GitHub repos at a time. You describe what you
+want in a planning chat; Claude turns that into a dependency-ordered list of
+tasks; then specialist models (whichever you've configured — by default GLM,
+Deepseek Pro/Flash, Grok, Nex) implement each task in its own isolated git
+worktree and branch, in parallel where the tasks don't overlap.
+
+Before anything merges to `main`, it has to clear objective gates
+(typecheck/lint/build/tests/no-conflicts/in-scope) and a review from a
+separate validator model that never authored the change it's reviewing. If
+everything passes and nothing looks risky, it auto-merges without asking
+you. If something looks risky — a DB migration, a new dependency, a change
+outside the task's declared scope — it stops and asks, over the web UI and
+(optionally) Telegram, instead of merging blind.
+
+It's built for one specific kind of user: someone who already pays for
+several of these model subscriptions and wants to point a team of them at a
+real repo and let it run unattended for a while, with real safety rails and
+a way to step in — pause, stop a task, add a task mid-run, roll back a
+merge — rather than either babysitting every diff or trusting a black box.
+
+## Install & prerequisites
+
+- **Node >= 20** (22 recommended), and a GitHub account with the
+  [`gh` CLI](https://cli.github.com/) installed and logged in
+  (`gh auth login`, then confirm with `gh auth status`).
+- **Claude** — Hoopedorc drives `claude` (Claude Code) directly, so it uses
+  whatever you're already logged into (Pro/Max subscription, or an API key
+  via `claude`'s own config). It plans every project and reviews every
+  merge by default, so it's not optional the way the specialist models are.
+- **The specialist models** all run through [OpenCode](https://opencode.ai)
+  (`opencode` CLI), so you only need to authenticate once per provider, not
+  once per app:
+  ```bash
+  opencode auth login
+  ```
+  and follow the prompts for whichever of these you actually hold a
+  subscription/API credits for — the default roster is Z.AI (GLM), DeepSeek
+  (Deepseek Pro/Flash), xAI (Grok), and OpenRouter (Nex, a free-tier model —
+  no paid account needed for that one specifically). You don't need all of
+  them: disable whichever you don't have from Settings → Models, and
+  re-point the routing at what's left (Settings → Routing, or the
+  onboarding wizard's routing step).
+- Run `npm install && npm run setup` from the repo root — `setup` creates
+  `.env` from `.env.example` if you don't have one yet, and checks all
+  three CLIs (`gh`/`claude`/`opencode`) for you.
+
+Then `npm run dev` (all packages in watch mode) or `npm run start`
+(production-style: build everything, run one server that also serves the
+web UI). See [`deploy/`](../deploy/) for systemd/Docker notes if this is
+going on a always-on box.
+
+## Your first project
+
+1. Open the web UI (`http://localhost:5173` in dev, or wherever `npm run
+   start` is listening). A brand-new install routes you into a short
+   onboarding wizard first (tool checks, model roster, routing defaults,
+   optional budget/Telegram) — finish that once, then **New Project**.
+2. Either point it at an existing repo URL, or let it create a fresh
+   private GitHub repo for you.
+3. **Plan**: describe what you want in the chat panel. Claude (Sonnet, for
+   cheap back-and-forth) will ask clarifying questions and propose a plan —
+   refine it conversationally ("split that into two tasks", "don't touch
+   the database", "add tests"). When you're happy, approving it runs one
+   more Claude call (Opus, the plan's single most important call) that
+   deconstructs the agreed plan into a real task list: each task's
+   description, difficulty, which model will author it, its acceptance
+   criteria, its allowed file scope, and its dependencies on other tasks.
+4. **Review the table.** Every field is editable before you commit —
+   reassign a task to a different model, tighten its scope paths, add or
+   remove acceptance criteria, reorder dependencies. Nothing runs yet.
+5. **Start.** The Board fills with cards moving through
+   Backlog → Ready → In Progress → In Review → Done (or Blocked/Failed).
+   Click any card for the full detail drawer: logs, gate results, the
+   validator's verdict and reasons, the PR link. The mission-control strip
+   above the board shows every currently-active agent, budget burn, and any
+   pending approvals at a glance.
+6. **Approvals**, if any come up (a risky change, or the merge policy is set
+   to always ask), show up as `action_required` in Notifications, and — if
+   you've set up Telegram (Settings → Telegram, needs a bot token from
+   [BotFather](https://t.me/BotFather) and your chat id) — as a message with
+   inline Approve/Reject buttons, the PR link, and the validator's top
+   reasons, so you can decide from your phone without opening the app.
+7. When a task finishes, its PR is already merged (or waiting on you, per
+   the above). You can **Retry** a failed task, **Rollback** a merged one
+   (reverts the merge commit), or **Stop** a task that's still running.
+
+## The safety model
+
+- **Gates.** Every task's change must pass typecheck, lint, build, and
+  tests (whichever your repo has — see below on "vacuous" gates), plus two
+  Hoopedorc-specific checks: no merge conflicts with the current default
+  branch, and no files touched outside the task's declared scope paths.
+  Per-project overrides (different script names, a non-npm test command, or
+  skipping a gate) are available under **New Project → Advanced** or a
+  project's header — see `docs/PRODUCTIZATION_PLAN.md`'s F9 entry.
+- **The validator.** A separate model (never the one that authored the
+  change) reviews the diff against the task's acceptance criteria and
+  returns approve / request changes / escalate, with a confidence score.
+  Below `Settings.confidenceThreshold` (0.7 by default) always escalates to
+  you, regardless of the merge policy.
+- **Risky-change rules.** Even with clean gates and a confident approval,
+  a change gets flagged for your approval instead of auto-merging if it
+  touches: DB/schema files, `package.json` (new dependencies), anything
+  that looks like auth/secrets/tokens, or files outside the task's declared
+  scope. Toggle these independently in Settings → Merge Policy.
+- **Merge policy** (global in Settings, optionally overridden per-project):
+  `hard_gate_flag_risky` (default — auto-merge unless something above
+  trips), `fully_autonomous` (never asks), or `always_ask` (every merge
+  needs a human tap, even a clean one).
+- **"Vacuous" gates.** A brand-new repo with no `test`/`build`/etc. scripts
+  yet would otherwise "pass" every gate by doing nothing — Hoopedorc detects
+  this (`GateResult.vacuous`) and treats it as risky (escalates) unless you
+  explicitly opt into `Settings.allowVacuousGates`.
+- **Budgets.** A per-project cap and a global monthly cap (Settings), soft
+  warnings at 50%/80% of either, and a hard stop once a cap is hit — the
+  autonomous run winds down cleanly rather than erroring out.
+- **Rollback.** Any merged task has a one-click Rollback (reverts the merge
+  commit on `main` via `git revert`) if something merged that shouldn't
+  have.
+- **What's NOT sandboxed (yet).** Gate scripts and every model's own tool
+  use run **directly on the host machine** with your real `gh`/`claude`/
+  `opencode` auth — a repo's own `test`/`build` scripts execute as-is. Their
+  environment is stripped of anything secret-shaped before they run, but
+  they still have real filesystem/network access. Don't point this at a
+  repo you don't trust. A containerized sandbox mode is tracked as future
+  work (F13 in `docs/PRODUCTIZATION_PLAN.md`), not built yet.
+
+## Remote setup (Tailscale)
+
+The server binds to `127.0.0.1` and is unauthenticated by default — fine
+for solo localhost use, but this app can spend real money and push real
+code, so don't casually widen it. To reach it from another device (a
+laptop, your phone) without exposing it to the open internet:
+
+1. Put the box on your [Tailscale](https://tailscale.com/) tailnet.
+2. Set `HOST=0.0.0.0` (or the tailnet interface's own address) in `.env` —
+   the server **refuses to start** with a non-loopback `HOST` unless you
+   also set one of the next two things.
+3. Set `API_TOKEN` in `.env` to a random string. Every `/api/*` request then
+   needs `Authorization: Bearer <token>`, and the web UI will prompt you for
+   it once (stored in the browser's `localStorage` after that). This is the
+   normal path — do this, don't skip it.
+4. (Escape hatch, not recommended) `ALLOW_UNAUTHENTICATED=1` starts the
+   server on a non-loopback `HOST` with no token at all — only reasonable
+   for a genuinely locked-down throwaway sandbox.
+5. At the network layer: if this also sits behind a cloud security group
+   (e.g. EC2), don't open the app port to `0.0.0.0/0` — restrict it to the
+   tailnet, and rely on Tailscale for the actual access control. Anyone on
+   your tailnet can reach the app once it's up; for a solo setup that's the
+   right tradeoff (app-level auth becomes a second layer, not the only one).
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `gh pr create` fails with "No commits between main and \<branch\>" | The author model didn't actually commit anything — usually a task that was too vague, or scoped to files that didn't need changing. (Historically this was also caused by agents writing to the wrong directory because `$PWD` didn't match the worktree `cwd` — fixed; if you see this on a current build, it's almost always the task itself, not the plumbing.) | Check the task's logs in its detail drawer; tighten the description/acceptance criteria and Retry. |
+| A model's task fails almost instantly with something like "database is locked" | OpenCode keeps a shared SQLite session store; two `opencode` runs starting at the exact same instant (two tasks dispatched concurrently) can collide on it. | Hoopedorc already retries this automatically after a short stagger (`OPENCODE_TRANSIENT` in `packages/adapters`) — a single retry almost always clears it. If it keeps happening, lower that model's `maxConcurrent` in Settings. |
+| Every task in a brand-new project auto-merges with basically no verification | The repo has no `test`/`build`/`lint`/`typecheck` scripts yet, so every gate "passes" by doing nothing (vacuous). | This should already escalate to your approval by default — check `Settings.allowVacuousGates` isn't turned on. Longer-term, the planner's first scaffold task is supposed to set up real scripts; if it didn't, add them yourself or via a follow-up task. |
+| A "hard" difficulty task always fails validation with a self-review error | The author and validator models are configured to be the same model for that difficulty tier — the validator refuses to review its own work. | Settings → Routing: make sure `validatorByDifficulty` never matches `byDifficulty`/`byRole` for the same tier. |
+| Pressing Stop doesn't seem to do anything | You're on a very old build — this was a real bug (B1), fixed early in the productization pass: Stop now actually aborts the live process and can't be overtaken by an in-flight auto-merge. | Update to a current build. |
+| Approvals never reach Telegram | No bot token/chat id set, or the token has a Markdown metacharacter issue (also fixed — messages are plain text now). | Settings → Telegram: use the **Send test message** button to confirm delivery before relying on it live. |
+| The server won't start after setting `HOST=0.0.0.0` | No `API_TOKEN` set and `ALLOW_UNAUTHENTICATED` isn't `1` — this is an intentional refusal, not a bug. | Set `API_TOKEN` (see Remote setup above), or explicitly opt into `ALLOW_UNAUTHENTICATED=1` if you really mean to. |
+| The web UI shows nothing / a blank board in "real" (non-mock) mode | No project selected yet, or you're pointed at `MOCK=1` data. | Use the project picker in the nav; confirm `MOCK` isn't set in your `.env`/environment. |
+| Docker: `claude` fails to authenticate inside the container | Claude Code's login on macOS lives in the system Keychain, which a Linux container can't reach at all — no mount fixes this. | Set `ANTHROPIC_API_KEY` in `.env` instead (see `deploy/README.md`) — note this bills per-token via the Console, not your subscription's flat rate. |

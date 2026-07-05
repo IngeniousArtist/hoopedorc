@@ -8,22 +8,22 @@ date-stamped version numbers.
 
 ## [Unreleased]
 
-### Added — F10: packaging & deployment
-- The server now serves the built web app itself (`apps/web/dist`) once it
-  exists — one process, one port, no CORS needed in production. No effect on
-  `npm run dev` (Vite's own dev server still proxies `/api`/`/ws`).
-- `npm run start` — build every workspace, then run the server.
-- `npm run setup` (`scripts/init.mjs`) — creates `.env` from `.env.example` if
-  missing, checks `gh`/`claude`/`opencode` auth.
-- `hoopedorc` CLI (`bin/hoopedorc.mjs`, `start`/`init`) for a linked/global
-  install.
-- `deploy/` — a systemd unit (the primary supported deployment path) plus a
-  reference Dockerfile/compose file with documented auth caveats (Claude
-  Code's login lives in the macOS Keychain and isn't reachable from a Linux
-  container; use `ANTHROPIC_API_KEY` there instead).
+### Added — F11: docs for other users
+- `docs/USER_GUIDE.md` — what it is, install + prerequisites (per-model
+  subscriptions, `opencode auth login`), a first-project walkthrough, the
+  safety model, remote setup over Tailscale, and a troubleshooting table
+  built from real failure modes hit during development. Linked from the
+  README and the app's Setup page.
 
 ## Phase 6 (in progress) — flexibility, packaging, docs
 
+- **F10 — Packaging & deployment.** The server now serves the built web app
+  itself (`apps/web/dist`) once it exists — one process, one port, no CORS
+  needed in production. `npm run start`/`npm run setup`, a `hoopedorc` CLI,
+  and `deploy/` (a systemd unit as the primary path, plus a reference
+  Dockerfile/compose with documented auth caveats — Claude Code's login
+  lives in the macOS Keychain and isn't reachable from a Linux container;
+  use `ANTHROPIC_API_KEY` there instead).
 - **F9 — Project templates & per-project gate config.** Per-project
   overrides (`Project.config`): gate script name overrides (or skip a gate),
   a free-form test command for non-npm stacks, a `maxAttempts` default, and
