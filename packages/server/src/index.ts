@@ -4,7 +4,9 @@ import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import cors from "@fastify/cors";
+import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import type {
@@ -465,6 +467,27 @@ async function main() {
     origin: [...DEV_WEB_ORIGINS, ...ENV.corsOrigins],
   });
   await app.register(websocket);
+
+  // F10: once the web app is built (`apps/web/dist`), serve it from this same
+  // process/port — one command, one port, no CORS needed in production
+  // (same-origin). `here` is 3 directories below the repo root whether this
+  // runs from source (`src/index.ts`, tsx) or the tsup bundle
+  // (`dist/index.js`), so the relative path is identical either way. In dev
+  // (Vite's own server on :5173, proxying /api + /ws here) this directory
+  // won't exist, so this is a no-op.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const webDist = resolve(here, "../../../apps/web/dist");
+  if (existsSync(webDist)) {
+    await app.register(fastifyStatic, { root: webDist });
+    app.setNotFoundHandler((req, reply) => {
+      const url = req.raw.url ?? "";
+      const isApiOrWs =
+        url.startsWith("/api/") || url === WS_PATH || url.startsWith(`${WS_PATH}?`);
+      if (isApiOrWs) return reply.code(404).send({ error: "not found" });
+      return reply.type("text/html").sendFile("index.html");
+    });
+    app.log.info(`serving built web app from ${webDist}`);
+  }
 
   const db = setupDb();
   const hub = new WsHub();

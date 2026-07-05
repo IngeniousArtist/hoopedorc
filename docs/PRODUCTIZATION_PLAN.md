@@ -234,9 +234,29 @@ reimplementations. Notable finds/decisions:
 | Item | Status | PR |
 |---|---|---|
 | F9 — Project templates & per-project gate config | ✅ done | [#37](https://github.com/IngeniousArtist/hoopedorc/pull/37) |
-| F10 — Packaging & deployment | ⬜ not started | |
+| F10 — Packaging & deployment | ✅ done | [#38](https://github.com/IngeniousArtist/hoopedorc/pull/38) |
 | F11 — Docs for other users | ⬜ not started | |
 | F12 — Multi-project run queue | ⬜ not started | |
+
+F10 merged to `main`; `npm run typecheck`/`npm run build` green,
+`npm test -w @orc/engine` (20/20) / `-w @orc/adapters` (4/4) unaffected. The
+server now serves the built web app itself (`@fastify/static` on
+`apps/web/dist`, no-op until that directory exists so `npm run dev` is
+unaffected) with a SPA-style fallback to `index.html` for unmatched non-API
+paths — live-verified against the real built `dist/index.js`, not just
+source. New root `npm run start`/`npm run setup` (`scripts/init.mjs`) and a
+`hoopedorc` CLI (`bin/hoopedorc.mjs`); `npm run setup` was run for real
+(created `.env`, all three CLI checks passed). `deploy/` holds a systemd
+unit (the primary supported path) plus a reference Dockerfile/compose —
+writing the Docker auth caveats surfaced a real, verified fact worth
+remembering: **Claude Code's login lives in the macOS Keychain**, which a
+Linux container cannot access at all (mountable or not); the documented
+workaround is `ANTHROPIC_API_KEY` (confirmed via `claude --help`'s `--bare`
+mode), which bills per-token via the Console rather than a Pro/Max
+subscription's flat rate. The Docker path itself was **not** built/run
+against a live daemon (none available in this environment) — it's a
+documented starting point, not a verified recipe. New `CHANGELOG.md`
+(retroactive entries per phase) + README updates.
 
 F9 merged to `main`; `npm run typecheck`, `npm run build`, `npm test -w
 @orc/engine` (20/20, 5 new), and `npm test -w @orc/adapters` (4/4) green.

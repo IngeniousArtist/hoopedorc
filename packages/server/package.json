@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
+    "@fastify/static": "^9.1.3",
     "@fastify/websocket": "^11.0.1",
     "@orc/adapters": "*",
     "@orc/engine": "*",

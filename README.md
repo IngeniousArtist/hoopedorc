@@ -21,12 +21,16 @@ apps/
   web/        @orc/web        — React kanban UI + live logs + settings          [owner: glm]
 docs/
   PRD.md, ARCHITECTURE.md, CONTRACT.md, specs/*.md
+deploy/       systemd unit + Dockerfile/compose (see deploy/README.md)
+bin/          `hoopedorc` CLI (start|init)
+scripts/      npm run setup's implementation (scripts/init.mjs)
 ```
 
 ## Run
 
 ```bash
 npm install          # install all workspaces
+npm run setup        # create .env from .env.example, check gh/claude/opencode auth
 npm run build        # build the libs (types -> adapters -> engine -> server -> web)
 
 # Frontend dev against mock data (no real models needed):
@@ -34,7 +38,13 @@ npm run mock         # mock API on :4317 + web on :5173
 
 # Full dev (all packages in watch mode):
 npm run dev
+
+# Production-ish single command: builds everything, then runs the server,
+# which also serves the built web app itself (one process, one port):
+npm run start        # or: hoopedorc start (if installed/linked — see bin/)
 ```
+
+See [`deploy/`](deploy/) for systemd/Docker deployment notes.
 
 ## Prereqs
 
@@ -42,6 +52,8 @@ npm run dev
 - `opencode` installed and authenticated for GLM / Deepseek / Grok / Nex; run `opencode serve`
 - `claude` (Claude Code) logged in with your Pro subscription
 - `gh` CLI authenticated (`gh auth status`)
+
+`npm run setup` checks all three for you.
 
 ## Security
 
@@ -68,7 +80,8 @@ the productization plan).
 
 This is under active development against a living fix/feature list — see
 [`docs/PRODUCTIZATION_PLAN.md`](docs/PRODUCTIZATION_PLAN.md) (progress table near
-the top) for what's been fixed, what's in flight, and what's next.
+the top) for what's been fixed, what's in flight, and what's next, and
+[`CHANGELOG.md`](CHANGELOG.md) for a summarized history.
 
 ## The rules every module follows
 

@@ -1,0 +1,22 @@
+[Unit]
+Description=Hoopedorc — multi-model AI coding orchestrator
+After=network.target
+
+[Service]
+Type=simple
+# Edit these two for your box:
+User=YOUR_USERNAME
+WorkingDirectory=/opt/hoopedorc
+# .env holds PORT/HOST/DB_PATH/API_TOKEN/etc — see .env.example.
+EnvironmentFile=/opt/hoopedorc/.env
+# npm run start = build everything + run the server (which also serves the
+# built web app on the same port once apps/web/dist exists).
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=5
+# gh/claude/opencode auth lives under this user's $HOME (~/.config/gh,
+# ~/.claude, opencode's own config dir) — the service's User= must be the
+# account those CLIs were authenticated as, or every run will fail auth.
+
+[Install]
+WantedBy=multi-user.target
