@@ -229,14 +229,43 @@ reimplementations. Notable finds/decisions:
   updates-role model for natural language" toggle — explicitly optional, and
   the plan itself says the mechanical digest must not depend on a model.
 
-### Phase 6 — F9, F10, F11, F12 (flexibility, packaging, docs) — 🔄 in progress
+### Phase 6 — F9, F10, F11, F12 (flexibility, packaging, docs) — ✅ DONE
 
 | Item | Status | PR |
 |---|---|---|
 | F9 — Project templates & per-project gate config | ✅ done | [#37](https://github.com/IngeniousArtist/hoopedorc/pull/37) |
 | F10 — Packaging & deployment | ✅ done | [#38](https://github.com/IngeniousArtist/hoopedorc/pull/38) |
 | F11 — Docs for other users | ✅ done | [#39](https://github.com/IngeniousArtist/hoopedorc/pull/39) |
-| F12 — Multi-project run queue | ⬜ not started | |
+| F12 — Multi-project run queue | ✅ done | [#40](https://github.com/IngeniousArtist/hoopedorc/pull/40) |
+
+All four merged to `main`; `npm run typecheck`/`npm run build` green
+across every workspace as of each merge. **This closes out Phase 6 — every
+item in Part 1 (security/bugs) and Part 2 (product features) of this plan
+is now done.** F12: `ModelConfig.maxConcurrent` was only ever enforced
+per-`Orchestrator`-instance, so two concurrently-running projects could
+each dispatch `maxConcurrent` copies of the same model at once — new
+optional `SchedulerDeps.getModelActive`/`incModelActive`/`decModelActive`
+hooks let `EngineRunner.buildOrchestrator` wire every project's Orchestrator
+to ONE shared counter instead (falls back to a local per-instance count
+when the hooks are absent, e.g. unit tests). Writing the test for this
+surfaced a real correctness gap the change introduced: the dispatch loop's
+"nothing dispatched, nothing of mine active → wind down" exit condition
+assumed a blocked task could only be freed by this orchestrator's own
+activity — with a shared cap, it can now be freed by a *different*
+project's task finishing, so a new `blockedByCapacity` flag makes that
+specific case poll-and-retry instead of prematurely ending the run.
+`ProjectsView` also gained inline Start/Pause per row (previously
+read-only). Verified: `npm test -w @orc/engine` 21/21 (1 new, proving two
+separate Orchestrator instances sharing an injected registry actually
+serialize dispatch of a capped model); the real `EngineRunner` wiring
+itself (not just Orchestrator logic) was live-verified via a standalone
+script reaching `buildOrchestrator` for two different real projects and
+confirming their deps share one counter; the Projects-page buttons'
+underlying routes were live-verified via curl. Browser screenshot
+verification was attempted for both F11 and F12's UI pieces but the Chrome
+extension tool errored at the frame level across several attempts
+(confirmed via curl that the dev servers themselves served fine) — noted
+rather than claimed.
 
 F11 merged to `main`; `npm run typecheck`/`npm run build` (`@orc/web`)
 green. New `docs/USER_GUIDE.md` covers what it is, install/prereqs (which
@@ -896,7 +925,14 @@ doc first (`docs/specs/sandbox.md`), do not attempt as part of this pass.
 | 3 | S5, B6–B15 | Hygiene + rails; each is small and independent. | ✅ done |
 | 4 | F1, F2, F3, F4 | Core product loop: onboard → understand → intervene → observe. | ✅ done |
 | 5 | F5, F6, F7, F8 | Away-from-keyboard autonomy story. | ✅ done |
-| 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. | ⬜ not started |
+| 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. | ✅ done |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
+
+**All six phases are now complete — every item in Part 1 (security/bugs) and
+Part 2 (product features) of this plan is done.** What's left is explicitly
+out of scope for this pass: F13 (sandbox mode) is future work, noted but not
+attempted (see its entry above). Any further work should start from a fresh
+read of the current codebase rather than this plan, which has served its
+purpose.

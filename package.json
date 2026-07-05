@@ -1,7 +1,7 @@
 {
   "name": "hoopedorc",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Hoopedorc — a multi-model AI coding orchestrator (Claude + OpenCode models working as a team).",
   "type": "module",
   "workspaces": [
