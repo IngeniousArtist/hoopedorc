@@ -262,6 +262,26 @@ export interface AuditEntry {
   detail?: Record<string, unknown>;
 }
 
+/**
+ * The structured shape of AuditEntry.detail when kind === "run_summary"
+ * (F8) — one autonomous-loop start-to-finish cycle's report card. Rendered
+ * specially at the top of AuditView; also what gets turned into the
+ * Telegram end-of-run digest.
+ */
+export interface RunSummaryDetail {
+  startedAt: string;
+  endedAt: string;
+  durationMs: number;
+  finalStatus: string;
+  tasksDone: number;
+  tasksFailed: number;
+  totalCostUsd: number;
+  prLinks: { taskId: string; title: string; prNumber: number; url: string }[];
+  approvalsRequired: number;
+  /** One line per failed task, newest-relevant-reason-first; capped short. */
+  topFailureReasons: string[];
+}
+
 export type MergePolicy =
   | "hard_gate_flag_risky" // gates + validator pass, ask only for risky changes (DEFAULT)
   | "fully_autonomous" // gates + validator pass => merge, never ask

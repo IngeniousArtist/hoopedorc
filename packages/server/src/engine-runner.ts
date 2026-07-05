@@ -7,13 +7,59 @@ import {
   type SchedulerDeps,
 } from "@orc/engine";
 import { makeAdapter, type AgentAdapter } from "@orc/adapters";
-import type { ModelId, Project } from "@orc/types";
+import type { ModelId, Project, RunSummaryDetail } from "@orc/types";
 import { ENV, defaultSettings } from "./config";
 import type { Db } from "./db/index";
 import * as repo from "./db/repo";
 import type { WsHub } from "./ws-hub";
 import { checkBudget, checkBudgetThresholds } from "./budget";
 import type { ServerNotifier } from "./telegram";
+
+function fmtDurationMs(ms: number): string {
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.round(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  return `${hours}h ${totalMinutes % 60}m`;
+}
+
+/**
+ * F8's Telegram digest — the end-of-run "info" push upgraded from one line
+ * to an actual report card. Exported (and kept a pure function of its
+ * inputs) so it's directly unit-testable without spinning up a whole
+ * EngineRunner, matching the pattern F6's classifyFailure established.
+ */
+export function formatRunSummaryMessage(
+  projectName: string,
+  s: RunSummaryDetail,
+): string {
+  const icon = s.finalStatus === "completed" ? "🏁" : "⚠️";
+  const lines = [
+    `${icon} ${projectName} ${s.finalStatus} — ${fmtDurationMs(s.durationMs)}`,
+    `✅ ${s.tasksDone} done · ❌ ${s.tasksFailed} failed · $${s.totalCostUsd.toFixed(4)} spent`,
+  ];
+
+  if (s.prLinks.length > 0) {
+    lines.push("", "PRs merged:");
+    for (const pr of s.prLinks) {
+      lines.push(`- ${pr.title} (#${pr.prNumber}): ${pr.url}`);
+    }
+  }
+
+  if (s.approvalsRequired > 0) {
+    lines.push("", `⏸ ${s.approvalsRequired} approval(s) were required this run`);
+  }
+
+  if (s.topFailureReasons.length > 0) {
+    lines.push("", "Top issues:");
+    for (const reason of s.topFailureReasons) {
+      lines.push(`- ${reason}`);
+    }
+  }
+
+  return lines.join("\n");
+}
 
 /**
  * Bridges the engine to the server: builds SchedulerDeps whose events persist to
@@ -383,6 +429,7 @@ export class EngineRunner {
     }
     const orch = this.buildOrchestrator(project);
     this.orchestrators.set(project.id, orch);
+    const runStartedAt = new Date().toISOString();
 
     void (async () => {
       try {
@@ -435,14 +482,86 @@ export class EngineRunner {
 
         const fresh = repo.getProject(this.db, project.id);
         if (fresh) this.hub.broadcast({ type: "project.updated", payload: fresh });
-        const { totalUsd } = repo.getCostSummary(this.db, project.id);
-        this.notifier?.info(
-          finalStatus === "completed"
-            ? `🏁 ${project.name} finished. Total spend $${totalUsd.toFixed(4)}.`
-            : `⚠️ ${project.name} stopped (${finalStatus}) with unfinished tasks. Total spend $${totalUsd.toFixed(4)}.`,
-        );
+
+        // F8: the "get updates" feature for away-from-keyboard autonomy — a
+        // report card for this specific start-to-finish cycle (not the
+        // project's lifetime totals), persisted so AuditView can show past
+        // runs and pushed as a real digest instead of one terse line.
+        this.pushRunSummary(project, runStartedAt, finalStatus);
       }
     })();
+  }
+
+  /** Builds and persists this run's report card (F8), then pushes it to
+   *  Telegram as a multi-line digest. */
+  private pushRunSummary(
+    project: Project,
+    runStartedAt: string,
+    finalStatus: string,
+  ): void {
+    const endedAt = new Date().toISOString();
+    const durationMs = new Date(endedAt).getTime() - new Date(runStartedAt).getTime();
+    const totalCostUsd = repo.getCostSince(this.db, project.id, runStartedAt);
+
+    // Scope every count to what actually happened during THIS run, not the
+    // project's all-time history — audit entries are the natural source
+    // since every terminal transition already writes one.
+    const sinceRun = repo
+      .getAuditLog(this.db, project.id)
+      .filter((e) => e.ts >= runStartedAt);
+    const doneEntries = sinceRun.filter((e) => e.kind === "task_done");
+    const failedEntries = sinceRun.filter((e) => e.kind === "task_failed");
+    const approvalsRequired = sinceRun.filter(
+      (e) => e.kind === "approval_requested",
+    ).length;
+
+    const prLinks = doneEntries.flatMap((e) => {
+      const prNumber = e.detail?.prNumber as number | undefined;
+      if (!prNumber || !e.taskId) return [];
+      return [
+        {
+          taskId: e.taskId,
+          title: e.summary.split(" → ")[0] ?? e.summary,
+          prNumber,
+          url: `${project.repoUrl}/pull/${prNumber}`,
+        },
+      ];
+    });
+
+    // "Why" for each failed task: the most recent validator verdict's top
+    // reason, if it went through review at all — otherwise just the task
+    // title, since a task can fail before ever reaching the validator (e.g.
+    // exhausted attempts on author errors).
+    const topFailureReasons = failedEntries.slice(0, 5).map((e) => {
+      const title = e.summary.split(" → ")[0] ?? e.summary;
+      const reason = e.taskId
+        ? repo.getMergeDecisions(this.db, e.taskId)[0]?.reasons[0]
+        : undefined;
+      return reason ? `${title}: ${reason}` : title;
+    });
+
+    const summary: RunSummaryDetail = {
+      startedAt: runStartedAt,
+      endedAt,
+      durationMs,
+      finalStatus,
+      tasksDone: doneEntries.length,
+      tasksFailed: failedEntries.length,
+      totalCostUsd,
+      prLinks,
+      approvalsRequired,
+      topFailureReasons,
+    };
+
+    repo.createAuditEntry(this.db, {
+      projectId: project.id,
+      kind: "run_summary",
+      actor: "engine",
+      summary: `Run ${finalStatus}: ${summary.tasksDone} done, ${summary.tasksFailed} failed, $${totalCostUsd.toFixed(4)} spent`,
+      detail: summary as unknown as Record<string, unknown>,
+    });
+
+    this.notifier?.info(formatRunSummaryMessage(project.name, summary));
   }
 
   /** Run a single task through the full pipeline (manual dispatch). */
