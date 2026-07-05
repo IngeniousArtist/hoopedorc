@@ -215,7 +215,18 @@ function buildPriorContext(db: Db, project: Project): string | undefined {
 
   const fmtTask = (t: Task) =>
     `- [${t.status}] ${t.title}${t.role ? ` (${t.role})` : ""} — ${t.description.split("\n")[0]}`;
-  const taskList = tasks.map(fmtTask).join("\n");
+  // Cap the inlined task list on long-running projects — like the audit slice
+  // below, an extra bound against a huge planning prompt (see B7: the whole
+  // prompt goes over argv/stdin to `claude -p`, which has its own size limits
+  // worth staying well clear of). `tasks` is oldest-first, so the tail is the
+  // most recent.
+  const MAX_PRIOR_TASKS = 50;
+  const recentTasks = tasks.slice(-MAX_PRIOR_TASKS);
+  const taskList = recentTasks.map(fmtTask).join("\n");
+  const taskListHeader =
+    tasks.length > MAX_PRIOR_TASKS
+      ? `### Tasks already on the board (${tasks.length}, showing most recent ${MAX_PRIOR_TASKS})`
+      : `### Tasks already on the board (${tasks.length})`;
 
   // Recent terminal/notable audit entries, newest first, capped so the prompt
   // stays bounded on long-running projects.
@@ -234,7 +245,7 @@ function buildPriorContext(db: Db, project: Project): string | undefined {
 
   return [
     prd,
-    `### Tasks already on the board (${tasks.length})\n${taskList}`,
+    `${taskListHeader}\n${taskList}`,
     audit ? `### Recent activity\n${audit}` : "",
   ]
     .filter(Boolean)
