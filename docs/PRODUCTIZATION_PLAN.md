@@ -176,11 +176,60 @@ just typechecked. Notable finds/decisions:
   fetch already returned `budgetUsd`, just wasn't being read — no new
   request needed for the budget bar.
 
-Next up per the plan's execution order: **Phase 5 = F5-F8** (away-from-
-keyboard autonomy: browser notifications, model health/cooldown, soft budget
-rails, run report cards).
+### Phase 5 — F5, F6, F7, F8 (away-from-keyboard autonomy) — ✅ DONE
 
-### Phase 5 — F5, F6, F7, F8 (away-from-keyboard autonomy) — ⬜ not started
+| Item | Status | PR |
+|---|---|---|
+| F5 — Notifications that reach the user | ✅ done | [#32](https://github.com/IngeniousArtist/hoopedorc/pull/32) |
+| F6 — Model health + subscription awareness | ✅ done | [#33](https://github.com/IngeniousArtist/hoopedorc/pull/33) |
+| F7 — Cost guardrails short of the hard stop | ✅ done | [#34](https://github.com/IngeniousArtist/hoopedorc/pull/34) |
+| F8 — Autonomous-run report card | ✅ done | [#35](https://github.com/IngeniousArtist/hoopedorc/pull/35) |
+
+All four merged to `main`; `npm run typecheck`, `npm run build`,
+`npm test -w @orc/engine` (15/15, 1 new), and `npm test -w @orc/adapters`
+(4/4, 2 new) green as of each merge. UI-touching pieces were live-verified in
+a real browser against a real (non-mock) server seeded directly via SQLite;
+server-only logic (cooldown skip, budget-threshold gating, run-summary
+computation) was verified with standalone scripts that boot a real
+`EngineRunner`/`Orchestrator` against a real in-memory SQLite DB and reach
+private methods via `as any` — exercising actual production code paths, not
+reimplementations. Notable finds/decisions:
+- F5: `Settings.telegram.digest` (`"off" | "terminal" | "all"`) gates task
+  status pushes independent of the always-unconditional audit entry and
+  always-sent approval requests. New `ApprovalContext` (PR url + top
+  validator reasons) enriches the Telegram approval message. New
+  `useBrowserNotify` context wraps the Notifications API — only fires while
+  the tab is hidden, so it doesn't nag an already-focused window.
+- F6: adapters classify a failed run's `exitReason` as `"rate_limited"` (new
+  `classifyFailure`, regex against the failure summary) instead of the
+  generic `"error"`; `EngineRunner` tracks a cross-project in-memory
+  cooldown map keyed by model, consulted via a new
+  `SchedulerDeps.checkModelCooldown` hook at dispatch time — mirrors
+  `checkBudget` exactly (skip, don't fail, warn once). New `model_checks`
+  table persists "Test models" results so the new SetupView health panel's
+  "last check" column survives a reload; failure rate + median duration come
+  from the existing `runs` table (median computed in JS — SQLite has no
+  `MEDIAN` aggregate).
+- F7: new `budget_alerts` table (unique on `scope, threshold`) makes the
+  50%/80% warnings fire exactly once each; the global scope's key bakes in
+  the calendar month (`global:2026-07`) so a new month re-arms both
+  thresholds without any explicit reset, matching how the global budget
+  itself is month-scoped. Raising a project's budget cap also clears its
+  recorded alerts, so crossing 80% once doesn't permanently silence future
+  warnings. The per-task estimate chip reused the `estimate.ts`/
+  `GET /api/projects/:id/estimate` machinery that already existed but was
+  unused by the Board. The "budget bar turns amber/red" ask needed zero new
+  code — F4's `MissionControl` already covered it.
+- F8: report cards are scoped to one autonomous-loop start-to-finish cycle
+  (`ts >= runStartedAt` against the audit log), not the project's lifetime
+  totals — a new `repo.getCostSince` made that precise. Persisted as a
+  `run_summary`-kind audit entry; `AuditView` separates those out into a
+  dedicated "Run Reports" section instead of mixing them into the
+  chronological list. Skipped the plan's optional "pipe through the
+  updates-role model for natural language" toggle — explicitly optional, and
+  the plan itself says the mechanical digest must not depend on a model.
+
+### Phase 6 — F9, F10, F11, F12 (flexibility, packaging, docs) — ⬜ not started
 
 ### Phase 6 — F9, F10, F11, F12 (flexibility, packaging, docs) — ⬜ not started
 
@@ -782,7 +831,7 @@ doc first (`docs/specs/sandbox.md`), do not attempt as part of this pass.
 | 2 | B1, B2, B3, B4, B5 | The control-plane bugs users hit daily (stop, logs, double-run, run rows, status). | ✅ done |
 | 3 | S5, B6–B15 | Hygiene + rails; each is small and independent. | ✅ done |
 | 4 | F1, F2, F3, F4 | Core product loop: onboard → understand → intervene → observe. | ✅ done |
-| 5 | F5, F6, F7, F8 | Away-from-keyboard autonomy story. | ⬜ not started |
+| 5 | F5, F6, F7, F8 | Away-from-keyboard autonomy story. | ✅ done |
 | 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. | ⬜ not started |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
