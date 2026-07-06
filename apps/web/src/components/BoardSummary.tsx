@@ -1,6 +1,5 @@
 import type { Task, TaskStatus } from "@orc/types";
-
-const usd = (n: number) => "$" + n.toFixed(4);
+import { formatUsd } from "../lib/format";
 
 const STATUS_LABEL: Partial<Record<TaskStatus, string>> = {
   done: "done",
@@ -67,7 +66,7 @@ export function BoardSummary({
           <span className="text-amber-300">{blocked} need attention</span>
         )}
         {failed > 0 && <span className="text-red-300">{failed} failed</span>}
-        <span className="text-neutral-400">{usd(costUsd)} spent</span>
+        <span className="text-neutral-400">{formatUsd(costUsd)} spent</span>
       </div>
       {last && (
         <div className="mt-1.5 truncate text-[11px] text-neutral-400">

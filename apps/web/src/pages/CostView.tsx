@@ -6,6 +6,7 @@ import type {
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useWS } from "../hooks/useWS";
+import { formatUsd } from "../lib/format";
 
 const usd = (n: number) => "$" + n.toFixed(4);
 const fmtTokens = (n: number) =>
@@ -60,7 +61,7 @@ export function CostView({ projectId }: { projectId: string }) {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-4">
           <div className="text-3xl font-semibold text-neutral-100">
-            {usd(a.totalUsd)}
+            {formatUsd(a.totalUsd)}
           </div>
           <div className="mt-1 text-xs text-neutral-400">Total spend</div>
         </div>

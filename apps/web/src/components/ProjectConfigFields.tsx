@@ -103,18 +103,23 @@ export function projectConfigFromForm(form: ProjectConfigForm): ProjectConfig | 
     if (Number.isFinite(n)) config.githubChecksTimeoutMin = n;
   }
 
-  if (form.scheduleEnabled) {
-    if (form.scheduleMode === "interval") {
+  // U7: emit the schedule fields even when the enable checkbox is off, as
+  // long as they're filled in — otherwise unchecking + saving drops the
+  // whole object, and re-enabling later starts from blank inputs. The
+  // scheduler (isScheduleDue) already checks `enabled` first, so persisting
+  // a disabled schedule is inert.
+  if (form.scheduleMode === "interval") {
+    if (form.scheduleIntervalHours.trim()) {
       const n = parseInt(form.scheduleIntervalHours, 10);
       if (Number.isFinite(n) && n > 0) {
-        config.schedule = { enabled: true, mode: "interval", intervalHours: n };
+        config.schedule = { enabled: form.scheduleEnabled, mode: "interval", intervalHours: n };
       }
-    } else {
-      const hour = parseInt(form.scheduleHour, 10);
-      const minute = parseInt(form.scheduleMinute, 10);
-      if (Number.isFinite(hour) && Number.isFinite(minute)) {
-        config.schedule = { enabled: true, mode: "daily", hour, minute };
-      }
+    }
+  } else if (form.scheduleHour.trim() && form.scheduleMinute.trim()) {
+    const hour = parseInt(form.scheduleHour, 10);
+    const minute = parseInt(form.scheduleMinute, 10);
+    if (Number.isFinite(hour) && Number.isFinite(minute)) {
+      config.schedule = { enabled: form.scheduleEnabled, mode: "daily", hour, minute };
     }
   }
 

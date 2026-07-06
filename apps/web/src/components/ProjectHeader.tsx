@@ -2,6 +2,7 @@ import type { Project, RouteKey } from "@orc/types";
 import { useState } from "react";
 import { api } from "../api/client";
 import { useToast } from "../hooks/useToast";
+import { formatSchedule } from "../lib/format";
 import { ProjectConfigFields, projectConfigFromForm, projectConfigToForm } from "./ProjectConfigFields";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -16,7 +17,13 @@ const STATUS_COLOR: Record<string, string> = {
 
 const STARTABLE = ["created", "planned", "paused", "completed", "failed"];
 
-export function ProjectHeader({ project }: { project: Project }) {
+/**
+ * U2: `compact` renders just the name/repo/status/run-controls row — used on
+ * every project page except Board, where budget editing and the Advanced
+ * accordion have nothing to do with the page's own content (Plan, Costs,
+ * Audit, Notifications). Board keeps the full editor (compact omitted).
+ */
+export function ProjectHeader({ project, compact = false }: { project: Project; compact?: boolean }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const origBudget = project.budgetUsd != null ? String(project.budgetUsd) : "";
@@ -80,6 +87,7 @@ export function ProjectHeader({ project }: { project: Project }) {
   const startLabel = project.status === "paused" ? "Resume" : "Start";
   const budgetDirty = budget !== origBudget;
   const configDirty = JSON.stringify(configForm) !== JSON.stringify(origConfigForm);
+  const scheduleLabel = formatSchedule(project.config?.schedule);
 
   return (
     <div className="mb-4 rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3">
@@ -103,6 +111,14 @@ export function ProjectHeader({ project }: { project: Project }) {
         >
           {project.status}
         </span>
+        {scheduleLabel && (
+          <span
+            className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-400"
+            title="Auto-start schedule (Advanced settings)"
+          >
+            {scheduleLabel}
+          </span>
+        )}
 
         <div className="ml-auto flex items-center gap-2">
           {running ? (
@@ -136,42 +152,46 @@ export function ProjectHeader({ project }: { project: Project }) {
         </div>
       </div>
 
-      <div className="mt-2 flex items-center gap-2 text-[11px] text-neutral-400">
-        <span>Budget $</span>
-        <input
-          type="number"
-          min={0}
-          step={0.5}
-          value={budget}
-          onChange={(e) => setBudget(e.target.value)}
-          placeholder="none"
-          className="w-24 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-200"
-        />
-        <button
-          onClick={saveBudget}
-          disabled={busy || !budgetDirty}
-          className="rounded border border-neutral-700 px-2 py-0.5 text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
-        >
-          Save
-        </button>
-        {budgetDirty && <span className="text-amber-400">unsaved</span>}
-      </div>
-
-      <div className="mt-2">
-        <ProjectConfigFields form={configForm} onChange={setConfigForm} />
-        {configDirty && (
-          <div className="mt-1 flex items-center gap-2 text-[11px]">
+      {!compact && (
+        <>
+          <div className="mt-2 flex items-center gap-2 text-[11px] text-neutral-400">
+            <span>Budget $</span>
+            <input
+              type="number"
+              min={0}
+              step={0.5}
+              value={budget}
+              onChange={(e) => setBudget(e.target.value)}
+              placeholder="none"
+              className="w-24 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-200"
+            />
             <button
-              onClick={saveConfig}
-              disabled={busy}
+              onClick={saveBudget}
+              disabled={busy || !budgetDirty}
               className="rounded border border-neutral-700 px-2 py-0.5 text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
             >
-              Save advanced settings
+              Save
             </button>
-            <span className="text-amber-400">unsaved</span>
+            {budgetDirty && <span className="text-amber-400">unsaved</span>}
           </div>
-        )}
-      </div>
+
+          <div className="mt-2">
+            <ProjectConfigFields form={configForm} onChange={setConfigForm} />
+            {configDirty && (
+              <div className="mt-1 flex items-center gap-2 text-[11px]">
+                <button
+                  onClick={saveConfig}
+                  disabled={busy}
+                  className="rounded border border-neutral-700 px-2 py-0.5 text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
+                >
+                  Save advanced settings
+                </button>
+                <span className="text-amber-400">unsaved</span>
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
