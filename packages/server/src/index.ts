@@ -27,6 +27,7 @@ import { ENV, defaultSettings } from "./config";
 import { seed } from "./mock";
 import type { Db } from "./db/index";
 import { initDb } from "./db/index";
+import { runBackup } from "./db/backup";
 import * as repo from "./db/repo";
 import { WsHub } from "./ws-hub";
 import { EngineRunner } from "./engine-runner";
@@ -532,6 +533,21 @@ async function main() {
   }
   pruneOldLogs();
   setInterval(pruneOldLogs, ONE_DAY_MS).unref();
+
+  // F17: online-backup the DB on boot and once a day thereafter. No-op for
+  // a mock/in-memory boot (nothing durable to protect). A failed backup
+  // must never crash the server — log a warning and move on.
+  function backupDb(): void {
+    runBackup(db, ENV.mock ? ":memory:" : ENV.dbPath, ENV.dbBackupDir, ENV.dbBackupKeep)
+      .then((result) => {
+        if (!result.skipped) app.log.info(`DB backup written: ${result.file}`);
+      })
+      .catch((err) => {
+        app.log.warn(`DB backup failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+  }
+  backupDb();
+  setInterval(backupDb, ONE_DAY_MS).unref();
 
   // Zombie approvals (B10): any approval-notification still unresolved from
   // before this boot has no live resolver anymore (EngineRunner.pendingApprovals
