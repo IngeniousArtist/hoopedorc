@@ -116,6 +116,12 @@ going on a always-on box.
   `hard_gate_flag_risky` (default — auto-merge unless something above
   trips), `fully_autonomous` (never asks), or `always_ask` (every merge
   needs a human tap, even a clean one).
+- **GitHub checks gate (opt-in, per-project).** If the target repo has its
+  own CI, enable **"Wait for the PR's own GitHub checks"** in the project's
+  Advanced settings — the auto-merge then also waits for the PR's GitHub
+  checks to pass (default timeout 15 minutes; configurable). Checks failing
+  or timing out escalates to you instead of merging. Repos with no checks
+  configured are unaffected.
 - **"Vacuous" gates.** A brand-new repo with no `test`/`build`/etc. scripts
   yet would otherwise "pass" every gate by doing nothing — Hoopedorc detects
   this (`GateResult.vacuous`) and treats it as risky (escalates) unless you
@@ -123,6 +129,13 @@ going on a always-on box.
 - **Budgets.** A per-project cap and a global monthly cap (Settings), soft
   warnings at 50%/80% of either, and a hard stop once a cap is hit — the
   autonomous run winds down cleanly rather than erroring out.
+- **Subscription quotas.** Model plans with usage windows (Claude Pro's
+  rolling cap being the motivating case) can be declared per model in
+  Settings → Models: a window in hours plus a max run count and/or max
+  spend. Once a model's window is exhausted the scheduler routes around it
+  (skips dispatching, retries once the window rolls) instead of burning
+  attempts on rate-limit failures. This complements the automatic cooldown
+  that already kicks in *after* a rate-limited failure.
 - **Rollback.** Any merged task has a one-click Rollback (reverts the merge
   commit on `main` via `git revert`) if something merged that shouldn't
   have.
@@ -133,6 +146,29 @@ going on a always-on box.
   they still have real filesystem/network access. Don't point this at a
   repo you don't trust. A containerized sandbox mode is tracked as future
   work (F13 in `docs/PRODUCTIZATION_PLAN.md`), not built yet.
+
+## Scheduled runs
+
+A project can auto-start on a schedule — useful for a nightly maintenance
+backlog. Enable it under the project's **Advanced** settings: either
+**every N hours** or **daily at HH:MM** (the *server's* local clock). The
+schedule triggers the exact same Start as the button — all the safety
+rails above (gates, validator, budgets, quotas, approvals) apply
+unchanged, and a schedule never piles onto a run that's already active. A
+daily run fires within a few minutes of its set time; if the server was
+*down* at that time, the missed run is skipped, not fired retroactively on
+boot — an unattended machine starting a paid model run at an unexpected
+hour would be worse than skipping a night.
+
+## Backups & data
+
+Everything lives in two places: the SQLite DB (`DB_PATH`, default
+`./hoopedorc.db`) and the cloned repos (`REPOS_DIR`, default
+`~/.hoopedorc/repos`). The server backs the DB up automatically on boot
+and daily via SQLite's online-backup API into `DB_BACKUP_DIR` (default: a
+`backups/` directory next to the DB), keeping the newest `DB_BACKUP_KEEP`
+(default 7). The repos directory is just git clones — everything in it is
+recoverable from GitHub, so the DB backups are the part that matters.
 
 ## Remote setup (Tailscale)
 

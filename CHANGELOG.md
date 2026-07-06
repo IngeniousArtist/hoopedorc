@@ -3,6 +3,69 @@
 All notable changes to Hoopedorc are recorded here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] — 2026-07-06
+
+Part 3 of `docs/PRODUCTIZATION_PLAN.md` is complete as of this tag: the
+five review-pass fixes (Phase 7), the second feature wave (Phase 8,
+including scheduled runs, which was pulled into scope mid-phase), and a
+post-plan audit pass with three follow-up fixes.
+
+## Post-plan audit (A1–A3)
+
+- **A1 — Concurrent 401s no longer hang the app.** On a token-protected
+  server, a fresh page load fires several API calls at once; each 401
+  previously invoked the login gate separately, clobbering all but the last
+  caller's resolver and leaving those requests hanging forever. All
+  concurrent 401s now share one in-flight login and retry together.
+- **A2 — Scheduled runs now show as running.** A scheduled auto-start set
+  the run in motion but never flipped the project's status or notified open
+  tabs — the UI showed the stale pre-run status for the whole run.
+- **A3 — Daily schedules can no longer skip a day.** The due-check required
+  the exact HH:MM minute, which the 60-second poll can drift past; daily
+  runs now fire within a 5-minute grace window (still once per day, never
+  retroactively after a server was down at the scheduled time).
+
+## Phase 8 — second feature wave (F14–F19)
+
+- **F14 — CI.** GitHub Actions on every PR and push to `main` (typecheck,
+  build, engine + adapter tests). The very first run caught a real bug:
+  `npm run typecheck` only worked on machines where a previous build had
+  already produced `dist/` type declarations — the root script now builds
+  the type-bearing packages first, so a fresh checkout typechecks.
+- **F15 — "Wait for GitHub checks" merge gate.** Opt-in per project: the
+  auto-merge additionally waits for the PR's own GitHub checks (the target
+  repo's CI). Checks failing or timing out escalates to a human instead of
+  merging; repos with no checks configured are unaffected.
+- **F16 — Subscription quota awareness.** Declare a per-model usage window
+  (hours + max runs and/or max spend); the scheduler routes around an
+  exhausted window *before* burning attempts, complementing the existing
+  after-the-failure rate-limit cooldown. Enforced across all projects.
+- **F17 — DB backup rotation.** Automatic online backups of the SQLite DB
+  on boot and daily, pruned to the newest N (default 7), via
+  `DB_BACKUP_DIR`/`DB_BACKUP_KEEP`.
+- **F18 — Sandbox design doc.** `docs/specs/sandbox.md` designs the future
+  containerized mode for agents + gates (no implementation).
+- **F19 — Scheduled runs.** Cron-style per-project auto-start: every N
+  hours or daily at HH:MM, triggering the same Start (and the same safety
+  rails) as the button.
+
+## Phase 7 — review-pass fixes (B16–B19, S6)
+
+- **B16** — the reference Dockerfile's build stage was missing COPYs for
+  `tsconfig.base.json`, `bin/`, and `scripts/`, making it deterministically
+  unbuildable.
+- **B17** — an explicitly configured gate-script override naming a missing
+  npm script now fails the gate loudly instead of silently passing.
+- **B18** — a project waiting on another project's model-concurrency slot
+  now logs a warn-once "model at capacity" line instead of polling
+  silently (previously indistinguishable from a hang).
+- **B19** — manually dispatched tasks now count toward the shared
+  per-model concurrency cap (still never blocked by it — a human's explicit
+  dispatch must not silently queue).
+- **S6** — auth polish: a real in-app login screen replaces the blocking
+  browser prompt, the server compares tokens in constant time, and the
+  unauthenticated-by-design SPA shell is documented.
+
 ## [0.1.0] — 2026-07-05
 
 The productization pass (`docs/PRODUCTIZATION_PLAN.md`) is complete as of

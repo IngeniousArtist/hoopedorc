@@ -2,7 +2,7 @@
 
 **Audience: the implementing model (Sonnet).** This doc was produced by a full read of
 the codebase (all of `packages/*` and `apps/web`) plus the existing docs (PRD,
-ARCHITECTURE, NEXT_STEPS, CONTRACT). It has three parts:
+ARCHITECTURE, NEXT_STEPS, CONTRACT). It has four parts:
 
 - **Part 1 — Fix first**: real bugs and security issues found in the current code,
   ordered by severity, each with a concrete fix. Do these before any Part 2 feature.
@@ -14,6 +14,10 @@ ARCHITECTURE, NEXT_STEPS, CONTRACT). It has three parts:
   fixes for defects the audit confirmed in the shipped Phase 6 work, then a second
   feature wave. Same rules, same workflow. Fable will re-verify each item after it
   merges, so keep verification evidence in the PR descriptions.
+- **Part 4 — Post-plan audit & UX wave** (added 2026-07-06 after Part 3 completed):
+  the audit record for the merged Phase 7/8 work (three integration fixes, already
+  landed as PR #57), then a UX improvement wave (U1–U10) produced by walking every
+  page of the real app in a browser. This is the active work.
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
@@ -681,6 +685,36 @@ unaffected (no engine/adapter changes).
 
 **This closes out Phase 8 — every item in Parts 1, 2, and 3 of this plan
 (S1-S6, B1-B19, F1-F19) is now done.**
+
+### Phase 9 — Part 4: post-plan audit fixes + UX wave — 🔄 in progress
+
+| Item | Status | PR |
+|---|---|---|
+| A1 — concurrent 401s hang api() calls (TokenGate resolver clobbered) | ✅ done | [#57](https://github.com/IngeniousArtist/hoopedorc/pull/57) |
+| A2 — scheduled runs never showed status "running" / no WS broadcast | ✅ done | [#57](https://github.com/IngeniousArtist/hoopedorc/pull/57) |
+| A3 — daily schedules could silently skip a day (poll drift) | ✅ done | [#57](https://github.com/IngeniousArtist/hoopedorc/pull/57) |
+| A4 — CHANGELOG had no 0.2.0 / Phase 7–8 entries | ✅ done | TBD |
+| A5 — USER_GUIDE didn't cover quota/schedules/checks-gate/backups | ✅ done | TBD |
+| U1 — no global "action required" indicator in the nav | ⬜ | |
+| U2 — full ProjectHeader repeats on every project page | ⬜ | |
+| U3 — Board's 8 columns overflow with no affordance | ⬜ | |
+| U4 — switching tabs silently discards unsaved Settings edits | ⬜ | |
+| U5 — MissionControl elapsed label reads "42s ago elapsed" | ⬜ | |
+| U6 — model-reassign dropdown on every kanban card | ⬜ | |
+| U7 — schedules invisible outside the Advanced accordion; disable loses times | ⬜ | |
+| U8 — headline costs render as "$0.0000" | ⬜ | |
+| U9 — "New Project" is a nav tab though it's an action | ⬜ | |
+| U10 — dependency chips truncate with no way to see the full title | ⬜ | |
+
+A1–A3 were found by Fable's post-Phase-8 audit and fixed the same day (see
+Part 4 below for the record); A4/A5 were fixed alongside Part 4 itself in
+the docs PR that also restored this doc's accidentally-deleted "Part 1"
+heading and overhauled the README. U1–U10 are the next implementation wave
+— same workflow as every prior phase, work top-down.
+
+---
+
+## Part 1 — Bugs & security (fix first, in this order)
 
 ### S1. Command injection via `execSync` string interpolation — CRITICAL — ✅ DONE (PR [#3](https://github.com/IngeniousArtist/hoopedorc/pull/3))
 
@@ -1594,6 +1628,255 @@ or "every N hours" control) alongside F9's other per-project config.
 
 ---
 
+## Part 4 — Post-plan audit & UX wave (Fable, 2026-07-06)
+
+Two halves. First, the **audit record** for the merged Phase 7/8 work:
+item-level acceptance criteria all held up and CI stayed green, but three
+cross-cutting integration defects were found and fixed the same day
+(PR [#57](https://github.com/IngeniousArtist/hoopedorc/pull/57)) — they're
+recorded as A1–A3 below so the reasoning isn't lost. Second, the **UX
+wave**: findings from driving every page of the real app (mock server, real
+browser, desktop and phone widths), specced as U1–U10 for Sonnet to
+implement top-down. Same ground rules as Parts 1–3 — branch → PR → merge,
+CI (F14) green on every PR, verification evidence in PR descriptions,
+live-verify anything with a runtime surface. Note the standing rule from
+the top of this doc: UI work is live-verified in a real browser (the
+`agent-browser` pattern used since Phase 4), not just typechecked.
+
+### A1–A5. Audit record (already fixed — do not re-implement)
+
+- **A1 (PR #57)** — `apps/web/src/api/client.ts`: a fresh page load against
+  a token-requiring server fires several `api()` calls at once; each 401
+  invoked the TokenGate handler separately, and since `App.tsx` keeps a
+  single resolver, each invocation clobbered the previous caller's —
+  leaving every earlier call hanging forever (e.g. `listProjects` losing
+  the race left the project dropdown on "No projects"). Fixed by sharing
+  one in-flight handler promise across all concurrent 401s.
+- **A2 (PR #57)** — `checkSchedules` (`packages/server/src/index.ts`) never
+  set the project status to `"running"` nor broadcast `project.updated`
+  (the `/start` route does both), so a scheduled run showed a stale status
+  for its whole duration. Fixed by mirroring the route on successful
+  kickoff.
+- **A3 (PR #57)** — `isScheduleDue` daily mode required the *exact* HH:MM
+  minute; `setInterval(60s)` drift can skip a minute boundary, silently
+  losing that day's run. Fixed with a 5-minute grace window (still
+  once-per-day; deliberately not retroactive across a server that was down
+  at the scheduled time — cron semantics, not anacron).
+- **A4** — CHANGELOG.md had no 0.2.0/Phase 7–8 entries; added.
+- **A5** — USER_GUIDE.md didn't cover subscription quotas, scheduled runs,
+  the GitHub-checks gate, or backups; added (two safety-model bullets plus
+  "Scheduled runs" and "Backups & data" sections).
+
+### U1. Global "action required" indicator in the nav — HIGH (the product's core promise)
+
+**Where:** `apps/web/src/App.tsx` (the `NAV` row), data from
+`GET /api/notifications` + the global `notification` WS events.
+
+**Problem:** pending approvals — the one thing an unattended run genuinely
+blocks on — are only visible in the Board's MissionControl strip or by
+opening the Notifications tab. On any other page there is zero indication
+that a run is sitting frozen waiting for a human tap.
+
+**Fix:** a count badge on the "Notifications" nav item: number of
+notifications with `requiresApproval` and no `respondedWith`. Seed it from
+one fetch on mount; keep it live from the (already-global, see B15)
+`notification` WS events and decrement on respond. Amber dot/count style
+consistent with MissionControl's existing approval chip.
+
+**Acceptance:** with a pending approval, every page shows the badge; tapping
+through and responding clears it without a reload; zero pending = no badge
+(not a "0").
+
+### U2. Slim ProjectHeader outside the Board — HIGH (screen real estate)
+
+**Where:** `apps/web/src/App.tsx` (renders `ProjectHeader` for every page in
+`PROJECT_PAGES`), `apps/web/src/components/ProjectHeader.tsx`.
+
+**Problem:** the full header — budget editor, Advanced config accordion,
+Pause/Stop buttons — repeats at full size on Plan, Costs, Audit, and
+Notifications, eating ~120px before each page's own content starts. Budget
+and gate-config editing have nothing to do with reading the audit log.
+
+**Fix:** give `ProjectHeader` a `compact` prop: one row (name, repo link,
+status chip, Start/Pause/Stop). `App.tsx` passes `compact` for every
+project page except Board. Board keeps the full editor.
+
+**Acceptance:** Plan/Costs/Audit/Notifications show the one-row header with
+working run controls; Board is unchanged; budget/config editing still
+reachable on Board.
+
+### U3. Board columns overflow with no affordance — HIGH
+
+**Where:** `apps/web/src/pages/Board.tsx` (column list comes from
+`TASK_STATUSES`).
+
+**Problem:** 8 fixed-width columns at 1280px push CHANGES REQ., BLOCKED,
+DONE, and FAILED past the right edge with no scroll hint — on first load it
+looks like the board has 4–5 columns, and terminal columns (the ones that
+tell you what finished/failed) are the hidden ones.
+
+**Fix:** collapse *empty* columns to a slim vertical strip (rotated title +
+count 0) that expands on click and on `dragover` (so drag-to-status still
+works). Non-empty columns keep full width. Alternative acceptable
+implementation: keep all 8 full-width but add a visible horizontal-scroll
+affordance + auto-scroll to the busiest column; prefer the collapse.
+
+**Acceptance:** with the mock seed (4 non-empty columns), all 8 states are
+visible at 1280px without horizontal scrolling; dragging a card onto a
+collapsed empty column still drops correctly; a column with cards never
+collapses.
+
+### U4. Unsaved Settings edits are silently discarded — HIGH (data loss)
+
+**Where:** `apps/web/src/pages/Settings.tsx`, `apps/web/src/App.tsx`
+(`{page === "settings" && <Settings />}` unmounts it on tab switch).
+
+**Problem:** Settings is one long form (models, routing, budgets, Telegram)
+with a Save button; switching to any other tab unmounts the component and
+every unsaved edit vanishes without warning.
+
+**Fix:** track dirty state in Settings (compare against the fetched
+snapshot, the same dirty-check pattern ProjectHeader's budget row already
+uses); expose it to App via a callback or module-level flag; on nav-away
+while dirty, `window.confirm` ("Discard unsaved settings changes?") —
+cancel keeps the user on Settings. Also make the Save row sticky at the
+bottom of the viewport with a visible "unsaved changes" hint so the state
+is obvious before it's a problem.
+
+**Acceptance:** edit any field → switch tab → confirm dialog appears;
+cancel stays with edits intact; save → switch is silent; the Save control
+is visible without scrolling on a 800px-tall window.
+
+### U5. MissionControl elapsed label reads "42s ago elapsed" — TRIVIAL
+
+**Where:** `apps/web/src/components/MissionControl.tsx` (reuses TaskCard's
+`agoLabel`, then appends "elapsed").
+
+**Problem:** `agoLabel` returns "42s ago", producing the ungrammatical
+"42s ago elapsed" on every active-agent row.
+
+**Fix:** strip the "ago" for this usage — "elapsed 42s" (or "running for
+42s"). One-line formatting change; don't change TaskCard's own usage.
+
+**Acceptance:** an active agent row reads "elapsed 42s" (and "elapsed
+2m 3s" past a minute).
+
+### U6. Model-reassign dropdown on every kanban card — MEDIUM
+
+**Where:** `apps/web/src/components/TaskCard.tsx` (full `<select>` of the
+model roster on every card), `apps/web/src/components/TaskDrawer.tsx`.
+
+**Problem:** every card carries the full model dropdown — visually the
+heaviest element on the board, mostly disabled (active tasks can't be
+reassigned), and an easy accidental-click target on the cards where it is
+enabled.
+
+**Fix:** replace the card's `<select>` with the plain model chip it already
+shows elsewhere; move reassignment into TaskDrawer's Overview tab (same
+enable/disable rules the card enforces today — only non-active tasks).
+
+**Acceptance:** cards show a static model chip; reassigning from the drawer
+updates the card live; active tasks can't be reassigned (control disabled
+with the current model shown).
+
+### U7. Schedules are invisible outside the accordion; disabling loses the times — MEDIUM (F19 follow-up)
+
+**Where:** `apps/web/src/components/ProjectConfigFields.tsx`
+(`projectConfigFromForm` drops `schedule` entirely when the enable checkbox
+is off), `ProjectHeader.tsx` / `pages/ProjectsView.tsx` (no schedule
+display anywhere).
+
+**Problem:** (1) a configured schedule shows nowhere except inside the
+Advanced accordion — nothing on the header or Projects page says "this
+project auto-starts nightly at 03:00", which is exactly the kind of thing
+that surprises you at 3am. (2) unchecking "enabled" and saving deletes the
+whole schedule object, so re-enabling later starts from blank inputs.
+
+**Fix:** (1) when a schedule exists and is enabled, show a small chip on
+ProjectHeader (both variants, see U2) and on the ProjectsView row: "⏱ daily
+03:00" / "⏱ every 6h". (2) `projectConfigFromForm`: when the checkbox is
+off but times/interval are filled in, emit `{ enabled: false, …times }`
+instead of omitting `schedule` — the scheduler already ignores disabled
+schedules (`isScheduleDue` checks `enabled` first), so persisting them is
+free.
+
+**Acceptance:** an enabled schedule is visible on the header and Projects
+row; disable → save → re-enable round-trips the configured times; a
+never-configured project shows no chip.
+
+### U8. Headline costs render as "$0.0000" — LOW
+
+**Where:** `apps/web/src/pages/CostView.tsx` (stat tiles),
+`apps/web/src/components/BoardSummary.tsx` ("$0.0000 spent").
+
+**Problem:** four-decimal precision makes sense for a $0.0034 per-task
+cost, but headline tiles ("Total spend", the board's "spent" figure)
+reading "$0.0000" look broken rather than precise.
+
+**Fix:** one shared `formatUsd(n)` helper (e.g. in `apps/web/src/lib/` or
+next to the api client): `>= $0.01` → 2 decimals; `> 0` and `< $0.01` → 4
+decimals; `0` → "$0.00". Use it for headline stats and the board summary;
+keep 4-decimal precision on per-task/per-run rows where sub-cent amounts
+are the norm.
+
+**Acceptance:** a fresh project's board reads "$0.00 spent"; a $0.0034 task
+row still shows "$0.0034"; a $1.234567 total shows "$1.23".
+
+### U9. "New Project" is a nav tab though it's an action — LOW
+
+**Where:** `apps/web/src/App.tsx` (`NAV` array + the top row with the
+project selector).
+
+**Problem:** the tab row mixes places (Board, Costs…) with an action (New
+Project), and the action also appears as a button in empty states — two
+ways in, one of them pretending to be a page.
+
+**Fix:** remove `new-project` from `NAV`; add a small "+ New" button next
+to the project selector in the top row (it's an app-level action, so it
+belongs with the app-level selector). The `page` state keeps supporting
+`"new-project"` — only the affordance moves. While in there, visually
+separate project-scoped tabs (Board…Notifications) from global ones
+(Projects/Settings/Setup) with a divider.
+
+**Acceptance:** New Project reachable from every page via the top-row
+button; the tab list has 8 entries; empty-state buttons still work.
+
+### U10. Dependency chips truncate with no full-title affordance — TRIVIAL
+
+**Where:** `apps/web/src/components/TaskCard.tsx` (the "blocked by …"
+chips).
+
+**Problem:** chips ellipsize ("blocked by Orchestrator eng…") and there's
+no hover/tooltip to read the full dependency title.
+
+**Fix:** `title` attribute with the full task title on each chip.
+
+**Acceptance:** hovering a truncated chip shows the full title.
+
+### What the walkthrough did NOT flag (for calibration)
+
+The narrow/phone layout genuinely holds up (the two-row nav and full-width
+cards adapt cleanly — F4's layout comments paid off); Setup & Health is the
+strongest page in the app; empty states (Audit, Notifications) are clear;
+the TaskDrawer and TokenGate are clean. The wave above is polish on a
+fundamentally sound UI, not a redesign.
+
+### Beyond the UX wave (not specced — decide when U1–U10 land)
+
+- **F13 phase 1 — gates-only sandbox**, per `docs/specs/sandbox.md`'s
+  phased rollout. The biggest remaining security-posture item.
+- **A real `@orc/server` test package.** The only workspace with no test
+  script. `scheduler.ts`, `budget.ts`, and `db/backup.ts` are pure or
+  near-pure and already have exactly-shaped standalone-script verifications
+  from Phases 5–9 to port into `node --test` files; wire into CI's existing
+  test steps.
+- **Quota usage in SetupView's model-health panel** — F16's explicitly
+  skipped nice-to-have ("N runs / $X used this window").
+- **v0.2.0 tagged** with this Part's docs PR; keep tagging at wave
+  boundaries.
+
+---
+
 ## Suggested execution order
 
 | Phase | Items | Rationale | Status |
@@ -1606,14 +1889,16 @@ or "every N hours" control) alongside F9's other per-project config.
 | 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. | ✅ done |
 | 7 | B16, B17, B18, B19, S6 | Review-pass fixes: confirmed defects in the shipped Phase 6 work. Fix before Phase 8. | ✅ done |
 | 8 | F14, F15, F16, F17, F18, F19 | Second feature wave: CI first (F14 — every later PR benefits), then external-CI gate, quota awareness, backups, sandbox doc, scheduled runs (F19 opted into 2026-07-06). | ✅ done |
+| 9 | A1–A5 (done), U1–U10 | Post-plan audit fixes, then the UX wave from the full-app walkthrough — badge/header/board layout first (U1–U4 are the high-impact ones), trivial polish after. | 🔄 in progress |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
 
-Parts 1, 2, and 3 (Phases 1–8) are **all done**. Phases 1–6 are tagged
-`v0.1.0`. Phase 7 (review-pass fixes) and Phase 8 (second feature wave,
-including F19 which the user opted into after Phase 7) closed out Part 3.
-F13 remains future work — F18 covers its design doc only. Fable
-independently re-verifies each Part 3 item after merge; verification
+Parts 1, 2, and 3 (Phases 1–8) are **all done** — Phases 1–6 tagged
+`v0.1.0`, Phases 7–8 plus the post-plan audit fixes tagged `v0.2.0`. Part 4
+(Phase 9) is the active work: the audit items A1–A5 are already fixed;
+U1–U10 are next, top-down. F13 remains future work — F18 covers its design
+doc only, and Part 4's "Beyond the UX wave" list is where to look after
+U10. Fable independently re-verifies each wave after merge; verification
 evidence is in each item's PR description and in this doc's Progress
 section above.
