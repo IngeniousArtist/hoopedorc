@@ -907,16 +907,16 @@ success path already broadcasts the updated notification globally (used and
 verified since B15/F5), and the badge's handler is the same upsert-by-id
 reducer `Notifications.tsx` has used and relied on since F5.
 
-### Phase 10 — Part 5: post-UX-wave fixes + remote-QoL wave — ⬜ ACTIVE
+### Phase 10 — Part 5: post-UX-wave fixes + remote-QoL wave — 🔶 IN PROGRESS
 
 | Item | Status | PR |
 |---|---|---|
-| B20 — Projects-page "Pause" is an unconfirmed hard abort | ⬜ | |
-| S7 — API token written to server logs via the WS query param | ⬜ | |
-| B21 — Board drag-and-drop failures are silent | ⬜ | |
-| B22 — Schedule form can silently delete a saved schedule | ⬜ | |
-| B23 — `notifications` table grows unbounded | ⬜ | |
-| B24 — Browser-notification dead ends are silent | ⬜ | |
+| B20 — Projects-page "Pause" is an unconfirmed hard abort | ✅ done | [#64](https://github.com/IngeniousArtist/hoopedorc/pull/64) |
+| S7 — API token written to server logs via the WS query param | ✅ done | [#65](https://github.com/IngeniousArtist/hoopedorc/pull/65) |
+| B21 — Board drag-and-drop failures are silent | ✅ done | [#64](https://github.com/IngeniousArtist/hoopedorc/pull/64) |
+| B22 — Schedule form can silently delete a saved schedule | ✅ done | [#66](https://github.com/IngeniousArtist/hoopedorc/pull/66) |
+| B23 — `notifications` table grows unbounded | ✅ done | [#67](https://github.com/IngeniousArtist/hoopedorc/pull/67) |
+| B24 — Browser-notification dead ends are silent | ✅ done | [#67](https://github.com/IngeniousArtist/hoopedorc/pull/67) |
 | F20 — Remote setup docs: `tailscale serve` HTTPS + EC2 headless auth | ⬜ | |
 | F21 — Hash routing + deep links | ⬜ | |
 | F22 — Approval context (PR link + reasons) in the web UI | ⬜ | |
@@ -935,6 +935,50 @@ Phases 3/9 went: (1) B20 + B21 — two small run-control/Board fixes; (2) S7;
 (9) F24; (10) U11–U14 together (all small UI polish); (11) F25; (12) F26.
 Update this table (and re-check each item's acceptance criteria) as each
 lands.
+
+**"Fixes first" batch (B20–B24, S7) — ✅ DONE**, all four PRs merged;
+`npm run typecheck`, `npm run build` green across all workspaces on every
+merge; `npm test -w @orc/engine` (32/32) and `-w @orc/adapters` (4/4)
+unaffected throughout (no engine/adapter changes in this batch — all
+web/server). Every item was live-verified against a real running
+process/browser, not just typechecked — see each PR's description for the
+specific evidence. Notable finds/decisions:
+- B20+B21 (PR #64): B20's fix was verified by stubbing `window.fetch` and
+  `window.confirm` in a real browser session (not just reading the code) —
+  confirmed Pause genuinely sends `{drain:true}` with no confirm dialog, and
+  Stop now shows the exact confirm copy and only sends `{drain:false}` on
+  acceptance. B21 was verified by dispatching real `DragEvent`s (U3's
+  technique) for both a rejected move (toast shows the server's actual 400
+  message) and a valid one (silent, task genuinely updates server-side).
+- S7 (PR #65): live-verified against the real *built* server (not the mock),
+  since the mock server's simplified paths aren't representative of what
+  actually ships to production logs — booted with a real `API_TOKEN`,
+  connected a real WebSocket with the token in the query string via Node's
+  native `WebSocket`, and confirmed via `grep -c` on the log file that the
+  real token string appears zero times, while the redacted line reads
+  `/ws?token=[redacted]`.
+- B22 (PR #66): the fix needed a third state beyond "no schedule" / "valid
+  schedule" — a `projectConfigFormError()` helper distinguishes "the user
+  hasn't touched schedule fields at all" (fine, clears the schedule) from
+  "some sign of intent but incomplete for the current mode" (blocks save).
+  Live-verified both trigger paths that motivated the bug: blanking one of
+  two paired fields (daily's hour/minute), and switching the mode dropdown
+  when the new mode's own field is empty — both disable Save with a visible
+  reason and leave the previously stored schedule untouched, confirmed via a
+  live `GET` after each blocked-save attempt.
+- B23+B24 (PR #67): B23's boot-time integration test surfaced a genuine,
+  correct interaction with B10 worth recording — an old *pending* approval
+  seeded before boot gets converted to `expired_restart` by B10's unrelated
+  boot-time sweep before B23's pruning ever runs, so it becomes fair game
+  for age-based pruning like any other resolved notification (this is
+  correct: B23's "never prune a pending approval" guarantee is precise and
+  was proven directly against `pruneNotifications()` with a *live* pending
+  approval, decoupled from B10's boot semantics, in a separate standalone
+  script). B24's Android-throws-on-construction path was live-verified by
+  substituting a fake `window.Notification` class whose constructor throws
+  — confirmed the new amber warning renders, then repeated with a
+  succeeding fake to confirm the ordinary green "Enabled." path still
+  works unchanged.
 
 ---
 
