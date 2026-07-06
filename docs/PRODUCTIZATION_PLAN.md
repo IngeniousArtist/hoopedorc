@@ -695,22 +695,90 @@ unaffected (no engine/adapter changes).
 | A3 — daily schedules could silently skip a day (poll drift) | ✅ done | [#57](https://github.com/IngeniousArtist/hoopedorc/pull/57) |
 | A4 — CHANGELOG had no 0.2.0 / Phase 7–8 entries | ✅ done | [#58](https://github.com/IngeniousArtist/hoopedorc/pull/58) |
 | A5 — USER_GUIDE didn't cover quota/schedules/checks-gate/backups | ✅ done | [#58](https://github.com/IngeniousArtist/hoopedorc/pull/58) |
-| U1 — no global "action required" indicator in the nav | ⬜ | |
-| U2 — full ProjectHeader repeats on every project page | ⬜ | |
+| U1 — no global "action required" indicator in the nav | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
+| U2 — full ProjectHeader repeats on every project page | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
 | U3 — Board's 8 columns overflow with no affordance | ⬜ | |
 | U4 — switching tabs silently discards unsaved Settings edits | ⬜ | |
-| U5 — MissionControl elapsed label reads "42s ago elapsed" | ⬜ | |
+| U5 — MissionControl elapsed label reads "42s ago elapsed" | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
 | U6 — model-reassign dropdown on every kanban card | ⬜ | |
-| U7 — schedules invisible outside the Advanced accordion; disable loses times | ⬜ | |
-| U8 — headline costs render as "$0.0000" | ⬜ | |
-| U9 — "New Project" is a nav tab though it's an action | ⬜ | |
-| U10 — dependency chips truncate with no way to see the full title | ⬜ | |
+| U7 — schedules invisible outside the Advanced accordion; disable loses times | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
+| U8 — headline costs render as "$0.0000" | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
+| U9 — "New Project" is a nav tab though it's an action | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
+| U10 — dependency chips truncate with no way to see the full title | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
 
 A1–A3 were found by Fable's post-Phase-8 audit and fixed the same day (see
 Part 4 below for the record); A4/A5 were fixed alongside Part 4 itself in
 the docs PR that also restored this doc's accidentally-deleted "Part 1"
 heading and overhauled the README. U1–U10 are the next implementation wave
-— same workflow as every prior phase, work top-down.
+— same workflow as every prior phase, work top-down. Split into two
+batches (mirroring Phase 3's pattern): batch 1 (U1, U2, U5, U7, U8, U9 —
+✅ done, PR #59; U10 needed no code change, already fixed) shipped the
+lower-risk items; batch 2 (U3, U4, U6 — the ones with more interaction-state
+complexity: Board column collapse/dragover, cross-component Settings dirty
+tracking, moving the model-reassign control) is still open.
+
+Batch 1 (PR #59) fixed: **U1** — new amber count badge on the
+Notifications nav item (`App.tsx`) for notifications with
+`requiresApproval` and no `respondedWith`; seeded once from
+`GET /api/notifications` on mount, kept live off the same global
+`notification` WS broadcast B15 already made reach every client regardless
+of subscribed project (the handler now always upserts into a `notifications`
+array — mirroring `Notifications.tsx`'s own WS reducer exactly — and only
+conditionally fires the existing browser-notify call on `action_required`).
+**U2** — `ProjectHeader` takes a `compact?: boolean` prop that skips the
+budget editor and the Advanced accordion, rendering just the top row (name,
+repo, status chip, schedule chip, Start/Pause/Stop); `App.tsx` passes
+`compact={page !== "board"}`. **U5** — one-line fix in `MissionControl.tsx`:
+strips the " ago" suffix off the reused `agoLabel()` output instead of
+appending "elapsed" after it, so an active row reads "elapsed 2m 3s" instead
+of "2m 3s ago elapsed" — `TaskCard.tsx`'s own `agoLabel` usage is untouched.
+**U7** — new `formatSchedule()` helper renders the "⏱ daily 03:15" / "⏱
+every 6h" chip on both ProjectHeader variants and the ProjectsView row;
+separately, `projectConfigFromForm` no longer drops the whole `schedule`
+object when the enable checkbox is off — it now emits
+`{ enabled: false, ...times }` whenever the hour/minute or interval fields
+are filled in, so disabling and saving no longer discards them (the
+scheduler's `isScheduleDue` already checks `enabled` first, so a persisted
+disabled schedule is inert). Live-verified the exact round-trip the bug
+described: toggle off → save → reload the page → re-check "enabled" →
+the same hour/minute reappear instead of blank inputs (confirmed via curl
+that the server actually persisted `{enabled:false, hour:3, minute:15}`,
+not an omitted field). **U8** — new shared `formatUsd()`
+(`apps/web/src/lib/format.ts`): `>= $0.01` → 2 decimals, `> 0 and < $0.01`
+→ 4 decimals, `0` → "$0.00"; applied only to the two headline spots the
+plan named (CostView's "Total spend" tile, BoardSummary's "spent" line) —
+per-task/per-run rows (CostView's "By task"/"By model", the avg-cost
+caption) deliberately keep their existing 4-decimal `usd()` formatting.
+**U9** — `new-project` removed from `App.tsx`'s `NAV` array (now 8 tabs);
+a "+ New" button sits next to the project selector in the top row instead,
+plus a visual divider between the project-scoped tabs (Board…Notifications)
+and the global ones (Projects/Settings/Setup) — computed from
+`PROJECT_PAGES` rather than a hardcoded index so the two lists can't drift
+apart. **U10** — turned out to already be fixed: `TaskCard.tsx`'s
+dependency chip has carried `title={dep.title}` since the F3/F4 era: no
+code change, confirmed via a DOM inspection (`el.title`) since native OS
+tooltips don't render in CDP screenshots.
+
+All six live-verified together against one real (non-mock) server process,
+seeded via the actual `repo.ts` functions (`createProject`/`createTask`/
+`createCost`/`createNotification` — not raw SQL) into a scratch SQLite DB:
+one project with an enabled daily schedule, a running task, a task blocked
+on it (for U10's tooltip), and two notifications inserted *after* boot
+specifically to dodge B10's boot-time `expireStaleApprovals` sweep (seeding
+them before boot would have stamped them `expired_restart` before the badge
+could ever see them as pending); a second project with real cost records
+($1.23 + $0.0034) for U8's two precision tiers. `npm run typecheck` /
+`npm run build` green across every workspace; `npm test -w @orc/engine`
+(32/32) and `-w @orc/adapters` (4/4) unaffected — no engine/adapter code
+touched this batch. One thing deliberately **not** live-verified: the
+badge's WS-driven live decrement when a notification is actually responded
+to. That requires a genuine in-flight engine approval (a real
+`EngineRunner.pendingApprovals` resolver, private to the running server
+process) — fabricating one safely was out of proportion for a UI-polish
+batch, so this was reasoned from code instead: `respondNotification`'s
+success path already broadcasts the updated notification globally (used and
+verified since B15/F5), and the badge's handler is the same upsert-by-id
+reducer `Notifications.tsx` has used and relied on since F5.
 
 ---
 
