@@ -126,6 +126,34 @@ export function projectConfigFromForm(form: ProjectConfigForm): ProjectConfig | 
   return Object.keys(config).length > 0 ? config : undefined;
 }
 
+/**
+ * B22: `projectConfigFromForm` silently drops the whole schedule when the
+ * fields for the *current* mode are incomplete — e.g. hour filled but
+ * minute blank, or the mode switched to interval while only the (now
+ * irrelevant) daily fields are filled — which deletes a previously saved
+ * schedule with no warning. Returns a message when the form shows signs of
+ * schedule intent (the enable checkbox, or any of the mode's own fields)
+ * but doesn't have everything the current mode needs; null when the form is
+ * either fully blank (no schedule intended — fine) or fully complete.
+ */
+export function projectConfigFormError(form: ProjectConfigForm): string | null {
+  const hasIntent =
+    form.scheduleEnabled ||
+    form.scheduleHour.trim() !== "" ||
+    form.scheduleMinute.trim() !== "" ||
+    form.scheduleIntervalHours.trim() !== "";
+  if (!hasIntent) return null;
+
+  if (form.scheduleMode === "daily") {
+    if (form.scheduleHour.trim() === "" || form.scheduleMinute.trim() === "") {
+      return "Daily schedule needs both an hour and a minute.";
+    }
+  } else if (form.scheduleIntervalHours.trim() === "") {
+    return "Interval schedule needs a number of hours.";
+  }
+  return null;
+}
+
 const MERGE_POLICIES: { value: MergePolicy; label: string }[] = [
   { value: "hard_gate_flag_risky", label: "Hard gate + flag risky" },
   { value: "fully_autonomous", label: "Fully autonomous" },
@@ -182,6 +210,7 @@ export function ProjectConfigFields({
   const [open, setOpen] = useState(false);
   const set = <K extends keyof ProjectConfigForm>(key: K, value: ProjectConfigForm[K]) =>
     onChange({ ...form, [key]: value });
+  const scheduleError = projectConfigFormError(form);
 
   return (
     <div className="rounded border border-neutral-800">
@@ -356,6 +385,11 @@ export function ProjectConfigFields({
               Times are the server's local clock. Calls the same Start the
               button above does — it won't pile up on top of an active run.
             </p>
+            {/* B22: surfaced here (in addition to the save-site message) so
+                it's visible right next to the fields that need fixing. */}
+            {scheduleError && (
+              <p className="mt-1 text-[10px] text-amber-400">{scheduleError}</p>
+            )}
           </div>
         </div>
       )}
