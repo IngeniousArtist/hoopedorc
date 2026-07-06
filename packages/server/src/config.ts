@@ -164,6 +164,9 @@ export const ENV = {
   // and snapshot queries). Pruned on boot and daily — see pruneLogs() in
   // db/repo.ts and its callers in index.ts.
   logRetentionDays: Number(process.env.LOG_RETENTION_DAYS ?? 14),
+  // B23: mirrors logRetentionDays — pending approvals are exempt regardless
+  // of age (see pruneNotifications() in db/repo.ts).
+  notificationRetentionDays: Number(process.env.NOTIFICATION_RETENTION_DAYS ?? 30),
   // F17: where periodic DB backups (better-sqlite3's online backup API) are
   // written — default sits next to the DB file itself. No-op for an
   // in-memory/mock DB, so this only ever matters for a real deployment.

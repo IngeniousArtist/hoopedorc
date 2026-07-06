@@ -401,10 +401,33 @@ export function Settings({
         <p className="text-[11px] text-neutral-400">
           Fires a native browser notification for approvals and task failures
           while this tab is hidden — no need to keep it in the foreground.
+          On phones, Telegram (below) is the more reliable channel.
         </p>
+        {/* B24: order matters — a real support/context gap takes priority
+            over the permission-state messaging below it. */}
         {!browserNotify.supported ? (
           <p className="text-[11px] text-amber-400">
             Not supported in this browser.
+          </p>
+        ) : !browserNotify.secureContext ? (
+          <p className="text-[11px] text-amber-400">
+            Needs HTTPS — this page isn't in a secure context (plain HTTP to
+            another machine, e.g. over Tailscale, doesn't count). See{" "}
+            <a
+              href="https://github.com/IngeniousArtist/hoopedorc/blob/main/docs/USER_GUIDE.md"
+              target="_blank"
+              rel="noreferrer"
+              className="text-blue-400 hover:underline"
+            >
+              the User Guide ↗
+            </a>{" "}
+            for the recommended <code>tailscale serve</code> remote setup.
+          </p>
+        ) : browserNotify.permission === "granted" && browserNotify.constructionFailed ? (
+          <p className="text-[11px] text-amber-400">
+            Permission granted, but this browser can't actually show page
+            notifications (common on Android Chrome). Rely on Telegram for
+            pings on this device.
           </p>
         ) : browserNotify.permission === "granted" ? (
           <p className="text-[11px] text-green-400">Enabled.</p>

@@ -779,18 +779,49 @@ export function getNotification(db: Db, id: string): Notification | null {
   return row ? mapNotification(row) : null;
 }
 
-export function getNotifications(db: Db, projectId?: string): Notification[] {
+/** B23: newest-first, capped so months of autonomous runs don't hand the
+ *  Notifications page (and the U1 nav badge's seed fetch) an ever-growing
+ *  list — mirrors the bound `pruneNotifications` below enforces at rest. */
+export function getNotifications(
+  db: Db,
+  projectId?: string,
+  limit = 200,
+): Notification[] {
   let rows: Record<string, unknown>[];
   if (projectId) {
     rows = db
-      .prepare("SELECT * FROM notifications WHERE project_id = ? ORDER BY created_at DESC")
-      .all(projectId) as Record<string, unknown>[];
+      .prepare(
+        "SELECT * FROM notifications WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
+      )
+      .all(projectId, limit) as Record<string, unknown>[];
   } else {
     rows = db
-      .prepare("SELECT * FROM notifications ORDER BY created_at DESC")
-      .all() as Record<string, unknown>[];
+      .prepare("SELECT * FROM notifications ORDER BY created_at DESC LIMIT ?")
+      .all(limit) as Record<string, unknown>[];
   }
   return rows.map(mapNotification);
+}
+
+/**
+ * B23: mirrors pruneLogs' shape — delete notifications older than
+ * `retentionDays`, called on boot and once a day (see index.ts main()).
+ * Never deletes a pending approval (requires_approval with no
+ * responded_with) regardless of age — B10 already expires those on boot,
+ * but an approval a human hasn't seen yet must never just vanish. Returns
+ * the number of rows deleted, for a boot-time log line.
+ */
+export function pruneNotifications(db: Db, retentionDays: number): number {
+  const cutoff = new Date(
+    Date.now() - retentionDays * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  const result = db
+    .prepare(
+      `DELETE FROM notifications
+       WHERE created_at < ?
+         AND NOT (requires_approval = 1 AND responded_with IS NULL)`,
+    )
+    .run(cutoff);
+  return result.changes;
 }
 
 export function createNotification(
