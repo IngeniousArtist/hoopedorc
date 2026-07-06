@@ -175,6 +175,26 @@ and daily via SQLite's online-backup API into `DB_BACKUP_DIR` (default: a
 (default 7). The repos directory is just git clones — everything in it is
 recoverable from GitHub, so the DB backups are the part that matters.
 
+## Updating
+
+From the repo root on the deployed box:
+
+```bash
+npm run update
+```
+
+This runs `scripts/update.sh`, which: refuses if the working tree has
+uncommitted changes (commit/stash first); warns and asks for confirmation
+if any project is currently running (`GET /api/projects` against
+`127.0.0.1` — updating restarts the process, aborting anything active);
+then `git pull --ff-only && npm ci && npm run build`; then restarts
+`hoopedorc.service` via `systemctl` if that unit is installed (the
+[EC2 / headless Linux](#ec2--headless-linux) native+systemd path above),
+or otherwise prints a reminder to restart the process yourself (however
+you're actually running it — a process manager, a `screen`/`tmux`
+session, etc). Check `GET /api/health`'s `version` field (also shown at
+the top of the Setup & Health page) to confirm the update actually took.
+
 ## Remote setup (Tailscale)
 
 The server binds to `127.0.0.1` and is unauthenticated by default — fine
@@ -309,8 +329,9 @@ your own setup, per the note on each step.
     section assumes.
 - Once all three check out (`npm run setup` re-runs the same checks Setup
   page does), follow `deploy/README.md`'s "Native + systemd" steps for the
-  actual service setup, and see **Backups & data** above for where the DB
-  and its backups live on disk.
+  actual service setup, see **Backups & data** above for where the DB and
+  its backups live on disk, and **Updating** below for keeping this box
+  current afterward (`npm run update` restarts the same systemd unit).
 
 ## Troubleshooting
 
