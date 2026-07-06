@@ -451,16 +451,35 @@ SPA shell → 200 unauthenticated in all cases. `npm run typecheck`/
 package of its own — live verification is the bar for server-only changes
 here, matching precedent from S2's original auth-hook work).
 
-### Phase 8 — F14–F17 (+F18 doc, F19 optional) — ⬜ not started
+### Phase 8 — F14–F19 (user opted in to F19 too) — 🔄 in progress
 
 | Item | Status | PR |
 |---|---|---|
-| F14 — CI for this repo (GitHub Actions) | ⬜ | |
+| F14 — CI for this repo (GitHub Actions) | ✅ done | TBD |
 | F15 — "Wait for GitHub checks" merge gate | ⬜ | |
 | F16 — Subscription quota awareness | ⬜ | |
 | F17 — DB backup rotation | ⬜ | |
 | F18 — Sandbox design doc (docs only) | ⬜ | |
-| F19 — Scheduled runs (optional, LOW) | ⬜ | |
+| F19 — Scheduled runs (previously optional — user explicitly asked for it after Phase 7, so it's in scope; do after F14-F17) | ⬜ | |
+
+F14 fixed: new `.github/workflows/ci.yml` runs on every PR and push to
+`main` — checkout, `setup-node@v4` (node 22, npm cache), `npm ci`,
+`npm run typecheck`, `npm run build`, `npm test -w @orc/engine`,
+`npm test -w @orc/adapters`. No Docker build step, no secrets needed. The
+very first CI run immediately found a real, previously-invisible bug:
+`npm run typecheck` failed everywhere with "Cannot find module '@orc/types'"
+because `@orc/types`/`@orc/adapters`/`@orc/engine` all resolve their
+`"types"` field to `./dist/index.d.ts`, and a fresh checkout has no `dist/`
+at all (gitignored) — this was masked in every local dev session so far
+because `dist/` always already existed from some earlier build. Reproduced
+locally by deleting every workspace's `dist/` and hitting the identical
+failure. Fixed the root cause: the root `typecheck` script now builds
+`@orc/types` → `@orc/adapters` → `@orc/engine` (mirroring the existing
+`build` script's dependency order) before running the per-workspace `tsc`
+checks — so `npm run typecheck` alone is correct on any fresh checkout, not
+just under CI. Verified: reran the full sequence from a clean `dist`-less
+state (typecheck → build → both test suites, all green), then confirmed the
+actual GitHub Actions run on the PR went green via `gh pr checks --watch`.
 
 ---
 
@@ -1356,12 +1375,21 @@ policy, env sanitization inside vs outside, gates in-container, and a phased
 rollout (gates-only sandbox first, agents later). Link it from F13's entry
 above and from the README security section. **No implementation.**
 
-### F19. Scheduled runs — OPTIONAL, LOW (skip unless told otherwise)
+### F19. Scheduled runs — IN SCOPE (user opted in 2026-07-06, after Phase 7)
 
-Cron-style "start project X every night" for maintenance tasks. Only worth it
-after F14–F17; needs either a tiny cron-parse dep or a deliberately dumb
-interval scheduler. Don't build this without an explicit go-ahead — listed so
-it isn't forgotten.
+Cron-style "start project X every night" for maintenance tasks. Do after
+F14–F17 (needs CI to trust it, and should respect the quota/backup rails
+those add). Design: a small `schedule` field on `Project` (or a new table if
+multiple schedules per project end up wanted) holding a simple recurrence —
+prefer a deliberately dumb interval/time-of-day scheduler over pulling in a
+cron-parse dependency unless real cron syntax turns out to be worth the
+weight (decide once the shape is clearer). A `setInterval` check (mirroring
+the existing log-prune/backup boot+interval pattern in `main()`) compares
+current time against each project's next-due time and calls the existing
+`EngineRunner.start(project)` path — no new dispatch mechanism, just a timer
+that triggers the same button the UI's Start does. Surface it in
+`ProjectConfigFields`/`ProjectHeader` (enable + a simple "every day at HH:MM"
+or "every N hours" control) alongside F9's other per-project config.
 
 ---
 
@@ -1376,7 +1404,7 @@ it isn't forgotten.
 | 5 | F5, F6, F7, F8 | Away-from-keyboard autonomy story. | ✅ done |
 | 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. | ✅ done |
 | 7 | B16, B17, B18, B19, S6 | Review-pass fixes: confirmed defects in the shipped Phase 6 work. Fix before Phase 8. | ✅ done |
-| 8 | F14, F15, F16, F17, F18 (F19 optional) | Second feature wave: CI first (F14 — every later PR benefits), then external-CI gate, quota awareness, backups, sandbox doc. | ⬜ not started |
+| 8 | F14, F15, F16, F17, F18, F19 | Second feature wave: CI first (F14 — every later PR benefits), then external-CI gate, quota awareness, backups, sandbox doc, scheduled runs (F19 opted into 2026-07-06). | 🔄 in progress |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
