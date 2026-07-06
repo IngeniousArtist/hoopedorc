@@ -6,6 +6,9 @@
 FROM node:22-slim AS build
 WORKDIR /app
 COPY package*.json ./
+COPY tsconfig.base.json ./
+COPY bin ./bin
+COPY scripts ./scripts
 COPY packages ./packages
 COPY apps ./apps
 RUN npm ci
