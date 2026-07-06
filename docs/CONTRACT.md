@@ -33,6 +33,18 @@ run count or spend is reached — cross-project, since a subscription's cap
 belongs to the model's API key/plan, not any one project — the same
 skip-don't-fail treatment as budget/cooldown checks.
 
+`ProjectConfig.schedule` (`ProjectSchedule`, F19) is a deliberately simple
+cron-style auto-start — not real cron syntax. `enabled: boolean` plus
+`mode: "interval" | "daily"`: `"interval"` needs `intervalHours` (1–720,
+runs every N hours since the last scheduled start); `"daily"` needs `hour`
+(0–23) and `minute` (0–59), server-local time, runs once a day at that
+clock time. A background check (~once a minute) calls the same
+`EngineRunner.start()` the UI's Start button uses — no new dispatch path.
+`Project.lastScheduledRunAt` (top-level, system-managed, **not** part of
+`config`) tracks when the scheduler last actually kicked off a run, kept
+separate from the user-edited `config` blob so a Settings save and the
+scheduler's own write can never race each other.
+
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.
 

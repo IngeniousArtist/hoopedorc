@@ -151,6 +151,14 @@ export interface Project {
   /** Per-project overrides (F9) — gate scripts, retry budget, merge policy.
    *  All optional; omitted fields keep the global/default behavior. */
   config?: ProjectConfig;
+  /**
+   * F19: when the scheduler (see `config.schedule`) last auto-started this
+   * project, so it knows not to fire again until the next interval/day is
+   * due. System-managed — set only by the scheduler itself, never by the
+   * config-edit UI (kept off `ProjectConfig` specifically to avoid a save
+   * from the Advanced accordion racing with the scheduler's own write).
+   */
+  lastScheduledRunAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -198,6 +206,31 @@ export interface ProjectConfig {
   /** Minutes to wait for GitHub checks before treating them as timed out.
    *  Only meaningful when `requireGithubChecks` is true; default 15. */
   githubChecksTimeoutMin?: number;
+  /**
+   * F19: cron-style auto-start for maintenance tasks — "run this project's
+   * backlog every night" without a human pressing Start. A timer in the
+   * server checks every project's schedule roughly once a minute and calls
+   * the same `EngineRunner.start()` the UI's Start button does; it does
+   * not add a new dispatch mechanism, just triggers the existing one.
+   */
+  schedule?: ProjectSchedule;
+}
+
+/**
+ * F19: deliberately simple recurrence, not real cron syntax — "every N
+ * hours" or "once a day at HH:MM" covers the stated use case (nightly
+ * maintenance runs) without a parser dependency. Times are the *server's*
+ * local clock, not UTC — simplest to reason about for a single-operator,
+ * single-box tool.
+ */
+export interface ProjectSchedule {
+  enabled: boolean;
+  mode: "interval" | "daily";
+  /** Required when `mode === "interval"`. */
+  intervalHours?: number;
+  /** Required when `mode === "daily"` (24h, server-local time). */
+  hour?: number;
+  minute?: number;
 }
 
 export type RunStatus = "running" | "passed" | "failed" | "stopped";

@@ -451,7 +451,7 @@ SPA shell → 200 unauthenticated in all cases. `npm run typecheck`/
 package of its own — live verification is the bar for server-only changes
 here, matching precedent from S2's original auth-hook work).
 
-### Phase 8 — F14–F19 (user opted in to F19 too) — 🔄 in progress
+### Phase 8 — F14–F19 (user opted in to F19 too) — ✅ DONE
 
 | Item | Status | PR |
 |---|---|---|
@@ -459,8 +459,8 @@ here, matching precedent from S2's original auth-hook work).
 | F15 — "Wait for GitHub checks" merge gate | ✅ done | [#51](https://github.com/IngeniousArtist/hoopedorc/pull/51) |
 | F16 — Subscription quota awareness | ✅ done | [#52](https://github.com/IngeniousArtist/hoopedorc/pull/52) |
 | F17 — DB backup rotation | ✅ done | [#53](https://github.com/IngeniousArtist/hoopedorc/pull/53) |
-| F18 — Sandbox design doc (docs only) | ✅ done | TBD |
-| F19 — Scheduled runs (previously optional — user explicitly asked for it after Phase 7, so it's in scope; do after F14-F17) | ⬜ | |
+| F18 — Sandbox design doc (docs only) | ✅ done | [#54](https://github.com/IngeniousArtist/hoopedorc/pull/54) |
+| F19 — Scheduled runs (previously optional — user explicitly asked for it after Phase 7, so it's in scope; do after F14-F17) | ✅ done | TBD |
 
 F14 fixed: new `.github/workflows/ci.yml` runs on every PR and push to
 `main` — checkout, `setup-node@v4` (node 22, npm cache), `npm ci`,
@@ -631,6 +631,56 @@ problem at all — plain `npm`/`execFile` calls), and a three-phase rollout
 auth story → agents default-on). Linked from F13's plan entry and from
 `README.md`'s Security section, per the acceptance criteria. **No
 implementation** — F13 remains future work; this is design only.
+
+F19 fixed (last item — **closes Part 3 and the entire productization
+plan**): new `ProjectConfig.schedule` (`ProjectSchedule`) — deliberately
+simple cron-style auto-start, not real cron syntax, matching the plan's own
+"deliberately dumb" framing: `enabled` + `mode: "interval" | "daily"`,
+where `"interval"` needs `intervalHours` (1–720) and `"daily"` needs `hour`
+(0–23)/`minute` (0–59) on the server's local clock. Validated on
+`PATCH /api/projects/:id` the same way F15/F16 validate their own
+`ProjectConfig` additions. New pure `packages/server/src/scheduler.ts`
+`isScheduleDue(schedule, lastRunAt, now)` — kept as a standalone,
+DB-free function so the date math is testable without booting a server;
+"interval" fires once `now - lastRunAt >= intervalHours`, or immediately if
+never run; "daily" fires only during the exact HH:MM minute *and* only
+once per calendar day (guards against firing every poll during that
+minute, or twice if the server restarts within it). New top-level
+`Project.lastScheduledRunAt` (a real DB column via the standard `ALTER
+TABLE` migration, deliberately **not** part of the `config` JSON blob a
+Settings-style save would round-trip wholesale) tracks when the scheduler
+last actually kicked off a run — kept as its own field specifically so a
+human editing the schedule in the Advanced accordion and the scheduler's
+own background write can never race each other. A new `setInterval` in
+`main()` (~60s — fine enough resolution for HH:MM precision) iterates
+every project, calls the existing `EngineRunner.start()` — the exact same
+call the UI's Start button makes, no new dispatch mechanism — and only
+stamps `lastScheduledRunAt` on an actual successful kickoff (`engine.start()`
+throwing, e.g. a manual dispatch is in flight, doesn't consume the
+schedule slot, so the next ~60s check retries instead of silently losing
+that cycle until the next full interval/day). New Advanced-accordion
+controls (`ProjectConfigFields.tsx`) — enable checkbox, a mode select,
+and the relevant inputs. Verified: a standalone script exercising the real
+`isScheduleDue` directly covered 13 cases (disabled/undefined schedules,
+interval under/at/over its window plus a never-run-yet immediate-due case
+plus an invalid-zero-hours case, and daily's exact-minute/wrong-minute/
+wrong-hour/already-fired-today/fired-yesterday/missing-config cases) — all
+passed. Live-verified end-to-end against a real running server: invalid
+schedule configs (missing `hour`, a bad `mode`, an out-of-range
+`intervalHours`) all correctly 400; a valid daily schedule round-trips
+through `PATCH`; and — the real integration point — a throwaway project
+(pointed at a nonexistent repo URL and an isolated scratch directory, kept
+deliberately separate from anything that could touch this actual repo or
+spend real model cost) with an immediately-due interval schedule was
+picked up by the real ~60s scheduler tick, logged `"scheduled start:
+<name>"`, and had `lastScheduledRunAt` populated — confirming the
+scheduler genuinely calls the production `engine.start()` path, not a
+reimplementation. `npm run typecheck`/`npm run build` green across all
+workspaces; `npm test -w @orc/engine` (32/32) and `-w @orc/adapters` (4/4)
+unaffected (no engine/adapter changes).
+
+**This closes out Phase 8 — every item in Parts 1, 2, and 3 of this plan
+(S1-S6, B1-B19, F1-F19) is now done.**
 
 ### S1. Command injection via `execSync` string interpolation — CRITICAL — ✅ DONE (PR [#3](https://github.com/IngeniousArtist/hoopedorc/pull/3))
 
@@ -1555,13 +1605,15 @@ or "every N hours" control) alongside F9's other per-project config.
 | 5 | F5, F6, F7, F8 | Away-from-keyboard autonomy story. | ✅ done |
 | 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. | ✅ done |
 | 7 | B16, B17, B18, B19, S6 | Review-pass fixes: confirmed defects in the shipped Phase 6 work. Fix before Phase 8. | ✅ done |
-| 8 | F14, F15, F16, F17, F18, F19 | Second feature wave: CI first (F14 — every later PR benefits), then external-CI gate, quota awareness, backups, sandbox doc, scheduled runs (F19 opted into 2026-07-06). | 🔄 in progress |
+| 8 | F14, F15, F16, F17, F18, F19 | Second feature wave: CI first (F14 — every later PR benefits), then external-CI gate, quota awareness, backups, sandbox doc, scheduled runs (F19 opted into 2026-07-06). | ✅ done |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
 
-Parts 1 and 2 (Phases 1–6) are fully done and tagged `v0.1.0`. Part 3
-(Phases 7–8) is the active work: fixes first, then features, F14 (CI) as the
-very first Phase 8 item so every subsequent PR runs under it. F13 remains
-future work — F18 covers its design doc only. Fable independently re-verifies
-each Part 3 item after merge; keep verification evidence in PR descriptions.
+Parts 1, 2, and 3 (Phases 1–8) are **all done**. Phases 1–6 are tagged
+`v0.1.0`. Phase 7 (review-pass fixes) and Phase 8 (second feature wave,
+including F19 which the user opted into after Phase 7) closed out Part 3.
+F13 remains future work — F18 covers its design doc only. Fable
+independently re-verifies each Part 3 item after merge; verification
+evidence is in each item's PR description and in this doc's Progress
+section above.

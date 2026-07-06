@@ -18,6 +18,11 @@ export interface ProjectConfigForm {
   testCommand: string;
   requireGithubChecks: boolean;
   githubChecksTimeoutMin: string;
+  scheduleEnabled: boolean;
+  scheduleMode: "interval" | "daily";
+  scheduleIntervalHours: string;
+  scheduleHour: string;
+  scheduleMinute: string;
 }
 
 export const EMPTY_PROJECT_CONFIG_FORM: ProjectConfigForm = {
@@ -34,6 +39,11 @@ export const EMPTY_PROJECT_CONFIG_FORM: ProjectConfigForm = {
   testCommand: "",
   requireGithubChecks: false,
   githubChecksTimeoutMin: "",
+  scheduleEnabled: false,
+  scheduleMode: "daily",
+  scheduleIntervalHours: "",
+  scheduleHour: "",
+  scheduleMinute: "",
 };
 
 export function projectConfigToForm(config: ProjectConfig | undefined): ProjectConfigForm {
@@ -54,6 +64,12 @@ export function projectConfigToForm(config: ProjectConfig | undefined): ProjectC
     requireGithubChecks: config.requireGithubChecks ?? false,
     githubChecksTimeoutMin:
       config.githubChecksTimeoutMin != null ? String(config.githubChecksTimeoutMin) : "",
+    scheduleEnabled: config.schedule?.enabled ?? false,
+    scheduleMode: config.schedule?.mode ?? "daily",
+    scheduleIntervalHours:
+      config.schedule?.intervalHours != null ? String(config.schedule.intervalHours) : "",
+    scheduleHour: config.schedule?.hour != null ? String(config.schedule.hour) : "",
+    scheduleMinute: config.schedule?.minute != null ? String(config.schedule.minute) : "",
   };
 }
 
@@ -85,6 +101,21 @@ export function projectConfigFromForm(form: ProjectConfigForm): ProjectConfig | 
   if (form.githubChecksTimeoutMin.trim()) {
     const n = parseInt(form.githubChecksTimeoutMin, 10);
     if (Number.isFinite(n)) config.githubChecksTimeoutMin = n;
+  }
+
+  if (form.scheduleEnabled) {
+    if (form.scheduleMode === "interval") {
+      const n = parseInt(form.scheduleIntervalHours, 10);
+      if (Number.isFinite(n) && n > 0) {
+        config.schedule = { enabled: true, mode: "interval", intervalHours: n };
+      }
+    } else {
+      const hour = parseInt(form.scheduleHour, 10);
+      const minute = parseInt(form.scheduleMinute, 10);
+      if (Number.isFinite(hour) && Number.isFinite(minute)) {
+        config.schedule = { enabled: true, mode: "daily", hour, minute };
+      }
+    }
   }
 
   return Object.keys(config).length > 0 ? config : undefined;
@@ -258,6 +289,68 @@ export function ProjectConfigFields({
                 className={`${inputCls} mt-1`}
               />
             )}
+          </div>
+
+          <div>
+            <label className="mb-1 flex items-center gap-2 text-neutral-400">
+              <input
+                type="checkbox"
+                checked={form.scheduleEnabled}
+                onChange={(e) => set("scheduleEnabled", e.target.checked)}
+              />
+              Auto-start this project on a schedule (cron-style, for
+              maintenance tasks)
+            </label>
+            {form.scheduleEnabled && (
+              <div className="mt-1 flex items-center gap-2">
+                <select
+                  value={form.scheduleMode}
+                  onChange={(e) =>
+                    set("scheduleMode", e.target.value as "interval" | "daily")
+                  }
+                  className={inputCls}
+                >
+                  <option value="daily">Daily at</option>
+                  <option value="interval">Every N hours</option>
+                </select>
+                {form.scheduleMode === "daily" ? (
+                  <>
+                    <input
+                      type="number"
+                      min={0}
+                      max={23}
+                      value={form.scheduleHour}
+                      onChange={(e) => set("scheduleHour", e.target.value)}
+                      placeholder="HH (0-23)"
+                      className={inputCls}
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      max={59}
+                      value={form.scheduleMinute}
+                      onChange={(e) => set("scheduleMinute", e.target.value)}
+                      placeholder="MM (0-59)"
+                      className={inputCls}
+                    />
+                  </>
+                ) : (
+                  <input
+                    type="number"
+                    min={1}
+                    max={720}
+                    value={form.scheduleIntervalHours}
+                    onChange={(e) => set("scheduleIntervalHours", e.target.value)}
+                    placeholder="hours"
+                    className={inputCls}
+                  />
+                )}
+              </div>
+            )}
+            <p className="mt-1 text-[10px] text-neutral-600">
+              Times are the server's local clock. Calls the same Start the
+              button above does — it won't pile up on top of an active run.
+            </p>
           </div>
         </div>
       )}

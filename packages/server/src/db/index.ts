@@ -36,6 +36,8 @@ export function initDb(path: string = ENV.dbPath): Db {
     "ALTER TABLE merge_decisions ADD COLUMN project_id TEXT",
     // F9: per-project gate/retry/merge-policy overrides.
     "ALTER TABLE projects ADD COLUMN config TEXT",
+    // F19: when the scheduler last auto-started this project.
+    "ALTER TABLE projects ADD COLUMN last_scheduled_run_at TEXT",
   ]) {
     try { db.exec(col); } catch { /* column already exists */ }
   }
