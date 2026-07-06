@@ -12,7 +12,7 @@ import { ENV, defaultSettings } from "./config";
 import type { Db } from "./db/index";
 import * as repo from "./db/repo";
 import type { WsHub } from "./ws-hub";
-import { checkBudget, checkBudgetThresholds } from "./budget";
+import { checkBudget, checkBudgetThresholds, checkModelQuota } from "./budget";
 import type { ServerNotifier } from "./telegram";
 
 function fmtDurationMs(ms: number): string {
@@ -278,6 +278,7 @@ export class EngineRunner {
       getTasks: () => repo.getTasks(this.db, project.id),
       checkBudget: (modelId) => checkBudget(this.db, project.id, modelId, settings),
       checkModelCooldown: (modelId) => this.checkModelCooldown(modelId),
+      checkModelQuota: (modelId) => checkModelQuota(this.db, modelId, settings),
       getModelActive: (modelId) => this.modelActiveCount.get(modelId) ?? 0,
       incModelActive: (modelId) =>
         this.modelActiveCount.set(modelId, (this.modelActiveCount.get(modelId) ?? 0) + 1),

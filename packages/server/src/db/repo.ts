@@ -730,6 +730,29 @@ export function getGlobalMonthlyCost(db: Db): number {
   return row ? Number(row.total) : 0;
 }
 
+/**
+ * F16: how many times `model` has run and how much it has cost, since
+ * `sinceIso`, across ALL projects — a subscription's usage cap applies to
+ * the model's API key/plan, not any one project. Run count comes from the
+ * `runs` table (every attempt, not just terminal ones — a subscription's
+ * rolling window cares about requests made, not outcomes); cost comes from
+ * `costs` the same way `getModelMonthlyCost` does, just with a rolling
+ * window instead of a calendar-month one.
+ */
+export function getModelUsageSince(
+  db: Db,
+  model: string,
+  sinceIso: string,
+): { runs: number; costUsd: number } {
+  const runRow = db
+    .prepare("SELECT COUNT(*) as n FROM runs WHERE model = ? AND started_at >= ?")
+    .get(model, sinceIso) as { n: number };
+  const costRow = db
+    .prepare("SELECT COALESCE(SUM(cost_usd), 0) as total FROM costs WHERE model = ? AND ts >= ?")
+    .get(model, sinceIso) as { total: number };
+  return { runs: Number(runRow.n), costUsd: Number(costRow.total) };
+}
+
 // ── Notifications ──
 
 function mapNotification(row: Record<string, unknown>): Notification {

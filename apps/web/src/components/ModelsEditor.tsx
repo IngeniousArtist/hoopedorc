@@ -191,6 +191,64 @@ export function ModelsEditor({
 
             <div>
               <label className="mb-1 block text-[10px] uppercase text-neutral-400">
+                Subscription quota (optional) — route around a subscription's
+                usage window before burning attempts, instead of reacting
+                after a rate-limit failure
+              </label>
+              <div className="grid grid-cols-3 gap-3">
+                <input
+                  type="number"
+                  min={1}
+                  value={m.quota?.windowHours ?? ""}
+                  onChange={(e) => {
+                    const windowHours = e.target.value ? parseFloat(e.target.value) : undefined;
+                    patch(idx, {
+                      quota: windowHours ? { ...m.quota, windowHours } : undefined,
+                    });
+                  }}
+                  placeholder="window (hours)"
+                  className={inputCls}
+                />
+                <input
+                  type="number"
+                  min={0}
+                  disabled={!m.quota?.windowHours}
+                  value={m.quota?.maxRuns ?? ""}
+                  onChange={(e) =>
+                    m.quota?.windowHours &&
+                    patch(idx, {
+                      quota: {
+                        ...m.quota,
+                        maxRuns: e.target.value ? parseInt(e.target.value, 10) : undefined,
+                      },
+                    })
+                  }
+                  placeholder="max runs"
+                  className={`${inputCls} disabled:opacity-40`}
+                />
+                <input
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  disabled={!m.quota?.windowHours}
+                  value={m.quota?.maxCostUsd ?? ""}
+                  onChange={(e) =>
+                    m.quota?.windowHours &&
+                    patch(idx, {
+                      quota: {
+                        ...m.quota,
+                        maxCostUsd: e.target.value ? parseFloat(e.target.value) : undefined,
+                      },
+                    })
+                  }
+                  placeholder="max cost $"
+                  className={`${inputCls} disabled:opacity-40`}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                 Roles
               </label>
               <div className="flex flex-wrap gap-2">

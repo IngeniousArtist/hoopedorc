@@ -172,6 +172,16 @@ export interface SchedulerDeps {
    */
   checkModelCooldown?: (modelId: ModelId) => string | null;
   /**
+   * F16: returns a reason string if `modelId`'s configured subscription
+   * quota (a rolling window of run-count and/or cost) has been reached, or
+   * `null` otherwise. Consulted at both places `checkBudget` is — the
+   * dispatch loop (skip, don't fail, so it dispatches once the window
+   * rolls) and the retry/attempt path (requeue to backlog, mirroring how
+   * checkBudget itself is handled there). Optional; if omitted, no quota
+   * enforcement is applied.
+   */
+  checkModelQuota?: (modelId: ModelId) => string | null;
+  /**
    * F12: shared per-model concurrency accounting, so `ModelConfig.maxConcurrent`
    * holds across every concurrently-running project, not just within one
    * Orchestrator instance. `EngineRunner` wires all three to one `Map` shared

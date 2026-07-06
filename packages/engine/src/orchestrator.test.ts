@@ -731,6 +731,63 @@ test("F15: a Stop requested during the GitHub-checks wait blocks the task withou
   assert.equal(merged.length, 0, "must not merge after a stop, even if checks ultimately passed");
 });
 
+test("F16: a model at its subscription quota is skipped at dispatch (warned once, not once per poll)", async () => {
+  const merged: number[] = [];
+  const logs: { level: string; message: string }[] = [];
+  const deps = fakeDeps(
+    {
+      checkModelQuota: (m) =>
+        m === "deepseek-pro"
+          ? "Model deepseek-pro quota reached: 5/5 runs in the last 24h"
+          : null,
+      // A slow-but-unblocked task on a different model keeps the dispatch
+      // loop alive across several 250ms polls, so the quota-blocked task
+      // (on a non-overlapping scope, so it isn't held back for THAT reason
+      // instead) gets re-evaluated more than once — proving the warn is
+      // deduped, not just incidentally logged a single time.
+      adapterFor: () => ({
+        runner: "opencode",
+        async run() {
+          await new Promise((r) => setTimeout(r, 600));
+          return {
+            ok: true, exitReason: "completed", costUsd: 0.01, tokensIn: 1, tokensOut: 1,
+            summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+          };
+        },
+      }),
+      events: {
+        onLog(e) {
+          logs.push({ level: e.level, message: e.message });
+        },
+        onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+  const slowTask = task("slow", [], {
+    assignedModel: "deepseek-flash",
+    scopePaths: ["src/a/**"],
+  });
+  const quotaTask = task("quota-blocked", [], {
+    assignedModel: "deepseek-pro",
+    scopePaths: ["src/b/**"],
+  });
+  await new Orchestrator(deps).start(PROJECT, [slowTask, quotaTask]);
+  assert.equal(slowTask.status, "done");
+  assert.notEqual(quotaTask.status, "done", "the quota-blocked task should never dispatch");
+  const quotaWarnings = logs.filter(
+    (l) => l.level === "warn" && /Model quota reached/.test(l.message),
+  );
+  assert.equal(
+    quotaWarnings.length,
+    1,
+    "should warn exactly once across all the blocked polls, not once per poll",
+  );
+});
+
 test("isAuthOrSecretFile matches path segments, not substrings", () => {
   assert.equal(isAuthOrSecretFile("author.ts"), false, "substring of an unrelated filename");
   assert.equal(isAuthOrSecretFile("auth.ts"), true);

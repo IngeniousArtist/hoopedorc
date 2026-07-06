@@ -56,6 +56,19 @@ export interface ModelConfig {
   monthlyBudgetUsd?: number;
   /** How many tasks this model may run at once. */
   maxConcurrent: number;
+  /**
+   * F16: subscription quota awareness — declare a subscription's known
+   * usage window (e.g. Claude Pro's rolling cap) so the scheduler routes
+   * around exhaustion *before* burning attempts, instead of only reacting
+   * after a run fails rate-limited (F6's cooldown). At least one of
+   * `maxRuns`/`maxCostUsd` must be set for the quota to mean anything
+   * (validated on `PUT /api/settings`).
+   */
+  quota?: {
+    windowHours: number;
+    maxRuns?: number;
+    maxCostUsd?: number;
+  };
 }
 
 export type Difficulty = "easy" | "medium" | "hard";
