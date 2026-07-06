@@ -339,7 +339,7 @@ silently always `true` on success in every real repo, only ever
 | B17 — Configured-but-missing gate script silently passes | ✅ done | [#43](https://github.com/IngeniousArtist/hoopedorc/pull/43) |
 | B18 — Capacity-blocked project waits silently | ✅ done | [#44](https://github.com/IngeniousArtist/hoopedorc/pull/44) |
 | B19 — Manual dispatch invisible to the global model cap | ✅ done | [#45](https://github.com/IngeniousArtist/hoopedorc/pull/45) |
-| S6 — Auth polish: real login screen, constant-time compare, doc note | ✅ done | TBD |
+| S6 — Auth polish: real login screen, constant-time compare, doc note | ✅ done | [#46](https://github.com/IngeniousArtist/hoopedorc/pull/46) |
 
 B16 fixed: `deploy/Dockerfile`'s build stage now copies `tsconfig.base.json`,
 `bin/`, and `scripts/` before `npm ci` (every workspace tsconfig extends the
