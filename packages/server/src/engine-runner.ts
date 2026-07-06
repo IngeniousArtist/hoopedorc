@@ -641,6 +641,28 @@ export class EngineRunner {
     }
   }
 
+  /**
+   * F23: the global "Stop all" panic button — hard-aborts every currently
+   * running project, both the autonomous loop (via pause({drain:false}),
+   * the same path the per-project Stop now button uses) *and* any
+   * manually-dispatched task in flight for it (B19: `manualRuns` is a
+   * separate execution path pause() alone never touches — a plain
+   * pause-everything here would silently leave a manual dispatch running).
+   * Returns the ids of projects that actually had something to stop.
+   */
+  async stopAll(projects: Project[]): Promise<string[]> {
+    const stopped: string[] = [];
+    for (const project of projects) {
+      const wasRunning = this.isRunning(project.id);
+      const manualTaskIds = [...(this.manualRuns.get(project.id)?.keys() ?? [])];
+      if (!wasRunning && manualTaskIds.length === 0) continue;
+      if (wasRunning) await this.pause(project, { drain: false });
+      for (const taskId of manualTaskIds) this.stopTask(project.id, taskId);
+      stopped.push(project.id);
+    }
+    return stopped;
+  }
+
   /** Revert a merged PR on the project's default branch (one-click rollback). */
   async rollback(project: Project, prNumber: number): Promise<void> {
     const git = new GitServiceImpl();

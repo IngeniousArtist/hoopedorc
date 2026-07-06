@@ -10,6 +10,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { api, setUnauthorizedHandler } from "./api/client";
 import { useWS } from "./hooks/useWS";
 import { useBrowserNotify } from "./hooks/useBrowserNotify";
+import { useToast } from "./hooks/useToast";
 import { ProjectHeader } from "./components/ProjectHeader";
 import { TokenGate } from "./components/TokenGate";
 import { AuditView } from "./pages/AuditView";
@@ -269,6 +270,7 @@ export function App() {
 
   // Keep names/status fresh as the engine runs (update existing entries in place).
   const { notify } = useBrowserNotify();
+  const toast = useToast();
 
   const onWS = useCallback(
     (e: ServerEvent) => {
@@ -321,6 +323,34 @@ export function App() {
     },
     [],
   );
+
+  // F23: the global "Stop all" panic button — rendered only while
+  // something is actually running (live via the same project.updated WS
+  // events App already tracks, not a separate poll).
+  const [stopAllBusy, setStopAllBusy] = useState(false);
+  const runningProjects = projects.filter((p) => p.status === "running");
+  const handleStopAll = useCallback(async () => {
+    if (runningProjects.length === 0) return;
+    const names = runningProjects.map((p) => p.name).join(", ");
+    if (
+      !window.confirm(
+        `Stop all running projects now? Every active agent is aborted immediately: ${names}.`,
+      )
+    ) {
+      return;
+    }
+    setStopAllBusy(true);
+    try {
+      await api("stopAll");
+      // Project statuses update via the project.updated broadcasts the
+      // route itself fires (the same pattern every other pause/start
+      // control in this app already relies on) — no local state patch here.
+    } catch (e) {
+      toast(String(e), "error");
+    } finally {
+      setStopAllBusy(false);
+    }
+  }, [runningProjects, toast]);
 
   const needsProject = PROJECT_PAGES.includes(page);
   const hasProject = Boolean(selectedProjectId);
@@ -375,6 +405,16 @@ export function App() {
             >
               + New
             </button>
+            {runningProjects.length > 0 && (
+              <button
+                onClick={handleStopAll}
+                disabled={stopAllBusy}
+                title="Abort every running project immediately"
+                className="shrink-0 rounded border border-red-800 px-2 py-1 text-[11px] font-medium text-red-300 hover:bg-red-950/40 disabled:opacity-50"
+              >
+                {stopAllBusy ? "…" : "⏹ Stop all"}
+              </button>
+            )}
           </div>
         </div>
 
