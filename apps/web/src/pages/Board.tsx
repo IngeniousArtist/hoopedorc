@@ -79,6 +79,15 @@ export function Board({
   // a column with cards is never collapsed regardless of membership here.
   const [expandedEmpty, setExpandedEmpty] = useState<Set<TaskStatus>>(new Set());
   const [dragOverStatus, setDragOverStatus] = useState<TaskStatus | null>(null);
+  // U13: when a task entered its current active (in_progress/in_review)
+  // stretch — client receive time, kept stable across the in_progress <->
+  // in_review transition within the same attempt (unlike task.updatedAt,
+  // which bumps on that transition too and made MissionControl's "elapsed"
+  // visibly reset mid-attempt). Cleared once a task leaves the active set,
+  // so a later re-entry (a retry) starts a fresh count instead of an old,
+  // no-longer-relevant one. No entry yet (a task active since before this
+  // page loaded) falls back to task.updatedAt in MissionControl itself.
+  const [activeSince, setActiveSince] = useState<Record<string, number>>({});
 
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
@@ -172,6 +181,22 @@ export function Board({
       switch (event.type) {
         case "task.updated": {
           const updated = event.payload;
+          const wasActive = (() => {
+            const prevStatus = tasksRef.current.find((t) => t.id === updated.id)?.status;
+            return prevStatus === "in_progress" || prevStatus === "in_review";
+          })();
+          const isActive =
+            updated.status === "in_progress" || updated.status === "in_review";
+          if (isActive && !wasActive) {
+            setActiveSince((prev) => ({ ...prev, [updated.id]: Date.now() }));
+          } else if (!isActive) {
+            setActiveSince((prev) => {
+              if (!(updated.id in prev)) return prev;
+              const next = { ...prev };
+              delete next[updated.id];
+              return next;
+            });
+          }
           setTasks((prev) =>
             prev.map((t) => (t.id === updated.id ? updated : t)),
           );
@@ -416,6 +441,7 @@ export function Board({
         tasks={tasks}
         models={settings?.models ?? []}
         activity={activity}
+        activeSince={activeSince}
         costUsd={costUsd}
         budgetUsd={budgetUsd}
         onViewNotifications={() => onViewNotifications?.()}

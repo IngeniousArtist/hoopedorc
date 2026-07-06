@@ -8,7 +8,12 @@ const IDLE_LIMIT_MS = 6 * 60 * 1000;
 export function agoLabel(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s ago`;
-  return `${Math.floor(s / 60)}m ${s % 60}s ago`;
+  const m = Math.floor(s / 60);
+  // U12: a run past an hour used to read "127m 33s ago" — switch to
+  // hours+minutes instead of minutes+seconds once there's an hour to show.
+  if (m < 60) return `${m}m ${s % 60}s ago`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m ago`;
 }
 
 /** Live "is the model still working" heartbeat for an in-progress task.

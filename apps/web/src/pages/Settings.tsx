@@ -47,6 +47,19 @@ export function Settings({
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
+
+  // U11: U4's confirm only guards in-app tab switches — a reload or tab
+  // close (an easy reflex on a phone) bypassed it entirely and discarded
+  // edits silently. The browser's own "leave site?" prompt covers those;
+  // its text is controlled by the browser, not this preventDefault() call.
+  useEffect(() => {
+    if (!dirty) return;
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault();
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
