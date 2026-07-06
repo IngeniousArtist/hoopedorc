@@ -915,6 +915,59 @@ export class Orchestrator implements Scheduler {
         return;
       }
 
+      // F15: opt-in per-project gate — hold the merge until the target
+      // repo's own CI (its GitHub-side checks) passes, not just this app's
+      // local gates. "passed"/"none" fall through to the normal canAutoMerge
+      // risk check below; "failed"/"timeout" skip straight to a human
+      // decision instead, since there's nothing more for canAutoMerge to add.
+      if (project.config?.requireGithubChecks) {
+        const timeoutMin = project.config.githubChecksTimeoutMin ?? 15;
+        this.emit("info", "engine", "Waiting for GitHub checks before merging…", task.id);
+        const checksResult = await this.deps.git.waitForChecks(
+          project,
+          task.prNumber!,
+          timeoutMin * 60_000,
+          (elapsedMs) => {
+            this.emit(
+              "info",
+              "engine",
+              `Waiting for GitHub checks (${Math.round(elapsedMs / 60_000)}m)…`,
+              task.id,
+            );
+          },
+        );
+        if (this.bailIfStopRequested(task)) return;
+        if (checksResult === "failed" || checksResult === "timeout") {
+          const reason =
+            checksResult === "failed"
+              ? "GitHub checks failed"
+              : `GitHub checks timed out after ${timeoutMin}m`;
+          this.emit(
+            "warn",
+            "engine",
+            `${reason} — requesting approval instead of auto-merging`,
+            task.id,
+          );
+          const choice = await this.deps.events.requestApproval({
+            taskId: task.id,
+            title: `GitHub checks ${checksResult} for ${task.title}`,
+            message: `${reason}. Approve merge anyway?`,
+            options: ["approve_merge", "reject"],
+          });
+          if (choice === "approve_merge") {
+            await this.deps.git.mergePr(project, task.prNumber!);
+            await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
+            task.status = "done";
+            this.emit("info", "engine", `Merged: ${task.title}`, task.id);
+          } else {
+            task.status = "failed";
+            this.emit("warn", "engine", `Rejected: ${task.title}`, task.id);
+          }
+          this.deps.events.onTaskUpdated(task);
+          return;
+        }
+      }
+
       const canMerge = await this.canAutoMerge(project, task, finalGate!);
       if (canMerge) {
         await this.deps.git.mergePr(project, task.prNumber!);

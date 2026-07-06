@@ -86,6 +86,26 @@ export interface GitService {
     project: Project,
     task: Task,
   ): Promise<"clean" | "conflict">;
+  /**
+   * F15: poll the target repo's own CI/checks for `prNumber` (opt-in via
+   * `ProjectConfig.requireGithubChecks`) — distinct from this app's local
+   * gates, which can't see the target repo's configured checks at all.
+   * Polls `gh pr checks` every ~15s. Returns:
+   * - `"passed"`: every check succeeded (or was skipped/neutral)
+   * - `"none"`: the repo has no checks configured for this PR at all —
+   *   treated as nothing to wait for, not a failure
+   * - `"failed"`: at least one check failed or was cancelled
+   * - `"timeout"`: still pending when `timeoutMs` elapsed
+   * `onPoll` fires once per poll attempt (including the first) so the
+   * caller can emit a log line and keep the task's activity heartbeat fresh
+   * during what can be a multi-minute wait.
+   */
+  waitForChecks(
+    project: Project,
+    prNumber: number,
+    timeoutMs: number,
+    onPoll?: (elapsedMs: number) => void,
+  ): Promise<"passed" | "failed" | "none" | "timeout">;
 }
 
 /** Runs the objective, non-AI gates inside a worktree. */

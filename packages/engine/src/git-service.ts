@@ -281,6 +281,60 @@ export class GitServiceImpl implements GitService {
     return "clean";
   }
 
+  async waitForChecks(
+    project: Project,
+    prNumber: number,
+    timeoutMs: number,
+    onPoll?: (elapsedMs: number) => void,
+  ): Promise<"passed" | "failed" | "none" | "timeout"> {
+    const POLL_MS = 15_000;
+    const start = Date.now();
+    for (;;) {
+      onPoll?.(Date.now() - start);
+      // --json makes `gh pr checks` exit 0 for pass/pending/fail alike — the
+      // real state lives in each check's `bucket` field, not the exit code.
+      // The ONE case that still throws even with --json is "no checks
+      // configured at all", which prints a literal "no checks reported on
+      // the '<branch>' branch" message instead of emitting JSON. Verified
+      // directly against the installed `gh` (all four states) before
+      // writing this, per the plan's instruction not to trust assumptions
+      // about CLI exit-code semantics.
+      try {
+        const stdout = await gh([
+          "pr",
+          "checks",
+          String(prNumber),
+          "--repo",
+          project.repoUrl,
+          "--json",
+          "bucket,state,name",
+        ]);
+        const checks = JSON.parse(stdout) as { bucket: string }[];
+        if (checks.length > 0) {
+          if (checks.some((c) => c.bucket === "fail" || c.bucket === "cancel")) {
+            return "failed";
+          }
+          if (!checks.some((c) => c.bucket === "pending")) {
+            return "passed"; // everything left is pass/skipping
+          }
+          // else still pending — fall through to the timeout/sleep below
+        }
+      } catch (err: unknown) {
+        const message = String(
+          (err as { stderr?: string; message?: string })?.stderr ??
+            (err as Error)?.message ??
+            "",
+        );
+        if (/no checks reported/i.test(message)) return "none";
+        // Any other CLI hiccup (transient network blip, etc.) — tolerate and
+        // keep polling until the timeout rather than failing the whole task
+        // over one bad poll.
+      }
+      if (Date.now() - start >= timeoutMs) return "timeout";
+      await delay(POLL_MS);
+    }
+  }
+
   /** Fetch + checkout + ff-merge the primary clone to origin's default branch.
    *  Caller must hold the repo lock. */
   private async syncPrimary(project: Project): Promise<void> {

@@ -455,8 +455,8 @@ here, matching precedent from S2's original auth-hook work).
 
 | Item | Status | PR |
 |---|---|---|
-| F14 — CI for this repo (GitHub Actions) | ✅ done | TBD |
-| F15 — "Wait for GitHub checks" merge gate | ⬜ | |
+| F14 — CI for this repo (GitHub Actions) | ✅ done | [#48](https://github.com/IngeniousArtist/hoopedorc/pull/48) |
+| F15 — "Wait for GitHub checks" merge gate | ✅ done | TBD |
 | F16 — Subscription quota awareness | ⬜ | |
 | F17 — DB backup rotation | ⬜ | |
 | F18 — Sandbox design doc (docs only) | ⬜ | |
@@ -480,6 +480,56 @@ checks — so `npm run typecheck` alone is correct on any fresh checkout, not
 just under CI. Verified: reran the full sequence from a clean `dist`-less
 state (typecheck → build → both test suites, all green), then confirmed the
 actual GitHub Actions run on the PR went green via `gh pr checks --watch`.
+
+F15 fixed: new opt-in per-project `ProjectConfig.requireGithubChecks` +
+`githubChecksTimeoutMin` (integer 1–120, default 15). **Verified the real
+`gh` CLI's behavior by hand before writing any code** (per the plan's
+explicit instruction not to trust the paragraph's assumptions) using a
+throwaway probe PR against this very repo — the actual semantics turned out
+cleaner than assumed: with `--json bucket,state,name`, `gh pr checks`
+**always exits 0** for pass/pending/fail alike (the real state lives in
+each check's `bucket` field, not the exit code — confirmed `"pass"`,
+`"pending"`, `"fail"` directly); the **one** case that still throws (exit 1)
+even with `--json` is "no checks configured at all", which prints a literal
+`no checks reported on the '<branch>' branch` message instead of any JSON.
+New `GitService.waitForChecks(project, prNumber, timeoutMs, onPoll?)` in
+`git-service.ts` polls every 15s on exactly that logic: parse the JSON
+array, `"fail"`/`"cancel"` bucket → `"failed"`; no `"pending"` bucket left →
+`"passed"`; the "no checks reported" message → `"none"`; any other
+unexpected CLI error tolerated (keep polling, don't fail the task over one
+bad poll) until `timeoutMs` elapses → `"timeout"`. `Orchestrator.executeTask`
+consults it right before the existing `canAutoMerge` risk check (after
+`syncBranchWithMain`, guarded by `project.config?.requireGithubChecks`):
+`"passed"`/`"none"` fall through to the normal risk-based merge decision
+unchanged; `"failed"`/`"timeout"` skip straight to the existing
+`requestApproval` escalation (reusing the same `approve_merge`/`reject`
+shape as the risky-change path) since there's nothing more for
+`canAutoMerge` to add once GitHub's own CI has already failed or hung.
+`bailIfStopRequested` is checked immediately after the wait returns, so a
+Stop press during a multi-minute wait can't be overtaken by checks finishing
+and auto-merging behind it. Investigated the plan's stuck-detector warning
+directly in the code rather than assuming it applied: `STUCK_DETECTION`'s
+actual watchdog timers (`maxRunTimer`/`idleTimer`) are scoped and cleared
+entirely within `runAuthor`, so a wait during the merge phase can't trigger
+an abort — but the Board's `TaskCard` heartbeat indicator (`apps/web/.../
+TaskCard.tsx`) mirrors the same `idleMs` threshold purely cosmetically from
+log timestamps, so a silent multi-minute wait would still make the card
+misleadingly look "possibly stuck" to a human watching the Board. Emitting
+an info log line on every poll (as the plan asked) keeps that heartbeat
+honest regardless of which mechanism was actually at risk. New
+`apps/web/src/components/ProjectConfigFields.tsx` checkbox + conditional
+timeout-minutes input alongside F9's other per-project Advanced fields.
+Verified: 5 new engine unit tests with a fake `GitService` covering all
+four outcomes plus the Stop-during-wait case (31/31 engine tests green,
+4/4 adapters); **also live-verified the real (non-fake) `GitServiceImpl.
+waitForChecks` implementation** via a standalone script against real PRs in
+this repo — PR #48 (real passed CI) → `"passed"`, PR #47 (merged before CI
+existed, no checks) → `"none"`, and a throwaway broken PR → `"failed"` —
+exercising the actual JSON-parsing/bucket-decision code, not just CLI
+behavior in isolation. The `"timeout"` path is covered by the fake-GitService
+unit test only (precise real-world timing control wasn't practical to
+reproduce safely). `npm run typecheck`/`npm run build` green across all
+workspaces.
 
 ---
 

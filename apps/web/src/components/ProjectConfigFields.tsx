@@ -16,6 +16,8 @@ export interface ProjectConfigForm {
   testScript: string;
   testSkip: boolean;
   testCommand: string;
+  requireGithubChecks: boolean;
+  githubChecksTimeoutMin: string;
 }
 
 export const EMPTY_PROJECT_CONFIG_FORM: ProjectConfigForm = {
@@ -30,6 +32,8 @@ export const EMPTY_PROJECT_CONFIG_FORM: ProjectConfigForm = {
   testScript: "",
   testSkip: false,
   testCommand: "",
+  requireGithubChecks: false,
+  githubChecksTimeoutMin: "",
 };
 
 export function projectConfigToForm(config: ProjectConfig | undefined): ProjectConfigForm {
@@ -47,6 +51,9 @@ export function projectConfigToForm(config: ProjectConfig | undefined): ProjectC
     testScript: typeof g.testScript === "string" ? g.testScript : "",
     testSkip: g.testScript === false,
     testCommand: g.testCommand ?? "",
+    requireGithubChecks: config.requireGithubChecks ?? false,
+    githubChecksTimeoutMin:
+      config.githubChecksTimeoutMin != null ? String(config.githubChecksTimeoutMin) : "",
   };
 }
 
@@ -73,6 +80,12 @@ export function projectConfigFromForm(form: ProjectConfigForm): ProjectConfig | 
   addGate("testScript", form.testSkip, form.testScript);
   if (form.testCommand.trim()) gates.testCommand = form.testCommand.trim();
   if (Object.keys(gates).length > 0) config.gates = gates;
+
+  if (form.requireGithubChecks) config.requireGithubChecks = true;
+  if (form.githubChecksTimeoutMin.trim()) {
+    const n = parseInt(form.githubChecksTimeoutMin, 10);
+    if (Number.isFinite(n)) config.githubChecksTimeoutMin = n;
+  }
 
   return Object.keys(config).length > 0 ? config : undefined;
 }
@@ -223,6 +236,28 @@ export function ProjectConfigFields({
               placeholder="runs via execFile — no shell, split on spaces"
               className={inputCls}
             />
+          </div>
+
+          <div>
+            <label className="mb-1 flex items-center gap-2 text-neutral-400">
+              <input
+                type="checkbox"
+                checked={form.requireGithubChecks}
+                onChange={(e) => set("requireGithubChecks", e.target.checked)}
+              />
+              Wait for the PR's own GitHub checks before auto-merging
+            </label>
+            {form.requireGithubChecks && (
+              <input
+                type="number"
+                min={1}
+                max={120}
+                value={form.githubChecksTimeoutMin}
+                onChange={(e) => set("githubChecksTimeoutMin", e.target.value)}
+                placeholder="timeout minutes (default: 15)"
+                className={`${inputCls} mt-1`}
+              />
+            )}
           </div>
         </div>
       )}
