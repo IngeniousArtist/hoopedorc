@@ -30,10 +30,11 @@ if [ -f .env ]; then
   token="$(grep -E '^API_TOKEN=' .env | tail -1 | cut -d= -f2- || true)"
 fi
 
-auth_header=()
-[ -n "$token" ] && auth_header=(-H "Authorization: Bearer $token")
-
-projects_json="$(curl -s --max-time 3 "${auth_header[@]}" "http://127.0.0.1:${port}/api/projects" 2>/dev/null || true)"
+if [ -n "$token" ]; then
+  projects_json="$(curl -s --max-time 3 -H "Authorization: Bearer $token" "http://127.0.0.1:${port}/api/projects" 2>/dev/null || true)"
+else
+  projects_json="$(curl -s --max-time 3 "http://127.0.0.1:${port}/api/projects" 2>/dev/null || true)"
+fi
 if [ -n "$projects_json" ] && echo "$projects_json" | grep -q '"status":"running"'; then
   echo "Warning: at least one project is currently running." >&2
   echo "Updating restarts the server, aborting any active task." >&2
