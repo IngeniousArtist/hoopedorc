@@ -17,7 +17,14 @@ ARCHITECTURE, NEXT_STEPS, CONTRACT). It has four parts:
 - **Part 4 — Post-plan audit & UX wave** (added 2026-07-06 after Part 3 completed):
   the audit record for the merged Phase 7/8 work (three integration fixes, already
   landed as PR #57), then a UX improvement wave (U1–U10) produced by walking every
-  page of the real app in a browser. This is the active work.
+  page of the real app in a browser. Completed 2026-07-06.
+- **Part 5 — Post-UX-wave fixes & remote-QoL wave** (added 2026-07-07 after Part 4
+  completed, from Fable's audit of the merged U1–U10 code plus a review of the app
+  against the target deployment: the server on an EC2 instance inside the owner's
+  Tailscale tailnet, planned and supervised from any device — often a phone —
+  running near-autonomously): six fixes for defects/footguns confirmed in the
+  current code, then a quality-of-life wave aimed at that remote deployment.
+  **This is the active work.**
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
@@ -899,6 +906,35 @@ batch, so this was reasoned from code instead: `respondNotification`'s
 success path already broadcasts the updated notification globally (used and
 verified since B15/F5), and the badge's handler is the same upsert-by-id
 reducer `Notifications.tsx` has used and relied on since F5.
+
+### Phase 10 — Part 5: post-UX-wave fixes + remote-QoL wave — ⬜ ACTIVE
+
+| Item | Status | PR |
+|---|---|---|
+| B20 — Projects-page "Pause" is an unconfirmed hard abort | ⬜ | |
+| S7 — API token written to server logs via the WS query param | ⬜ | |
+| B21 — Board drag-and-drop failures are silent | ⬜ | |
+| B22 — Schedule form can silently delete a saved schedule | ⬜ | |
+| B23 — `notifications` table grows unbounded | ⬜ | |
+| B24 — Browser-notification dead ends are silent | ⬜ | |
+| F20 — Remote setup docs: `tailscale serve` HTTPS + EC2 headless auth | ⬜ | |
+| F21 — Hash routing + deep links | ⬜ | |
+| F22 — Approval context (PR link + reasons) in the web UI | ⬜ | |
+| F23 — Global "Stop all" control | ⬜ | |
+| F24 — Update story: `scripts/update.sh` + version surfacing | ⬜ | |
+| F25 — Single shared WebSocket connection | ⬜ | |
+| F26 — PWA manifest | ⬜ | |
+| U11 — No `beforeunload` guard while Settings is dirty | ⬜ | |
+| U12 — `agoLabel` has no hours unit | ⬜ | |
+| U13 — MissionControl "elapsed" resets on status transitions | ⬜ | |
+| U14 — Notifications page: pending approvals should sort first | ⬜ | |
+
+Work top-down (specs in Part 5 below). Suggested batches, mirroring how
+Phases 3/9 went: (1) B20 + B21 — two small run-control/Board fixes; (2) S7;
+(3) B22; (4) B23 + B24; (5) F20 (docs only); (6) F21; (7) F22; (8) F23;
+(9) F24; (10) U11–U14 together (all small UI polish); (11) F25; (12) F26.
+Update this table (and re-check each item's acceptance criteria) as each
+lands.
 
 ---
 
@@ -2065,6 +2101,450 @@ fundamentally sound UI, not a redesign.
 
 ---
 
+## Part 5 — Post-UX-wave fixes & remote-QoL wave (Fable, 2026-07-07)
+
+Produced by auditing the merged U1–U10 code (PRs #59–#62) on `main`, plus a
+review of the whole app against the deployment the owner actually plans:
+the server on an EC2 instance inside a Tailscale tailnet, planned and
+supervised from any device (often a phone), running near-autonomously.
+Every "Problem" below was confirmed against the actual code on `main`, not
+inferred from the progress notes. Verdict on the U1–U10 wave itself: all
+ten items are genuinely implemented as specced and the verification claims
+held up — this Part is polish and gaps *around* that work, not rework.
+
+**Workflow (same as Parts 1–4):**
+- Branch → PR → merge; CI (F14) green on every PR; item IDs in commit
+  messages; update the Phase 10 table in Progress as you land.
+- Verification bar unchanged: typecheck/build/engine+adapter tests green,
+  live verification (the `agent-browser` pattern) for anything with a UI
+  surface, evidence in PR descriptions — Fable re-verifies after merge.
+  Part 3's browser note still applies (pick the local macOS browser).
+- The verify-before-writing rule from F15/F17 applies doubly to F20: never
+  document a command you haven't run — where this environment can't run
+  one (no tailscale, no EC2), say so explicitly in the doc text.
+
+### Fixes (do these first, top-down)
+
+### B20. Projects-page "Pause" is an unconfirmed hard abort — HIGH (footgun)
+
+**Where:** `apps/web/src/pages/ProjectsView.tsx` (~line 161 — the
+running-project branch calls `act(p.id, "pauseProject", { drain: false })`).
+
+**Problem:** the row's single run-control is labeled "⏸ Pause" but passes
+`drain: false` — the immediate-abort mode. Its own tooltip admits it
+("Abort any running task immediately and requeue it to backlog").
+`ProjectHeader.tsx` gets this right: "Pause (finish current)" is
+`drain: true`, and the destructive "Stop now" is a separate button behind a
+`window.confirm`. On the Projects page, one click on something labeled
+*Pause* kills a running agent mid-task with no confirmation — exactly the
+class of misclick U6 moved the model dropdown to avoid. (The row buttons
+landed with F12 and predate the UX wave; nobody re-checked them against
+F3's pause-mode split.)
+
+**Fix:** mirror ProjectHeader on the row: "Pause" → `{ drain: true }` with
+the finish-current tooltip; add a separate "Stop now" button using the same
+confirm copy `ProjectHeader.stopNow()` uses. Keep both visually compact
+(the row is already dense).
+
+**Acceptance:** with a task running, clicking the row's Pause leaves the
+active agent running (drains after it finishes — no abort); Stop now asks
+for confirmation and aborts on confirm; tooltips match actual behavior.
+Live-verify the non-destructive path against a scratch project (no real
+model cost needed — the mock server's seed is fine for the button wiring;
+the drain semantics themselves were verified back in F3).
+
+### S7. API token written to server logs via the WS query param — MEDIUM
+
+**Where:** `packages/server/src/index.ts` (~line 506,
+`Fastify({ logger: true })`); `apps/web/src/hooks/useWS.ts` appends
+`?token=<API_TOKEN>` to the upgrade URL (by design — browsers can't set
+headers on a WS upgrade; S2/S6).
+
+**Problem:** Fastify's default request logging includes the full request
+URL, so every WebSocket connect writes `GET /ws?token=<the real token>` to
+stdout — which systemd persists in the journal on the target EC2
+deployment. S6's own verification evidence quotes exactly such log lines.
+Anyone who can read the logs (or a log snippet pasted into a bug report)
+gets the token.
+
+**Fix:** override the logger's `req` serializer to redact the `token`
+query parameter from the logged URL (e.g.
+`url.replace(/([?&]token=)[^&]*/, "$1[redacted]")`) while keeping
+method/path/status logging intact. Check the actual serializer shape
+against the installed Fastify version's docs/output — don't assume it from
+memory. Also grep the server for any other place a request URL is logged
+(the auth hook, `ws-hub.ts`) and redact there too.
+
+**Acceptance:** boot with `API_TOKEN` set, connect the web app → the
+server log shows `/ws?token=[redacted]`, and `grep`ing the captured log
+output for the real token finds nothing; normal request logging still
+shows method/path/status; a wrong-token 401's log line is redacted too.
+
+### B21. Board drag-and-drop failures are silent — LOW
+
+**Where:** `apps/web/src/pages/Board.tsx` `handleDrop` (~line 360 — the
+catch reverts the optimistic move and shows nothing).
+
+**Problem:** B5's server rules reject most manual status moves with
+genuinely useful messages ("PATCH can only requeue a task to \"backlog\"
+or \"ready\"", a 409 telling you to Stop an active task first). The catch
+swallows them, so the card just snaps back — indistinguishable from the
+drag not registering. U3's own live-testing hit exactly this confusion
+(two fixture picks "failed silently" before those rules were understood).
+
+**Fix:** `toast(String(e), "error")` in the catch — `useToast` is already
+in scope in Board.tsx.
+
+**Acceptance:** dragging an in-progress card to Done shows a toast with
+the server's message and the card reverts; a valid backlog→ready drag
+stays silent.
+
+### B22. Schedule form can silently delete a saved schedule — MEDIUM (data loss)
+
+**Where:** `apps/web/src/components/ProjectConfigFields.tsx`
+`projectConfigFromForm` (~lines 111–124).
+
+**Problem:** the schedule is only emitted when its fields are complete
+(daily needs hour AND minute; interval needs hours). A partially-filled
+form — hour set, minute blank; or the mode switched to interval with hours
+blank — omits `schedule` from the produced config entirely, so saving
+**deletes the previously stored schedule** with no warning. This is the
+same bug class U7 fixed for the enabled-checkbox, one level down.
+
+**Fix:** distinguish three cases: all schedule fields blank → no schedule
+(intentional removal — current behavior, keep); complete → emit (keep);
+**partial → invalid**. For the partial case, export a
+`projectConfigFormError(form): string | null` helper from
+ProjectConfigFields and have both save sites (ProjectHeader's `saveConfig`
+and NewProject's create) disable save and show the message ("Schedule
+needs both HH and MM" / "Interval schedule needs hours"). Show the same
+hint inline next to the schedule inputs so the fix is discoverable before
+the save attempt.
+
+**Acceptance:** with a saved daily schedule, blanking the minute → save is
+blocked with a visible message and the stored schedule survives (verify
+via `GET /api/projects/:id`); blanking hour AND minute then saving removes
+the schedule (intentional path still works); NewProject shows the same
+validation.
+
+### B23. `notifications` table grows unbounded — LOW
+
+**Where:** `packages/server/src/db/repo.ts` `getNotifications` (~line 782
+— no LIMIT); nothing prunes notifications (B14 covered only `logs`; B10
+only marks stale approvals expired, never deletes);
+`apps/web/src/pages/Notifications.tsx` and App.tsx's U1 badge seed both
+fetch the full list.
+
+**Problem:** months of autonomous runs accumulate thousands of rows, all
+fetched and rendered on every Notifications visit and every badge seed.
+
+**Fix:** mirror B14's pattern: prune on boot + daily in `main()` — delete
+notifications older than `NOTIFICATION_RETENTION_DAYS` (env, default 30)
+**except** rows with `requiresApproval` and no `respondedWith` (a pending
+approval must never be silently deleted, no matter how old). Add a LIMIT
+(default ~200, newest first — the query already orders by `created_at
+DESC`) to `getNotifications`. Add the env var to `.env.example`.
+
+**Acceptance:** seed 300 old responded notifications + 1 old pending
+approval → boot → the old responded rows are pruned, the pending approval
+survives; the page and the U1 badge still work.
+
+### B24. Browser-notification dead ends are silent — LOW
+
+**Where:** `apps/web/src/hooks/useBrowserNotify.tsx` (~line 8 `SUPPORTED`;
+~line 46 the constructor try/catch); `Settings.tsx`'s "Browser
+Notifications" section; `docs/USER_GUIDE.md`.
+
+**Problem:** two dead ends the UI currently hides. (1) Over plain HTTP
+from another machine (`http://<tailnet-ip>:3987`) there is no secure
+context, so the Notification API is unavailable — Settings just says "Not
+supported in this browser" with no hint that the fix is HTTPS (see F20).
+(2) On Android Chrome, `new Notification(...)` **throws even with
+permission granted** (that platform only allows
+`ServiceWorkerRegistration.showNotification`) — the catch swallows it, so
+the user "enables" notifications that can never fire and Settings shows a
+green "Enabled."
+
+**Fix:** honest messaging, not a service worker (that's future work F26
+notes as its hook). (1) When `!window.isSecureContext`, show specific
+copy: "Needs HTTPS — see the user guide's Remote setup (`tailscale
+serve`)." (2) On grant, fire a test notification inside the same try/catch
+and surface a failure state ("This browser can't show page notifications —
+rely on Telegram for pings on this device."). (3) Update the guide's
+notification mentions: browser notifications are for desktop browsers over
+HTTPS/localhost; on phones, Telegram is the channel.
+
+**Acceptance:** over an insecure non-localhost origin, Settings explains
+the HTTPS requirement instead of the generic "not supported"; on a
+platform where construction throws, enabling surfaces the failure message
+instead of "Enabled."; guide updated.
+
+### QoL wave (after the fixes, top-down)
+
+### F20. Remote setup docs: `tailscale serve` HTTPS + EC2 headless auth — docs only, do first
+
+**Where:** `docs/USER_GUIDE.md` "Remote setup (Tailscale)" (~line 173);
+`deploy/README.md`; B24's Settings copy links here.
+
+**Problem:** the current remote section says `HOST=0.0.0.0` + `API_TOKEN`.
+That works, but it's strictly worse than the tailscale-native path, and it
+leaves everything on plain HTTP — which quietly breaks secure-context
+browser features (B24) and sends the bearer token unencrypted (fine inside
+WireGuard, but only inside it). And there is no EC2/headless-Linux
+guidance at all, even though that's the owner's actual target — the CLIs'
+login flows are exactly where a first headless deploy stalls.
+
+**Fix (rewrite the Remote setup section + add an EC2 section):**
+1. **Recommended path:** keep `HOST=127.0.0.1` and put `tailscale serve`
+   in front — it serves `https://<machine>.<tailnet>.ts.net` with a
+   trusted cert, proxying to localhost, so no non-loopback bind is needed
+   at all (the API_TOKEN startup refusal never triggers; still recommend
+   setting a token as defense in depth). **Verify the exact invocation
+   with a real `tailscale` CLI** (`tailscale serve --help`) before writing
+   it down; if no tailscale is installed in this environment, write the
+   command from current official docs and mark it "verify on your box"
+   explicitly. Warn: `tailscale funnel` exposes the port to the public
+   internet — never use it for this.
+2. Keep the existing `HOST=0.0.0.0` + token instructions as the
+   documented fallback.
+3. New **"EC2 / headless Linux"** subsection: prereqs (node 22, git, gh,
+   claude, opencode), then headless auth for each CLI — `gh auth login`'s
+   device flow; `opencode auth login`; Claude Code on Linux (note the F10
+   Keychain caveat is macOS/container-specific — on Linux the credentials
+   live on disk, so subscription auth is expected to work; document the
+   login flow and the `ANTHROPIC_API_KEY` fallback, and clearly mark
+   anything not directly verified). Point at `deploy/`'s systemd unit, the
+   DB/backup locations (F17), and cross-link F24's update procedure once
+   it exists.
+
+**Acceptance:** the guide's remote section leads with `tailscale serve` +
+loopback; an EC2 section exists covering all the CLI auth flows with
+verified-vs-unverified clearly marked; B24's Settings copy links to the
+section.
+
+### F21. Hash routing + deep links
+
+**Where:** `apps/web/src/App.tsx` (`page` + `selectedProjectId` are plain
+`useState`; `STORAGE_KEY` persists only the project).
+
+**Problem:** a refresh anywhere lands back on Board; nothing is linkable —
+a phone user can't bookmark Notifications, and a Telegram approval can't
+link into the app (F22 wants exactly that). For a multi-device deployment
+this is the single biggest friction item.
+
+**Fix:** sync page + project to the URL hash — no router dependency:
+- Format: `#/<page>` for global pages (`#/settings`), `#/p/<projectId>/
+  <page>` for project pages (`#/p/abc123/board`).
+- On load: parse the hash; a valid project id in it wins over
+  localStorage; invalid/empty falls back to current behavior (stored
+  project, Board, F1's welcome redirect unchanged).
+- On navigation: write the hash (pushState, so back/forward work) — all
+  through the existing `navigate()` so the U4 dirty-guard keeps working.
+  Listen to `hashchange` for back/forward and route it through the same
+  guard; if the user cancels the confirm, restore the previous hash.
+- Keep it page-level only: the selected task / drawer state does NOT go
+  into the URL (avoids hash churn on every card click).
+
+**Acceptance:** refresh on Costs stays on Costs for the same project;
+pasting `#/notifications` into a fresh tab opens Notifications; browser
+back returns to the previous page; with dirty Settings, both a tab click
+and browser-back still confirm, and cancel keeps the edits; the first-run
+onboarding redirect still works.
+
+### F22. Approval context (PR link + validator reasons) in the web UI
+
+**Where:** `packages/types/src/domain.ts` `Notification` (no context field
+today); the F5 `ApprovalContext` plumbing (engine-runner → `telegram.ts`)
+that already computes PR url + top validator reasons;
+`packages/server/src/db` (notifications schema — the standard `ALTER
+TABLE` migration list); `apps/web/src/pages/Notifications.tsx`; mock
+server seed; CONTRACT.md.
+
+**Problem:** F5 enriched only the *Telegram* message. The web card is
+title + message, so approving from the app (phone or desktop) means
+deciding blind or hunting the Board for the task's drawer. For "step in
+from any device," the approval screen should carry what the decision
+needs.
+
+**Fix:** add optional `context?: { prUrl?: string; reasons?: string[] }`
+to `Notification` (types + CONTRACT.md + a mock-seed example); persist it
+(new nullable JSON column via the migration list); populate it at the same
+site telegram's `ApprovalContext` is built — one source, both channels;
+render it on the Notifications card when present: a "View PR ↗" link and
+the reasons as a short list above the approve/reject buttons. Rows without
+context render exactly as today.
+
+**Acceptance:** a new risky-merge approval shows the PR link + reasons on
+the web card (live-verify via a seeded approval with context — same
+technique as U1's batch); rows predating the migration render unchanged;
+Telegram output unchanged; CONTRACT.md updated.
+
+### F23. Global "Stop all" control
+
+**Where:** `apps/web/src/App.tsx` (nav top row);
+`packages/server/src/index.ts` + `ROUTES` in `@orc/types` + CONTRACT.md +
+mock server.
+
+**Problem:** the safety rails are all per-project. The owner's scenario is
+several projects running unattended; when something looks wrong from a
+phone, "make everything stop NOW" currently takes Projects page → per-row
+action → repeat. A panic control should be one confirmed tap from
+anywhere.
+
+**Fix:** new route `POST /api/engine/stop-all` — for every running
+project, call the existing `engine.pause(project, { drain: false })` (the
+same abort path the per-project Stop now uses); write one audit entry
+(kind `"stopped"`, actor human, listing affected projects); return the
+list. Verify manually-dispatched tasks are covered by that path (the
+B1/B3 `manualRuns` machinery) — if not, also call `stopTask` for those.
+UI: a red "Stop all" button in the nav top row, rendered only when ≥1
+project is running (App already has live project statuses via WS), behind
+a `window.confirm` naming the affected projects.
+
+**Acceptance:** two projects running → one click + confirm → both paused,
+active agent processes gone within ~3s (the existing SIGTERM→SIGKILL
+path), audit entry written; the button is absent when nothing is running;
+the mock server implements the route so the UI is verifiable without real
+runs.
+
+### F24. Update story: `scripts/update.sh` + version surfacing
+
+**Where:** new `scripts/update.sh`; `packages/server` (health route);
+`apps/web/src/pages/SetupView.tsx`; `docs/USER_GUIDE.md` (new "Updating"
+section; cross-link from F20's EC2 section).
+
+**Problem:** nothing documents how to update a deployed instance, and the
+server doesn't report what version it's running — on a remote box that's
+"ssh in and guess."
+
+**Fix:** (1) `scripts/update.sh`: refuse on a dirty tree; warn (prompt) if
+any project is currently running (`GET /api/projects` against localhost,
+tolerating the server being down); then `git pull --ff-only && npm ci &&
+npm run build`; restart via systemd if the `hoopedorc` unit exists, else
+print the restart instruction. (2) Add `version` (from the root
+`package.json`) to `GET /api/health`; show it on SetupView ("Hoopedorc
+vX.Y.Z"). (3) Short "Updating" section in the guide.
+
+**Acceptance:** the script runs end-to-end on a clean checkout locally
+(minus the systemd step — environment-dependent, mark it); a dirty tree →
+refusal; `/api/health` returns the version and SetupView displays it.
+
+### F25. Single shared WebSocket connection
+
+**Where:** `apps/web/src/hooks/useWS.ts` and its call sites (`App.tsx`,
+`Board.tsx`, `MissionControl.tsx`, `Notifications.tsx`).
+
+**Problem:** every `useWS` call opens its own socket, so the Board view
+holds **three** concurrent connections (App + Board + MissionControl) to
+the same server for the same project — three reconnect storms after every
+server restart or phone sleep, three snapshot replays, for zero benefit.
+
+**Fix:** a module-level connection manager — one socket, reference-counted
+handler registry, the same backoff logic; `useWS` keeps its exact
+signature so call sites don't change. All current subscribers use the same
+projectId; on projectId change, resubscribe once. Note `ws-hub.ts` tracks
+one subscription per socket — verify that stays satisfied (it does, since
+all subscribers share the projectId; log a warning if a second distinct
+projectId ever registers, so a future regression is visible).
+
+**Acceptance:** the Board view opens exactly one WS connection (server log
+/ devtools network tab); the U1 badge, MissionControl approvals, and Board
+live logs all still update; kill and restart the server → a single
+reconnection, everything resumes.
+
+### F26. PWA manifest
+
+**Where:** `apps/web/index.html`, `apps/web/public/`.
+
+**Problem:** on a phone the app lives in a browser tab; add-to-home-screen
+produces a generic bookmark. An installable manifest gives it an icon and
+a standalone window, and is the prerequisite for any future service-worker
+notification work (the honest gap B24 documents).
+
+**Fix:** `manifest.webmanifest` (name/short_name "Hoopedorc", `display:
+standalone`, background/theme `#0a0a0a`, 192/512 icons — a simple
+generated monogram is fine), `<link rel="manifest">` + theme-color meta.
+**No service worker in this item.**
+
+**Acceptance:** Chrome devtools' manifest panel shows no errors;
+add-to-home-screen installs with the icon and opens standalone; the built
+`dist` (F10's static-serving path) serves the manifest and icons.
+
+### UX polish (small, batch together)
+
+### U11. No `beforeunload` guard while Settings is dirty — LOW
+
+**Where:** `apps/web/src/pages/Settings.tsx` (U4 guarded in-app nav only).
+
+**Problem:** U4's confirm covers tab clicks, but reload/close — an easy
+reflex on a phone — still discards edits silently.
+
+**Fix:** while dirty, register a `beforeunload` handler that calls
+`preventDefault()` (the standard browser "unsaved changes" prompt); remove
+it when clean or on unmount.
+
+**Acceptance:** dirty → reload → the native confirm appears; after save,
+reload is silent.
+
+### U12. `agoLabel` has no hours unit — TRIVIAL
+
+**Where:** `apps/web/src/components/TaskCard.tsx` `agoLabel` (~line 8).
+
+**Problem:** a 2-hour run reads "127m 33s ago" on card heartbeats and the
+MissionControl strip.
+
+**Fix:** ≥ 60m → `${h}h ${m}m ago`. Verify MissionControl's " ago"-suffix
+strip still produces "elapsed 2h 5m".
+
+**Acceptance:** 2h 5m renders "2h 5m ago" (card) and "elapsed 2h 5m"
+(strip).
+
+### U13. MissionControl "elapsed" resets on status transitions — LOW
+
+**Where:** `apps/web/src/components/MissionControl.tsx` (~line 90 computes
+elapsed from `task.updatedAt`).
+
+**Problem:** `updatedAt` bumps on every task update — including the
+mid-attempt `in_progress → in_review` transition (B6) — so "elapsed"
+visibly resets to zero while the same attempt is still going.
+
+**Fix:** Board already sees every `task.updated`: record the timestamp a
+task *enters* the active set (status changes into `in_progress` from a
+non-active status) in a small map and pass it to MissionControl; fall back
+to `updatedAt` when unknown (initial page load). Don't fetch runs for
+this.
+
+**Acceptance:** a task moving `in_progress → in_review` keeps its elapsed
+counter; after a reload the label is still roughly right (fallback).
+
+### U14. Notifications page: pending approvals should sort first — LOW
+
+**Where:** `apps/web/src/pages/Notifications.tsx` (renders in fetch order,
+`createdAt` DESC).
+
+**Problem:** the one thing that blocks a run — a pending approval — can
+sit below newer info/warn noise.
+
+**Fix:** sort pending approvals (`requiresApproval && !respondedWith`) to
+the top, newest first within each group; optionally a "Needs response"
+subheading when any exist.
+
+**Acceptance:** an older pending approval renders above newer info items;
+once responded, it drops back into chronological order.
+
+### What Part 5 deliberately does NOT include (for calibration)
+
+- **No service worker / push notifications** — B24 fixes the messaging,
+  F26 lays the manifest groundwork; actual SW notifications are future
+  work (Telegram already covers the phone-ping channel well).
+- **No sandbox work** — F13 phase 1 (gates-only, per
+  `docs/specs/sandbox.md`) remains the biggest security-posture item on
+  the post-Part-5 backlog, along with the rest of Part 4's "Beyond the UX
+  wave" list (an `@orc/server` test package, quota usage in the health
+  panel, release tagging).
+
+---
+
 ## Suggested execution order
 
 | Phase | Items | Rationale | Status |
@@ -2078,14 +2558,17 @@ fundamentally sound UI, not a redesign.
 | 7 | B16, B17, B18, B19, S6 | Review-pass fixes: confirmed defects in the shipped Phase 6 work. Fix before Phase 8. | ✅ done |
 | 8 | F14, F15, F16, F17, F18, F19 | Second feature wave: CI first (F14 — every later PR benefits), then external-CI gate, quota awareness, backups, sandbox doc, scheduled runs (F19 opted into 2026-07-06). | ✅ done |
 | 9 | A1–A5, U1–U10 | Post-plan audit fixes, then the UX wave from the full-app walkthrough — badge/header/board layout first (U1–U4 are the high-impact ones), trivial polish after. | ✅ done |
+| 10 | B20–B24, S7, F20–F26, U11–U14 | Post-UX-wave audit fixes (the Projects-page Pause footgun first), then the remote-deployment QoL wave: docs → routing → approval context → stop-all → update story → polish → WS/PWA. | ⬜ active |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
 
 Parts 1–4 (Phases 1–9) are **all done** — Phases 1–6 tagged `v0.1.0`,
 Phases 7–8 plus the post-plan audit fixes tagged `v0.2.0`, Phase 9 (A1–A5,
-U1–U10) closes out every item currently in this plan. F13 remains future
-work — F18 covers its design doc only, and Part 4's "Beyond the UX wave"
-list (below) is where to look next. Fable independently re-verifies each
-wave after merge; verification evidence is in each item's PR description
-and in this doc's Progress section above.
+U1–U10) closed out Parts 1–4. **Part 5 (Phase 10) is the active work** —
+work it top-down (B20 first; suggested batches are in the Phase 10
+Progress entry). F13 remains future work — F18 covers its design doc only
+— and Part 4's "Beyond the UX wave" list plus Part 5's "deliberately does
+NOT include" note are the backlog to draw from after Phase 10. Fable
+independently re-verifies each wave after merge; verification evidence is
+in each item's PR description and in this doc's Progress section above.
