@@ -131,6 +131,8 @@ export class Orchestrator implements Scheduler {
   private readonly cooldownBlockedWarned = new Set<string>();
   /** Tasks already logged as capacity-blocked this run, to avoid log spam. */
   private readonly capacityBlockedWarned = new Set<string>();
+  /** F16: tasks already logged as quota-blocked this run, to avoid log spam. */
+  private readonly quotaBlockedWarned = new Set<string>();
   /** How many times each task has been requeued for a merge-time conflict,
    *  so a perpetually-conflicting task can't loop forever. */
   private readonly mergeConflicts = new Map<string, number>();
@@ -240,6 +242,7 @@ export class Orchestrator implements Scheduler {
     this.budgetBlockedWarned.clear();
     this.cooldownBlockedWarned.clear();
     this.capacityBlockedWarned.clear();
+    this.quotaBlockedWarned.clear();
 
     // Orphan recovery: this Orchestrator instance starts with empty
     // activeTaskIds, so any task already "in_progress" or "in_review" was
@@ -361,6 +364,24 @@ export class Orchestrator implements Scheduler {
           continue;
         }
         this.cooldownBlockedWarned.delete(task.id);
+
+        // F16: skip (don't fail) a task whose assigned model has hit its
+        // configured subscription quota — same "hold, don't burn an
+        // attempt" treatment as budget/cooldown above.
+        const quotaMsg = this.deps.checkModelQuota?.(task.assignedModel) ?? null;
+        if (quotaMsg) {
+          if (!this.quotaBlockedWarned.has(task.id)) {
+            this.quotaBlockedWarned.add(task.id);
+            this.emit(
+              "warn",
+              "engine",
+              `Model quota reached, not dispatching: ${quotaMsg}`,
+              task.id,
+            );
+          }
+          continue;
+        }
+        this.quotaBlockedWarned.delete(task.id);
 
         const active = this.getModelActive(task.assignedModel);
         if (active >= cfg.maxConcurrent) {
@@ -567,6 +588,21 @@ export class Orchestrator implements Scheduler {
             "error",
             "engine",
             `Budget cap reached, stopping task: ${budgetMsg}`,
+            task.id,
+          );
+          task.status = "backlog";
+          this.deps.events.onTaskUpdated(task);
+          return;
+        }
+
+        // F16: same requeue-not-fail treatment as the budget check above,
+        // for whichever model is about to actually run this attempt.
+        const quotaMsg = this.deps.checkModelQuota?.(currentModel) ?? null;
+        if (quotaMsg) {
+          this.emit(
+            "warn",
+            "engine",
+            `Model quota reached, requeuing task: ${quotaMsg}`,
             task.id,
           );
           task.status = "backlog";

@@ -25,6 +25,14 @@ checks (the target repo's CI, distinct from this app's local gates) report
 `"passed"` or `"none"` (no checks configured); `"failed"`/`"timeout"`
 escalate to a human approval instead of merging.
 
+`ModelConfig.quota` (F16) declares a subscription's rolling usage window —
+`windowHours` plus at least one of `maxRuns`/`maxCostUsd` (enforced on
+`PUT /api/settings`, a quota with neither set means nothing). When
+configured, the scheduler skips dispatching that model once its window's
+run count or spend is reached — cross-project, since a subscription's cap
+belongs to the model's API key/plan, not any one project — the same
+skip-don't-fail treatment as budget/cooldown checks.
+
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.
 

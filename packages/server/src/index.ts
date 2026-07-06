@@ -1732,6 +1732,32 @@ async function main() {
       });
     }
 
+    // F16: a quota with a window but no actual limit doesn't mean anything
+    // — catch it here rather than silently having checkModelQuota never fire.
+    for (const m of merged.models) {
+      if (!m.quota) continue;
+      if (typeof m.quota.windowHours !== "number" || !(m.quota.windowHours > 0)) {
+        return reply.code(400).send({
+          error: `Model ${m.id}: quota.windowHours must be a positive number`,
+        });
+      }
+      if (m.quota.maxRuns == null && m.quota.maxCostUsd == null) {
+        return reply.code(400).send({
+          error: `Model ${m.id}: quota needs at least one of maxRuns or maxCostUsd set`,
+        });
+      }
+      if (m.quota.maxRuns != null && !(m.quota.maxRuns > 0)) {
+        return reply.code(400).send({
+          error: `Model ${m.id}: quota.maxRuns must be a positive number`,
+        });
+      }
+      if (m.quota.maxCostUsd != null && !(m.quota.maxCostUsd > 0)) {
+        return reply.code(400).send({
+          error: `Model ${m.id}: quota.maxCostUsd must be a positive number`,
+        });
+      }
+    }
+
     const saved = repo.upsertSettings(db, merged);
     configureTelegram(); // apply enable/disable/token/chatId changes live
     return { settings: redactSettings(saved) };

@@ -456,8 +456,8 @@ here, matching precedent from S2's original auth-hook work).
 | Item | Status | PR |
 |---|---|---|
 | F14 — CI for this repo (GitHub Actions) | ✅ done | [#48](https://github.com/IngeniousArtist/hoopedorc/pull/48) |
-| F15 — "Wait for GitHub checks" merge gate | ✅ done | TBD |
-| F16 — Subscription quota awareness | ⬜ | |
+| F15 — "Wait for GitHub checks" merge gate | ✅ done | [#51](https://github.com/IngeniousArtist/hoopedorc/pull/51) |
+| F16 — Subscription quota awareness | ✅ done | TBD |
 | F17 — DB backup rotation | ⬜ | |
 | F18 — Sandbox design doc (docs only) | ⬜ | |
 | F19 — Scheduled runs (previously optional — user explicitly asked for it after Phase 7, so it's in scope; do after F14-F17) | ⬜ | |
@@ -530,6 +530,51 @@ behavior in isolation. The `"timeout"` path is covered by the fake-GitService
 unit test only (precise real-world timing control wasn't practical to
 reproduce safely). `npm run typecheck`/`npm run build` green across all
 workspaces.
+
+F16 fixed: new optional `ModelConfig.quota: { windowHours, maxRuns?,
+maxCostUsd? }` declares a subscription's rolling usage window (Claude Pro's
+cap being the motivating case); `PUT /api/settings` rejects a quota with a
+non-positive `windowHours`, neither `maxRuns` nor `maxCostUsd` set, or a
+non-positive limit. New `repo.getModelUsageSince(db, model, sinceIso)`
+counts `runs` rows (every attempt, not just terminal ones — a subscription
+window cares about requests made) and sums `costs` rows for a model since a
+timestamp, across ALL projects (mirroring `getModelMonthlyCost`'s
+cross-project reasoning, just with a rolling window instead of a calendar
+month). New `budget.ts` function `checkModelQuota(db, model, settings)`
+computes the window's cutoff from `quota.windowHours` and returns a reason
+once either limit is met. Wired into `EngineRunner.buildOrchestrator` as a
+direct lambda (`checkModelQuota: (modelId) => checkModelQuota(this.db,
+modelId, settings)`) — a deliberate deviation from the plan's literal
+wording ("`EngineRunner.checkModelQuota(modelId)`"): no internal state is
+needed (unlike F6's cooldown Map), so it mirrors `checkBudget`'s existing
+direct-lambda wiring rather than adding a redundant wrapper method, the
+same kind of simplification F9 made for its own `SchedulerDeps` field.
+New `SchedulerDeps.checkModelQuota?` hook consulted at **both** places
+`checkBudget` already is: the dispatch loop (skip-don't-fail, new
+`quotaBlockedWarned` Set following the exact
+budget/cooldown/capacity warn-once pattern including the `.clear()`/
+`.delete()` calls) and the retry/attempt path (requeue-to-backlog,
+mirroring `checkBudget`'s own retry-path shape exactly, including that it
+is **not** warn-once there — matching how the existing budget check
+behaves at that site too). New checkbox-adjacent three-input row (window
+hours / max runs / max cost) in `ModelsEditor.tsx` per model. Verified: new
+engine unit test proves the warn fires exactly once across several polls
+while a *different* task keeps the loop alive (not just trivially once,
+which the naive first draft of this test would have shown regardless of
+the dedup logic — a plain single-task version couldn't distinguish "warned
+once" from "the loop only ever runs one pass," since budget/cooldown/quota
+blocks don't set the `blockedByCapacity` flag that keeps `start()`'s loop
+polling, unlike F12/B18's capacity check) — 32/32 engine tests green (1
+new). Server-side: a standalone script against a real in-memory SQLite DB
+(seeded via the actual `repo.createProject`/`createTask`/`createRun`/
+`createCost` functions, not raw SQL) confirmed the real `checkModelQuota` +
+`getModelUsageSince` window math for all four cases the plan asked for —
+runs-limit reached, cost-limit under then over, and no-quota-configured —
+plus an explicit assertion that out-of-window rows are excluded from the
+count. Also live-verified `PUT /api/settings`'s new validation against a
+real running server: a quota with a window but no limit → 400 with a clear
+message; a valid quota → 200 and round-trips; a negative `maxRuns` → 400.
+`npm run typecheck`/`npm run build` green across all workspaces.
 
 ---
 
