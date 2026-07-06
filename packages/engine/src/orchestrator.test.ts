@@ -556,6 +556,60 @@ test("B18: a capacity-blocked task logs exactly one warn across several polls, t
   );
 });
 
+test("B19: a manually-dispatched task (runTask) counts toward the shared model cap, serializing a second Orchestrator's autonomous dispatch behind it", async () => {
+  // Simulates EngineRunner wiring the same shared registry into both a
+  // manual dispatch's Orchestrator and a different project's autonomous-loop
+  // Orchestrator.
+  const shared = new Map<string, number>();
+  const getModelActive = (m: string) => shared.get(m) ?? 0;
+  const incModelActive = (m: string) => shared.set(m, (shared.get(m) ?? 0) + 1);
+  const decModelActive = (m: string) =>
+    shared.set(m, Math.max(0, (shared.get(m) ?? 0) - 1));
+
+  let concurrentAuthors = 0;
+  let maxConcurrentAuthors = 0;
+  const blockingAdapter: AgentAdapter = {
+    runner: "opencode",
+    async run(): Promise<AgentRunResult> {
+      concurrentAuthors++;
+      maxConcurrentAuthors = Math.max(maxConcurrentAuthors, concurrentAuthors);
+      await new Promise((r) => setTimeout(r, 30));
+      concurrentAuthors--;
+      return {
+        ok: true, exitReason: "completed", costUsd: 0.01, tokensIn: 1, tokensOut: 1,
+        summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+      };
+    },
+  };
+
+  const merged: number[] = [];
+  const depsManual = fakeDeps(
+    { adapterFor: () => blockingAdapter, getModelActive, incModelActive, decModelActive },
+    merged,
+  );
+  const depsLoop = fakeDeps(
+    { adapterFor: () => blockingAdapter, getModelActive, incModelActive, decModelActive },
+    merged,
+  );
+
+  // deepseek-pro has maxConcurrent: 1 in the shared test settings() fixture.
+  const manualTask = task("manual-t1", [], { assignedModel: "deepseek-pro" });
+  const loopTask = task("loop-t1", [], { assignedModel: "deepseek-pro" });
+
+  await Promise.all([
+    new Orchestrator(depsManual).runTask(PROJECT, manualTask),
+    new Orchestrator(depsLoop).start(PROJECT, [loopTask]),
+  ]);
+
+  assert.equal(manualTask.status, "done");
+  assert.equal(loopTask.status, "done");
+  assert.equal(
+    maxConcurrentAuthors,
+    1,
+    "the manual dispatch's model use must be visible to the autonomous loop's capacity check, serializing them",
+  );
+});
+
 test("isAuthOrSecretFile matches path segments, not substrings", () => {
   assert.equal(isAuthOrSecretFile("author.ts"), false, "substring of an unrelated filename");
   assert.equal(isAuthOrSecretFile("auth.ts"), true);

@@ -337,8 +337,8 @@ silently always `true` on success in every real repo, only ever
 |---|---|---|
 | B16 — Dockerfile build stage certainly fails (missing COPYs) | ✅ done | [#42](https://github.com/IngeniousArtist/hoopedorc/pull/42) |
 | B17 — Configured-but-missing gate script silently passes | ✅ done | [#43](https://github.com/IngeniousArtist/hoopedorc/pull/43) |
-| B18 — Capacity-blocked project waits silently | ✅ done | TBD |
-| B19 — Manual dispatch invisible to the global model cap | ⬜ | |
+| B18 — Capacity-blocked project waits silently | ✅ done | [#44](https://github.com/IngeniousArtist/hoopedorc/pull/44) |
+| B19 — Manual dispatch invisible to the global model cap | ✅ done | TBD |
 | S6 — Auth polish: real login screen, constant-time compare, doc note | ⬜ | |
 
 B16 fixed: `deploy/Dockerfile`'s build stage now copies `tsconfig.base.json`,
@@ -381,6 +381,27 @@ unit test: pre-load a shared registry already at `maxConcurrent`, let the
 250ms poll loop run several passes (600ms), confirm exactly one capacity
 warn log fires (not one per poll), then free the slot and confirm the task
 dispatches and completes. 25/25 engine tests green (1 new).
+
+B19 fixed: `runTask()` (the `/dispatch` manual-run path) now calls
+`this.incModel(task.assignedModel)` and `this.runningModel.set(task.id, ...)`
+before `executeTask`, and its `finally` mirrors `start()`'s dispatch-finally
+exactly — decrement whichever model the task last ran on (fallback
+escalation may have switched it), then clear `runningModel`/`activeTaskIds`.
+Deliberately does **not** add a capacity *check* to `runTask`: a manual
+dispatch is a human's explicit action and must never be silently
+capacity-blocked, but until this fix it was invisible to the shared F12
+registry, so the autonomous loop (or another project) could pile
+`maxConcurrent` *more* copies of the same model on top of it. Updated the
+stale `manualRuns` doc-comment in `engine-runner.ts`, which previously
+stated manual runs "never contribute to that count" — they now do (the
+capacity check is still skipped, only the counting changed). New unit test:
+a manually-dispatched task and a second `Orchestrator`'s autonomous-loop
+task share a registry and both target a `maxConcurrent: 1` model — asserts
+their author adapter calls never overlap (`maxConcurrentAuthors === 1`) and
+both finish `done`. As documented in the plan, left the known escalation
+transient-overshoot case alone (fallback escalation increments the next
+model without a capacity check — blocking mid-task risks deadlock, so a
+brief overshoot is the accepted tradeoff). 26/26 engine tests green (1 new).
 
 ### Phase 8 — F14–F17 (+F18 doc, F19 optional) — ⬜ not started
 
