@@ -131,6 +131,33 @@ export function Notifications({
               )}
             </div>
 
+            {/* F22: the same PR link + validator reasons Telegram's
+                approval message already carries — deciding from the app
+                shouldn't mean hunting the Board for the task's drawer.
+                Absent on notifications that aren't a merge approval and on
+                any row that predates this field. */}
+            {n.context && (n.context.prUrl || n.context.reasons?.length) ? (
+              <div className="mt-3 space-y-1.5 rounded border border-neutral-800 bg-neutral-950/50 px-3 py-2">
+                {n.context.prUrl && (
+                  <a
+                    href={n.context.prUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-block text-xs text-blue-400 hover:underline"
+                  >
+                    View PR ↗
+                  </a>
+                )}
+                {n.context.reasons && n.context.reasons.length > 0 && (
+                  <ul className="list-inside list-disc space-y-0.5 text-[11px] text-neutral-400">
+                    {n.context.reasons.map((reason, i) => (
+                      <li key={i}>{reason}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ) : null}
+
             {n.requiresApproval &&
               n.options &&
               !n.respondedWith && (

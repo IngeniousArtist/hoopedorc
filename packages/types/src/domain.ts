@@ -328,6 +328,18 @@ export interface Notification {
   options?: string[];
   respondedWith?: string;
   createdAt: string;
+  /**
+   * F22: the same PR link + top validator reasons Telegram's approval
+   * message already carries (`ApprovalContext` in `packages/server/src/
+   * telegram.ts`) — one source, both channels — so deciding from the web
+   * UI doesn't mean hunting the Board for the task's drawer. Absent on
+   * notifications that aren't a merge approval, and on any row that
+   * predates this field.
+   */
+  context?: {
+    prUrl?: string;
+    reasons?: string[];
+  };
 }
 
 export interface CostRecord {

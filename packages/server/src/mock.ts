@@ -1,4 +1,4 @@
-import type { Project, Settings, Task } from "@orc/types";
+import type { Notification, Project, Settings, Task } from "@orc/types";
 import { defaultSettings } from "./config";
 
 /** Seed data for `npm run mock` so the web app is developable with no models. */
@@ -6,6 +6,7 @@ export function seed(): {
   projects: Project[];
   tasks: Task[];
   settings: Settings;
+  notifications: Notification[];
 } {
   const now = new Date().toISOString();
 
@@ -79,5 +80,41 @@ export function seed(): {
     }),
   ];
 
-  return { projects, tasks, settings: defaultSettings() };
+  // F22: one pending approval with context (PR link + validator reasons —
+  // the same shape the web UI now renders a "View PR" link + reasons list
+  // for) and one plain, already-responded notification with no context, so
+  // `npm run mock` demonstrates both the new rendering and the unchanged
+  // pre-F22 rendering side by side.
+  const notifications: Notification[] = [
+    {
+      id: "notif-1",
+      projectId: "proj-hoopedorc",
+      taskId: "t3",
+      severity: "action_required",
+      title: "Approval needed: Server + adapters",
+      message: "Touches packages/server/package.json (new dependency) — flagged as risky.",
+      requiresApproval: true,
+      options: ["approve", "reject"],
+      createdAt: now,
+      context: {
+        prUrl: "https://github.com/you/hoopedorc/pull/42",
+        reasons: [
+          "Adds a new npm dependency (better-sqlite3 upgrade)",
+          "Touches packages/server/package.json, outside the task's declared scope",
+        ],
+      },
+    },
+    {
+      id: "notif-2",
+      projectId: "proj-hoopedorc",
+      taskId: "t1",
+      severity: "info",
+      title: "Kanban board UI merged",
+      message: "PR #41 auto-merged — gates passed, validator approved (confidence 0.91).",
+      requiresApproval: false,
+      createdAt: now,
+    },
+  ];
+
+  return { projects, tasks, settings: defaultSettings(), notifications };
 }
