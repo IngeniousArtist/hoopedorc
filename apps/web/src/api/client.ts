@@ -20,6 +20,21 @@ function setStoredApiToken(token: string | null): void {
   }
 }
 
+/**
+ * S6: registered by App.tsx to show the in-app TokenGate instead of the old
+ * blocking browser-prompt stopgap. Called only on a real 401 — when auth is
+ * off (the default) no request ever 401s, so nothing renders. Expected to
+ * resolve with a token it has already confirmed works (or null if the user
+ * gives up), so the single retry below normally succeeds.
+ */
+let unauthorizedHandler: (() => Promise<string | null>) | null = null;
+
+export function setUnauthorizedHandler(
+  handler: (() => Promise<string | null>) | null,
+): void {
+  unauthorizedHandler = handler;
+}
+
 export function apiUrl(key: RouteKey, params?: Record<string, string>): string {
   const parts = ROUTES[key].split(" ");
   let path = parts[1] ?? "";
@@ -67,14 +82,11 @@ export async function api<T>(
 
   // Server requires a bearer token (HOST is non-loopback or an apiToken is
   // configured) and we don't have one, or it's stale — ask once and retry.
-  // Frictionless when auth is off (the default): that path never 401s.
-  if (res.status === 401) {
-    const entered =
-      typeof window !== "undefined"
-        ? window.prompt(
-            "This Hoopedorc server requires an API token. Enter it:",
-          )
-        : null;
+  // Frictionless when auth is off (the default): that path never 401s. A
+  // second 401 after the retry just surfaces as a normal thrown error below;
+  // the next unrelated api() call will 401 again and re-invoke the handler.
+  if (res.status === 401 && unauthorizedHandler) {
+    const entered = await unauthorizedHandler();
     if (entered) {
       setStoredApiToken(entered);
       token = entered;

@@ -4,11 +4,12 @@ import type {
   ServerEvent,
   Settings as SettingsType,
 } from "@orc/types";
-import { useCallback, useEffect, useState } from "react";
-import { api } from "./api/client";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, setUnauthorizedHandler } from "./api/client";
 import { useWS } from "./hooks/useWS";
 import { useBrowserNotify } from "./hooks/useBrowserNotify";
 import { ProjectHeader } from "./components/ProjectHeader";
+import { TokenGate } from "./components/TokenGate";
 import { AuditView } from "./pages/AuditView";
 import { Board } from "./pages/Board";
 import { CostView } from "./pages/CostView";
@@ -67,6 +68,31 @@ export function App() {
   // render would yank the user back to Welcome if they navigate away from it
   // before creating a project.
   const [onboardingChecked, setOnboardingChecked] = useState(false);
+
+  // S6: registers the in-app TokenGate as client.ts's 401 handler, replacing
+  // the old blocking browser-prompt stopgap. Never shows unless a real
+  // request 401s — auth-off (the default) never trips this.
+  const [tokenGateOpen, setTokenGateOpen] = useState(false);
+  const tokenGateResolveRef = useRef<((token: string | null) => void) | null>(
+    null,
+  );
+
+  useEffect(() => {
+    setUnauthorizedHandler(
+      () =>
+        new Promise<string | null>((resolve) => {
+          tokenGateResolveRef.current = resolve;
+          setTokenGateOpen(true);
+        }),
+    );
+    return () => setUnauthorizedHandler(null);
+  }, []);
+
+  const handleTokenAuthenticated = useCallback((token: string) => {
+    setTokenGateOpen(false);
+    tokenGateResolveRef.current?.(token);
+    tokenGateResolveRef.current = null;
+  }, []);
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -160,6 +186,9 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
+      {tokenGateOpen && (
+        <TokenGate onAuthenticated={handleTokenAuthenticated} />
+      )}
       {/*
         Two fixed rows rather than one flex row with a flex-1 middle section:
         a flex-1 nav-links container next to a fixed-width project selector
