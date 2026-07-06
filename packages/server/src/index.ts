@@ -598,7 +598,16 @@ async function main() {
       engine
         .start(project)
         .then(() => {
-          repo.updateProject(db, project.id, { lastScheduledRunAt: new Date().toISOString() });
+          // Mirror the /start route: mark the project running and tell open
+          // tabs the run began. Without this the UI kept showing the
+          // pre-run status (completed/paused/created) for the whole
+          // scheduled run, only correcting itself when the run's
+          // finally-block wrote the final status.
+          const updated = repo.updateProject(db, project.id, {
+            status: "running",
+            lastScheduledRunAt: new Date().toISOString(),
+          });
+          if (updated) broadcast({ type: "project.updated", payload: updated });
           app.log.info(`scheduled start: ${project.name}`);
         })
         .catch((err) => {
