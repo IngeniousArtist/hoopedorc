@@ -507,6 +507,55 @@ test("F12: a shared model-concurrency registry enforces maxConcurrent across two
   );
 });
 
+test("B18: a capacity-blocked task logs exactly one warn across several polls, then dispatches once capacity frees up", async () => {
+  const merged: number[] = [];
+  const logs: { level: string; message: string }[] = [];
+  // deepseek-pro has maxConcurrent: 1 in the shared test settings() fixture;
+  // start the shared registry already "full" so every ready task is
+  // capacity-blocked from the first pass.
+  let active = 1;
+  const deps = fakeDeps(
+    {
+      getModelActive: () => active,
+      incModelActive: () => {
+        active++;
+      },
+      decModelActive: () => {
+        active = Math.max(0, active - 1);
+      },
+      events: {
+        onLog(e) {
+          logs.push({ level: e.level, message: e.message });
+        },
+        onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1", [], { assignedModel: "deepseek-pro" });
+
+  // Let the 250ms poll loop run through several capacity-blocked passes
+  // before freeing the slot.
+  setTimeout(() => {
+    active = 0;
+  }, 600);
+
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.equal(t1.status, "done", "should dispatch and finish once capacity frees up");
+  const capacityWarnings = logs.filter(
+    (l) => l.level === "warn" && /at capacity/.test(l.message),
+  );
+  assert.equal(
+    capacityWarnings.length,
+    1,
+    "should warn exactly once across all the blocked polls, not once per poll",
+  );
+});
+
 test("isAuthOrSecretFile matches path segments, not substrings", () => {
   assert.equal(isAuthOrSecretFile("author.ts"), false, "substring of an unrelated filename");
   assert.equal(isAuthOrSecretFile("auth.ts"), true);
