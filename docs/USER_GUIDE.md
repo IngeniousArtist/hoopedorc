@@ -180,33 +180,137 @@ recoverable from GitHub, so the DB backups are the part that matters.
 The server binds to `127.0.0.1` and is unauthenticated by default — fine
 for solo localhost use, but this app can spend real money and push real
 code, so don't casually widen it. To reach it from another device (a
-laptop, your phone) without exposing it to the open internet:
+laptop, your phone) without exposing it to the open internet, there are two
+paths — try the first one before falling back to the second.
 
-1. Put the box on your [Tailscale](https://tailscale.com/) tailnet.
-2. Set `HOST=0.0.0.0` (or the tailnet interface's own address) in `.env` —
+### Recommended: `tailscale serve` (real HTTPS, no non-loopback bind)
+
+[Tailscale Serve](https://tailscale.com/kb/1242/tailscale-serve) proxies a
+real HTTPS endpoint on your tailnet (`https://<machine>.<your-tailnet>.ts.net`)
+straight through to a `localhost` port on the box — the server itself never
+needs to bind beyond loopback, and you get a browser-trusted TLS cert for
+free (no self-signed-cert warnings, and it's what makes the Notification
+API and other secure-context-only browser features actually work over the
+tailnet — see B24 in `docs/PRODUCTIZATION_PLAN.md`).
+
+1. Put the box on your [Tailscale](https://tailscale.com/) tailnet and make
+   sure `tailscale` is installed and logged in there (`tailscale status`).
+2. Leave `HOST` at its default (`127.0.0.1`) in `.env` — `tailscale serve`
+   is what makes the app reachable, not a wider bind.
+3. Run (as the same user hosting the app, or via a systemd drop-in if you
+   want this to survive reboots):
+   ```bash
+   tailscale serve --bg 3987
+   ```
+   (replace `3987` with whatever `PORT` you've configured). This was **not
+   run against a live tailnet while writing this doc** — the exact flags
+   can drift between Tailscale versions, so run `tailscale serve --help` and
+   `tailscale serve status` once on your box to confirm the invocation
+   before relying on it.
+4. Still set `API_TOKEN` (below) as defense in depth — Tailscale Serve
+   controls *who can reach the port*, not application-level auth.
+5. **Never** use `tailscale funnel` for this — Funnel exposes the endpoint
+   to the public internet, not just your tailnet, which defeats the entire
+   point of gating a code-spending, GitHub-pushing app behind Tailscale.
+
+### Fallback: `HOST` + `API_TOKEN`
+
+If Tailscale Serve isn't available (older Tailscale version, or you're on
+a different private network entirely — a home LAN, a VPN), fall back to
+binding the server itself:
+
+1. Set `HOST=0.0.0.0` (or the tailnet interface's own address) in `.env` —
    the server **refuses to start** with a non-loopback `HOST` unless you
    also set one of the next two things.
-3. Set `API_TOKEN` in `.env` to a random string. Every `/api/*` request and
+2. Set `API_TOKEN` in `.env` to a random string. Every `/api/*` request and
    the WebSocket connection then need the token; the web UI shows an in-app
    login screen the first time it hits a 401 and stores what you enter in
    the browser's `localStorage` after that. This is the normal path — do
    this, don't skip it.
-4. (Escape hatch, not recommended) `ALLOW_UNAUTHENTICATED=1` starts the
+3. (Escape hatch, not recommended) `ALLOW_UNAUTHENTICATED=1` starts the
    server on a non-loopback `HOST` with no token at all — only reasonable
    for a genuinely locked-down throwaway sandbox.
-5. At the network layer: if this also sits behind a cloud security group
+4. At the network layer: if this also sits behind a cloud security group
    (e.g. EC2), don't open the app port to `0.0.0.0/0` — restrict it to the
    tailnet, and rely on Tailscale for the actual access control. Anyone on
    your tailnet can reach the app once it's up; for a solo setup that's the
    right tradeoff (app-level auth becomes a second layer, not the only one).
-6. One thing the token does **not** cover: the static SPA shell itself (the
-   HTML/JS/CSS bundle) is served without auth even when `API_TOKEN` is set —
-   only `/api/*` and the WebSocket upgrade are gated. This is intentional
-   (the shell has no data in it, just code), but it means anyone who can
-   reach the port can load the login screen and see that Hoopedorc is
-   running there, even without a valid token. Tailscale is still the real
-   access-control boundary; the token protects the data, not the app's
-   existence.
+5. Unlike the `tailscale serve` path, this one is still plain HTTP unless
+   you separately terminate TLS yourself — secure-context browser features
+   (the Notification API; see B24) won't work over it from another machine.
+
+### Applies to both paths
+
+One thing the token does **not** cover: the static SPA shell itself (the
+HTML/JS/CSS bundle) is served without auth even when `API_TOKEN` is set —
+only `/api/*` and the WebSocket upgrade are gated. This is intentional
+(the shell has no data in it, just code), but it means anyone who can
+reach the port can load the login screen and see that Hoopedorc is
+running there, even without a valid token. Tailscale is still the real
+access-control boundary; the token protects the data, not the app's
+existence.
+
+## EC2 / headless Linux
+
+The most likely real deployment target: an always-on Linux box with no
+display, reached only over Tailscale, running the app close to unattended.
+The three CLIs Hoopedorc shells out to (`gh`, `claude`, `opencode`) all
+expect an interactive login *once* — here's how to get each one working
+without a browser on the box itself. Everything below was checked against
+the actual installed CLIs' own `--help` output on this project's dev
+machine (not run end-to-end through a real OAuth flow, since that needs a
+live account) — verify the exact interactive prompts once for real during
+your own setup, per the note on each step.
+
+- **Prereqs**: Node >= 20 (22 recommended), `git`, and the three CLIs
+  installed (`gh`, `claude`, `opencode`) — same as local install
+  (`npm run setup` checks all three either way).
+- **`gh`**: the easiest of the three headlessly — it natively supports
+  `GH_TOKEN` (confirmed via `gh help environment`: "an authentication token
+  that will be used when a command targets github.com... takes precedence
+  over previously stored credentials"). Generate a fine-grained personal
+  access token scoped to the repos you'll point Hoopedorc at, and set
+  `GH_TOKEN=<token>` in `.env` — no interactive `gh auth login` needed at
+  all on the server itself.
+- **`opencode`**: `opencode auth login` is interactive (it walks you
+  through picking a provider and a login method). Its credentials land in
+  a plain file (`~/.local/share/opencode/auth.json` — confirmed by
+  `deploy/README.md`'s Docker section, verified there on macOS; the exact
+  path can differ by OS/install method, check `opencode auth list` if it
+  doesn't match). Two options: run `opencode auth login` directly over SSH
+  on the box (many CLI OAuth flows print a URL to open in *any* browser —
+  your laptop's, not the headless box's — rather than needing a local
+  display; confirm this is how it behaves for your chosen provider before
+  relying on it), or run it once on a machine that does have a browser and
+  copy the resulting `auth.json` over to the server under the same OS user
+  that will run Hoopedorc.
+- **`claude`**: two real paths, confirmed via `claude --help`/`claude auth
+  --help`:
+  - **`claude setup-token`** — documented by the CLI itself as "Set up a
+    long-lived authentication token (requires Claude subscription)". This
+    is the headless-friendly path that still bills at your Pro/Max
+    subscription's flat rate rather than pay-per-token — run it once
+    (likely via a URL-based flow you complete in a browser elsewhere, the
+    same pattern as `gh auth login`'s device flow) and it should leave a
+    durable credential behind. **Not run end-to-end while writing this** —
+    confirm the exact prompts once on your box.
+  - **`ANTHROPIC_API_KEY`** — the documented escape hatch (`claude --help`
+    on `--bare` mode: "Anthropic auth is strictly `ANTHROPIC_API_KEY` or
+    `apiKeyHelper`... OAuth and keychain are never read"). Set it in `.env`
+    if `setup-token` doesn't fit your setup. **Caveat, already noted in
+    `deploy/README.md`**: this bills pay-per-token via the Anthropic
+    Console, not your subscription's flat rate — a real cost-model
+    difference, not just a config difference.
+  - Note this Linux-native path is a different situation from
+    `deploy/README.md`'s Docker section, which is specifically about **why
+    a container** can't reach `claude`'s macOS-Keychain-based login — that
+    problem is macOS/container-specific and doesn't apply to a normal
+    (non-containerized) Linux systemd deployment, which is what this
+    section assumes.
+- Once all three check out (`npm run setup` re-runs the same checks Setup
+  page does), follow `deploy/README.md`'s "Native + systemd" steps for the
+  actual service setup, and see **Backups & data** above for where the DB
+  and its backups live on disk.
 
 ## Troubleshooting
 
