@@ -697,7 +697,7 @@ unaffected (no engine/adapter changes).
 | A5 — USER_GUIDE didn't cover quota/schedules/checks-gate/backups | ✅ done | [#58](https://github.com/IngeniousArtist/hoopedorc/pull/58) |
 | U1 — no global "action required" indicator in the nav | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
 | U2 — full ProjectHeader repeats on every project page | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
-| U3 — Board's 8 columns overflow with no affordance | ⬜ | |
+| U3 — Board's 8 columns overflow with no affordance | ✅ done | [#60](https://github.com/IngeniousArtist/hoopedorc/pull/60) |
 | U4 — switching tabs silently discards unsaved Settings edits | ⬜ | |
 | U5 — MissionControl elapsed label reads "42s ago elapsed" | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
 | U6 — model-reassign dropdown on every kanban card | ⬜ | |
@@ -713,9 +713,61 @@ heading and overhauled the README. U1–U10 are the next implementation wave
 — same workflow as every prior phase, work top-down. Split into two
 batches (mirroring Phase 3's pattern): batch 1 (U1, U2, U5, U7, U8, U9 —
 ✅ done, PR #59; U10 needed no code change, already fixed) shipped the
-lower-risk items; batch 2 (U3, U4, U6 — the ones with more interaction-state
-complexity: Board column collapse/dragover, cross-component Settings dirty
-tracking, moving the model-reassign control) is still open.
+lower-risk items; batch 2 (U3 — ✅ done, PR #60; U4, U6 still open) is the
+remaining ones with more interaction-state complexity: Board column
+collapse/dragover (done), cross-component Settings dirty tracking, moving
+the model-reassign control.
+
+U3 (PR #60) fixed: `Board.tsx` now tracks `expandedEmpty` (a
+`Set<TaskStatus>` of columns a click or a drag has explicitly opened) and
+`dragOverStatus` (the column currently being dragged over, if any). A
+column collapses to a `w-9` vertical strip — rotated label + a "0" count
+badge via `[writing-mode:vertical-rl] rotate-180` — whenever it has zero
+tasks *and* isn't in either of those two sets; a column with any tasks is
+never collapsed, full stop, regardless of set membership (so a column that
+was manually opened while empty and then received a card can't glitch back
+into a collapsed state later just because the set still has its status).
+Clicking a collapsed strip — or its expanded-but-still-empty header, which
+toggles the same way — flips its membership in `expandedEmpty`; dragging
+over a collapsed strip sets `dragOverStatus` to that column, which swaps it
+to the full expanded `<section>` in the same spot (same drop handler,
+already attached) so the drop completes normally, then clears
+`dragOverStatus` on drop/dragleave. Deliberately did not reorder columns
+(collapsed ones stay in their original `TASK_STATUSES` position) or add any
+new drag-and-drop mechanism — this only decides which of the two existing
+render branches (slim strip vs. full section) a column takes. Verified:
+`npm run typecheck`/`npm run build` green across all workspaces; `npm test
+-w @orc/engine` (32/32) and `-w @orc/adapters` (4/4) unaffected (no
+engine/adapter/server changes). Live-verified against `npm run mock`'s own
+seed (the exact scenario the acceptance criteria names): at a 1280px
+viewport, all 8 columns render with zero horizontal scroll — Backlog,
+Ready, In Progress, and In Review expanded per the seed's 4 non-empty
+statuses, Changes Req./Blocked/Done/Failed collapsed to strips. Click-to-
+expand and click-to-recollapse both confirmed on the Blocked strip. The
+drag-onto-collapsed-column path needed care to verify properly: Chrome's
+native mouse-drag simulation doesn't reliably fire real HTML5 `dragstart`/
+`dragover`/`drop` events, so it was tested by dispatching genuine
+`DragEvent`s with a shared `DataTransfer` directly at the DOM nodes
+(`element.dispatchEvent(new DragEvent(...))`) — the same technique used for
+automated HTML5 drag-and-drop testing generally, and it exercises the
+app's real bound handlers, not a reimplementation. This caught a bug in the
+*test script* itself on the first attempt (dispatching `drop` on a stale
+reference to the now-unmounted collapsed `<button>`, since it had already
+swapped to the expanded `<section>` on `dragover` — fixed by re-querying
+the live element before the `drop` dispatch) and separately surfaced two
+pre-existing, unrelated server rules while picking test fixtures: B5's PATCH
+validation only allows a manual drag to requeue a task to `backlog` or
+`ready` (every other status is engine-assigned, confirmed via
+`packages/server/src/index.ts`'s `"PATCH can only requeue a task to
+\"backlog\" or \"ready\""` 400), and a task that's `in_progress`/`in_review`
+rejects any PATCH with 409 (must Stop it first) — neither is new behavior,
+both were hit incidentally when the first two test picks (an in-progress
+task, then a backlog→changes_requested attempt) 409'd/400'd for reasons
+having nothing to do with collapse. The clean, unambiguous proof came from
+emptying Backlog by moving its one task to Ready (a valid transition,
+succeeded 200), confirming Backlog auto-collapsed, then dragging a Ready
+task onto the now-collapsed Backlog strip and confirming a 200 PATCH plus
+the card actually landing in the (now re-expanded) Backlog column.
 
 Batch 1 (PR #59) fixed: **U1** — new amber count badge on the
 Notifications nav item (`App.tsx`) for notifications with

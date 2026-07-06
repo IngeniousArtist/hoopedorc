@@ -73,6 +73,12 @@ export function Board({
   const [showAddTask, setShowAddTask] = useState(false);
   // F7: taskId -> pre-run cost estimate, for the Ready column's "~$0.03" chip.
   const [estimates, setEstimates] = useState<Record<string, TaskEstimate>>({});
+  // U3: empty columns collapse to a slim strip by default (8 fixed-width
+  // columns overflow at 1280px); a click or a drag hovering over one expands
+  // it. Only ever holds statuses the user (or a drag) has explicitly opened —
+  // a column with cards is never collapsed regardless of membership here.
+  const [expandedEmpty, setExpandedEmpty] = useState<Set<TaskStatus>>(new Set());
+  const [dragOverStatus, setDragOverStatus] = useState<TaskStatus | null>(null);
 
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
@@ -304,6 +310,31 @@ export function Board({
     e.dataTransfer.dropEffect = "move";
   };
 
+  // U3: a collapsed column still needs to accept a drop, so dragover expands
+  // it first (rather than requiring a click before every drag).
+  const toggleColumnExpanded = (status: TaskStatus) => {
+    setExpandedEmpty((prev) => {
+      const next = new Set(prev);
+      if (next.has(status)) next.delete(status);
+      else next.add(status);
+      return next;
+    });
+  };
+
+  const handleColumnDragOver = (status: TaskStatus, e: React.DragEvent) => {
+    handleDragOver(e);
+    if (dragOverStatus !== status) setDragOverStatus(status);
+  };
+
+  const handleColumnDragLeave = (status: TaskStatus) => {
+    setDragOverStatus((cur) => (cur === status ? null : cur));
+  };
+
+  const handleColumnDrop = (status: TaskStatus, e: React.DragEvent) => {
+    setDragOverStatus(null);
+    handleDrop(status, e);
+  };
+
   const handleDrop = async (
     status: TaskStatus,
     e: React.DragEvent,
@@ -406,26 +437,64 @@ export function Board({
       {/* snap-x makes mobile a one-column-at-a-time swipe; sm: reverts to the
           normal multi-column horizontal scroll once there's room for it. */}
       <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-4 sm:snap-none">
-        {COLUMNS.map((col) => (
-          <section
-            key={col.status}
-            onDragOver={handleDragOver}
-            onDrop={(e) => handleDrop(col.status, e)}
-            className="min-w-[85vw] max-w-[85vw] flex-1 snap-center rounded-lg border border-neutral-800 bg-neutral-900/50 p-3 sm:min-w-[220px] sm:max-w-[280px] sm:snap-none"
-          >
-            <h2 className="mb-3 flex items-center gap-2 text-xs font-medium text-neutral-400 uppercase tracking-wider">
-              {col.label}
-              <span className="rounded-full bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400">
-                {
-                  tasks.filter((t) => t.status === col.status)
-                    .length
+        {COLUMNS.map((col) => {
+          const colTasks = tasks.filter((t) => t.status === col.status);
+          // U3: never collapse a column that has cards, even if it was
+          // toggled open-then-emptied earlier this session — only the
+          // "still empty and not explicitly opened" case collapses.
+          const collapsed =
+            colTasks.length === 0 &&
+            !expandedEmpty.has(col.status) &&
+            dragOverStatus !== col.status;
+
+          if (collapsed) {
+            return (
+              <button
+                key={col.status}
+                type="button"
+                onClick={() => toggleColumnExpanded(col.status)}
+                onDragOver={(e) => handleColumnDragOver(col.status, e)}
+                onDragLeave={() => handleColumnDragLeave(col.status)}
+                onDrop={(e) => handleColumnDrop(col.status, e)}
+                title={`${col.label} — empty, click to expand`}
+                className="flex w-9 shrink-0 flex-col items-center justify-between rounded-lg border border-neutral-800 bg-neutral-900/50 py-3 hover:border-neutral-700"
+              >
+                <span className="rounded-full bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-500">
+                  0
+                </span>
+                <span className="[writing-mode:vertical-rl] rotate-180 text-[10px] font-medium tracking-wider text-neutral-500 uppercase">
+                  {col.label}
+                </span>
+              </button>
+            );
+          }
+
+          return (
+            <section
+              key={col.status}
+              onDragOver={(e) => handleColumnDragOver(col.status, e)}
+              onDragLeave={() => handleColumnDragLeave(col.status)}
+              onDrop={(e) => handleColumnDrop(col.status, e)}
+              className="min-w-[85vw] max-w-[85vw] flex-1 snap-center rounded-lg border border-neutral-800 bg-neutral-900/50 p-3 sm:min-w-[220px] sm:max-w-[280px] sm:snap-none"
+            >
+              <h2
+                onClick={
+                  colTasks.length === 0
+                    ? () => toggleColumnExpanded(col.status)
+                    : undefined
                 }
-              </span>
-            </h2>
-            <div className="space-y-2">
-              {tasks
-                .filter((t) => t.status === col.status)
-                .map((t) => (
+                className={
+                  "mb-3 flex items-center gap-2 text-xs font-medium text-neutral-400 uppercase tracking-wider" +
+                  (colTasks.length === 0 ? " cursor-pointer" : "")
+                }
+              >
+                {col.label}
+                <span className="rounded-full bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400">
+                  {colTasks.length}
+                </span>
+              </h2>
+              <div className="space-y-2">
+                {colTasks.map((t) => (
                   <TaskCard
                     key={t.id}
                     task={t}
@@ -451,9 +520,10 @@ export function Board({
                     isSelected={selectedTaskId === t.id}
                   />
                 ))}
-            </div>
-          </section>
-        ))}
+              </div>
+            </section>
+          );
+        })}
       </div>
 
       {selectedTask && (
