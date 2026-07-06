@@ -3,7 +3,12 @@ import { useState } from "react";
 import { api } from "../api/client";
 import { useToast } from "../hooks/useToast";
 import { formatSchedule } from "../lib/format";
-import { ProjectConfigFields, projectConfigFromForm, projectConfigToForm } from "./ProjectConfigFields";
+import {
+  ProjectConfigFields,
+  projectConfigFormError,
+  projectConfigFromForm,
+  projectConfigToForm,
+} from "./ProjectConfigFields";
 
 const STATUS_COLOR: Record<string, string> = {
   created: "bg-neutral-700 text-neutral-200",
@@ -69,6 +74,11 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
   }
 
   async function saveConfig() {
+    // B22: a partially-filled schedule (e.g. hour set, minute blank) would
+    // otherwise silently drop the whole schedule object on save — block it
+    // here too, not just via the disabled button, in case the two ever
+    // disagree.
+    if (projectConfigFormError(configForm)) return;
     setBusy(true);
     try {
       await api("updateProject", {
@@ -87,6 +97,7 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
   const startLabel = project.status === "paused" ? "Resume" : "Start";
   const budgetDirty = budget !== origBudget;
   const configDirty = JSON.stringify(configForm) !== JSON.stringify(origConfigForm);
+  const configError = projectConfigFormError(configForm);
   const scheduleLabel = formatSchedule(project.config?.schedule);
 
   return (
@@ -181,12 +192,17 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
               <div className="mt-1 flex items-center gap-2 text-[11px]">
                 <button
                   onClick={saveConfig}
-                  disabled={busy}
+                  disabled={busy || !!configError}
+                  title={configError ?? undefined}
                   className="rounded border border-neutral-700 px-2 py-0.5 text-neutral-300 hover:bg-neutral-800 disabled:opacity-40"
                 >
                   Save advanced settings
                 </button>
-                <span className="text-amber-400">unsaved</span>
+                {configError ? (
+                  <span className="text-amber-400">{configError}</span>
+                ) : (
+                  <span className="text-amber-400">unsaved</span>
+                )}
               </div>
             )}
           </div>

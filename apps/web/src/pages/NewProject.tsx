@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import {
   EMPTY_PROJECT_CONFIG_FORM,
   ProjectConfigFields,
+  projectConfigFormError,
   projectConfigFromForm,
 } from "../components/ProjectConfigFields";
 
@@ -23,8 +24,10 @@ export function NewProject({
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const scheduleError = projectConfigFormError(configForm);
+
   async function createProject() {
-    if (!name) return;
+    if (!name || scheduleError) return;
     setCreating(true);
     setError(null);
     try {
@@ -171,11 +174,15 @@ export function NewProject({
 
         <button
           onClick={createProject}
-          disabled={!name || creating || (!createRepo && !repoUrl)}
+          disabled={!name || creating || (!createRepo && !repoUrl) || !!scheduleError}
+          title={scheduleError ?? undefined}
           className="rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
         >
           {creating ? "Creating…" : "Create Project →"}
         </button>
+        {scheduleError && (
+          <p className="text-[11px] text-amber-400">{scheduleError}</p>
+        )}
       </section>
     </div>
   );
