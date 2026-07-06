@@ -45,6 +45,15 @@ clock time. A background check (~once a minute) calls the same
 separate from the user-edited `config` blob so a Settings save and the
 scheduler's own write can never race each other.
 
+`Notification.context` (F22) is `{ prUrl?: string; reasons?: string[] }` —
+the same PR link + top validator reasons Telegram's approval message
+already carries (`ApprovalContext` in `packages/server/src/telegram.ts`),
+computed once in `EngineRunner`'s `requestApproval` and persisted onto the
+notification so the web UI can render it too, not just Telegram. Optional
+and only ever set on an `action_required` approval notification that has
+at least a PR or a reason to show; absent on every other notification kind
+and on any row that predates this field.
+
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.
 

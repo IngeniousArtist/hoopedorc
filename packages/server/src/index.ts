@@ -675,6 +675,17 @@ async function main() {
     app.log.info(`expired ${expiredApprovals} stale approval notification(s) from before this boot`);
   }
 
+  // F22: seeded *after* the expiry sweep above, not inside setupDb() —
+  // B10's expireStaleApprovals runs unconditionally on every boot (mock or
+  // not) and would otherwise immediately stamp a freshly-seeded pending
+  // approval "expired_restart" before anyone ever saw it live, the same
+  // interaction U1's own live-verification had to work around.
+  if (ENV.mock) {
+    for (const n of seed().notifications) {
+      repo.createNotification(db, n);
+    }
+  }
+
   /** ENV.apiToken wins over the settings-stored one; either enables auth. */
   function getApiToken(): string | undefined {
     return ENV.apiToken || repo.getSettings(db)?.apiToken || undefined;

@@ -38,6 +38,10 @@ export function initDb(path: string = ENV.dbPath): Db {
     "ALTER TABLE projects ADD COLUMN config TEXT",
     // F19: when the scheduler last auto-started this project.
     "ALTER TABLE projects ADD COLUMN last_scheduled_run_at TEXT",
+    // F22: PR link + validator reasons for an approval notification — the
+    // same context Telegram's approval message already carries, now also
+    // persisted so the web UI can render it (JSON, nullable).
+    "ALTER TABLE notifications ADD COLUMN context TEXT",
   ]) {
     try { db.exec(col); } catch { /* column already exists */ }
   }

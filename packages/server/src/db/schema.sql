@@ -120,7 +120,8 @@ CREATE TABLE IF NOT EXISTS notifications (
   requires_approval INTEGER NOT NULL DEFAULT 0,
   options           TEXT,                       -- JSON array
   responded_with    TEXT,
-  created_at        TEXT NOT NULL
+  created_at        TEXT NOT NULL,
+  context           TEXT                        -- F22: JSON { prUrl?, reasons? }
 );
 
 -- F6: one row per "Test models" click per model — the health panel's

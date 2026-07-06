@@ -769,6 +769,9 @@ function mapNotification(row: Record<string, unknown>): Notification {
     options: row.options ? json<string[]>(row.options) : undefined,
     respondedWith: row.responded_with ? asStr(row.responded_with) : undefined,
     createdAt: asStr(row.created_at),
+    // F22: absent on pre-migration rows (NULL) exactly like any other
+    // optional field here — no special-casing needed.
+    context: row.context ? json<Notification["context"]>(row.context) : undefined,
   };
 }
 
@@ -831,8 +834,8 @@ export function createNotification(
   const id = n.id ?? crypto.randomUUID();
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO notifications (id, project_id, task_id, severity, title, message, requires_approval, options, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO notifications (id, project_id, task_id, severity, title, message, requires_approval, options, created_at, context)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     n.projectId,
@@ -843,6 +846,7 @@ export function createNotification(
     n.requiresApproval ? 1 : 0,
     n.options ? JSON.stringify(n.options) : null,
     now,
+    n.context ? JSON.stringify(n.context) : null,
   );
   return { ...n, id, createdAt: now } as Notification;
 }

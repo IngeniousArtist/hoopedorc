@@ -391,6 +391,22 @@ export class EngineRunner {
           this.hub.broadcast({ type: "merge.decision", payload: d });
         },
         requestApproval: (args) => {
+          // F5/F22: give the human enough to decide without opening the app
+          // (or, on the web, without hunting the Board for the task's
+          // drawer) — the PR to look at and why the validator flagged it.
+          // Computed once, before the notification is created, so both
+          // Telegram and the persisted (web-visible) notification carry the
+          // exact same context from one source.
+          const approvalTask = repo.getTask(this.db, args.taskId);
+          const prUrl =
+            approvalTask?.prNumber != null
+              ? `${project.repoUrl}/pull/${approvalTask.prNumber}`
+              : undefined;
+          const latestDecision = repo.getMergeDecisions(this.db, args.taskId)[0];
+          const context =
+            prUrl || latestDecision?.reasons?.length
+              ? { prUrl, reasons: latestDecision?.reasons }
+              : undefined;
           const notif = repo.createNotification(this.db, {
             projectId: project.id,
             taskId: args.taskId,
@@ -399,6 +415,7 @@ export class EngineRunner {
             message: args.message,
             requiresApproval: true,
             options: args.options,
+            context,
           });
           repo.createAuditEntry(this.db, {
             projectId: project.id,
@@ -409,19 +426,7 @@ export class EngineRunner {
             detail: { message: args.message, options: args.options },
           });
           this.hub.broadcast({ type: "notification", payload: notif });
-          // F5: give Telegram enough to decide from the phone alone — the PR
-          // to look at and why the validator flagged it, not just the
-          // generic title/message every approval already carries.
-          const approvalTask = repo.getTask(this.db, args.taskId);
-          const prUrl =
-            approvalTask?.prNumber != null
-              ? `${project.repoUrl}/pull/${approvalTask.prNumber}`
-              : undefined;
-          const latestDecision = repo.getMergeDecisions(this.db, args.taskId)[0];
-          this.notifier?.approvalRequested(notif, {
-            prUrl,
-            reasons: latestDecision?.reasons,
-          });
+          this.notifier?.approvalRequested(notif, { prUrl, reasons: latestDecision?.reasons });
           return new Promise<string>((resolve) => {
             this.pendingApprovals.set(notif.id, resolve);
           });
