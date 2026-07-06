@@ -1,5 +1,4 @@
-import type { ModelConfig, ModelId, Task, TaskEstimate } from "@orc/types";
-import { ModelSelect } from "./ModelSelect";
+import type { ModelConfig, Task, TaskEstimate } from "@orc/types";
 
 // Mirrors STUCK_DETECTION.idleMs in @orc/engine: if the model emits no output
 // for this long, the engine kills the run and falls back. The heartbeat turns
@@ -49,7 +48,6 @@ export function TaskCard({
   models,
   lastActivityAt,
   estimate,
-  onModelChange,
   onClick,
   onStop,
   isSelected,
@@ -60,7 +58,6 @@ export function TaskCard({
   lastActivityAt?: number;
   /** F7 — pre-run cost estimate, shown as a "~$0.03" chip on Ready cards only. */
   estimate?: TaskEstimate;
-  onModelChange?: (m: ModelId) => void;
   onClick?: () => void;
   /** F3 — "Stop this task" on a running card. Omitted while a stop is
    *  already in flight for this task, so the button just disappears rather
@@ -112,7 +109,8 @@ export function TaskCard({
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
         <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
-          {task.assignedModel}
+          {models.find((m) => m.id === task.assignedModel)?.displayName ??
+            task.assignedModel}
         </span>
         <span
           className={
@@ -164,20 +162,6 @@ export function TaskCard({
                 : dep.title}
             </span>
           ))}
-        </div>
-      )}
-
-      {onModelChange && (
-        <div className="mt-2" onClick={(e) => e.stopPropagation()}>
-          <ModelSelect
-            value={task.assignedModel}
-            models={models}
-            onChange={(m) => {
-              if (m) onModelChange(m);
-            }}
-            disabled={task.status === "in_progress" || task.status === "in_review"}
-            disabledReason="Running — wait for this attempt to finish to reassign"
-          />
         </div>
       )}
     </article>
