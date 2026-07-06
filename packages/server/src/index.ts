@@ -591,6 +591,26 @@ async function main() {
   pruneOldLogs();
   setInterval(pruneOldLogs, ONE_DAY_MS).unref();
 
+  // B23: mirrors pruneOldLogs — the notifications table otherwise grows
+  // unbounded across months of autonomous runs. Never touches a pending
+  // approval regardless of age (see pruneNotifications()'s own guard).
+  function pruneOldNotifications(): void {
+    try {
+      const deleted = repo.pruneNotifications(db, ENV.notificationRetentionDays);
+      if (deleted > 0) {
+        app.log.info(
+          `pruned ${deleted} old notification(s) (retention: ${ENV.notificationRetentionDays}d)`,
+        );
+      }
+    } catch (err) {
+      app.log.warn(
+        `notification pruning failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  pruneOldNotifications();
+  setInterval(pruneOldNotifications, ONE_DAY_MS).unref();
+
   // F17: online-backup the DB on boot and once a day thereafter. No-op for
   // a mock/in-memory boot (nothing durable to protect). A failed backup
   // must never crash the server — log a warning and move on.

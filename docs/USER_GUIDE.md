@@ -89,6 +89,11 @@ going on a always-on box.
    [BotFather](https://t.me/BotFather) and your chat id) — as a message with
    inline Approve/Reject buttons, the PR link, and the validator's top
    reasons, so you can decide from your phone without opening the app.
+   Settings also offers **browser notifications** (Settings → Browser
+   Notifications) — these only work over HTTPS or `localhost` (a browser
+   security requirement) and on some mobile browsers can't fire at all even
+   with permission granted; Telegram is the reliable channel for phones and
+   for the recommended remote setup (see below).
 7. When a task finishes, its PR is already merged (or waiting on you, per
    the above). You can **Retry** a failed task, **Rollback** a merged one
    (reverts the merge commit), or **Stop** a task that's still running.
