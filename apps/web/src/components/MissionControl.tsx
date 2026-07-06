@@ -24,6 +24,7 @@ export function MissionControl({
   tasks,
   models,
   activity,
+  activeSince,
   costUsd,
   budgetUsd,
   onViewNotifications,
@@ -32,6 +33,11 @@ export function MissionControl({
   tasks: Task[];
   models: ModelConfig[];
   activity: Record<string, number>;
+  /** U13: client-tracked "entered the active set" timestamp per task,
+   *  stable across in_progress <-> in_review — falls back to
+   *  task.updatedAt (below) for a task active before the page loaded, the
+   *  only case with no entry yet. */
+  activeSince: Record<string, number>;
   costUsd: number;
   budgetUsd?: number;
   onViewNotifications: () => void;
@@ -83,11 +89,13 @@ export function MissionControl({
         <div className="space-y-1.5">
           {active.map((t) => {
             const model = models.find((m) => m.id === t.assignedModel);
-            // task.updatedAt is bumped whenever status changes, including the
-            // "in_progress" transition that starts this attempt — a close
-            // enough proxy for "since this run started" without an extra
-            // per-task GET /api/tasks/:id/runs fetch.
-            const elapsedMs = Date.now() - new Date(t.updatedAt).getTime();
+            // U13: prefer the stable "entered the active set" timestamp over
+            // task.updatedAt, which bumps on the in_progress -> in_review
+            // transition too (B6) and made this visibly reset mid-attempt.
+            // Falls back to updatedAt only when there's no tracked entry yet
+            // (a task that was already active when the page first loaded).
+            const since = activeSince[t.id] ?? new Date(t.updatedAt).getTime();
+            const elapsedMs = Date.now() - since;
             return (
               <div key={t.id} className="flex items-center gap-2 text-xs">
                 <span className="shrink-0 rounded bg-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-300">
