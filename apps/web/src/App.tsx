@@ -58,8 +58,47 @@ const GLOBAL_NAV_START = NAV.findIndex((item) => !PROJECT_PAGES.includes(item.pa
 
 const STORAGE_KEY = "hoop.projectId";
 
+/** F21: global (non-project-scoped) pages that make sense as a deep link.
+ *  Deliberately excludes "welcome" — it's only reached via the F1 auto
+ *  redirect / SetupView's "Re-run setup" link, never a real destination. */
+const GLOBAL_HASH_PAGES: Page[] = ["settings", "setup", "projects", "new-project"];
+
+/** F21: `#/<page>` for global pages, `#/p/<projectId>/<page>` for project
+ *  pages — the inverse of `hashFor` below. Returns null for anything that
+ *  doesn't parse into a known, deep-linkable page (an empty hash, garbage
+ *  in the URL bar, or a page like "welcome" that isn't meant to be one) —
+ *  callers fall back to their own defaults in that case. */
+function parseHash(hash: string): { page: Page; projectId?: string } | null {
+  const path = hash.replace(/^#\/?/, "");
+  if (!path) return null;
+  const parts = path.split("/");
+  if (parts[0] === "p" && parts.length >= 3 && parts[1]) {
+    const page = parts[2] as Page;
+    return PROJECT_PAGES.includes(page) ? { page, projectId: parts[1] } : null;
+  }
+  const page = parts[0] as Page;
+  return GLOBAL_HASH_PAGES.includes(page) ? { page } : null;
+}
+
+/** The exact inverse of `parseHash` — kept as one function so the two can
+ *  never drift into producing/accepting different shapes. */
+function hashFor(page: Page, projectId: string): string {
+  if (PROJECT_PAGES.includes(page) && projectId) return `#/p/${projectId}/${page}`;
+  return `#/${page}`;
+}
+
+/** F21: parsed once at module load (i.e. once per real page load/reload) —
+ *  never re-read afterward, since it only seeds the initial state below.
+ *  Runtime hash changes (back/forward, a pasted link while the SPA is
+ *  already running) are handled separately by the hashchange listener. */
+const initialHashState =
+  typeof window !== "undefined" ? parseHash(window.location.hash) : null;
+
 export function App() {
-  const [page, setPage] = useState<Page>("board");
+  // F21: a valid project id parsed from the hash wins over localStorage —
+  // this only matters on first mount (a fresh load or a pasted deep link);
+  // an invalid/empty hash falls through to the exact pre-F21 defaults.
+  const [page, setPage] = useState<Page>(initialHashState?.page ?? "board");
   // Once the Plan tab is visited we keep PlanView mounted (hidden behind CSS
   // display:none when inactive) so any in-flight chat or deconstruct request
   // finishes even if the user switches tabs before the reply arrives.
@@ -71,7 +110,7 @@ export function App() {
   // tracks every notification regardless of which project tab is open.
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
-    () => localStorage.getItem(STORAGE_KEY) ?? "",
+    () => initialHashState?.projectId ?? localStorage.getItem(STORAGE_KEY) ?? "",
   );
   // F1: whether to auto-redirect to the onboarding wizard is decided once,
   // right after the first settings+projects load — re-checking on every
@@ -109,6 +148,57 @@ export function App() {
     },
     [page],
   );
+
+  // F21: keep the URL hash in sync with (page, selectedProjectId), covering
+  // every way those two can change (nav clicks via navigate(), the project
+  // dropdown, project creation/deletion, the F1 welcome redirect) rather
+  // than threading a hash-write through each call site individually.
+  // pushState so back/forward actually has entries to move through —
+  // except the very first write, which replaces instead so a browser with
+  // no pre-existing hash (a fresh install, or upgrading from a pre-F21
+  // build) doesn't gain a useless extra back-stack entry on load. "welcome"
+  // is never written — it's not a real deep-link destination. The equality
+  // check is what makes this a no-op during a hashchange-driven update
+  // below (the browser has already set location.hash to that same value by
+  // the time this effect runs), so no extra "don't push back what we just
+  // received" flag is needed.
+  const isFirstHashSyncRef = useRef(true);
+  useEffect(() => {
+    if (page === "welcome") return;
+    // Consumed here (not before the "welcome" check above) so a page of
+    // "welcome" on the very first render doesn't burn the "first write
+    // should replace" allowance before any real page gets a chance to use it.
+    const isFirst = isFirstHashSyncRef.current;
+    isFirstHashSyncRef.current = false;
+    const next = hashFor(page, selectedProjectId);
+    if (location.hash === next) return;
+    if (isFirst) history.replaceState(null, "", next);
+    else history.pushState(null, "", next);
+  }, [page, selectedProjectId]);
+
+  // F21: back/forward (and a hash typed/pasted into an already-open tab —
+  // a fresh tab's initial hash is handled once by initialHashState instead)
+  // land here. Routed through the exact same Settings-dirty guard navigate()
+  // uses; on cancel the browser has already moved location.hash to the
+  // target entry, so it's explicitly pushed back to the still-current page.
+  useEffect(() => {
+    function onHashChange() {
+      const parsed = parseHash(location.hash);
+      if (!parsed) return;
+      if (
+        page === "settings" &&
+        settingsDirtyRef.current &&
+        !window.confirm("Discard unsaved settings changes?")
+      ) {
+        history.pushState(null, "", hashFor(page, selectedProjectId));
+        return;
+      }
+      if (parsed.projectId) setSelectedProjectId(parsed.projectId);
+      setPage(parsed.page);
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, [page, selectedProjectId]);
 
   useEffect(() => {
     setUnauthorizedHandler(
