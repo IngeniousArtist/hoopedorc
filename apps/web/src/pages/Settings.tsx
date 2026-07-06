@@ -29,12 +29,24 @@ const RISKY_RULES: {
   { key: "outOfScopeEdits", label: "Out-of-scope edits" },
 ];
 
-export function Settings() {
+export function Settings({
+  onDirtyChange,
+}: {
+  /** U4: reports live dirty state upward so App.tsx can guard nav-away
+   *  while there are unsaved edits — Settings unmounts on tab switch
+   *  (`{page === "settings" && <Settings />}`), so App has to know
+   *  *before* that happens, not read it after the fact. */
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
   const browserNotify = useBrowserNotify();
   const [settings, setSettings] = useState<SettingsType | null>(
     null,
   );
   const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -522,7 +534,10 @@ export function Settings() {
         </details>
       </section>
 
-      <div className="flex items-center gap-3">
+      {/* U4: sticky so the save control (and the dirty hint) stay visible
+          while scrolling this long form, instead of only being reachable
+          at the very bottom. */}
+      <div className="sticky bottom-0 z-10 flex items-center gap-3 border-t border-neutral-800 bg-neutral-950 py-3">
         <button
           onClick={save}
           disabled={!dirty || saving}

@@ -698,7 +698,7 @@ unaffected (no engine/adapter changes).
 | U1 — no global "action required" indicator in the nav | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
 | U2 — full ProjectHeader repeats on every project page | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
 | U3 — Board's 8 columns overflow with no affordance | ✅ done | [#60](https://github.com/IngeniousArtist/hoopedorc/pull/60) |
-| U4 — switching tabs silently discards unsaved Settings edits | ⬜ | |
+| U4 — switching tabs silently discards unsaved Settings edits | ✅ done | [#61](https://github.com/IngeniousArtist/hoopedorc/pull/61) |
 | U5 — MissionControl elapsed label reads "42s ago elapsed" | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
 | U6 — model-reassign dropdown on every kanban card | ⬜ | |
 | U7 — schedules invisible outside the Advanced accordion; disable loses times | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
@@ -713,10 +713,10 @@ heading and overhauled the README. U1–U10 are the next implementation wave
 — same workflow as every prior phase, work top-down. Split into two
 batches (mirroring Phase 3's pattern): batch 1 (U1, U2, U5, U7, U8, U9 —
 ✅ done, PR #59; U10 needed no code change, already fixed) shipped the
-lower-risk items; batch 2 (U3 — ✅ done, PR #60; U4, U6 still open) is the
-remaining ones with more interaction-state complexity: Board column
-collapse/dragover (done), cross-component Settings dirty tracking, moving
-the model-reassign control.
+lower-risk items; batch 2 (U3 — ✅ done, PR #60; U4 — ✅ done, PR #61; U6
+still open) is the remaining ones with more interaction-state complexity:
+Board column collapse/dragover (done), cross-component Settings dirty
+tracking (done), moving the model-reassign control (open).
 
 U3 (PR #60) fixed: `Board.tsx` now tracks `expandedEmpty` (a
 `Set<TaskStatus>` of columns a click or a drag has explicitly opened) and
@@ -768,6 +768,45 @@ emptying Backlog by moving its one task to Ready (a valid transition,
 succeeded 200), confirming Backlog auto-collapsed, then dragging a Ready
 task onto the now-collapsed Backlog strip and confirming a 200 PATCH plus
 the card actually landing in the (now re-expanded) Backlog column.
+
+U4 (PR #61) fixed: `Settings.tsx` already tracked its own `dirty` boolean
+(set on every field mutation, cleared on save) — U4 just needed it exposed
+before the component unmounts, since `App.tsx`'s
+`{page === "settings" && <Settings />}` destroys it on tab switch. New
+`onDirtyChange?: (dirty: boolean) => void` prop, reported via a
+`useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange])` — a plain
+prop-drilled callback into a `useRef` in `App.tsx` (not `Settings` module
+state, since a ref update must never itself trigger a re-render of `App`).
+New `navigate(next: Page)` in `App.tsx` wraps every reachable-from-Settings
+`setPage` call (the `NAV` tab buttons and the top-row "+ New" button —
+traced every other `setPage` call site in the file and confirmed none of
+the others can fire while `page === "settings"`, e.g. the empty-state "New
+Project" button only renders for `PROJECT_PAGES`, which excludes Settings):
+`if (page === "settings" && settingsDirtyRef.current && !window.confirm(...))
+return;` else `setPage(next)`. Also made the Save row `sticky bottom-0`
+(previously just the last element of a long, tall form) so it — and the
+"Unsaved changes" hint next to it — stay in view on any viewport height
+without scrolling. Verified: `npm run typecheck`/`npm run build` green
+across all workspaces; `npm test -w @orc/engine` (32/32) and `-w
+@orc/adapters` (4/4) unaffected (no engine/adapter/server changes).
+Live-verified against `npm run mock` — a real native `window.confirm`
+dialog would hang the browser-automation session per its own tool
+guidance, so rather than skip verification, `window.confirm` was
+temporarily stubbed via script (a standard technique for testing code that
+calls blocking dialogs) while real clicks/inputs still drove the UI: toggled
+a model's role checkbox to dirty the form, clicked the Board nav tab with
+`confirm` stubbed to return `false` — confirmed it was called with the
+exact string `"Discard unsaved settings changes?"` and that Settings
+stayed mounted with the edit intact; retried with `confirm` stubbed to
+return `true` — confirmed it navigated to Board (Settings' own heading gone
+from the DOM); saved the edit, then clicked Board again with `confirm`
+stubbed to spy-only — confirmed it was **never called** and navigation
+happened immediately (the "save → switch is silent" case). Also confirmed
+visually at a real 1280×800 window: the Save button and "Unsaved changes"
+hint are both visible pinned to the bottom of the viewport on the initial
+Settings load, with no scrolling needed, even though the full form (Models,
+Routing, Merge Policy, Risky Rules, Projects, Security, Budget, Browser
+Notifications, Telegram) is far taller than 800px.
 
 Batch 1 (PR #59) fixed: **U1** — new amber count badge on the
 Notifications nav item (`App.tsx`) for notifications with

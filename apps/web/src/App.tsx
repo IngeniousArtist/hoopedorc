@@ -87,6 +87,29 @@ export function App() {
     null,
   );
 
+  // U4: Settings unmounts on tab switch ({page === "settings" && <Settings
+  // />}), silently discarding unsaved edits — a ref (not state) because
+  // Settings reports it on every keystroke and this must never trigger a
+  // re-render of App itself. Read only inside navigate(), and only while
+  // page === "settings", so it's irrelevant everywhere else.
+  const settingsDirtyRef = useRef(false);
+  const handleSettingsDirtyChange = useCallback((dirty: boolean) => {
+    settingsDirtyRef.current = dirty;
+  }, []);
+  const navigate = useCallback(
+    (next: Page) => {
+      if (
+        page === "settings" &&
+        settingsDirtyRef.current &&
+        !window.confirm("Discard unsaved settings changes?")
+      ) {
+        return;
+      }
+      setPage(next);
+    },
+    [page],
+  );
+
   useEffect(() => {
     setUnauthorizedHandler(
       () =>
@@ -251,7 +274,7 @@ export function App() {
               ))}
             </select>
             <button
-              onClick={() => setPage("new-project")}
+              onClick={() => navigate("new-project")}
               title="Create a new project"
               className={
                 "shrink-0 rounded border px-2 py-1 text-[11px] transition-colors " +
@@ -275,7 +298,7 @@ export function App() {
                 />
               )}
               <button
-                onClick={() => setPage(item.page)}
+                onClick={() => navigate(item.page)}
                 className={
                   "shrink-0 rounded px-3 py-1 text-xs transition-colors " +
                   (page === item.page
@@ -340,7 +363,9 @@ export function App() {
             {page === "notifications" && (
               <Notifications projectId={selectedProjectId} />
             )}
-            {page === "settings" && <Settings />}
+            {page === "settings" && (
+              <Settings onDirtyChange={handleSettingsDirtyChange} />
+            )}
             {page === "setup" && (
               <SetupView onRerunSetup={() => setPage("welcome")} />
             )}
