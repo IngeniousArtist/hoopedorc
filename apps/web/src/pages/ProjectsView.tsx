@@ -2,6 +2,7 @@ import type { ListProjectsResponse, Project, RouteKey } from "@orc/types";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useToast } from "../hooks/useToast";
+import { formatSchedule } from "../lib/format";
 
 const STATUS_COLOR: Record<string, string> = {
   created: "bg-neutral-700 text-neutral-200",
@@ -101,7 +102,9 @@ export function ProjectsView({
       )}
 
       <div className="space-y-2">
-        {projects.map((p) => (
+        {projects.map((p) => {
+          const scheduleLabel = formatSchedule(p.config?.schedule);
+          return (
           <div
             key={p.id}
             className={
@@ -142,6 +145,14 @@ export function ProjectsView({
               {p.budgetUsd != null && (
                 <span className="text-[11px] text-neutral-400">
                   budget ${p.budgetUsd}
+                </span>
+              )}
+              {scheduleLabel && (
+                <span
+                  className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-400"
+                  title="Auto-start schedule"
+                >
+                  {scheduleLabel}
                 </span>
               )}
 
@@ -199,7 +210,8 @@ export function ProjectsView({
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

@@ -1,10 +1,12 @@
 import type {
+  ListNotificationsResponse,
   ListProjectsResponse,
+  Notification,
   Project,
   ServerEvent,
   Settings as SettingsType,
 } from "@orc/types";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { api, setUnauthorizedHandler } from "./api/client";
 import { useWS } from "./hooks/useWS";
 import { useBrowserNotify } from "./hooks/useBrowserNotify";
@@ -44,11 +46,15 @@ const NAV: { page: Page; label: string }[] = [
   { page: "projects", label: "Projects" },
   { page: "settings", label: "Settings" },
   { page: "setup", label: "Setup" },
-  { page: "new-project", label: "New Project" },
 ];
 
 /** Pages that need a selected project to render anything useful. */
 const PROJECT_PAGES: Page[] = ["board", "plan", "costs", "audit", "notifications"];
+
+/** U9: first NAV index that isn't project-scoped — renders a divider there
+ *  so project tabs (Board…Notifications) read as visually distinct from
+ *  app-level ones (Projects/Settings/Setup). */
+const GLOBAL_NAV_START = NAV.findIndex((item) => !PROJECT_PAGES.includes(item.page));
 
 const STORAGE_KEY = "hoop.projectId";
 
@@ -60,6 +66,10 @@ export function App() {
   const [planMounted, setPlanMounted] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
+  // U1: global "action required" nav badge — notifications aren't
+  // project-scoped on the wire (see ws-hub.ts's isGlobalEvent), so this
+  // tracks every notification regardless of which project tab is open.
+  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () => localStorage.getItem(STORAGE_KEY) ?? "",
   );
@@ -114,6 +124,19 @@ export function App() {
     refreshProjects();
   }, [refreshProjects]);
 
+  const fetchNotifications = useCallback(async () => {
+    try {
+      const res = await api<ListNotificationsResponse>("listNotifications");
+      setNotifications(res.notifications);
+    } catch {
+      /* non-critical — badge just stays at its last known count */
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchNotifications();
+  }, [fetchNotifications]);
+
   useEffect(() => {
     if (onboardingChecked || !projectsLoaded) return;
     setOnboardingChecked(true);
@@ -145,13 +168,19 @@ export function App() {
       } else if (e.type === "project.deleted") {
         setProjects((prev) => prev.filter((p) => p.id !== e.payload.id));
         setSelectedProjectId((cur) => (cur === e.payload.id ? "" : cur));
-      } else if (
+      } else if (e.type === "notification") {
         // Global (B15) — reaches every client regardless of which project
-        // tab is open, matching "action needed" mattering everywhere.
-        e.type === "notification" &&
-        e.payload.severity === "action_required"
-      ) {
-        notify(e.payload.title, { body: e.payload.message });
+        // tab is open, matching "action needed" mattering everywhere. Also
+        // covers respond()'s own broadcast, so the U1 badge clears the
+        // moment an approval is answered from any tab.
+        setNotifications((prev) => {
+          const idx = prev.findIndex((n) => n.id === e.payload.id);
+          if (idx >= 0) return prev.map((n, i) => (i === idx ? e.payload : n));
+          return [e.payload, ...prev];
+        });
+        if (e.payload.severity === "action_required") {
+          notify(e.payload.title, { body: e.payload.message });
+        }
       } else if (e.type === "task.updated" && e.payload.status === "failed") {
         notify(`Task failed: ${e.payload.title}`, {
           body: e.payload.description.split("\n")[0],
@@ -183,6 +212,9 @@ export function App() {
   const needsProject = PROJECT_PAGES.includes(page);
   const hasProject = Boolean(selectedProjectId);
   const selectedProject = projects.find((p) => p.id === selectedProjectId);
+  const pendingApprovals = notifications.filter(
+    (n) => n.requiresApproval && !n.respondedWith,
+  ).length;
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
@@ -218,23 +250,47 @@ export function App() {
                 </option>
               ))}
             </select>
+            <button
+              onClick={() => setPage("new-project")}
+              title="Create a new project"
+              className={
+                "shrink-0 rounded border px-2 py-1 text-[11px] transition-colors " +
+                (page === "new-project"
+                  ? "border-blue-700 bg-blue-950/40 text-blue-200"
+                  : "border-neutral-700 text-neutral-300 hover:bg-neutral-800")
+              }
+            >
+              + New
+            </button>
           </div>
         </div>
 
         <div className="mt-2 flex items-center gap-1 overflow-x-auto">
-          {NAV.map((item) => (
-            <button
-              key={item.page}
-              onClick={() => setPage(item.page)}
-              className={
-                "shrink-0 rounded px-3 py-1 text-xs transition-colors " +
-                (page === item.page
-                  ? "bg-neutral-700 text-neutral-100"
-                  : "text-neutral-400 hover:text-neutral-200")
-              }
-            >
-              {item.label}
-            </button>
+          {NAV.map((item, i) => (
+            <Fragment key={item.page}>
+              {i === GLOBAL_NAV_START && GLOBAL_NAV_START > 0 && (
+                <span
+                  aria-hidden="true"
+                  className="mx-1 h-4 w-px shrink-0 bg-neutral-700"
+                />
+              )}
+              <button
+                onClick={() => setPage(item.page)}
+                className={
+                  "shrink-0 rounded px-3 py-1 text-xs transition-colors " +
+                  (page === item.page
+                    ? "bg-neutral-700 text-neutral-100"
+                    : "text-neutral-400 hover:text-neutral-200")
+                }
+              >
+                {item.label}
+                {item.page === "notifications" && pendingApprovals > 0 && (
+                  <span className="ml-1.5 inline-flex min-w-[1.1rem] items-center justify-center rounded-full border border-amber-700 bg-amber-900/60 px-1 text-[10px] font-medium text-amber-300">
+                    {pendingApprovals}
+                  </span>
+                )}
+              </button>
+            </Fragment>
           ))}
         </div>
       </nav>
@@ -256,7 +312,11 @@ export function App() {
         ) : (
           <>
             {needsProject && selectedProject && (
-              <ProjectHeader key={selectedProject.id} project={selectedProject} />
+              <ProjectHeader
+                key={selectedProject.id}
+                project={selectedProject}
+                compact={page !== "board"}
+              />
             )}
             {page === "board" && (
               <Board

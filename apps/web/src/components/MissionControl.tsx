@@ -97,7 +97,7 @@ export function MissionControl({
                   {t.title}
                 </span>
                 <span className="shrink-0 text-[11px] text-neutral-500">
-                  {agoLabel(elapsedMs)} elapsed
+                  elapsed {agoLabel(elapsedMs).replace(/ ago$/, "")}
                 </span>
                 <Heartbeat lastActivityAt={activity[t.id]} />
               </div>
