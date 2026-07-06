@@ -457,8 +457,8 @@ here, matching precedent from S2's original auth-hook work).
 |---|---|---|
 | F14 — CI for this repo (GitHub Actions) | ✅ done | [#48](https://github.com/IngeniousArtist/hoopedorc/pull/48) |
 | F15 — "Wait for GitHub checks" merge gate | ✅ done | [#51](https://github.com/IngeniousArtist/hoopedorc/pull/51) |
-| F16 — Subscription quota awareness | ✅ done | TBD |
-| F17 — DB backup rotation | ⬜ | |
+| F16 — Subscription quota awareness | ✅ done | [#52](https://github.com/IngeniousArtist/hoopedorc/pull/52) |
+| F17 — DB backup rotation | ✅ done | TBD |
 | F18 — Sandbox design doc (docs only) | ⬜ | |
 | F19 — Scheduled runs (previously optional — user explicitly asked for it after Phase 7, so it's in scope; do after F14-F17) | ⬜ | |
 
@@ -575,6 +575,38 @@ count. Also live-verified `PUT /api/settings`'s new validation against a
 real running server: a quota with a window but no limit → 400 with a clear
 message; a valid quota → 200 and round-trips; a negative `maxRuns` → 400.
 `npm run typecheck`/`npm run build` green across all workspaces.
+
+F17 fixed: new `packages/server/src/db/backup.ts` — `runBackup(db, dbPath,
+backupDir, keep)` uses better-sqlite3's own online-backup API
+(`db.backup(destPath)`, confirmed as a real `Promise`-returning method by
+reading the installed v11.10.0's actual implementation in
+`node_modules/better-sqlite3/lib/methods/backup.js` before writing any
+code, per the plan's explicit instruction — it also revealed a real
+constraint worth knowing: the destination *directory* must already exist
+or `db.backup()` throws, so `runBackup` `mkdirSync`s it first). Filenames
+are `hoopedorc-YYYY-MM-DD-HHmm.db`; prunes to the newest `keep` afterward
+by `mtime`. Skips entirely (no directory even created) when `dbPath` is
+literally `":memory:"` — the caller in `main()` passes
+`ENV.mock ? ":memory:" : ENV.dbPath`, matching exactly what `setupDb()`
+itself used to open the DB. Wired into `main()` right next to the existing
+log-pruning code, same on-boot-plus-daily `setInterval(...).unref()`
+pattern, wrapped in a `.catch()` that only logs a warning — a failed
+backup must never crash the server. New `DB_BACKUP_DIR` (default:
+`<dirname(dbPath)>/backups`, computed once in `config.ts` alongside
+`dbPath` itself so the default doesn't need recomputing at call sites) and
+`DB_BACKUP_KEEP` (default 7) env vars, added to `.env.example`. Verified
+against the real implementation two ways: (1) a standalone script against
+a real file-based `better-sqlite3` DB (via `initDb`, not a reimplementation)
+covering all three acceptance scenarios — a real backup file appears
+matching the exact filename pattern; pre-seeding 9 dummy older files then
+backing up again prunes to exactly 7 with the newest (including the
+just-created real backup) surviving; an in-memory DB backup is skipped
+with no directory created at all; (2) booted the actual built server
+(non-mock, a real file DB) fresh and confirmed via its own log line and a
+real `sqlite3 .tables` read against the produced file that a genuine,
+schema-intact backup was written on boot. `npm run typecheck`/
+`npm run build` green across all workspaces; `npm test -w @orc/engine`
+(32/32) and `-w @orc/adapters` (4/4) unaffected (no engine/adapter changes).
 
 ---
 

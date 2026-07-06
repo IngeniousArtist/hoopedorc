@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ModelConfig, Settings } from "@orc/types";
 
 /**
@@ -117,9 +117,11 @@ export function defaultSettings(): Settings {
   };
 }
 
+const dbPath = process.env.DB_PATH ?? "hoopedorc.db";
+
 export const ENV = {
   port: Number(process.env.PORT ?? 4317),
-  dbPath: process.env.DB_PATH ?? "hoopedorc.db",
+  dbPath,
   // Loopback by default — the API is unauthenticated unless apiToken/API_TOKEN
   // is set (see below), so binding wide open by default would let anything on
   // the LAN (or any website open in the operator's browser, via CORS) drive
@@ -162,4 +164,9 @@ export const ENV = {
   // and snapshot queries). Pruned on boot and daily — see pruneLogs() in
   // db/repo.ts and its callers in index.ts.
   logRetentionDays: Number(process.env.LOG_RETENTION_DAYS ?? 14),
+  // F17: where periodic DB backups (better-sqlite3's online backup API) are
+  // written — default sits next to the DB file itself. No-op for an
+  // in-memory/mock DB, so this only ever matters for a real deployment.
+  dbBackupDir: process.env.DB_BACKUP_DIR ?? join(dirname(dbPath), "backups"),
+  dbBackupKeep: Number(process.env.DB_BACKUP_KEEP ?? 7),
 };
