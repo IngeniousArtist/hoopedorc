@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { execFile } from "node:child_process";
+import { timingSafeEqual } from "node:crypto";
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -532,6 +533,20 @@ async function main() {
     return ENV.apiToken || repo.getSettings(db)?.apiToken || undefined;
   }
 
+  /**
+   * Constant-time token compare (S6). `timingSafeEqual` throws on unequal
+   * buffer lengths rather than returning false, so the length check must
+   * come first — but comparing lengths still leaks length, not content,
+   * which is the same tradeoff every constant-time-compare guide accepts.
+   */
+  function safeTokenEqual(candidate: string | undefined, expected: string): boolean {
+    if (candidate === undefined) return false;
+    const a = Buffer.from(candidate, "utf-8");
+    const b = Buffer.from(expected, "utf-8");
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  }
+
   // Refuse to come up wide-open-and-unauthenticated: if HOST is bound beyond
   // loopback, either a token must gate the API or the operator must
   // explicitly opt into ALLOW_UNAUTHENTICATED=1 (e.g. a throwaway sandbox).
@@ -563,7 +578,7 @@ async function main() {
     const bearer = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
     const queryToken = isWs ? (req.query as { token?: string }).token : undefined;
 
-    if (bearer !== token && queryToken !== token) {
+    if (!safeTokenEqual(bearer, token) && !safeTokenEqual(queryToken, token)) {
       return reply.code(401).send({ error: "unauthorized" });
     }
   });

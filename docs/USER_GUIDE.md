@@ -145,10 +145,11 @@ laptop, your phone) without exposing it to the open internet:
 2. Set `HOST=0.0.0.0` (or the tailnet interface's own address) in `.env` —
    the server **refuses to start** with a non-loopback `HOST` unless you
    also set one of the next two things.
-3. Set `API_TOKEN` in `.env` to a random string. Every `/api/*` request then
-   needs `Authorization: Bearer <token>`, and the web UI will prompt you for
-   it once (stored in the browser's `localStorage` after that). This is the
-   normal path — do this, don't skip it.
+3. Set `API_TOKEN` in `.env` to a random string. Every `/api/*` request and
+   the WebSocket connection then need the token; the web UI shows an in-app
+   login screen the first time it hits a 401 and stores what you enter in
+   the browser's `localStorage` after that. This is the normal path — do
+   this, don't skip it.
 4. (Escape hatch, not recommended) `ALLOW_UNAUTHENTICATED=1` starts the
    server on a non-loopback `HOST` with no token at all — only reasonable
    for a genuinely locked-down throwaway sandbox.
@@ -157,6 +158,14 @@ laptop, your phone) without exposing it to the open internet:
    tailnet, and rely on Tailscale for the actual access control. Anyone on
    your tailnet can reach the app once it's up; for a solo setup that's the
    right tradeoff (app-level auth becomes a second layer, not the only one).
+6. One thing the token does **not** cover: the static SPA shell itself (the
+   HTML/JS/CSS bundle) is served without auth even when `API_TOKEN` is set —
+   only `/api/*` and the WebSocket upgrade are gated. This is intentional
+   (the shell has no data in it, just code), but it means anyone who can
+   reach the port can load the login screen and see that Hoopedorc is
+   running there, even without a valid token. Tailscale is still the real
+   access-control boundary; the token protects the data, not the app's
+   existence.
 
 ## Troubleshooting
 

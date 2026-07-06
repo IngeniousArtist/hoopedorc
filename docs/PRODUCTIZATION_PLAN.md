@@ -331,15 +331,15 @@ silently always `true` on success in every real repo, only ever
 "working" in mocked tests. Fixed by checking `package.json` directly
 (`hasNpmScript`) instead of inferring presence from npm's exit behavior.
 
-### Phase 7 — B16–B19, S6 (review-pass fixes) — 🔄 in progress
+### Phase 7 — B16–B19, S6 (review-pass fixes) — ✅ DONE
 
 | Item | Status | PR |
 |---|---|---|
 | B16 — Dockerfile build stage certainly fails (missing COPYs) | ✅ done | [#42](https://github.com/IngeniousArtist/hoopedorc/pull/42) |
 | B17 — Configured-but-missing gate script silently passes | ✅ done | [#43](https://github.com/IngeniousArtist/hoopedorc/pull/43) |
 | B18 — Capacity-blocked project waits silently | ✅ done | [#44](https://github.com/IngeniousArtist/hoopedorc/pull/44) |
-| B19 — Manual dispatch invisible to the global model cap | ✅ done | TBD |
-| S6 — Auth polish: real login screen, constant-time compare, doc note | ⬜ | |
+| B19 — Manual dispatch invisible to the global model cap | ✅ done | [#45](https://github.com/IngeniousArtist/hoopedorc/pull/45) |
+| S6 — Auth polish: real login screen, constant-time compare, doc note | ✅ done | TBD |
 
 B16 fixed: `deploy/Dockerfile`'s build stage now copies `tsconfig.base.json`,
 `bin/`, and `scripts/` before `npm ci` (every workspace tsconfig extends the
@@ -402,6 +402,54 @@ both finish `done`. As documented in the plan, left the known escalation
 transient-overshoot case alone (fallback escalation increments the next
 model without a capacity check — blocking mid-task risks deadlock, so a
 brief overshoot is the accepted tradeoff). 26/26 engine tests green (1 new).
+
+S6 fixed (all three leftovers): **(1) Login screen.** New
+`apps/web/src/components/TokenGate.tsx` — a small centered card, rendered by
+`App.tsx` only when `client.ts`'s new `setUnauthorizedHandler` callback
+fires (i.e. only after a real 401; auth-off, the default, never trips it).
+`client.ts` replaced the old blocking browser-prompt stopgap with
+`export function setUnauthorizedHandler(h)`; on 401 it awaits the handler,
+stores what it resolves with, and retries once. `TokenGate` validates the
+entered token itself — a raw `fetch(apiUrl("getSettings"))` with the
+candidate token, bypassing `api()` to avoid recursing back into the 401
+handler — so by the time it resolves the outer promise the token is already
+confirmed-good, and it shows an inline "Incorrect token." error and stays
+open on a bad guess instead of closing and surfacing a generic error
+elsewhere. `useWS.ts` needed no changes: it already reads
+`getStoredApiToken()` fresh on every reconnect attempt (verified by reading
+the code, then confirming live — see below). `grep -r` for the old prompt
+mechanism (matched as a literal string) now returns nothing under
+`apps/web/src`. **(2) Constant-time compare.** New `safeTokenEqual()` in
+`index.ts`'s auth hook uses `node:crypto`'s `timingSafeEqual` on UTF-8
+buffers with a length-mismatch guard first (since `timingSafeEqual` throws
+rather than returning `false` on unequal lengths); applied to both the
+bearer-header and `?token=` query-param checks. **(3) Docs.** New paragraph
+in `USER_GUIDE.md`'s Remote setup section: the SPA shell (`/`, JS, CSS) is
+served without a token even when `API_TOKEN` is set — only `/api/*` and the
+WebSocket upgrade are gated — by design (the shell has no data in it), but
+worth knowing since anyone reaching the port can see Hoopedorc is running
+there. Live-verified end-to-end against a real (non-mock) server with
+`API_TOKEN` set, using `agent-browser` against the actual built
+`apps/web/dist` (F10's static-serving path, not the Vite dev server): fresh
+page load (cleared `localStorage`) showed the in-app TokenGate with no
+native browser dialog; submitting a wrong token showed the inline
+"Incorrect token." error and the gate stayed open (screenshotted); a
+followup fresh page load after clearing `localStorage` and setting a stale
+bogus token confirmed the gate is skipped entirely when the server has no
+`API_TOKEN` configured, regardless of leftover `localStorage` content;
+submitting the correct token closed the gate and loaded the full Board with
+live mock data. Server request logs confirm the WebSocket path specifically:
+an unauthenticated `GET /ws` attempt was rejected `401` before the token was
+entered, then subsequent `GET /ws?token=...` upgrade attempts after
+authenticating were **not** 401'd (no rejection logged for any of them),
+proving the socket itself authenticated — not just the REST calls. Also
+curl-verified the constant-time compare's observable behavior directly: no
+token → 401, wrong token → 401, correct token → 200, `/api/health` and the
+SPA shell → 200 unauthenticated in all cases. `npm run typecheck`/
+`npm run build` green across all workspaces; `npm test -w @orc/engine`
+(26/26) and `-w @orc/adapters` (4/4) unaffected (`@orc/server` has no test
+package of its own — live verification is the bar for server-only changes
+here, matching precedent from S2's original auth-hook work).
 
 ### Phase 8 — F14–F17 (+F18 doc, F19 optional) — ⬜ not started
 
@@ -1327,7 +1375,7 @@ it isn't forgotten.
 | 4 | F1, F2, F3, F4 | Core product loop: onboard → understand → intervene → observe. | ✅ done |
 | 5 | F5, F6, F7, F8 | Away-from-keyboard autonomy story. | ✅ done |
 | 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. | ✅ done |
-| 7 | B16, B17, B18, B19, S6 | Review-pass fixes: confirmed defects in the shipped Phase 6 work. Fix before Phase 8. | ⬜ not started |
+| 7 | B16, B17, B18, B19, S6 | Review-pass fixes: confirmed defects in the shipped Phase 6 work. Fix before Phase 8. | ✅ done |
 | 8 | F14, F15, F16, F17, F18 (F19 optional) | Second feature wave: CI first (F14 — every later PR benefits), then external-CI gate, quota awareness, backups, sandbox doc. | ⬜ not started |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
