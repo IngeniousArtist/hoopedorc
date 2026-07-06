@@ -458,8 +458,8 @@ here, matching precedent from S2's original auth-hook work).
 | F14 — CI for this repo (GitHub Actions) | ✅ done | [#48](https://github.com/IngeniousArtist/hoopedorc/pull/48) |
 | F15 — "Wait for GitHub checks" merge gate | ✅ done | [#51](https://github.com/IngeniousArtist/hoopedorc/pull/51) |
 | F16 — Subscription quota awareness | ✅ done | [#52](https://github.com/IngeniousArtist/hoopedorc/pull/52) |
-| F17 — DB backup rotation | ✅ done | TBD |
-| F18 — Sandbox design doc (docs only) | ⬜ | |
+| F17 — DB backup rotation | ✅ done | [#53](https://github.com/IngeniousArtist/hoopedorc/pull/53) |
+| F18 — Sandbox design doc (docs only) | ✅ done | TBD |
 | F19 — Scheduled runs (previously optional — user explicitly asked for it after Phase 7, so it's in scope; do after F14-F17) | ⬜ | |
 
 F14 fixed: new `.github/workflows/ci.yml` runs on every PR and push to
@@ -608,9 +608,29 @@ schema-intact backup was written on boot. `npm run typecheck`/
 `npm run build` green across all workspaces; `npm test -w @orc/engine`
 (32/32) and `-w @orc/adapters` (4/4) unaffected (no engine/adapter changes).
 
----
-
-## Part 1 — Bugs & security (fix first, in this order)
+F18 fixed: new `docs/specs/sandbox.md` — goals/non-goals, the
+authenticated-CLIs-in-a-container problem (leads with F10's Keychain
+finding: Claude Code's login lives in the macOS Keychain, unreachable from
+a Linux container, so `ANTHROPIC_API_KEY` — billed per-token via the
+Console, not a subscription's flat rate — is the only container-compatible
+path for Claude; `opencode`'s file-based auth and `gh`'s native `GH_TOKEN`
+support are more container-friendly, `GH_TOKEN`/`GITHUB_TOKEN` support
+confirmed directly via `gh help environment` before writing it down), the
+worktree mount model (bind-mount exactly `task.worktreePath`, nothing else
+from the host — closing the current gap that nothing actually enforces
+"one task can only touch its own worktree" beyond convention), a network
+allowlist policy (target-repo host, the assigned model's specific
+provider endpoint, and — a real tension worth flagging — package-registry
+access for gate scripts that install deps at run time, so "no network at
+all" doesn't cleanly work for the gates stage), env sanitization as two
+layers (S5's existing host-side `sanitizedEnv()` denylist, plus a stricter
+container-side allowlist built from scratch rather than forwarded from the
+host), why gates are the easier half to containerize first (no CLI-auth
+problem at all — plain `npm`/`execFile` calls), and a three-phase rollout
+(gates-only → agents opt-in per model, starting with `opencode`'s simpler
+auth story → agents default-on). Linked from F13's plan entry and from
+`README.md`'s Security section, per the acceptance criteria. **No
+implementation** — F13 remains future work; this is design only.
 
 ### S1. Command injection via `execSync` string interpolation — CRITICAL — ✅ DONE (PR [#3](https://github.com/IngeniousArtist/hoopedorc/pull/3))
 
@@ -1195,6 +1215,10 @@ host". A `SANDBOX=container` mode running each worktree's agent + gates inside a
 disposable container (repo mounted, no host env, network-restricted) is the real
 fix. Requires the CLIs authenticated inside the image — significant work; design
 doc first (`docs/specs/sandbox.md`), do not attempt as part of this pass.
+**F18 wrote that design doc** — see [`docs/specs/sandbox.md`](specs/sandbox.md)
+for goals/non-goals, the container-auth problem, worktree mount model, network
+policy, env sanitization, gates-in-container, and the phased rollout. Still no
+implementation — F13 itself remains future work.
 
 ---
 
