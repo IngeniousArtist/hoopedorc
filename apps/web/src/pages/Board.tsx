@@ -357,7 +357,12 @@ export function Board({
         params: { id: taskId },
         body: { status },
       });
-    } catch {
+    } catch (e) {
+      // B21: B5's server rules reject most invalid moves with a genuinely
+      // useful message ("can only requeue to backlog/ready", "stop it first")
+      // — surface it instead of letting the card silently snap back, which
+      // is indistinguishable from the drag not registering at all.
+      toast(String(e), "error");
       setTasks((prev) =>
         prev.map((t) =>
           t.id === taskId ? { ...t, status: task.status } : t,
