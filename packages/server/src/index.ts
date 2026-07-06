@@ -489,6 +489,15 @@ async function safeToDeleteLocalPath(
   return (await gitOriginUrl(localPath)) === repoUrl;
 }
 
+/** S7: the WS upgrade carries the bearer token as `?token=...` (browsers
+ *  can't set custom headers on a WS upgrade — see useWS.ts), so Fastify's
+ *  default request logger would otherwise write the real token to stdout
+ *  (and from there, systemd's journal) on every connection. Redact it from
+ *  the logged URL only — the actual request handling never sees this. */
+function redactTokenFromUrl(url: string): string {
+  return url.replace(/([?&]token=)[^&]*/, "$1[redacted]");
+}
+
 /** Replace secret fields with SECRET_SENTINEL before a settings object leaves
  *  the server (GET or PUT response). */
 function redactSettings(settings: SettingsType): SettingsType {
@@ -503,7 +512,24 @@ function redactSettings(settings: SettingsType): SettingsType {
 }
 
 async function main() {
-  const app = Fastify({ logger: true });
+  // S7: override only the `url` field of Fastify's default req serializer
+  // (method/host/remoteAddress/etc. stay exactly as the default reports
+  // them) so a token in the query string never reaches the logs.
+  const app = Fastify({
+    logger: {
+      serializers: {
+        req(request) {
+          return {
+            method: request.method,
+            url: redactTokenFromUrl(request.url),
+            host: request.host,
+            remoteAddress: request.ip,
+            remotePort: request.socket ? request.socket.remotePort : undefined,
+          };
+        },
+      },
+    },
+  });
 
   // Allowlist only — the dev web app's own origins plus any operator-added
   // CORS_ORIGINS. `origin: true` (reflect-any-origin) would let ANY website
