@@ -3,6 +3,7 @@ import type {
   LogEvent,
   MergeDecision,
   ModelConfig,
+  ModelId,
   Run,
   Task,
   TaskDecisionsResponse,
@@ -10,6 +11,7 @@ import type {
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { LogPanel } from "./LogPanel";
+import { ModelSelect } from "./ModelSelect";
 
 type Tab = "overview" | "logs" | "review" | "pr";
 const TABS: { key: Tab; label: string }[] = [
@@ -58,6 +60,7 @@ export function TaskDrawer({
   onViewDiff,
   onRetry,
   onRollback,
+  onModelChange,
 }: {
   task: Task;
   models: ModelConfig[];
@@ -70,6 +73,9 @@ export function TaskDrawer({
   onViewDiff: () => void;
   onRetry: () => void;
   onRollback: () => void;
+  /** U6 — moved here from the kanban card itself: same enable/disable rule
+   *  (only non-active tasks), but the card now just shows a static chip. */
+  onModelChange: (m: ModelId) => void;
 }) {
   const [tab, setTab] = useState<Tab>("overview");
   const [runs, setRuns] = useState<Run[]>([]);
@@ -196,12 +202,20 @@ export function TaskDrawer({
               <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">
                 Model
               </div>
-              <p className="text-neutral-300">
-                {modelName(task.assignedModel)}{" "}
-                <span className="text-neutral-500">
-                  — may escalate through a fallback chain by difficulty if an
-                  attempt fails (Settings → Routing)
-                </span>
+              <ModelSelect
+                value={task.assignedModel}
+                models={models}
+                onChange={(m) => {
+                  if (m) onModelChange(m);
+                }}
+                disabled={
+                  task.status === "in_progress" || task.status === "in_review"
+                }
+                disabledReason="Running — wait for this attempt to finish to reassign"
+              />
+              <p className="mt-1 text-neutral-500">
+                May escalate through a fallback chain by difficulty if an
+                attempt fails (Settings → Routing)
               </p>
             </div>
 

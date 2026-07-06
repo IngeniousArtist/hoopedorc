@@ -502,9 +502,6 @@ export function Board({
                     models={settings?.models ?? []}
                     lastActivityAt={activity[t.id]}
                     estimate={estimates[t.id]}
-                    onModelChange={(m) =>
-                      handleModelChange(t.id, m)
-                    }
                     onClick={() =>
                       setSelectedTaskId(
                         selectedTaskId === t.id
@@ -541,6 +538,7 @@ export function Board({
           onRollback={() =>
             handleRollback(selectedTask.id, selectedTask.prNumber!)
           }
+          onModelChange={(m) => handleModelChange(selectedTask.id, m)}
         />
       )}
     </div>

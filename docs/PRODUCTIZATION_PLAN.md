@@ -686,7 +686,7 @@ unaffected (no engine/adapter changes).
 **This closes out Phase 8 — every item in Parts 1, 2, and 3 of this plan
 (S1-S6, B1-B19, F1-F19) is now done.**
 
-### Phase 9 — Part 4: post-plan audit fixes + UX wave — 🔄 in progress
+### Phase 9 — Part 4: post-plan audit fixes + UX wave — ✅ DONE
 
 | Item | Status | PR |
 |---|---|---|
@@ -700,7 +700,7 @@ unaffected (no engine/adapter changes).
 | U3 — Board's 8 columns overflow with no affordance | ✅ done | [#60](https://github.com/IngeniousArtist/hoopedorc/pull/60) |
 | U4 — switching tabs silently discards unsaved Settings edits | ✅ done | [#61](https://github.com/IngeniousArtist/hoopedorc/pull/61) |
 | U5 — MissionControl elapsed label reads "42s ago elapsed" | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
-| U6 — model-reassign dropdown on every kanban card | ⬜ | |
+| U6 — model-reassign dropdown on every kanban card | ✅ done | [#62](https://github.com/IngeniousArtist/hoopedorc/pull/62) |
 | U7 — schedules invisible outside the Advanced accordion; disable loses times | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
 | U8 — headline costs render as "$0.0000" | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
 | U9 — "New Project" is a nav tab though it's an action | ✅ done | [#59](https://github.com/IngeniousArtist/hoopedorc/pull/59) |
@@ -713,10 +713,11 @@ heading and overhauled the README. U1–U10 are the next implementation wave
 — same workflow as every prior phase, work top-down. Split into two
 batches (mirroring Phase 3's pattern): batch 1 (U1, U2, U5, U7, U8, U9 —
 ✅ done, PR #59; U10 needed no code change, already fixed) shipped the
-lower-risk items; batch 2 (U3 — ✅ done, PR #60; U4 — ✅ done, PR #61; U6
-still open) is the remaining ones with more interaction-state complexity:
-Board column collapse/dragover (done), cross-component Settings dirty
-tracking (done), moving the model-reassign control (open).
+lower-risk items; batch 2 (U3 — ✅ done, PR #60; U4 — ✅ done, PR #61; U6 —
+✅ done, PR #62) shipped the remaining ones with more interaction-state
+complexity: Board column collapse/dragover, cross-component Settings dirty
+tracking, moving the model-reassign control. **This closes out the entire
+U1–U10 UX wave and Part 4 of the plan.**
 
 U3 (PR #60) fixed: `Board.tsx` now tracks `expandedEmpty` (a
 `Set<TaskStatus>` of columns a click or a drag has explicitly opened) and
@@ -807,6 +808,34 @@ hint are both visible pinned to the bottom of the viewport on the initial
 Settings load, with no scrolling needed, even though the full form (Models,
 Routing, Merge Policy, Risky Rules, Projects, Security, Budget, Browser
 Notifications, Telegram) is far taller than 800px.
+
+U6 (PR #62) fixed: `TaskCard.tsx` dropped its `<ModelSelect>` entirely
+(along with the now-unused `onModelChange` prop and `ModelId` import) —
+the card's existing static chip (previously the raw `task.assignedModel`
+id, e.g. `"deepseek-pro"`) now resolves the display name via `models`
+(`models.find((m) => m.id === task.assignedModel)?.displayName ??
+task.assignedModel`), matching how MissionControl already shows its
+active-agent chips. Reassignment moved to `TaskDrawer`'s Overview tab: a
+new required `onModelChange: (m: ModelId) => void` prop, wired through the
+same `ModelSelect` component TaskCard used to render, with the *exact*
+same enable/disable rule TaskCard enforced
+(`disabled={task.status === "in_progress" || task.status === "in_review"}`,
+same `disabledReason` copy) — a straight move, not a reimplementation.
+`Board.tsx` now passes `onModelChange` to `TaskDrawer` instead of each
+`TaskCard`, reusing the same pre-existing `handleModelChange(taskId,
+model)` handler unchanged. Verified: `npm run typecheck`/`npm run build`
+green across all workspaces; `npm test -w @orc/engine` (32/32) and `-w
+@orc/adapters` (4/4) unaffected (no engine/adapter/server changes).
+Live-verified against `npm run mock`: cards across Backlog/Ready/In
+Progress/In Review all show a plain chip with the friendly model name and
+no dropdown at all; opened the drawer for a Ready (non-active) task and
+reassigned it from "Deepseek v4 Pro" to "GLM 5.1" via the drawer's select —
+confirmed both the drawer's own "Roles: …" caption updated and, without
+closing the drawer, the *card itself* live-updated its chip to "GLM 5.1"
+(no reload); opened the drawer for an in_progress task and confirmed via
+direct DOM inspection (`select.disabled === true`) that the control is
+genuinely disabled, showing the current model and the "Running — wait for
+this attempt to finish to reassign" message, not just visually similar.
 
 Batch 1 (PR #59) fixed: **U1** — new amber count badge on the
 Notifications nav item (`App.tsx`) for notifications with
@@ -2048,16 +2077,15 @@ fundamentally sound UI, not a redesign.
 | 6 | F9, F10, F11, F12 | Per-repo flexibility, packaging, docs. | ✅ done |
 | 7 | B16, B17, B18, B19, S6 | Review-pass fixes: confirmed defects in the shipped Phase 6 work. Fix before Phase 8. | ✅ done |
 | 8 | F14, F15, F16, F17, F18, F19 | Second feature wave: CI first (F14 — every later PR benefits), then external-CI gate, quota awareness, backups, sandbox doc, scheduled runs (F19 opted into 2026-07-06). | ✅ done |
-| 9 | A1–A5 (done), U1–U10 | Post-plan audit fixes, then the UX wave from the full-app walkthrough — badge/header/board layout first (U1–U4 are the high-impact ones), trivial polish after. | 🔄 in progress |
+| 9 | A1–A5, U1–U10 | Post-plan audit fixes, then the UX wave from the full-app walkthrough — badge/header/board layout first (U1–U4 are the high-impact ones), trivial polish after. | ✅ done |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
 
-Parts 1, 2, and 3 (Phases 1–8) are **all done** — Phases 1–6 tagged
-`v0.1.0`, Phases 7–8 plus the post-plan audit fixes tagged `v0.2.0`. Part 4
-(Phase 9) is the active work: the audit items A1–A5 are already fixed;
-U1–U10 are next, top-down. F13 remains future work — F18 covers its design
-doc only, and Part 4's "Beyond the UX wave" list is where to look after
-U10. Fable independently re-verifies each wave after merge; verification
-evidence is in each item's PR description and in this doc's Progress
-section above.
+Parts 1–4 (Phases 1–9) are **all done** — Phases 1–6 tagged `v0.1.0`,
+Phases 7–8 plus the post-plan audit fixes tagged `v0.2.0`, Phase 9 (A1–A5,
+U1–U10) closes out every item currently in this plan. F13 remains future
+work — F18 covers its design doc only, and Part 4's "Beyond the UX wave"
+list (below) is where to look next. Fable independently re-verifies each
+wave after merge; verification evidence is in each item's PR description
+and in this doc's Progress section above.
