@@ -335,8 +335,8 @@ silently always `true` on success in every real repo, only ever
 
 | Item | Status | PR |
 |---|---|---|
-| B16 — Dockerfile build stage certainly fails (missing COPYs) | ✅ done | TBD |
-| B17 — Configured-but-missing gate script silently passes | ⬜ | |
+| B16 — Dockerfile build stage certainly fails (missing COPYs) | ✅ done | [#42](https://github.com/IngeniousArtist/hoopedorc/pull/42) |
+| B17 — Configured-but-missing gate script silently passes | ✅ done | TBD |
 | B18 — Capacity-blocked project waits silently | ⬜ | |
 | B19 — Manual dispatch invisible to the global model cap | ⬜ | |
 | S6 — Auth polish: real login screen, constant-time compare, doc note | ⬜ | |
@@ -351,6 +351,21 @@ environment — verified by replicating the exact post-fix `COPY` set
 `apps/`, excluding gitignored `node_modules`/`dist` to match what a real
 build context from a git checkout would contain) into a fresh temp dir and
 running `npm ci && npm run build` there — both succeeded.
+
+B17 fixed: `gate-runner.ts`'s `runGate()` and `runTestsGate()`'s `testScript`
+branch now check `hasNpmScript` for an explicit override *before* delegating
+to `runScript`, returning a hard `passed: false` with a
+`configured gate script "<name>" not found in package.json` message when the
+named script doesn't exist — mirrors `runCommand`'s existing reasoning for
+`testCommand` (operator-configured means failures are real, not "nothing to
+run"). The default-slot path (no override) is untouched: `runScript`'s own
+internal `hasNpmScript` check still returns `{ passed: true, ran: false }`
+for a repo with no default `typecheck`/`lint`/`build`/`test` scripts, which
+is exactly the B11 vacuous-gate signal. Three new `gate-runner.test.ts`
+cases cover all three acceptance scenarios (typecheck override missing →
+fails loudly; testScript override missing → fails the tests gate loudly;
+default-slot missing script with no override → still passes vacuously) —
+24/24 engine tests green (3 new).
 
 ### Phase 8 — F14–F17 (+F18 doc, F19 optional) — ⬜ not started
 

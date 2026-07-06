@@ -98,3 +98,30 @@ test("testCommand (F9) takes priority over a testScript override when both are s
   );
   assert.equal(result.tests, true, "testCommand should win over testScript");
 });
+
+test("B17: a configured gate script override naming a missing script fails the gate loudly", async () => {
+  const dir = tmpRepo({});
+  const runner = new GateRunnerImpl(worktrees);
+  const result = await runner.run(project({ gates: { typecheckScript: "tc:strict" } }), task(dir));
+  assert.equal(result.typecheck, false, "an explicitly configured override that doesn't exist must fail, not silently pass");
+  assert.match(result.details.typecheck ?? "", /not found/);
+});
+
+test("B17: a configured testScript override naming a missing script fails the tests gate loudly", async () => {
+  const dir = tmpRepo({});
+  const runner = new GateRunnerImpl(worktrees);
+  const result = await runner.run(project({ gates: { testScript: "unit-tests" } }), task(dir));
+  assert.equal(result.tests, false, "an explicitly configured testScript override that doesn't exist must fail, not silently pass");
+  assert.match(result.details.tests ?? "", /not found/);
+});
+
+test("B17: a missing DEFAULT-slot script (no override) still passes vacuously, unaffected by the override fix", async () => {
+  const dir = tmpRepo({});
+  const runner = new GateRunnerImpl(worktrees);
+  const result = await runner.run(project(), task(dir));
+  assert.equal(result.typecheck, true);
+  assert.equal(result.lint, true);
+  assert.equal(result.build, true);
+  assert.equal(result.tests, true);
+  assert.equal(result.vacuous, true, "no scripts at all in a plain repo with no overrides is still the B11 vacuous case");
+});
