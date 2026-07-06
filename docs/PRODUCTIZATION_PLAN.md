@@ -460,7 +460,7 @@ here, matching precedent from S2's original auth-hook work).
 | F16 — Subscription quota awareness | ✅ done | [#52](https://github.com/IngeniousArtist/hoopedorc/pull/52) |
 | F17 — DB backup rotation | ✅ done | [#53](https://github.com/IngeniousArtist/hoopedorc/pull/53) |
 | F18 — Sandbox design doc (docs only) | ✅ done | [#54](https://github.com/IngeniousArtist/hoopedorc/pull/54) |
-| F19 — Scheduled runs (previously optional — user explicitly asked for it after Phase 7, so it's in scope; do after F14-F17) | ✅ done | TBD |
+| F19 — Scheduled runs (previously optional — user explicitly asked for it after Phase 7, so it's in scope; do after F14-F17) | ✅ done | [#55](https://github.com/IngeniousArtist/hoopedorc/pull/55) |
 
 F14 fixed: new `.github/workflows/ci.yml` runs on every PR and push to
 `main` — checkout, `setup-node@v4` (node 22, npm cache), `npm ci`,
