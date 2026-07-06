@@ -331,15 +331,26 @@ silently always `true` on success in every real repo, only ever
 "working" in mocked tests. Fixed by checking `package.json` directly
 (`hasNpmScript`) instead of inferring presence from npm's exit behavior.
 
-### Phase 7 — B16–B19, S6 (review-pass fixes) — ⬜ not started
+### Phase 7 — B16–B19, S6 (review-pass fixes) — 🔄 in progress
 
 | Item | Status | PR |
 |---|---|---|
-| B16 — Dockerfile build stage certainly fails (missing COPYs) | ⬜ | |
+| B16 — Dockerfile build stage certainly fails (missing COPYs) | ✅ done | TBD |
 | B17 — Configured-but-missing gate script silently passes | ⬜ | |
 | B18 — Capacity-blocked project waits silently | ⬜ | |
 | B19 — Manual dispatch invisible to the global model cap | ⬜ | |
 | S6 — Auth polish: real login screen, constant-time compare, doc note | ⬜ | |
+
+B16 fixed: `deploy/Dockerfile`'s build stage now copies `tsconfig.base.json`,
+`bin/`, and `scripts/` before `npm ci` (every workspace tsconfig extends the
+root base config, and the root `package.json` declares a `bin` entry +
+`setup` script pointing at those paths, so both were required for `npm ci`
+and `npm run build` to succeed). No Docker daemon available in this
+environment — verified by replicating the exact post-fix `COPY` set
+(`package*.json`, `tsconfig.base.json`, `bin/`, `scripts/`, `packages/`,
+`apps/`, excluding gitignored `node_modules`/`dist` to match what a real
+build context from a git checkout would contain) into a fresh temp dir and
+running `npm ci && npm run build` there — both succeeded.
 
 ### Phase 8 — F14–F17 (+F18 doc, F19 optional) — ⬜ not started
 
