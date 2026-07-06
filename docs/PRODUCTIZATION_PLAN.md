@@ -24,7 +24,8 @@ ARCHITECTURE, NEXT_STEPS, CONTRACT). It has four parts:
   Tailscale tailnet, planned and supervised from any device — often a phone —
   running near-autonomously): six fixes for defects/footguns confirmed in the
   current code, then a quality-of-life wave aimed at that remote deployment.
-  **This is the active work.**
+  Completed 2026-07-07 — this closes out every part of the plan currently
+  written.
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
@@ -907,7 +908,7 @@ success path already broadcasts the updated notification globally (used and
 verified since B15/F5), and the badge's handler is the same upsert-by-id
 reducer `Notifications.tsx` has used and relied on since F5.
 
-### Phase 10 — Part 5: post-UX-wave fixes + remote-QoL wave — 🔶 IN PROGRESS
+### Phase 10 — Part 5: post-UX-wave fixes + remote-QoL wave — ✅ DONE
 
 | Item | Status | PR |
 |---|---|---|
@@ -917,24 +918,88 @@ reducer `Notifications.tsx` has used and relied on since F5.
 | B22 — Schedule form can silently delete a saved schedule | ✅ done | [#66](https://github.com/IngeniousArtist/hoopedorc/pull/66) |
 | B23 — `notifications` table grows unbounded | ✅ done | [#67](https://github.com/IngeniousArtist/hoopedorc/pull/67) |
 | B24 — Browser-notification dead ends are silent | ✅ done | [#67](https://github.com/IngeniousArtist/hoopedorc/pull/67) |
-| F20 — Remote setup docs: `tailscale serve` HTTPS + EC2 headless auth | ⬜ | |
-| F21 — Hash routing + deep links | ⬜ | |
-| F22 — Approval context (PR link + reasons) in the web UI | ⬜ | |
-| F23 — Global "Stop all" control | ⬜ | |
-| F24 — Update story: `scripts/update.sh` + version surfacing | ⬜ | |
-| F25 — Single shared WebSocket connection | ⬜ | |
-| F26 — PWA manifest | ⬜ | |
-| U11 — No `beforeunload` guard while Settings is dirty | ⬜ | |
-| U12 — `agoLabel` has no hours unit | ⬜ | |
-| U13 — MissionControl "elapsed" resets on status transitions | ⬜ | |
-| U14 — Notifications page: pending approvals should sort first | ⬜ | |
+| F20 — Remote setup docs: `tailscale serve` HTTPS + EC2 headless auth | ✅ done | [#69](https://github.com/IngeniousArtist/hoopedorc/pull/69) |
+| F21 — Hash routing + deep links | ✅ done | [#70](https://github.com/IngeniousArtist/hoopedorc/pull/70) |
+| F22 — Approval context (PR link + reasons) in the web UI | ✅ done | [#71](https://github.com/IngeniousArtist/hoopedorc/pull/71) |
+| F23 — Global "Stop all" control | ✅ done | [#72](https://github.com/IngeniousArtist/hoopedorc/pull/72) |
+| F24 — Update story: `scripts/update.sh` + version surfacing | ✅ done | [#73](https://github.com/IngeniousArtist/hoopedorc/pull/73) |
+| U11 — No `beforeunload` guard while Settings is dirty | ✅ done | [#74](https://github.com/IngeniousArtist/hoopedorc/pull/74) |
+| U12 — `agoLabel` has no hours unit | ✅ done | [#74](https://github.com/IngeniousArtist/hoopedorc/pull/74) |
+| U13 — MissionControl "elapsed" resets on status transitions | ✅ done | [#74](https://github.com/IngeniousArtist/hoopedorc/pull/74) |
+| U14 — Notifications page: pending approvals should sort first | ✅ done | [#74](https://github.com/IngeniousArtist/hoopedorc/pull/74) |
+| F25 — Single shared WebSocket connection | ✅ done | [#75](https://github.com/IngeniousArtist/hoopedorc/pull/75) |
+| F26 — PWA manifest | ✅ done | [#76](https://github.com/IngeniousArtist/hoopedorc/pull/76) |
 
-Work top-down (specs in Part 5 below). Suggested batches, mirroring how
-Phases 3/9 went: (1) B20 + B21 — two small run-control/Board fixes; (2) S7;
-(3) B22; (4) B23 + B24; (5) F20 (docs only); (6) F21; (7) F22; (8) F23;
-(9) F24; (10) U11–U14 together (all small UI polish); (11) F25; (12) F26.
-Update this table (and re-check each item's acceptance criteria) as each
-lands.
+Worked top-down in the suggested batches, mirroring Phases 3/9: (1) B20+B21;
+(2) S7; (3) B22; (4) B23+B24 — the "fixes first" set, recorded above; (5) F20
+(docs only); (6) F21; (7) F22; (8) F23; (9) F24; (10) U11–U14 together;
+(11) F25; (12) F26. **This closes out Part 5 and Phase 10.**
+
+F20–F26 notable finds/decisions (each fully live-verified against real
+running processes/browsers — see each PR description for the specific
+evidence):
+- **F20** (docs only): `tailscale` isn't installed in this dev environment,
+  so its exact invocation is written from official docs and explicitly
+  marked "verify on your box" rather than asserted as tested — everything
+  about the three CLI auth flows *was* verified against the actually
+  installed tools. Found `claude setup-token` via `--help` inspection — a
+  headless-friendly, subscription-billed (not pay-per-token) auth path
+  worth knowing about that wasn't previously documented anywhere in this repo.
+- **F21**: hash sync is a plain `useEffect` reacting to `(page,
+  selectedProjectId)` rather than threading a hash-write through every
+  `setPage` call site — the first write uses `replaceState` (no phantom
+  back-entry for a fresh install), every later one `pushState`s. The
+  Settings-dirty guard's cancel path explicitly re-pushes the hash back to
+  the current page, since a `hashchange` (unlike a click) has already moved
+  `location.hash` by the time the handler runs.
+- **F22**: `EngineRunner.requestApproval` now computes the PR URL + latest
+  validator reasons once and feeds both the persisted notification and the
+  Telegram message from that one source. Mock seed gained a permanent
+  pending-approval-with-context example, seeded *after* the boot-time
+  `expireStaleApprovals` sweep (not inside `setupDb()`) — that sweep runs
+  unconditionally on every boot and would otherwise stamp a freshly-seeded
+  pending approval `expired_restart` before anyone saw it live.
+- **F23**: `EngineRunner.stopAll` hard-aborts the autonomous loop *and*
+  separately walks `manualRuns` for in-flight manual dispatches — pause()
+  alone never touches that second, distinct execution path (B19). Writes
+  one audit entry *per* affected project rather than a single global one,
+  since `AuditEntry.projectId` is required and the Audit tab is per-project.
+  Multi-simultaneous-project stopping was verified by code review only —
+  reliably standing up two independently-registered real orchestrators
+  wasn't practical to reproduce safely in this pass (each needs its own
+  genuine Start, and a project with no tasks yet winds down its dispatch
+  loop almost immediately).
+- **F24**: found and fixed two real, independent bugs while wiring this up
+  — root `package.json`'s `version` had drifted to `"0.1.0"` despite
+  `CHANGELOG.md`/git tags already at `v0.2.0` (bumped to match, otherwise
+  the new version-surfacing feature would report something false), and
+  `scripts/update.sh`'s first draft threw `unbound variable` specifically
+  on **macOS's default Bash 3.2** (`set -u` + empty-array expansion — fixed
+  in 4.4+) — caught only by actually running the script end-to-end in an
+  isolated scratch clone, not by `bash -n` alone.
+- **U11–U14**: batched together as one PR (all small, independent UI
+  fixes). U13's specific `in_progress → in_review` transition couldn't be
+  live-reproduced in this environment — every real author attempt here
+  fails authentication/network near-instantly, so tasks never reach the
+  gates stage where that transition happens; verified by code review
+  instead (the new `activeSince` tracking mirrors the already-proven
+  `activity` heartbeat map exactly).
+- **F25**: live-verified against the real **production build** specifically
+  (not the Vite dev server) to avoid React StrictMode's dev-only
+  double-invoke noise muddying the connection count — confirmed exactly
+  one `/ws` request for the whole Board view (App+Board+MissionControl
+  together) and exactly one reconnection after killing and restarting the
+  server.
+- **F26**: manifest + two PNG icons (a `blue-600` "H" monogram on
+  `neutral-950`, matching the app's own existing palette) generated by hand
+  via `zlib.deflateSync` + manual PNG chunk framing rather than adding an
+  image-processing dependency for two static icons. Deliberately no service
+  worker (out of scope for this item) — noted that Chrome's automatic
+  install banner typically also wants one, so "Add to Home Screen" here may
+  need the browser's manual menu action rather than an automatic prompt.
+
+**This closes out Part 5 (Phase 10) — every item in Parts 1–5 of this plan
+is now done.**
 
 **"Fixes first" batch (B20–B24, S7) — ✅ DONE**, all four PRs merged;
 `npm run typecheck`, `npm run build` green across all workspaces on every
@@ -2602,17 +2667,18 @@ once responded, it drops back into chronological order.
 | 7 | B16, B17, B18, B19, S6 | Review-pass fixes: confirmed defects in the shipped Phase 6 work. Fix before Phase 8. | ✅ done |
 | 8 | F14, F15, F16, F17, F18, F19 | Second feature wave: CI first (F14 — every later PR benefits), then external-CI gate, quota awareness, backups, sandbox doc, scheduled runs (F19 opted into 2026-07-06). | ✅ done |
 | 9 | A1–A5, U1–U10 | Post-plan audit fixes, then the UX wave from the full-app walkthrough — badge/header/board layout first (U1–U4 are the high-impact ones), trivial polish after. | ✅ done |
-| 10 | B20–B24, S7, F20–F26, U11–U14 | Post-UX-wave audit fixes (the Projects-page Pause footgun first), then the remote-deployment QoL wave: docs → routing → approval context → stop-all → update story → polish → WS/PWA. | ⬜ active |
+| 10 | B20–B24, S7, F20–F26, U11–U14 | Post-UX-wave audit fixes (the Projects-page Pause footgun first), then the remote-deployment QoL wave: docs → routing → approval context → stop-all → update story → polish → WS/PWA. | ✅ done |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
 
-Parts 1–4 (Phases 1–9) are **all done** — Phases 1–6 tagged `v0.1.0`,
-Phases 7–8 plus the post-plan audit fixes tagged `v0.2.0`, Phase 9 (A1–A5,
-U1–U10) closed out Parts 1–4. **Part 5 (Phase 10) is the active work** —
-work it top-down (B20 first; suggested batches are in the Phase 10
-Progress entry). F13 remains future work — F18 covers its design doc only
-— and Part 4's "Beyond the UX wave" list plus Part 5's "deliberately does
-NOT include" note are the backlog to draw from after Phase 10. Fable
-independently re-verifies each wave after merge; verification evidence is
-in each item's PR description and in this doc's Progress section above.
+Parts 1–5 (Phases 1–10) are **all done** — Phases 1–6 tagged `v0.1.0`,
+Phases 7–8 plus the post-plan audit fixes tagged `v0.2.0` (package.json's own
+`version` field, previously stale at `0.1.0`, was corrected to match as part
+of F24), Phase 9 (A1–A5, U1–U10) closed out Parts 1–4, and Phase 10
+(B20–B24, S7, F20–F26, U11–U14) closes out Part 5 — every item currently in
+this plan. F13 remains future work — F18 covers its design doc only — and
+Part 4's "Beyond the UX wave" list plus Part 5's "deliberately does NOT
+include" note are where to look for what's next. Fable independently
+re-verifies each wave after merge; verification evidence is in each item's PR
+description and in this doc's Progress section above.
