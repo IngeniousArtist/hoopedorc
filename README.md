@@ -76,7 +76,7 @@ prompt-injected agent or a hostile `npm test` script in the repo being worked
 on can't read your Telegram token or provider API keys — but they still run
 with real filesystem/network access on your machine, since a repo's own
 `test`/`build` scripts are executed as-is (there's no sandbox yet; see F13 in
-the productization plan).
+the productization plan and its design doc, [`docs/specs/sandbox.md`](docs/specs/sandbox.md)).
 
 ## Status
 
