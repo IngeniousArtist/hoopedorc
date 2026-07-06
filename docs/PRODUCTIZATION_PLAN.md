@@ -693,8 +693,8 @@ unaffected (no engine/adapter changes).
 | A1 — concurrent 401s hang api() calls (TokenGate resolver clobbered) | ✅ done | [#57](https://github.com/IngeniousArtist/hoopedorc/pull/57) |
 | A2 — scheduled runs never showed status "running" / no WS broadcast | ✅ done | [#57](https://github.com/IngeniousArtist/hoopedorc/pull/57) |
 | A3 — daily schedules could silently skip a day (poll drift) | ✅ done | [#57](https://github.com/IngeniousArtist/hoopedorc/pull/57) |
-| A4 — CHANGELOG had no 0.2.0 / Phase 7–8 entries | ✅ done | TBD |
-| A5 — USER_GUIDE didn't cover quota/schedules/checks-gate/backups | ✅ done | TBD |
+| A4 — CHANGELOG had no 0.2.0 / Phase 7–8 entries | ✅ done | [#58](https://github.com/IngeniousArtist/hoopedorc/pull/58) |
+| A5 — USER_GUIDE didn't cover quota/schedules/checks-gate/backups | ✅ done | [#58](https://github.com/IngeniousArtist/hoopedorc/pull/58) |
 | U1 — no global "action required" indicator in the nav | ⬜ | |
 | U2 — full ProjectHeader repeats on every project page | ⬜ | |
 | U3 — Board's 8 columns overflow with no affordance | ⬜ | |
