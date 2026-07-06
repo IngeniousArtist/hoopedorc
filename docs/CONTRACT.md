@@ -54,6 +54,17 @@ and only ever set on an `action_required` approval notification that has
 at least a PR or a reason to show; absent on every other notification kind
 and on any row that predates this field.
 
+`POST /api/engine/stop-all` (F23) — the global panic button, one confirmed
+tap from anywhere in the app rather than Projects page → per-row action →
+repeat. Hard-stops (`drain: false` equivalent) every currently running
+project, both the autonomous loop and any in-flight manual dispatch
+(`EngineRunner.stopAll`), writes one `"stopped"` audit entry *per* affected
+project (not a single global entry — `AuditEntry.projectId` is required
+and the Audit tab is per-project, so every affected project's own trail
+should show the event; each entry's `detail.affectedProjectIds` lists all
+of them), and returns `StopAllResponse.projectIds` — the ones that actually
+had something to stop.
+
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.
 
@@ -66,6 +77,7 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 | `POST /api/projects/:id/plan` | `PlanProjectRequest` → `PlanProjectResponse` |
 | `POST /api/projects/:id/start` | → `{ ok }` |
 | `POST /api/projects/:id/pause` | `PauseProjectRequest` (optional) → `{ ok }` |
+| `POST /api/engine/stop-all` | (F23 — global panic button) → `StopAllResponse` |
 | `GET /api/projects/:id/tasks` | → `ListTasksResponse` |
 | `POST /api/projects/:id/tasks` | `AddTaskRequest` → `AddTaskResponse` |
 | `GET /api/tasks/:id` | → `GetTaskResponse` |

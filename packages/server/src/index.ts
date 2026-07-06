@@ -1361,6 +1361,33 @@ async function main() {
     return { project: repo.getProject(db, id)! };
   });
 
+  // F23: the global "Stop all" panic button — one confirmed tap aborts
+  // every currently-running project at once (autonomous loop + any
+  // in-flight manual dispatch), same abort semantics as a per-project
+  // Stop now. Always a hard stop, no drain option — this exists for "make
+  // it stop NOW", not a graceful multi-project wind-down.
+  app.post("/api/engine/stop-all", async () => {
+    const projects = repo.getProjects(db);
+    const stoppedIds = await engine.stopAll(projects);
+    for (const id of stoppedIds) {
+      repo.updateProject(db, id, { status: "paused" });
+      const updated = repo.getProject(db, id)!;
+      broadcast({ type: "project.updated", payload: updated });
+      // One audit entry per affected project (not one global entry) since
+      // AuditEntry.projectId is required and the Audit tab is per-project —
+      // every affected project's own audit trail should show it was
+      // stopped, with the full list of what else was hit alongside it.
+      repo.createAuditEntry(db, {
+        projectId: id,
+        kind: "stopped",
+        actor: "human",
+        summary: `Stopped via global "Stop all" (${stoppedIds.length} project${stoppedIds.length === 1 ? "" : "s"} affected)`,
+        detail: { affectedProjectIds: stoppedIds },
+      });
+    }
+    return { projectIds: stoppedIds };
+  });
+
   // ── Tasks ──
   app.get("/api/projects/:id/tasks", async (req) => {
     const { id } = req.params as RouteParams;

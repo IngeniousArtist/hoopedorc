@@ -386,6 +386,14 @@ export interface RespondNotificationRequest {
   choice: string;
 }
 
+/** F23: the "Stop all" panic button — one confirmed tap aborts every
+ *  currently-running project (autonomous loop and any in-flight manual
+ *  dispatch alike). */
+export interface StopAllResponse {
+  /** Ids of projects that were actually running (and so got stopped). */
+  projectIds: string[];
+}
+
 export interface ApiError {
   error: string;
   code?: string;
@@ -437,6 +445,7 @@ export const ROUTES = {
   setupModels: "GET /api/setup/models",
   modelHealth: "GET /api/setup/model-health",
   testModels: "POST /api/setup/test-models",
+  stopAll: "POST /api/engine/stop-all",
 } as const;
 
 export type RouteKey = keyof typeof ROUTES;
