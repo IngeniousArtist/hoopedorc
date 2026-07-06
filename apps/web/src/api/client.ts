@@ -29,6 +29,18 @@ function setStoredApiToken(token: string | null): void {
  */
 let unauthorizedHandler: (() => Promise<string | null>) | null = null;
 
+/**
+ * A fresh page load fires several api() calls at once (projects, settings,
+ * notifications, tasks…); against a token-requiring server they ALL 401
+ * nearly simultaneously. Each must NOT invoke the handler separately —
+ * App.tsx keeps a single resolver for the gate, so a second invocation
+ * would clobber the first caller's resolver and leave that api() call
+ * hanging forever. Instead, the first 401 opens the gate and every
+ * concurrent 401 awaits the same pending promise; when the user submits,
+ * all of them retry with the new token.
+ */
+let pendingUnauthorized: Promise<string | null> | null = null;
+
 export function setUnauthorizedHandler(
   handler: (() => Promise<string | null>) | null,
 ): void {
@@ -86,7 +98,12 @@ export async function api<T>(
   // second 401 after the retry just surfaces as a normal thrown error below;
   // the next unrelated api() call will 401 again and re-invoke the handler.
   if (res.status === 401 && unauthorizedHandler) {
-    const entered = await unauthorizedHandler();
+    if (!pendingUnauthorized) {
+      pendingUnauthorized = unauthorizedHandler().finally(() => {
+        pendingUnauthorized = null;
+      });
+    }
+    const entered = await pendingUnauthorized;
     if (entered) {
       setStoredApiToken(entered);
       token = entered;
