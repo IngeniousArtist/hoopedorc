@@ -336,8 +336,8 @@ silently always `true` on success in every real repo, only ever
 | Item | Status | PR |
 |---|---|---|
 | B16 — Dockerfile build stage certainly fails (missing COPYs) | ✅ done | [#42](https://github.com/IngeniousArtist/hoopedorc/pull/42) |
-| B17 — Configured-but-missing gate script silently passes | ✅ done | TBD |
-| B18 — Capacity-blocked project waits silently | ⬜ | |
+| B17 — Configured-but-missing gate script silently passes | ✅ done | [#43](https://github.com/IngeniousArtist/hoopedorc/pull/43) |
+| B18 — Capacity-blocked project waits silently | ✅ done | TBD |
 | B19 — Manual dispatch invisible to the global model cap | ⬜ | |
 | S6 — Auth polish: real login screen, constant-time compare, doc note | ⬜ | |
 
@@ -366,6 +366,21 @@ cases cover all three acceptance scenarios (typecheck override missing →
 fails loudly; testScript override missing → fails the tests gate loudly;
 default-slot missing script with no override → still passes vacuously) —
 24/24 engine tests green (3 new).
+
+B18 fixed: `orchestrator.ts` gained a `capacityBlockedWarned` Set that
+mirrors `budgetBlockedWarned`/`cooldownBlockedWarned` exactly — cleared in
+`start()`, one `"warn"`-level log ("Model at capacity (in use by another
+task or project), holding: `<model>`") emitted the first time the
+`active >= cfg.maxConcurrent` skip fires for a task, and deleted from the
+set right where the task actually dispatches (mirroring the budget/cooldown
+delete-on-dispatch pattern). Previously the F12 capacity skip was the only
+one of the three dispatch-blocking checks with no log line at all — with a
+shared cross-project cap, a project could sit polling for minutes on
+another project's model slot looking indistinguishable from a hang. New
+unit test: pre-load a shared registry already at `maxConcurrent`, let the
+250ms poll loop run several passes (600ms), confirm exactly one capacity
+warn log fires (not one per poll), then free the slot and confirm the task
+dispatches and completes. 25/25 engine tests green (1 new).
 
 ### Phase 8 — F14–F17 (+F18 doc, F19 optional) — ⬜ not started
 

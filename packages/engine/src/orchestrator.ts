@@ -129,6 +129,8 @@ export class Orchestrator implements Scheduler {
   private readonly budgetBlockedWarned = new Set<string>();
   /** Tasks already logged as cooldown-blocked this run, to avoid log spam. */
   private readonly cooldownBlockedWarned = new Set<string>();
+  /** Tasks already logged as capacity-blocked this run, to avoid log spam. */
+  private readonly capacityBlockedWarned = new Set<string>();
   /** How many times each task has been requeued for a merge-time conflict,
    *  so a perpetually-conflicting task can't loop forever. */
   private readonly mergeConflicts = new Map<string, number>();
@@ -237,6 +239,7 @@ export class Orchestrator implements Scheduler {
     this.currentTasks = tasks;
     this.budgetBlockedWarned.clear();
     this.cooldownBlockedWarned.clear();
+    this.capacityBlockedWarned.clear();
 
     // Orphan recovery: this Orchestrator instance starts with empty
     // activeTaskIds, so any task already "in_progress" or "in_review" was
@@ -362,8 +365,18 @@ export class Orchestrator implements Scheduler {
         const active = this.getModelActive(task.assignedModel);
         if (active >= cfg.maxConcurrent) {
           blockedByCapacity = true;
+          if (!this.capacityBlockedWarned.has(task.id)) {
+            this.capacityBlockedWarned.add(task.id);
+            this.emit(
+              "warn",
+              "engine",
+              `Model at capacity (in use by another task or project), holding: ${task.assignedModel}`,
+              task.id,
+            );
+          }
           continue;
         }
+        this.capacityBlockedWarned.delete(task.id);
 
         this.incModel(task.assignedModel);
         this.runningModel.set(task.id, task.assignedModel);
