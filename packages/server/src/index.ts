@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { execFile } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -550,6 +550,14 @@ async function main() {
   // (Vite's own server on :5173, proxying /api + /ws here) this directory
   // won't exist, so this is a no-op.
   const here = dirname(fileURLToPath(import.meta.url));
+  // F24: same "3 directories below the repo root" reasoning as webDist below —
+  // read once at boot (not per-request) so /api/health and SetupView can show
+  // what's actually deployed on a remote box instead of "ssh in and guess".
+  const version = (
+    JSON.parse(readFileSync(resolve(here, "../../../package.json"), "utf8")) as {
+      version: string;
+    }
+  ).version;
   const webDist = resolve(here, "../../../apps/web/dist");
   if (existsSync(webDist)) {
     await app.register(fastifyStatic, { root: webDist });
@@ -898,7 +906,7 @@ async function main() {
   configureTelegram(); // start the bot at boot if enabled
 
   // ── Health ──
-  app.get("/api/health", async () => ({ ok: true, mock: ENV.mock }));
+  app.get("/api/health", async () => ({ ok: true, mock: ENV.mock, version }));
 
   // ── Projects ──
 

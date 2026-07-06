@@ -36,6 +36,15 @@ export interface CreateProjectRequest {
   /** Per-project gate/retry/merge-policy overrides (F9). */
   config?: ProjectConfig;
 }
+/** F24: also shows the running instance's version, read once at boot from
+ *  the root package.json — surfaced on SetupView so "what's actually
+ *  deployed on that remote box" isn't a guessing game over SSH. */
+export interface HealthResponse {
+  ok: boolean;
+  mock: boolean;
+  version: string;
+}
+
 export interface CreateProjectResponse {
   project: Project;
 }

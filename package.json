@@ -1,7 +1,7 @@
 {
   "name": "hoopedorc",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Hoopedorc — a multi-model AI coding orchestrator (Claude + OpenCode models working as a team).",
   "type": "module",
   "workspaces": [
@@ -21,6 +21,7 @@
     "mock": "concurrently -n mock-api,web -c green,magenta \"MOCK=1 npm run dev -w @orc/server\" \"npm run dev -w @orc/web\"",
     "db:init": "npm run db:init -w @orc/server",
     "setup": "node scripts/init.mjs",
+    "update": "bash scripts/update.sh",
     "start": "npm run build && npm run start -w @orc/server"
   },
   "devDependencies": {

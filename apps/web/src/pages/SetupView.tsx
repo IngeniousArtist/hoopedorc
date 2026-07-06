@@ -1,4 +1,5 @@
 import type {
+  HealthResponse,
   ModelHealthResponse,
   SetupHealthResponse,
   TestModelsResponse,
@@ -39,6 +40,17 @@ export function SetupView({
   const [testing, setTesting] = useState(false);
   const [modelHealth, setModelHealth] = useState<ModelHealthResponse | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
+  // F24: "what's actually deployed" surfaced from the server's own boot-time
+  // read of package.json — so a remote box isn't a guessing game over SSH.
+  const [version, setVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    api<HealthResponse>("health")
+      .then((d) => setVersion(d.version))
+      .catch(() => {
+        /* non-critical — the header just omits the version */
+      });
+  }, []);
 
   const fetchModelHealth = useCallback(async () => {
     setHealthLoading(true);
@@ -88,7 +100,14 @@ export function SetupView({
   return (
     <div className="max-w-2xl space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Setup &amp; Health</h2>
+        <h2 className="text-lg font-semibold">
+          Setup &amp; Health
+          {version && (
+            <span className="ml-2 align-middle text-xs font-normal text-neutral-500">
+              Hoopedorc v{version}
+            </span>
+          )}
+        </h2>
         <div className="flex items-center gap-2">
           {onRerunSetup && (
             <button
