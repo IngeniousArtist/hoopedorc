@@ -38,13 +38,14 @@ function mapProject(row: Record<string, unknown>): Project {
     prd: row.prd ? asStr(row.prd) : undefined,
     budgetUsd: row.budget_usd != null ? Number(row.budget_usd) : undefined,
     config: row.config ? json<ProjectConfig>(row.config) : undefined,
+    lastScheduledRunAt: row.last_scheduled_run_at ? asStr(row.last_scheduled_run_at) : undefined,
     createdAt: asStr(row.created_at),
     updatedAt: asStr(row.updated_at),
   };
 }
 
 const PROJECT_COLUMNS =
-  "id, name, repo_url, default_branch, local_path, status, prd_path, prd, budget_usd, config, created_at, updated_at";
+  "id, name, repo_url, default_branch, local_path, status, prd_path, prd, budget_usd, config, last_scheduled_run_at, created_at, updated_at";
 
 export function getProjects(db: Db): Project[] {
   return db
@@ -103,6 +104,7 @@ export function updateProject(
     prd: "prd",
     budgetUsd: "budget_usd",
     config: "config",
+    lastScheduledRunAt: "last_scheduled_run_at",
   };
 
   for (const [key, col] of Object.entries(colMap)) {

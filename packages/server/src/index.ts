@@ -28,6 +28,7 @@ import { seed } from "./mock";
 import type { Db } from "./db/index";
 import { initDb } from "./db/index";
 import { runBackup } from "./db/backup";
+import { isScheduleDue } from "./scheduler";
 import * as repo from "./db/repo";
 import { WsHub } from "./ws-hub";
 import { EngineRunner } from "./engine-runner";
@@ -366,6 +367,36 @@ function parseProjectConfig(
     value.githubChecksTimeoutMin = n;
   }
 
+  if (raw.schedule !== undefined) {
+    if (typeof raw.schedule !== "object" || raw.schedule === null) {
+      return { error: "config.schedule must be an object" };
+    }
+    const s = raw.schedule as Record<string, unknown>;
+    if (typeof s.enabled !== "boolean") {
+      return { error: "config.schedule.enabled must be a boolean" };
+    }
+    if (s.mode !== "interval" && s.mode !== "daily") {
+      return { error: 'config.schedule.mode must be "interval" or "daily"' };
+    }
+    if (s.mode === "interval") {
+      const n = s.intervalHours;
+      if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 24 * 30) {
+        return { error: "config.schedule.intervalHours must be an integer between 1 and 720" };
+      }
+      value.schedule = { enabled: s.enabled, mode: "interval", intervalHours: n };
+    } else {
+      const hour = s.hour;
+      const minute = s.minute;
+      if (typeof hour !== "number" || !Number.isInteger(hour) || hour < 0 || hour > 23) {
+        return { error: "config.schedule.hour must be an integer between 0 and 23" };
+      }
+      if (typeof minute !== "number" || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+        return { error: "config.schedule.minute must be an integer between 0 and 59" };
+      }
+      value.schedule = { enabled: s.enabled, mode: "daily", hour, minute };
+    }
+  }
+
   return { value: Object.keys(value).length > 0 ? value : undefined };
 }
 
@@ -548,6 +579,36 @@ async function main() {
   }
   backupDb();
   setInterval(backupDb, ONE_DAY_MS).unref();
+
+  // F19: cron-style auto-start — checked roughly once a minute (fine enough
+  // granularity for a "daily at HH:MM" schedule) against every project's
+  // config.schedule. Calls the exact same engine.start() the UI's Start
+  // button does — no new dispatch mechanism. engine.start() is itself a
+  // no-op if the project is already running; a manual dispatch in flight
+  // throws, which is caught and skipped here (same as the /start route)
+  // rather than treated as a real failure.
+  const SCHEDULE_CHECK_MS = 60 * 1000;
+  function checkSchedules(): void {
+    for (const project of repo.getProjects(db)) {
+      if (!isScheduleDue(project.config?.schedule, project.lastScheduledRunAt)) continue;
+      // Only stamp lastScheduledRunAt on an actual successful kickoff — if
+      // engine.start() throws (a manual dispatch is in flight), this cycle
+      // doesn't count, so the next check can retry instead of silently
+      // losing the schedule slot until the next interval/day.
+      engine
+        .start(project)
+        .then(() => {
+          repo.updateProject(db, project.id, { lastScheduledRunAt: new Date().toISOString() });
+          app.log.info(`scheduled start: ${project.name}`);
+        })
+        .catch((err) => {
+          app.log.info(
+            `scheduled start skipped for "${project.name}": ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+    }
+  }
+  setInterval(checkSchedules, SCHEDULE_CHECK_MS).unref();
 
   // Zombie approvals (B10): any approval-notification still unresolved from
   // before this boot has no live resolver anymore (EngineRunner.pendingApprovals
