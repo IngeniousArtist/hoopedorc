@@ -85,6 +85,17 @@ export class GateRunnerImpl implements GateRunner {
     if (scriptOverride === false) {
       return { passed: true, ran: false, output: `gate "${slot}" disabled by project config` };
     }
+    // An override is an explicit operator choice, unlike the default slot name
+    // — if it names a script that doesn't exist (typo, or the repo renamed its
+    // scripts), that's a real gate failure, not "nothing to run" (mirrors
+    // runCommand's reasoning for testCommand).
+    if (typeof scriptOverride === "string" && !hasNpmScript(cwd, scriptOverride)) {
+      return {
+        passed: false,
+        ran: true,
+        output: `configured gate script "${scriptOverride}" not found in package.json`,
+      };
+    }
     return this.runScript(cwd, scriptOverride || slot);
   }
 
@@ -99,6 +110,13 @@ export class GateRunnerImpl implements GateRunner {
       return this.runCommand(cwd, gates.testCommand);
     }
     if (gates?.testScript) {
+      if (!hasNpmScript(cwd, gates.testScript)) {
+        return {
+          passed: false,
+          ran: true,
+          output: `configured gate script "${gates.testScript}" not found in package.json`,
+        };
+      }
       return this.runScript(cwd, gates.testScript);
     }
     // Default: support either a "test" or "tests" npm script; both must pass if present.
