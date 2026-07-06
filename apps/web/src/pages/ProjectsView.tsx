@@ -157,14 +157,32 @@ export function ProjectsView({
               )}
 
               {p.status === "running" ? (
-                <button
-                  onClick={() => act(p.id, "pauseProject", { drain: false })}
-                  disabled={busyId === p.id}
-                  title="Abort any running task immediately and requeue it to backlog"
-                  className="rounded border border-amber-800 px-2 py-1 text-[11px] text-amber-300 hover:bg-amber-950/40 disabled:opacity-50"
-                >
-                  {busyId === p.id ? "…" : "⏸ Pause"}
-                </button>
+                <>
+                  <button
+                    onClick={() => act(p.id, "pauseProject", { drain: true })}
+                    disabled={busyId === p.id}
+                    title="Stop dispatching new tasks; let anything already running finish"
+                    className="rounded border border-amber-800 px-2 py-1 text-[11px] text-amber-300 hover:bg-amber-950/40 disabled:opacity-50"
+                  >
+                    {busyId === p.id ? "…" : "⏸ Pause"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          "Stop now? Any task currently running will be aborted and requeued to backlog.",
+                        )
+                      ) {
+                        act(p.id, "pauseProject", { drain: false });
+                      }
+                    }}
+                    disabled={busyId === p.id}
+                    title="Abort any running task immediately and requeue it to backlog"
+                    className="rounded border border-red-800 px-2 py-1 text-[11px] text-red-300 hover:bg-red-950/40 disabled:opacity-50"
+                  >
+                    {busyId === p.id ? "…" : "Stop now"}
+                  </button>
+                </>
               ) : (
                 <button
                   onClick={() => act(p.id, "startProject")}
