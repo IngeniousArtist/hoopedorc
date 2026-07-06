@@ -124,10 +124,13 @@ model and independently audited by another — the full history is in
 ## Security
 
 The server binds to `127.0.0.1` and is unauthenticated by default (frictionless
-solo localhost use). If you expose it beyond localhost (e.g. `HOST=0.0.0.0` over
-Tailscale), set `API_TOKEN` so every request requires
-`Authorization: Bearer <token>` — the server refuses to start otherwise. See
-`.env.example` for `HOST`, `CORS_ORIGINS`, `API_TOKEN`, `ALLOW_UNAUTHENTICATED`.
+solo localhost use). For remote access over Tailscale, `tailscale serve` (real
+HTTPS, no non-loopback bind needed) is the recommended path; `HOST=0.0.0.0` +
+`API_TOKEN` is the documented fallback — either way, set `API_TOKEN` so every
+request requires `Authorization: Bearer <token>` — the server refuses to start
+on a non-loopback `HOST` otherwise. See `docs/USER_GUIDE.md`'s Remote setup
+section for the full walkthrough, and `.env.example` for `HOST`,
+`CORS_ORIGINS`, `API_TOKEN`, `ALLOW_UNAUTHENTICATED`.
 
 Secrets (the Telegram bot token, the API token itself) are stored in the local
 SQLite DB and redacted (`"__SET__"` sentinel) on every read from the settings API
