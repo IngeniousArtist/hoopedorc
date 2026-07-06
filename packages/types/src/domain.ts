@@ -175,6 +175,16 @@ export interface ProjectConfig {
   maxAttempts?: number;
   /** Overrides Settings.mergePolicy for this project's auto-merge decisions. */
   mergePolicy?: MergePolicy;
+  /**
+   * F15: hold an auto-merge until the PR's GitHub-side checks (the target
+   * repo's own CI, e.g. its own GitHub Actions) pass — distinct from this
+   * app's local gates, which only see the worktree, not the target repo's
+   * configured checks. Opt-in since not every repo has any configured.
+   */
+  requireGithubChecks?: boolean;
+  /** Minutes to wait for GitHub checks before treating them as timed out.
+   *  Only meaningful when `requireGithubChecks` is true; default 15. */
+  githubChecksTimeoutMin?: number;
 }
 
 export type RunStatus = "running" | "passed" | "failed" | "stopped";

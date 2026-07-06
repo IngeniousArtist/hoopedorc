@@ -18,7 +18,12 @@ non-npm stacks (run via `execFile`, no shell), a `maxAttempts` default applied
 to tasks created in that project, and a `mergePolicy` override. All fields
 optional; an unset project behaves exactly as it did before F9. Set via
 `config` on `CreateProjectRequest`/`UpdateProjectRequest` (`null` on update
-clears it).
+clears it). F15 adds `requireGithubChecks` (boolean, opt-in) and
+`githubChecksTimeoutMin` (integer 1–120, default 15 when unset): when set,
+the orchestrator holds the auto-merge decision until the PR's own GitHub
+checks (the target repo's CI, distinct from this app's local gates) report
+`"passed"` or `"none"` (no checks configured); `"failed"`/`"timeout"`
+escalate to a human approval instead of merging.
 
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.

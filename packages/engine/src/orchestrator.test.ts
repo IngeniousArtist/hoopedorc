@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { AgentAdapter, AgentRunResult } from "@orc/adapters";
 import type { GateResult, Project, Run, Settings, Task } from "@orc/types";
 import { Orchestrator, isAuthOrSecretFile, scopesOverlap } from "./orchestrator.js";
-import type { SchedulerDeps } from "./index.js";
+import type { GitService, SchedulerDeps } from "./index.js";
 
 function settings(): Settings {
   return {
@@ -49,7 +49,12 @@ const approveAdapter: AgentAdapter = {
   },
 };
 
-function fakeDeps(over: Partial<SchedulerDeps>, merged: number[], changed: string[] = ["src/example.ts"]): SchedulerDeps {
+function fakeDeps(
+  over: Partial<Omit<SchedulerDeps, "git">> & { git?: Partial<GitService> },
+  merged: number[],
+  changed: string[] = ["src/example.ts"],
+): SchedulerDeps {
+  const { git: gitOver, ...restOver } = over;
   return {
     settings: settings(),
     opencodeBaseUrl: "",
@@ -67,6 +72,8 @@ function fakeDeps(over: Partial<SchedulerDeps>, merged: number[], changed: strin
       async revertMerge() {},
       async appendChangelogEntry() {},
       async syncBranchWithMain() { return "clean" as const; },
+      async waitForChecks() { return "none" as const; },
+      ...gitOver,
     },
     gates: { async run() { return GOOD_GATE; } },
     validator: {
@@ -79,7 +86,7 @@ function fakeDeps(over: Partial<SchedulerDeps>, merged: number[], changed: strin
       onLog() {}, onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
       async requestApproval() { return "reject"; },
     },
-    ...over,
+    ...restOver,
   };
 }
 
@@ -608,6 +615,120 @@ test("B19: a manually-dispatched task (runTask) counts toward the shared model c
     1,
     "the manual dispatch's model use must be visible to the autonomous loop's capacity check, serializing them",
   );
+});
+
+test("F15: GitHub checks \"passed\" falls through to the normal auto-merge check", async () => {
+  const merged: number[] = [];
+  const polls: number[] = [];
+  const deps = fakeDeps(
+    {
+      git: {
+        async waitForChecks(_p, _n, _t, onPoll) {
+          onPoll?.(0);
+          polls.push(0);
+          return "passed" as const;
+        },
+      },
+    },
+    merged,
+  );
+  const project = { ...PROJECT, config: { requireGithubChecks: true } };
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(project, [t1]);
+  assert.equal(t1.status, "done");
+  assert.equal(merged.length, 1);
+  assert.equal(polls.length, 1, "waitForChecks should have been called and polled once");
+});
+
+test("F15: GitHub checks \"none\" (no checks configured) also falls through to auto-merge", async () => {
+  const merged: number[] = [];
+  const deps = fakeDeps(
+    { git: { async waitForChecks() { return "none" as const; } } },
+    merged,
+  );
+  const project = { ...PROJECT, config: { requireGithubChecks: true } };
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(project, [t1]);
+  assert.equal(t1.status, "done");
+  assert.equal(merged.length, 1);
+});
+
+test("F15: GitHub checks \"failed\" escalates to approval instead of auto-merging — approved merges anyway", async () => {
+  const merged: number[] = [];
+  const logs: { level: string; message: string }[] = [];
+  const deps = fakeDeps(
+    {
+      git: { async waitForChecks() { return "failed" as const; } },
+      events: {
+        onLog(e) { logs.push({ level: e.level, message: e.message }); },
+        onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() { return "approve_merge"; },
+      },
+    },
+    merged,
+  );
+  const project = { ...PROJECT, config: { requireGithubChecks: true } };
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(project, [t1]);
+  assert.equal(t1.status, "done", "a human can approve the merge despite failed checks");
+  assert.equal(merged.length, 1);
+  assert.ok(
+    logs.some((l) => l.level === "warn" && /GitHub checks failed/.test(l.message)),
+    "should log why approval was requested",
+  );
+});
+
+test("F15: GitHub checks \"timeout\" escalates to approval — rejected fails the task without merging", async () => {
+  const merged: number[] = [];
+  const deps = fakeDeps(
+    {
+      git: { async waitForChecks() { return "timeout" as const; } },
+      events: {
+        onLog() {}, onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() { return "reject"; },
+      },
+    },
+    merged,
+  );
+  const project = { ...PROJECT, config: { requireGithubChecks: true, githubChecksTimeoutMin: 5 } };
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(project, [t1]);
+  assert.equal(t1.status, "failed");
+  assert.equal(merged.length, 0, "must not merge after a rejected timeout escalation");
+});
+
+test("F15: a Stop requested during the GitHub-checks wait blocks the task without merging", async () => {
+  const merged: number[] = [];
+  let resolveWaitStarted!: () => void;
+  const waitStarted = new Promise<void>((r) => {
+    resolveWaitStarted = r;
+  });
+  let resolveChecks!: (v: "passed") => void;
+  const checksPromise = new Promise<"passed">((r) => {
+    resolveChecks = r;
+  });
+  const deps = fakeDeps(
+    {
+      git: {
+        async waitForChecks() {
+          resolveWaitStarted();
+          return checksPromise;
+        },
+      },
+    },
+    merged,
+  );
+  const project = { ...PROJECT, config: { requireGithubChecks: true } };
+  const t1 = task("t1");
+  const orch = new Orchestrator(deps);
+  const runPromise = orch.runTask(project, t1);
+  await waitStarted;
+  const stopped = orch.stopTask(t1.id);
+  assert.equal(stopped, true);
+  resolveChecks("passed"); // simulate checks finishing after the stop was requested
+  await runPromise;
+  assert.equal(t1.status, "blocked");
+  assert.equal(merged.length, 0, "must not merge after a stop, even if checks ultimately passed");
 });
 
 test("isAuthOrSecretFile matches path segments, not substrings", () => {

@@ -350,6 +350,21 @@ function parseProjectConfig(
     if (Object.keys(gates).length > 0) value.gates = gates;
   }
 
+  if (raw.requireGithubChecks !== undefined) {
+    if (typeof raw.requireGithubChecks !== "boolean") {
+      return { error: "config.requireGithubChecks must be a boolean" };
+    }
+    value.requireGithubChecks = raw.requireGithubChecks;
+  }
+
+  if (raw.githubChecksTimeoutMin !== undefined) {
+    const n = raw.githubChecksTimeoutMin;
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 120) {
+      return { error: "config.githubChecksTimeoutMin must be an integer between 1 and 120" };
+    }
+    value.githubChecksTimeoutMin = n;
+  }
+
   return { value: Object.keys(value).length > 0 ? value : undefined };
 }
 
