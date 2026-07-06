@@ -80,10 +80,12 @@ export class EngineRunner {
    * memory -> two agents on the same branch/worktree), and `stopTask()`
    * could never reach a manually-dispatched task's process. (Note: unlike
    * `activeTaskIds`, per-model concurrency accounting IS shared across every
-   * Orchestrator this class builds — see `modelActiveCount` below — though
+   * Orchestrator this class builds — see `modelActiveCount` below. B19:
    * manual dispatch's own `runTask` path bypasses the dispatch-loop's
-   * maxConcurrent check entirely and so never contributes to that count
-   * either way; a manually-dispatched task is simply not capacity-limited.)
+   * maxConcurrent CHECK entirely — a human's explicit dispatch is never
+   * capacity-blocked — but it DOES increment/decrement the same shared
+   * count around the run, so the autonomous loop and other projects can see
+   * it and won't pile maxConcurrent MORE copies of the model on top of it.)
    */
   private readonly manualRuns = new Map<string, Map<string, Orchestrator>>();
   private readonly pendingApprovals = new Map<string, (choice: string) => void>();

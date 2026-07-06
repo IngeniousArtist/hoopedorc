@@ -489,9 +489,24 @@ export class Orchestrator implements Scheduler {
     // that loop entirely, so stopTask()'s guard would never see this task as
     // stoppable without tracking it here too.
     this.activeTaskIds.add(task.id);
+    // B19: a manual dispatch must not be BLOCKED by the shared per-model cap
+    // (an explicit human action shouldn't silently queue) but it must be
+    // VISIBLE to it — otherwise the autonomous loop happily piles
+    // maxConcurrent more copies of the same model on top of this one. Count
+    // it here, same bookkeeping as start()'s dispatch (incModel + track which
+    // model is actually running for fallback-escalation accounting), just
+    // without the capacity check that start() applies before dispatching.
+    this.incModel(task.assignedModel);
+    this.runningModel.set(task.id, task.assignedModel);
     try {
       await this.executeTask(project, task);
     } finally {
+      // Mirrors start()'s per-task dispatch-finally exactly: decrement
+      // whichever model the task was last running on, since fallback
+      // escalation may have switched it away from task.assignedModel.
+      const ran = this.runningModel.get(task.id) ?? task.assignedModel;
+      this.decModel(ran);
+      this.runningModel.delete(task.id);
       this.activeTaskIds.delete(task.id);
     }
   }
