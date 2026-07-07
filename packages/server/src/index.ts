@@ -2038,6 +2038,21 @@ async function main() {
       }
     }
 
+    // F31: cap each guidelines field — an unbounded Settings textarea must
+    // never be able to blow up every author/validator prompt in the system.
+    const GUIDELINES_MAX_CHARS = 4000;
+    if (body.settings.guidelines) {
+      for (const key of ["coding", "ux", "security"] as const) {
+        const v = body.settings.guidelines[key];
+        if (v === undefined) continue;
+        if (typeof v !== "string" || v.length > GUIDELINES_MAX_CHARS) {
+          return reply.code(400).send({
+            error: `guidelines.${key} must be a string of at most ${GUIDELINES_MAX_CHARS} characters`,
+          });
+        }
+      }
+    }
+
     const saved = repo.upsertSettings(db, merged);
     configureTelegram(); // apply enable/disable/token/chatId changes live
     return { settings: redactSettings(saved) };

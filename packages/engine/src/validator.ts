@@ -10,6 +10,7 @@ import type {
   Task,
 } from "@orc/types";
 import type { AgentAdapter } from "@orc/adapters";
+import { buildEngineeringStandardsBlock } from "./guidelines.js";
 import type { Validator } from "./index.js";
 
 const pexecFile = promisify(execFile);
@@ -123,6 +124,13 @@ export class ValidatorImpl implements Validator {
   }
 
   private buildReviewPrompt(task: Task, gate: GateResult, diff: string): string {
+    // F31: the same text buildAuthorPrompt gave the author, so "meets the
+    // standards" is checkable on both sides rather than the validator
+    // grading against criteria the author was never told about.
+    const standards = buildEngineeringStandardsBlock(
+      this.settings.guidelines,
+      task.role === "frontend",
+    );
     return `You are a code reviewer. Grade the implementation of this task against its acceptance criteria, using the diff below as the primary evidence.
 
 ## Task
@@ -131,7 +139,7 @@ export class ValidatorImpl implements Validator {
 
 ## Acceptance Criteria
 ${task.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}
-
+${standards}
 ## Gate Results
 | Gate | Status | Details |
 |------|--------|---------|
@@ -146,7 +154,11 @@ ${task.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}
 \`\`\`diff
 ${diff}
 \`\`\`
-
+${
+  standards
+    ? `\nIf the diff clearly violates the Engineering standards above, name it in "reasons" and lean toward "request_changes" for a substantive violation — but don't nitpick style choices those standards don't mention.\n`
+    : ""
+}
 Respond with ONLY a JSON object (no markdown, no explanation):
 {
   "verdict": "approve" | "request_changes" | "escalate",

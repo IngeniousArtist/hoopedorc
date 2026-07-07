@@ -29,6 +29,31 @@ const RISKY_RULES: {
   { key: "outOfScopeEdits", label: "Out-of-scope edits" },
 ];
 
+/** F31: injected into every author prompt (always) and validator review
+ *  prompt (always) — ux is author-side-only-when-frontend, but still
+ *  editable here regardless of role since it's a global setting. */
+const GUIDELINE_FIELDS: {
+  key: keyof NonNullable<SettingsType["guidelines"]>;
+  label: string;
+  hint: string;
+}[] = [
+  {
+    key: "coding",
+    label: "Coding",
+    hint: "Always included in the author prompt and the validator's review prompt.",
+  },
+  {
+    key: "ux",
+    label: "UX",
+    hint: 'Included only for frontend-role tasks (author + validator).',
+  },
+  {
+    key: "security",
+    label: "Security",
+    hint: "Always included in the author prompt and the validator's review prompt.",
+  },
+];
+
 export function Settings({
   onDirtyChange,
 }: {
@@ -116,6 +141,22 @@ export function Settings({
               ...prev.riskyChangeRules,
               [key]: value,
             },
+          }
+        : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
+  function updateGuidelines(
+    key: keyof NonNullable<SettingsType["guidelines"]>,
+    value: string,
+  ) {
+    setSettings((prev) =>
+      prev
+        ? {
+            ...prev,
+            guidelines: { ...(prev.guidelines ?? {}), [key]: value },
           }
         : prev,
     );
@@ -314,6 +355,31 @@ export function Settings({
             </label>
           ))}
         </div>
+      </section>
+
+      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+        <h3 className="text-sm font-medium text-neutral-300">Guidelines</h3>
+        <p className="text-[10px] text-neutral-600">
+          Engineering standards injected into every author and validator
+          prompt — the validator grades against the exact same text the
+          author was given, so "meets the standards" is checkable rather
+          than vibes. Blank a field to stop including that section.
+        </p>
+        {GUIDELINE_FIELDS.map(({ key, label, hint }) => (
+          <div key={key}>
+            <label className="mb-1 block text-xs text-neutral-400">
+              {label}
+            </label>
+            <textarea
+              value={settings.guidelines?.[key] ?? ""}
+              onChange={(e) => updateGuidelines(key, e.target.value)}
+              rows={5}
+              maxLength={4000}
+              className="w-full resize-y rounded border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-xs text-neutral-200"
+            />
+            <p className="mt-1 text-[10px] text-neutral-600">{hint}</p>
+          </div>
+        ))}
       </section>
 
       <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">

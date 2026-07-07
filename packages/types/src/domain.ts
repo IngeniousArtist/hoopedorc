@@ -478,6 +478,19 @@ export interface Settings {
    * address unless ALLOW_UNAUTHENTICATED=1. Redacted on GET /api/settings.
    */
   apiToken?: string;
+  /**
+   * F31: operator-editable engineering standards injected into both the
+   * author prompt (buildAuthorPrompt) and the validator's review prompt, so
+   * "meets the standards" is a checkable claim on both sides of the loop
+   * instead of vibes. Each field is optional text (capped at 4000 chars on
+   * `PUT /api/settings`); `defaultSettings()` ships real ~15-20 line
+   * defaults for all three. Global only — no per-project override yet.
+   */
+  guidelines?: {
+    coding?: string;
+    ux?: string;
+    security?: string;
+  };
 }
 
 /**
