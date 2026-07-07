@@ -1062,7 +1062,7 @@ specific evidence. Notable finds/decisions:
 | B25 — USER_GUIDE's `tailscale serve` example uses the wrong port | ✅ done | [#79](https://github.com/IngeniousArtist/hoopedorc/pull/79) |
 | B26 — old pending approvals can fall off the notification fetch | ✅ done | [#79](https://github.com/IngeniousArtist/hoopedorc/pull/79) |
 | B27 — `update.sh` systemd-unit detection is version-fragile | ✅ done | [#79](https://github.com/IngeniousArtist/hoopedorc/pull/79) |
-| T1 — real `@orc/server` test package | ⬜ | |
+| T1 — real `@orc/server` test package | ✅ done | [#80](https://github.com/IngeniousArtist/hoopedorc/pull/80) |
 | F27 — plan-mode attachments (images/PDF/files → project context folder) | ⬜ | |
 | F28 — plan-chat history archived as markdown session files | ⬜ | |
 | F31 — engineering guidelines (coding/UX/security) in author+validator prompts | ⬜ | |
@@ -1088,7 +1088,18 @@ B27 by faking `systemctl` in `PATH` to reproduce the exact old-systemd
 output-based check falls through to the manual-restart path instead of
 firing `sudo systemctl restart` against a nonexistent unit (also checked
 the real-match and no-systemctl-at-all cases). Full evidence in the PR
-description. Next up: T1.
+description.
+
+**T1 (PR #80) — done.** New `@orc/server` test script (`node --import
+tsx --test`, same runner engine/adapters already use) wired into CI;
+35 new tests across `scheduler.test.ts` (13, F19/A3's isScheduleDue
+cases), `budget.test.ts` (7, F16's checkModelQuota window math),
+`db/backup.test.ts` (3, F17's three runBackup scenarios against real
+files on disk), `db/repo.test.ts` (8, B23's pruneNotifications
+pending-approval exemption + B26's getNotifications fix), and
+`log-redact.test.ts` (4, S7's redactTokenFromUrl — extracted out of
+index.ts into its own module so it's importable without booting the
+server via index.ts's top-level `main()` call). Next up: F27+F28.
 
 ---
 
