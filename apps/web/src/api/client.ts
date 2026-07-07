@@ -118,3 +118,58 @@ export async function api<T>(
   if (res.status === 204) return undefined as T;
   return res.json();
 }
+
+export interface ApiUploadOptions {
+  params?: Record<string, string>;
+  file: File;
+  signal?: AbortSignal;
+}
+
+/** F27: a multipart-file counterpart to api() — same auth/401-retry
+ *  handling, but a FormData body instead of JSON (and deliberately no
+ *  Content-Type header: the browser sets its own multipart boundary). */
+function doUploadFetch(
+  key: RouteKey,
+  opts: ApiUploadOptions,
+  token: string | null,
+): Promise<Response> {
+  const { params, file, signal } = opts;
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const form = new FormData();
+  form.append("file", file);
+  return fetch(apiUrl(key, params), {
+    method: apiMethod(key),
+    headers: Object.keys(headers).length ? headers : undefined,
+    body: form,
+    signal,
+  });
+}
+
+export async function apiUpload<T>(
+  key: RouteKey,
+  opts: ApiUploadOptions,
+): Promise<T> {
+  let token = getStoredApiToken();
+  let res = await doUploadFetch(key, opts, token);
+
+  if (res.status === 401 && unauthorizedHandler) {
+    if (!pendingUnauthorized) {
+      pendingUnauthorized = unauthorizedHandler().finally(() => {
+        pendingUnauthorized = null;
+      });
+    }
+    const entered = await pendingUnauthorized;
+    if (entered) {
+      setStoredApiToken(entered);
+      token = entered;
+      res = await doUploadFetch(key, opts, token);
+    }
+  }
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: `${res.status}` }));
+    throw new Error(err.error || `${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}

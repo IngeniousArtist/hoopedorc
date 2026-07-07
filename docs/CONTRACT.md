@@ -65,6 +65,33 @@ should show the event; each entry's `detail.affectedProjectIds` lists all
 of them), and returns `StopAllResponse.projectIds` — the ones that actually
 had something to stop.
 
+`PlanAttachment` (F27) — `{ name, size, mtime }` for a file uploaded from
+PlanView as planning context. Stored on disk at
+`<project.localPath>/context/attachments/<name>` (`packages/server/src/
+attachments.ts`); `name` is the sanitized, on-disk filename (charset
+`[A-Za-z0-9._-]`, extension allowlist `png jpg jpeg gif webp pdf md txt csv
+json`, 25MB cap, `-2`/`-3`… suffix on a name collision) — not necessarily
+identical to what the user picked. The planner's own prompt gains an
+"Attached context files" block listing these paths (relative to its cwd,
+which is the project's clone) so it reads them with its own file tools;
+empty when there are no attachments. `ENV.mock` roots attachments in a
+scratch tmp dir instead of the seed project's real (and here, misleading)
+`localPath: "."`, so `npm run mock` stays exercisable without writing into
+this repo.
+
+F28: every planning session (the existing `planning_messages`/
+`planning_prd`/`planning_draft_tasks` DB fields — starts empty, ends when
+`/plan/commit` clears it) is also archived as a human-readable markdown
+file at `context/plan-sessions/<YYYY-MM-DD-HHmm>.md` (`planning_session_file`
+DB column, minted on the first chat turn; suffixed `-2` etc. on a same-
+minute collision). Each of the three planning routes rewrites the whole
+file from current state — chat appends `## User`/`## Assistant` turns,
+deconstruct appends a `## Deconstructed plan` section, commit appends a
+final `## Committed` line and clears `planning_session_file` (alongside the
+existing messages/prd/draftTasks clear) so the next chat turn starts a
+genuinely new file. A failed write never fails the underlying request
+(warn-logged and swallowed, same posture as F17's DB backups).
+
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.
 
@@ -75,6 +102,9 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 | `GET /api/projects` | → `ListProjectsResponse` |
 | `GET /api/projects/:id` | → `GetProjectResponse` |
 | `POST /api/projects/:id/plan` | `PlanProjectRequest` → `PlanProjectResponse` |
+| `GET /api/projects/:id/plan/attachments` | (F27) → `ListPlanAttachmentsResponse` |
+| `POST /api/projects/:id/plan/attachments` | (F27) multipart file upload → `ListPlanAttachmentsResponse` |
+| `DELETE /api/projects/:id/plan/attachments/:name` | (F27) → `ListPlanAttachmentsResponse` |
 | `POST /api/projects/:id/start` | → `{ ok }` |
 | `POST /api/projects/:id/pause` | `PauseProjectRequest` (optional) → `{ ok }` |
 | `POST /api/engine/stop-all` | (F23 — global panic button) → `StopAllResponse` |

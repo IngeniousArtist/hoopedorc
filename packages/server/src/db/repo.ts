@@ -151,13 +151,22 @@ export function deleteProject(db: Db, id: string): void {
 export function savePlanningSession(
   db: Db,
   projectId: string,
-  opts: { messages?: PlanChatMessage[]; prd?: string | null; draftTasks?: DraftTask[] | null },
+  opts: {
+    messages?: PlanChatMessage[];
+    prd?: string | null;
+    draftTasks?: DraftTask[] | null;
+    /** F28: the archived markdown session file this session is being
+     *  written to. `null` clears it (done at /plan/commit, so the next
+     *  chat turn mints a fresh file for the next session). */
+    sessionFile?: string | null;
+  },
 ): void {
   const sets: string[] = [];
   const vals: unknown[] = [];
   if (opts.messages !== undefined) { sets.push("planning_messages = ?"); vals.push(JSON.stringify(opts.messages)); }
   if (opts.prd !== undefined) { sets.push("planning_prd = ?"); vals.push(opts.prd ?? null); }
   if (opts.draftTasks !== undefined) { sets.push("planning_draft_tasks = ?"); vals.push(opts.draftTasks ? JSON.stringify(opts.draftTasks) : null); }
+  if (opts.sessionFile !== undefined) { sets.push("planning_session_file = ?"); vals.push(opts.sessionFile ?? null); }
   if (sets.length === 0) return;
   vals.push(projectId);
   db.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
@@ -166,15 +175,30 @@ export function savePlanningSession(
 export function getPlanningSession(
   db: Db,
   projectId: string,
-): { messages: PlanChatMessage[]; prd?: string; draftTasks?: DraftTask[] } {
+): {
+  messages: PlanChatMessage[];
+  prd?: string;
+  draftTasks?: DraftTask[];
+  sessionFile?: string;
+} {
   const row = db
-    .prepare("SELECT planning_messages, planning_prd, planning_draft_tasks FROM projects WHERE id = ?")
-    .get(projectId) as { planning_messages: string | null; planning_prd: string | null; planning_draft_tasks: string | null } | undefined;
+    .prepare(
+      "SELECT planning_messages, planning_prd, planning_draft_tasks, planning_session_file FROM projects WHERE id = ?",
+    )
+    .get(projectId) as
+    | {
+        planning_messages: string | null;
+        planning_prd: string | null;
+        planning_draft_tasks: string | null;
+        planning_session_file: string | null;
+      }
+    | undefined;
   if (!row) return { messages: [] };
   return {
     messages: row.planning_messages ? (JSON.parse(row.planning_messages) as PlanChatMessage[]) : [],
     prd: row.planning_prd ?? undefined,
     draftTasks: row.planning_draft_tasks ? (JSON.parse(row.planning_draft_tasks) as DraftTask[]) : undefined,
+    sessionFile: row.planning_session_file ?? undefined,
   };
 }
 

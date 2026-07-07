@@ -7,6 +7,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
@@ -42,6 +43,15 @@ import { createGithubRepo, getPrDiff, slugifyRepoName } from "./github";
 import { checkBudget } from "./budget";
 import { estimatePlan } from "./estimate";
 import { redactTokenFromUrl } from "./log-redact";
+import {
+  MAX_ATTACHMENT_BYTES,
+  attachmentsDir,
+  listAttachments,
+  removeAttachment,
+  sanitizeAttachmentName,
+  saveAttachment,
+} from "./attachments";
+import { recordPlanChatTurn, recordPlanCommit, recordPlanDeconstruct } from "./plan-sessions";
 import { TelegramBot, sendTelegramMessage } from "./telegram";
 import { getModelRoster, runSetupChecks, testModels } from "./setup";
 import type {
@@ -533,6 +543,13 @@ async function main() {
     origin: [...DEV_WEB_ORIGINS, ...ENV.corsOrigins],
   });
   await app.register(websocket);
+  // F27: plan-mode attachment uploads. The route-level `req.file({ limits })`
+  // call is the actual enforcement point (see the attachments routes below);
+  // this registration-level default just keeps any future multipart route
+  // from silently inheriting the plugin's own much smaller 1MB default.
+  await app.register(multipart, {
+    limits: { files: 1, fileSize: MAX_ATTACHMENT_BYTES },
+  });
 
   // F10: once the web app is built (`apps/web/dist`), serve it from this same
   // process/port — one command, one port, no CORS needed in production
@@ -1189,19 +1206,28 @@ async function main() {
 
     try {
       const cwd = await resolvePlannerCwd(project);
+      // F27: name-only list of whatever's currently in context/attachments/
+      // — buildChatPrompt turns this into a "read these with your file
+      // tools" pointer, not an inline dump.
+      const attachmentNames = listAttachments(attachmentsDir(project, ENV.mock)).map(
+        (a) => a.name,
+      );
       const { reply: text, costUsd } = await runPlannerChat(
         messages,
         project.name,
         cwd,
         ENV.plannerChatModel,
         buildPriorContext(db, project),
+        attachmentNames,
       );
       recordPlanningCost(id, costUsd);
       // Persist the full conversation (including assistant reply) so the Plan
       // tab can restore it on reload or after a tab switch.
-      repo.savePlanningSession(db, id, {
-        messages: [...messages, { role: "assistant", content: text }],
-      });
+      const updatedMessages = [...messages, { role: "assistant" as const, content: text }];
+      repo.savePlanningSession(db, id, { messages: updatedMessages });
+      recordPlanChatTurn(db, project, ENV.mock, updatedMessages, ENV.plannerChatModel, (msg) =>
+        app.log.warn(msg),
+      );
       return { reply: text, costUsd };
     } catch (err) {
       return reply.code(502).send({
@@ -1224,12 +1250,16 @@ async function main() {
 
     try {
       const cwd = await resolvePlannerCwd(project);
+      const attachmentNames = listAttachments(attachmentsDir(project, ENV.mock)).map(
+        (a) => a.name,
+      );
       const { output, costUsd } = await runPlannerDeconstruct(
         messages,
         project.name,
         cwd,
         ENV.plannerDeconstructModel,
         buildPriorContext(db, project),
+        attachmentNames,
       );
       recordPlanningCost(id, costUsd);
       const settings = repo.getSettings(db) ?? defaultSettings();
@@ -1240,6 +1270,16 @@ async function main() {
         prd: output.prdMarkdown,
         draftTasks: tasks,
       });
+      recordPlanDeconstruct(
+        db,
+        project,
+        ENV.mock,
+        messages,
+        output.prdMarkdown,
+        tasks,
+        ENV.plannerChatModel,
+        (msg) => app.log.warn(msg),
+      );
       return { prdMarkdown: output.prdMarkdown, tasks, costUsd };
     } catch (err) {
       return reply.code(502).send({
@@ -1273,6 +1313,62 @@ async function main() {
     return { ...session, planCostUsd };
   });
 
+  // F27: planning-context attachments — images/PDFs/reference files the
+  // planner reads with its own file tools from the project's clone (see
+  // attachments.ts for the storage-safety reasoning).
+  app.get("/api/projects/:id/plan/attachments", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    return { attachments: listAttachments(attachmentsDir(project, ENV.mock)) };
+  });
+
+  app.post("/api/projects/:id/plan/attachments", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+
+    let data;
+    try {
+      data = await req.file({ limits: { fileSize: MAX_ATTACHMENT_BYTES } });
+    } catch {
+      return reply.code(400).send({ error: "expected a multipart file upload" });
+    }
+    if (!data) return reply.code(400).send({ error: "no file provided" });
+
+    const sanitized = sanitizeAttachmentName(data.filename);
+    if (!sanitized) {
+      return reply.code(400).send({
+        error:
+          "invalid filename — must have an allowed extension (png, jpg, jpeg, gif, webp, pdf, md, txt, csv, json)",
+      });
+    }
+
+    let buffer: Buffer;
+    try {
+      buffer = await data.toBuffer();
+    } catch (err) {
+      if (err instanceof app.multipartErrors.RequestFileTooLargeError) {
+        return reply.code(413).send({
+          error: `file exceeds the ${MAX_ATTACHMENT_BYTES / (1024 * 1024)}MB limit`,
+        });
+      }
+      throw err;
+    }
+
+    const dir = attachmentsDir(project, ENV.mock);
+    return { attachments: saveAttachment(dir, sanitized, buffer) };
+  });
+
+  app.delete("/api/projects/:id/plan/attachments/:name", async (req, reply) => {
+    const { id, name } = req.params as { id: string; name: string };
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    const updated = removeAttachment(attachmentsDir(project, ENV.mock), name);
+    if (updated === null) return reply.code(404).send({ error: "attachment not found" });
+    return { attachments: updated };
+  });
+
   // Commit the (user-edited) draft tasks into real Task rows.
   app.post("/api/projects/:id/plan/commit", async (req, reply) => {
     const { id } = req.params as RouteParams;
@@ -1298,10 +1394,24 @@ async function main() {
       : (project.prd ?? `# ${project.name}\n`);
     repo.updateProject(db, id, { status: "planned", prd: prdMarkdown });
 
+    // F28: write the final "## Committed" marker into the session's archive
+    // file BEFORE clearing the row below — it reads the about-to-be-cleared
+    // messages/draftTasks, so it must run first.
+    recordPlanCommit(db, project, ENV.mock, created.length, ENV.plannerChatModel, (msg) =>
+      app.log.warn(msg),
+    );
+
     // Clear the whole planning session (draft + PRD scratch + conversation) so
     // the next iteration starts from a fresh chat; the committed outcome lives
     // in project.prd / tasks / audit log, which is what v2 planning reads.
-    repo.savePlanningSession(db, id, { messages: [], prd: null, draftTasks: null });
+    // sessionFile is cleared too (F28) so the next chat turn mints a new
+    // archive file instead of continuing to write into this just-finalized one.
+    repo.savePlanningSession(db, id, {
+      messages: [],
+      prd: null,
+      draftTasks: null,
+      sessionFile: null,
+    });
 
     const prdPath = project.prdPath ?? "docs/PRD.md";
     void gitForPlanning

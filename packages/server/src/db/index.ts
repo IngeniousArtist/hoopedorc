@@ -42,6 +42,11 @@ export function initDb(path: string = ENV.dbPath): Db {
     // same context Telegram's approval message already carries, now also
     // persisted so the web UI can render it (JSON, nullable).
     "ALTER TABLE notifications ADD COLUMN context TEXT",
+    // F28: which archived markdown file (context/plan-sessions/<ts>.md)
+    // this project's current planning session is being written to. Kept
+    // separate from the other planning_* columns so it can be cleared
+    // independently at /plan/commit (see plan-sessions.ts).
+    "ALTER TABLE projects ADD COLUMN planning_session_file TEXT",
   ]) {
     try { db.exec(col); } catch { /* column already exists */ }
   }
