@@ -51,6 +51,18 @@ export interface WorktreeManager {
   changedFiles(project: Project, task: Task): Promise<string[]>;
   /** True if the task modified only files matching task.scopePaths. */
   changedFilesInScope(project: Project, task: Task): Promise<boolean>;
+  /**
+   * F30: revert any UNCOMMITTED worktree changes outside `allowedPatterns`
+   * (minimatch globs) and return the paths that were reverted. Used to
+   * hard-enforce the per-task documentation stage's file scope — the
+   * documenter model is prompted to touch only docs, but this is the actual
+   * enforcement, not just an instruction. Tracked modifications are restored
+   * to their last-committed content; untracked new files are deleted
+   * outright. Scoped to whatever is uncommitted at call time (not the whole
+   * branch), so call this right after the documenter's run finishes and
+   * before committing its changes.
+   */
+  revertOutOfScope(task: Task, allowedPatterns: string[]): Promise<string[]>;
 }
 
 /** Thin wrapper over git + the `gh` CLI. */

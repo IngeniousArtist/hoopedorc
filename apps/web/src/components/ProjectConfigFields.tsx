@@ -18,6 +18,7 @@ export interface ProjectConfigForm {
   testCommand: string;
   requireGithubChecks: boolean;
   githubChecksTimeoutMin: string;
+  docsDisabled: boolean;
   scheduleEnabled: boolean;
   scheduleMode: "interval" | "daily";
   scheduleIntervalHours: string;
@@ -39,6 +40,7 @@ export const EMPTY_PROJECT_CONFIG_FORM: ProjectConfigForm = {
   testCommand: "",
   requireGithubChecks: false,
   githubChecksTimeoutMin: "",
+  docsDisabled: false,
   scheduleEnabled: false,
   scheduleMode: "daily",
   scheduleIntervalHours: "",
@@ -64,6 +66,7 @@ export function projectConfigToForm(config: ProjectConfig | undefined): ProjectC
     requireGithubChecks: config.requireGithubChecks ?? false,
     githubChecksTimeoutMin:
       config.githubChecksTimeoutMin != null ? String(config.githubChecksTimeoutMin) : "",
+    docsDisabled: config.perTaskDocs === false,
     scheduleEnabled: config.schedule?.enabled ?? false,
     scheduleMode: config.schedule?.mode ?? "daily",
     scheduleIntervalHours:
@@ -102,6 +105,11 @@ export function projectConfigFromForm(form: ProjectConfigForm): ProjectConfig | 
     const n = parseInt(form.githubChecksTimeoutMin, 10);
     if (Number.isFinite(n)) config.githubChecksTimeoutMin = n;
   }
+
+  // perTaskDocs defaults to true engine-side — only ever set it explicitly
+  // to false (the opt-out), never true, so an unset project keeps behaving
+  // exactly as before F30.
+  if (form.docsDisabled) config.perTaskDocs = false;
 
   // U7: emit the schedule fields even when the enable checkbox is off, as
   // long as they're filled in — otherwise unchecking + saving drops the
@@ -323,6 +331,18 @@ export function ProjectConfigFields({
                 className={`${inputCls} mt-1`}
               />
             )}
+          </div>
+
+          <div>
+            <label className="mb-1 flex items-center gap-2 text-neutral-400">
+              <input
+                type="checkbox"
+                checked={form.docsDisabled}
+                onChange={(e) => set("docsDisabled", e.target.checked)}
+              />
+              Skip the automatic docs commit (CHANGELOG/README) after each
+              task merges
+            </label>
           </div>
 
           <div>

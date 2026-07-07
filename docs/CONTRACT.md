@@ -45,6 +45,19 @@ clock time. A background check (~once a minute) calls the same
 separate from the user-edited `config` blob so a Settings save and the
 scheduler's own write can never race each other.
 
+`ProjectConfig.perTaskDocs` (F30, boolean, default true when unset) gates a
+docs stage the orchestrator runs after validator approval and before merge:
+a docs-role-routed model (`routing.byRole.updates ?? routing.byRole.docs`)
+works in the same worktree to update CHANGELOG.md (and README.md/`docs/**`
+only if this change makes them wrong), then commits + pushes so the docs
+ride the same PR as the code they describe. Scope is hard-enforced, not just
+prompted — `WorktreeManager.revertOutOfScope` reverts any uncommitted edit
+outside `CHANGELOG.md`/`README.md`/`docs/**` before the commit. Strictly
+best-effort: no documenter routed, an errored/timed-out run (5 min cap), or
+a failed commit/push all warn-log and fall through to the normal merge
+unchanged — a docs failure never blocks a validated merge. Set
+`perTaskDocs: false` to opt a project out entirely.
+
 `Notification.context` (F22) is `{ prUrl?: string; reasons?: string[] }` —
 the same PR link + top validator reasons Telegram's approval message
 already carries (`ApprovalContext` in `packages/server/src/telegram.ts`),

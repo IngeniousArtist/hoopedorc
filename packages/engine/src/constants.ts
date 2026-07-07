@@ -9,3 +9,10 @@ export const STUCK_DETECTION = {
   // Kill if the exact same log line repeats this many times (a real spin-loop).
   maxRepeats: 8,
 } as const;
+
+/**
+ * F30: hard timeout for the per-task documentation stage. Docs, not a
+ * feature — much shorter than STUCK_DETECTION.maxRunMs so a stuck documenter
+ * can't hold up a validated merge for anywhere near as long as an author run.
+ */
+export const DOCS_STAGE_TIMEOUT_MS = 5 * 60 * 1000;
