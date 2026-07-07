@@ -41,6 +41,7 @@ import {
 import { createGithubRepo, getPrDiff, slugifyRepoName } from "./github";
 import { checkBudget } from "./budget";
 import { estimatePlan } from "./estimate";
+import { redactTokenFromUrl } from "./log-redact";
 import { TelegramBot, sendTelegramMessage } from "./telegram";
 import { getModelRoster, runSetupChecks, testModels } from "./setup";
 import type {
@@ -487,15 +488,6 @@ async function safeToDeleteLocalPath(
   if (localPath.length <= homedir().length + 1) return false;
   if (!existsSync(join(localPath, ".git"))) return false;
   return (await gitOriginUrl(localPath)) === repoUrl;
-}
-
-/** S7: the WS upgrade carries the bearer token as `?token=...` (browsers
- *  can't set custom headers on a WS upgrade — see useWS.ts), so Fastify's
- *  default request logger would otherwise write the real token to stdout
- *  (and from there, systemd's journal) on every connection. Redact it from
- *  the logged URL only — the actual request handling never sees this. */
-function redactTokenFromUrl(url: string): string {
-  return url.replace(/([?&]token=)[^&]*/, "$1[redacted]");
 }
 
 /** Replace secret fields with SECRET_SENTINEL before a settings object leaves
