@@ -1067,7 +1067,7 @@ specific evidence. Notable finds/decisions:
 | F28 — plan-chat history archived as markdown session files | ✅ done | [#81](https://github.com/IngeniousArtist/hoopedorc/pull/81) |
 | F31 — engineering guidelines (coding/UX/security) in author+validator prompts | ✅ done | [#82](https://github.com/IngeniousArtist/hoopedorc/pull/82) |
 | F29 — documentation guidelines for the docs-role model | ✅ done | [#83](https://github.com/IngeniousArtist/hoopedorc/pull/83) |
-| F30 — per-task documentation stage in the merge pipeline | ✅ done | TBD |
+| F30 — per-task documentation stage in the merge pipeline | ✅ done | [#84](https://github.com/IngeniousArtist/hoopedorc/pull/84) |
 | F32 — rate-limit wait-and-retry + fallback alerts on Telegram | ⬜ | |
 | F33 — model test round-trip shows the model's own reply | ⬜ | |
 | F34 — skills strategy: docs + per-project skill hints in prompts | ⬜ | |
