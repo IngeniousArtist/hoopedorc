@@ -1065,7 +1065,7 @@ specific evidence. Notable finds/decisions:
 | T1 — real `@orc/server` test package | ✅ done | [#80](https://github.com/IngeniousArtist/hoopedorc/pull/80) |
 | F27 — plan-mode attachments (images/PDF/files → project context folder) | ✅ done | [#81](https://github.com/IngeniousArtist/hoopedorc/pull/81) |
 | F28 — plan-chat history archived as markdown session files | ✅ done | [#81](https://github.com/IngeniousArtist/hoopedorc/pull/81) |
-| F31 — engineering guidelines (coding/UX/security) in author+validator prompts | ✅ done | |
+| F31 — engineering guidelines (coding/UX/security) in author+validator prompts | ✅ done | [#82](https://github.com/IngeniousArtist/hoopedorc/pull/82) |
 | F29 — documentation guidelines for the docs-role model | ⬜ | |
 | F30 — per-task documentation stage in the merge pipeline | ⬜ | |
 | F32 — rate-limit wait-and-retry + fallback alerts on Telegram | ⬜ | |
