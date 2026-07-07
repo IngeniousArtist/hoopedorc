@@ -161,6 +161,22 @@ export interface SaveDraftResponse {
   ok: true;
 }
 
+/**
+ * F27: a file uploaded from PlanView as planning context — stored at
+ * `context/attachments/<name>` in the project's clone, where the planner
+ * reads it with its own file tools. `name` is the sanitized, on-disk
+ * filename (not necessarily identical to what the user picked — see
+ * CONTRACT.md).
+ */
+export interface PlanAttachment {
+  name: string;
+  size: number;
+  mtime: string;
+}
+export interface ListPlanAttachmentsResponse {
+  attachments: PlanAttachment[];
+}
+
 export interface ListTasksResponse {
   tasks: Task[];
 }
@@ -426,6 +442,9 @@ export const ROUTES = {
   planCommit: "POST /api/projects/:id/plan/commit",
   planSession: "GET /api/projects/:id/plan/session",
   planSaveDraft: "POST /api/projects/:id/plan/save-draft",
+  listPlanAttachments: "GET /api/projects/:id/plan/attachments",
+  uploadPlanAttachment: "POST /api/projects/:id/plan/attachments",
+  deletePlanAttachment: "DELETE /api/projects/:id/plan/attachments/:name",
   startProject: "POST /api/projects/:id/start",
   pauseProject: "POST /api/projects/:id/pause",
   listTasks: "GET /api/projects/:id/tasks",

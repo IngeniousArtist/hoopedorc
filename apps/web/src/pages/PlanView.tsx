@@ -3,8 +3,10 @@ import type {
   DraftTask,
   GetProjectResponse,
   GetSettingsResponse,
+  ListPlanAttachmentsResponse,
   ModelConfig,
   ModelId,
+  PlanAttachment,
   PlanChatMessage,
   PlanChatResponse,
   PlanCommitResponse,
@@ -13,8 +15,9 @@ import type {
   Project,
 } from "@orc/types";
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api/client";
+import { api, apiUpload } from "../api/client";
 import { ModelSelect } from "../components/ModelSelect";
+import { useToast } from "../hooks/useToast";
 
 const DIFFICULTIES: Difficulty[] = ["easy", "medium", "hard"];
 
@@ -86,6 +89,7 @@ export function PlanView({
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const toast = useToast();
 
   // Chat
   const [messages, setMessages] = useState<PlanChatMessage[]>([]);
@@ -94,6 +98,13 @@ export function PlanView({
   const [planCost, setPlanCost] = useState(0);
   const [plannerReady, setPlannerReady] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // F27: planning-context attachments (images/PDFs/reference files) —
+  // seeded from GET on mount so they survive a reload, uploaded/removed
+  // against the same list the planner reads from disk.
+  const [attachments, setAttachments] = useState<PlanAttachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Draft plan
   const [prd, setPrd] = useState<string | null>(null);
@@ -116,8 +127,11 @@ export function PlanView({
       api<GetProjectResponse>("getProject", { params: { id: projectId } }),
       api<PlanningSessionResponse>("planSession", { params: { id: projectId } }),
       api<GetSettingsResponse>("getSettings"),
+      api<ListPlanAttachmentsResponse>("listPlanAttachments", {
+        params: { id: projectId },
+      }),
     ])
-      .then(([projRes, sessionRes, settingsRes]) => {
+      .then(([projRes, sessionRes, settingsRes, attachmentsRes]) => {
         setProject(projRes.project ?? null);
         setModels(settingsRes.settings.models);
         // Strip [PLAN_COMPLETE] tokens from restored messages and detect readiness.
@@ -136,10 +150,45 @@ export function PlanView({
           setTasks(null);
           setPrd(null);
         }
+        setAttachments(attachmentsRes.attachments);
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, [projectId]);
+
+  // F27: upload from the hidden file input; errors surface as a toast
+  // rather than the page-level error banner, since a failed attachment
+  // shouldn't block the chat itself.
+  async function handleAttachFiles(files: FileList | null) {
+    if (!projectId || !files || files.length === 0) return;
+    setUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        const res = await apiUpload<ListPlanAttachmentsResponse>(
+          "uploadPlanAttachment",
+          { params: { id: projectId }, file },
+        );
+        setAttachments(res.attachments);
+      }
+    } catch (e) {
+      toast(String(e), "error");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function removeAttachment(name: string) {
+    if (!projectId) return;
+    try {
+      const res = await api<ListPlanAttachmentsResponse>("deletePlanAttachment", {
+        params: { id: projectId, name },
+      });
+      setAttachments(res.attachments);
+    } catch (e) {
+      toast(String(e), "error");
+    }
+  }
 
   // Scroll chat to bottom on new messages
   useEffect(() => {
@@ -392,7 +441,46 @@ export function PlanView({
             <div ref={chatEndRef} />
           </div>
 
+          {/* F27: planning-context attachments — chips seeded from GET on
+              mount so they survive a reload; the planner reads these from
+              context/attachments/ in the project's clone. */}
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {attachments.map((a) => (
+                <span
+                  key={a.name}
+                  className="flex items-center gap-1.5 rounded border border-neutral-700 bg-neutral-800/60 px-2 py-1 text-[11px] text-neutral-300"
+                >
+                  📎 {a.name}
+                  <button
+                    onClick={() => removeAttachment(a.name)}
+                    title="Remove attachment"
+                    className="text-neutral-500 hover:text-red-400"
+                  >
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
           <div className="flex gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.md,.txt,.csv,.json"
+              className="hidden"
+              onChange={(e) => handleAttachFiles(e.target.files)}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              title="Attach images, PDFs, or reference files for the planner to read"
+              className="shrink-0 self-start rounded border border-neutral-700 px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+            >
+              {uploading ? "…" : "📎"}
+            </button>
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}

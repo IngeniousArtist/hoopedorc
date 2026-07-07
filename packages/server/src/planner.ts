@@ -127,10 +127,33 @@ ${priorContext}
 `;
 }
 
+/**
+ * F27: names of files currently sitting in `context/attachments/` in the
+ * project's clone — images, PDFs, reference docs the user uploaded from
+ * PlanView. The planner runs with that clone as its cwd (see
+ * `resolvePlannerCwd` in index.ts), so pointing it at the paths is enough
+ * for it to read them with its own file tools; no base64-into-prompt
+ * plumbing needed. Empty/omitted list produces no block at all, so a
+ * project with no attachments sees an unchanged prompt.
+ */
+function attachmentsBlock(attachments?: string[]): string {
+  if (!attachments || attachments.length === 0) return "";
+  const list = attachments.map((name) => `- context/attachments/${name}`).join("\n");
+  return `
+
+## Attached context files
+The user has uploaded the following files into \`context/attachments/\` in your working
+directory — read them with your file tools (some may be images or PDFs) before answering
+or planning, and treat their content as part of the project's requirements:
+${list}
+`;
+}
+
 function buildChatPrompt(
   messages: PlanChatMessage[],
   projectName: string,
   priorContext?: string,
+  attachments?: string[],
 ): string {
   const transcript = messages
     .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
@@ -138,7 +161,7 @@ function buildChatPrompt(
   return `${CHAT_SYSTEM}
 
 Project: "${projectName}"
-${priorContextBlock(priorContext)}
+${priorContextBlock(priorContext)}${attachmentsBlock(attachments)}
 Conversation so far:
 ${transcript}
 
@@ -149,6 +172,7 @@ function buildDeconstructPrompt(
   messages: PlanChatMessage[],
   projectName: string,
   priorContext?: string,
+  attachments?: string[],
 ): string {
   const transcript = messages
     .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
@@ -162,7 +186,7 @@ use your file tools to check real file paths and existing structure before writi
 each task's scopePaths must match files/globs that actually make sense for this repo, not
 invented paths. For a brand-new/empty project, plan from the conversation alone.
 ${priorContext ? "" : SCAFFOLD_INSTRUCTION}
-${priorContextBlock(priorContext)}
+${priorContextBlock(priorContext)}${attachmentsBlock(attachments)}
 ## Planning conversation
 ${transcript}
 
@@ -299,9 +323,10 @@ export async function runPlannerChat(
   cwd: string,
   model?: string,
   priorContext?: string,
+  attachments?: string[],
 ): Promise<{ reply: string; costUsd: number }> {
   const { text, costUsd } = await runClaudeJson(
-    buildChatPrompt(messages, projectName, priorContext),
+    buildChatPrompt(messages, projectName, priorContext, attachments),
     cwd,
     model,
   );
@@ -315,9 +340,10 @@ export async function runPlannerDeconstruct(
   cwd: string,
   model?: string,
   priorContext?: string,
+  attachments?: string[],
 ): Promise<{ output: PlanOutput; costUsd: number }> {
   const { text, costUsd } = await runClaudeJson(
-    buildDeconstructPrompt(messages, projectName, priorContext),
+    buildDeconstructPrompt(messages, projectName, priorContext, attachments),
     cwd,
     model,
   );

@@ -1063,8 +1063,8 @@ specific evidence. Notable finds/decisions:
 | B26 — old pending approvals can fall off the notification fetch | ✅ done | [#79](https://github.com/IngeniousArtist/hoopedorc/pull/79) |
 | B27 — `update.sh` systemd-unit detection is version-fragile | ✅ done | [#79](https://github.com/IngeniousArtist/hoopedorc/pull/79) |
 | T1 — real `@orc/server` test package | ✅ done | [#80](https://github.com/IngeniousArtist/hoopedorc/pull/80) |
-| F27 — plan-mode attachments (images/PDF/files → project context folder) | ⬜ | |
-| F28 — plan-chat history archived as markdown session files | ⬜ | |
+| F27 — plan-mode attachments (images/PDF/files → project context folder) | ✅ done | [#81](https://github.com/IngeniousArtist/hoopedorc/pull/81) |
+| F28 — plan-chat history archived as markdown session files | ✅ done | [#81](https://github.com/IngeniousArtist/hoopedorc/pull/81) |
 | F31 — engineering guidelines (coding/UX/security) in author+validator prompts | ⬜ | |
 | F29 — documentation guidelines for the docs-role model | ⬜ | |
 | F30 — per-task documentation stage in the merge pipeline | ⬜ | |
@@ -1099,7 +1099,53 @@ files on disk), `db/repo.test.ts` (8, B23's pruneNotifications
 pending-approval exemption + B26's getNotifications fix), and
 `log-redact.test.ts` (4, S7's redactTokenFromUrl — extracted out of
 index.ts into its own module so it's importable without booting the
-server via index.ts's top-level `main()` call). Next up: F27+F28.
+server via index.ts's top-level `main()` call).
+
+**F27+F28 — done.** New `@fastify/multipart` (9.x line, confirmed
+compatible with this repo's `fastify@^5.1.0` via a real build) backs
+three new routes (`GET`/`POST`/`DELETE .../plan/attachments`,
+`packages/server/src/attachments.ts`) storing uploads at
+`context/attachments/<name>` in the project's clone — S-item-grade
+validation (basename-only, `[A-Za-z0-9._-]` charset, extension
+allowlist, 25MB cap, `-2`/`-3`… collision suffixing, containment
+double-checked independent of the sanitizer). `buildChatPrompt`/
+`buildDeconstructPrompt` (planner.ts) gain an "Attached context files"
+block naming them for the planner's own file tools; empty when there
+are none. F28's `plan-sessions.ts` archives every planning session as
+`context/plan-sessions/<YYYY-MM-DD-HHmm>.md` (new `planning_session_file`
+DB column), rewritten wholesale on each chat/deconstruct turn and
+finalized with a `## Committed` line at commit (which also clears the
+field so the next chat mints a genuinely new file) — minting dedupes
+against the directory (`-2` suffix) since two sessions can land in the
+same clock-minute, a real collision a first-draft version of this code
+had and a test caught. `ENV.mock` roots both attachments and session
+files in a scratch tmp dir (shared `context-dir.ts` helper) instead of
+the seed project's real `localPath: "."`, so `npm run mock` stays
+exercisable without dirtying this repo. PlanView.tsx: an attach button
++ chips (seeded from `GET` on mount, survive reload) above the chat
+composer; a new `apiUpload()` in `client.ts` mirrors `api()`'s
+auth/401-retry handling with a `FormData` body instead of JSON.
+Verified: typecheck/build green across every workspace; `npm test -w
+@orc/engine` (32/32) and `-w @orc/adapters` (4/4) unaffected; `npm test
+-w @orc/server` 67/67 (16 new: 10 for the attachments module's pure
+storage-safety logic, 6 for plan-sessions' mint/rewrite/collision/
+read-only-directory behavior — all against real fs, no mocks).
+**Live-verified end-to-end against a real (non-mock) built server**
+with a throwaway local git repo (`git init` + a matching `origin`
+remote — satisfies `ensureClone`'s fast path with no real GitHub repo
+or network needed) standing in for a project: uploaded a real file via
+curl multipart, confirmed it landed correctly sanitized on disk; a
+`../../evil.png` traversal attempt landed as `evil.png` *inside*
+`context/attachments/`, not outside it; a disallowed extension and an
+oversized file both correctly rejected (400/413); deleted it and
+confirmed a 404 on a second delete. Then the one genuinely
+un-unit-testable claim: **a real `claude -p` chat call** with a
+`context/attachments/notes.txt` file reading "The secret ingredient is
+basil." — asked "what's the secret ingredient," got back exactly
+`"Basil"`, proving the planner actually read the file with its own
+tools rather than guessing. A second real turn confirmed the *same*
+session file gets rewritten (not a new one) and now contains both
+turns. Total live-verification cost: ~$0.24. Next up: F31.
 
 ---
 
