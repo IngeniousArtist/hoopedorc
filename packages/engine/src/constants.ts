@@ -16,3 +16,20 @@ export const STUCK_DETECTION = {
  * can't hold up a validated merge for anywhere near as long as an author run.
  */
 export const DOCS_STAGE_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * F32: how many times a rate-limited author run waits and retries the SAME
+ * model before giving up on it and falling back to the next model in the
+ * chain. `stuck`/`error` exit reasons skip this entirely and fall back
+ * immediately, same as before — a hung or crashing model won't be fixed by
+ * waiting, so the misclassification risk only runs one way.
+ */
+export const RATE_LIMIT_RETRIES = 2;
+
+/**
+ * F32: how long each rate-limit wait-and-retry pauses before trying the same
+ * model again. Overridable per-orchestrator via `SchedulerDeps.rateLimitWaitMs`
+ * — production leaves it unset (uses this real 5-minute default); unit tests
+ * shrink it drastically so a retry test doesn't sleep for real.
+ */
+export const RATE_LIMIT_WAIT_MS = 5 * 60 * 1000;

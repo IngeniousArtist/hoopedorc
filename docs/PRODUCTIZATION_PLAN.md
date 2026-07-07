@@ -1068,7 +1068,7 @@ specific evidence. Notable finds/decisions:
 | F31 — engineering guidelines (coding/UX/security) in author+validator prompts | ✅ done | [#82](https://github.com/IngeniousArtist/hoopedorc/pull/82) |
 | F29 — documentation guidelines for the docs-role model | ✅ done | [#83](https://github.com/IngeniousArtist/hoopedorc/pull/83) |
 | F30 — per-task documentation stage in the merge pipeline | ✅ done | [#84](https://github.com/IngeniousArtist/hoopedorc/pull/84) |
-| F32 — rate-limit wait-and-retry + fallback alerts on Telegram | ⬜ | |
+| F32 — rate-limit wait-and-retry + fallback alerts on Telegram | ✅ done | [#85](https://github.com/IngeniousArtist/hoopedorc/pull/85) |
 | F33 — model test round-trip shows the model's own reply | ⬜ | |
 | F34 — skills strategy: docs + per-project skill hints in prompts | ⬜ | |
 | F35 — quota usage in the Setup health panel | ⬜ | |
@@ -1315,7 +1315,87 @@ cost: ~$0.27 (`claude` $0.21 validator + `grok` $0.056 docs + `deepseek-flash`
 $0.004 author). Same cleanup note as F29: the throwaway repo
 (`IngeniousArtist/f30-livetest`) couldn't be deleted afterward (no
 `delete_repo` token scope) — a harmless merged private repo, left in
-place. Next up: F32.
+place.
+
+**F32 — done.** New `RATE_LIMIT_RETRIES` (2) and `RATE_LIMIT_WAIT_MS`
+(5 min, `constants.ts`). In the `!authorResult.ok` branch of
+`executeTask`, an `exitReason === "rate_limited"` failure now waits and
+retries the SAME model up to `RATE_LIMIT_RETRIES` times (new
+`Orchestrator.waitOutRateLimit`, polling `this.paused`/`stopRequested`
+in 5s slices — a Pause/Stop press mid-wait bails promptly rather than
+sleeping the whole duration regardless) before falling through to the
+existing fallback-escalation code; each wait bumps `task.maxAttempts` in
+lockstep with the for-loop's own `attempts++` so a wait-and-retry cycle
+never eats into the task's real attempt budget. New per-task
+`rateLimitWaits: Map<string, number>` (cleared in the same `finally` as
+`stopRequested`) tracks how many waits a task has used on its current
+model, reset to 0 whenever the model actually switches (all four
+fallback-switch sites now clear it) so a *new* fallback model gets its
+own fair shot at wait-and-retry rather than being kicked to the next
+model the instant it's first rate-limited. `stuck`/`error` exit reasons
+are untouched — they still escalate immediately, since a hung or
+crashing model won't be fixed by waiting and the misclassification risk
+only runs one way. New optional `EngineEvents.onModelTrouble?(info)` and
+a tiny `Orchestrator.notifyModelTrouble` wrapper, called at all three
+places the plan asked for: the *first* wait for a task (not every wait —
+one ping, not spam), every fallback-model switch, and a terminal failure
+with no fallback left. Read the plan's "there are several" fallback
+sites literally against the actual code rather than assuming it meant
+just the rate-limited path: there are exactly four "Switching to
+fallback model" sites (author-run failure, no-changes-produced,
+gates-still-failing, and the `SelfReviewError` validator-collision
+catch) and four matching "no fallback left → fail" sites — all eight now
+notify (`"fallback"`/`"exhausted"` respectively), not just the
+rate-limit-specific one the owner's example happened to describe; this
+gives one consistent signal regardless of which pipeline stage produced
+the trouble. New `SchedulerDeps.rateLimitWaitMs?: number` overrides the
+real 5-minute constant — production leaves it unset, unit tests shrink
+it to single-digit milliseconds so a wait-and-retry test doesn't sleep
+for real. `EngineRunner.buildOrchestrator` forwards every
+`onModelTrouble` event to both a new `kind: "model_trouble"` audit-log
+entry and — gated by new `Settings.telegram.modelAlerts` (boolean,
+default true when unset, independent of the existing `digest` setting)
+— a new `ServerNotifier.modelTrouble` Telegram push
+(`TelegramBot.modelTrouble`, a short two-line message: project + task on
+one line, model + detail on the next, with a ⏳/🔀/🛑 icon per event
+kind). Settings.tsx gained a checkbox next to the digest control.
+Verified: typecheck/build green across every workspace; `npm test -w
+@orc/adapters` (4/4) and `-w @orc/server` (51/51) unaffected; `npm test
+-w @orc/engine` **55/55 (3 new)** covering exactly the plan's three
+acceptance scenarios against a real fake-adapter-driven `Orchestrator`,
+not a reimplementation — (a) a rate-limited author run fails twice then
+succeeds on the 3rd attempt, staying on `deepseek-flash` the whole time
+(`modelsUsed` asserted identical across all three calls), ending `done`
+with `maxAttempts - attempts` unchanged from its starting headroom
+(proving the two waits didn't consume real attempt budget), and exactly
+one `rate_limit_wait` `onModelTrouble` call (not two, proving the
+one-ping-not-every-wait rule); (b) a model that's rate-limited on every
+call exhausts its `RATE_LIMIT_RETRIES` and falls back to
+`deepseek-pro`, which then succeeds — `onModelTrouble` saw exactly
+`["rate_limit_wait", "fallback"]` in that order; (c) calling `stopTask`
+~30ms into a 150ms rate-limit wait (a real, if short, wait — no fake
+timers) ends the task `blocked` with nothing merged and confirms the
+author adapter was never called a second time. **Telegram side**
+verified against the real, unmocked `TelegramBot.modelTrouble`
+implementation with a scripted-`fetch` double (the B8 technique — no
+real bot token available in this environment): stubbed `globalThis.fetch`
+to capture outbound `sendMessage` calls, called the real method for all
+three event kinds, and confirmed the actual production code path sends
+the right `chat_id`, the right icon per event (⏳/🔀/🛑), and the
+project name + task title + model + detail text — not a reimplementation
+of the formatting logic. Also live-verified the new
+`Settings.telegram.modelAlerts` field against a real running (non-mock)
+server: unset by default (absent from a fresh `GET /api/settings`),
+settable to `true`/`false` via `PUT`, and persists across a follow-up
+`GET` — no model spend needed for this part. Did **not** attempt a full
+live author→gates→validator run for this item, unlike F29/F30: unlike
+those, F32's central mechanism (a genuine `rate_limited` classification)
+can't be organically triggered on demand without either wastefully
+exhausting a real subscription's quota or faking the adapter response —
+which is exactly what the unit tests above already do against the real
+orchestration code, so a "live" run would only re-prove the same author
+→ gates → validator plumbing F29/F30 already exercised, not anything
+F32-specific. Next up: F33.
 
 ---
 

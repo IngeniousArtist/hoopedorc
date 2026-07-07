@@ -480,6 +480,14 @@ export interface Settings {
      * regardless of this setting — they're action-required, not chatter.
      */
     digest?: "off" | "terminal" | "all";
+    /**
+     * F32: push a Telegram message whenever a task's author model hits
+     * trouble — the first rate-limit wait, every fallback-model switch, and
+     * a terminal failure with no fallback left. Default true (unset counts
+     * as enabled) since the owner explicitly asked to be alerted on these;
+     * independent of `digest`, which only covers task-status chatter.
+     */
+    modelAlerts?: boolean;
   };
   /**
    * Bearer token required on every /api/* request (and as a `?token=` query
