@@ -187,7 +187,14 @@ export function SetupView({
               Test each model
             </h3>
             <p className="text-[11px] text-neutral-400">
-              Sends a one-word prompt to every enabled model. Costs a few cents.
+              Asks every enabled model to say hello and name itself. Costs a
+              few cents.
+            </p>
+            <p className="mt-0.5 text-[10px] text-neutral-600">
+              Models self-identify approximately — some report a family or an
+              older base-model name rather than the exact marketing name. The
+              cost/latency next to the reply is the real signal that the
+              wiring reached a live model; an exact name match isn't promised.
             </p>
           </div>
           <button
@@ -214,14 +221,18 @@ export function SetupView({
                     }
                   />
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2 text-xs">
-                      <span className="text-neutral-200">{r.displayName}</span>
-                      <span className="font-mono text-[11px] text-neutral-400">
-                        {(r.ms / 1000).toFixed(1)}s · ${r.costUsd.toFixed(4)}
-                      </span>
-                    </div>
-                    <div className="mt-0.5 break-words font-mono text-[11px] text-neutral-400">
-                      {r.ok ? `reply: ${r.reply ?? "(empty)"}` : `error: ${r.error}`}
+                    <div className="text-xs text-neutral-200">{r.displayName}</div>
+                    {r.ok ? (
+                      <div className="mt-0.5 break-words text-sm text-neutral-100">
+                        “{r.reply || "(empty reply)"}”
+                      </div>
+                    ) : (
+                      <div className="mt-0.5 break-words font-mono text-[11px] text-red-400">
+                        error: {r.error}
+                      </div>
+                    )}
+                    <div className="mt-1 font-mono text-[10px] text-neutral-500">
+                      {(r.ms / 1000).toFixed(1)}s · ${r.costUsd.toFixed(4)}
                     </div>
                   </div>
                 </div>

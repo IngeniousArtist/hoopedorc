@@ -97,11 +97,15 @@ export async function testModels(
         const adapter = makeAdapter(cfg, opencodeBaseUrl);
         const res = await adapter.run({
           model: cfg.id,
-          prompt: "Reply with exactly the two characters: OK",
+          // F33: "OK" only proved liveness, not identity — the owner wants to
+          // see the model actually say who it is, so a passing test reads
+          // like a real handshake instead of a cryptic two-letter footnote.
+          prompt:
+            "Say hello and state which AI model you are (name and version), in one short line.",
           cwd: tmpdir(),
           onLog: () => {},
         });
-        const reply = (res.summary ?? "").trim().slice(0, 80);
+        const reply = (res.summary ?? "").trim().slice(0, 200);
         return {
           id: cfg.id,
           displayName: cfg.displayName,
