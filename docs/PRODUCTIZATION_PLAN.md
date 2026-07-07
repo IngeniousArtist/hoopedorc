@@ -1066,7 +1066,7 @@ specific evidence. Notable finds/decisions:
 | F27 — plan-mode attachments (images/PDF/files → project context folder) | ✅ done | [#81](https://github.com/IngeniousArtist/hoopedorc/pull/81) |
 | F28 — plan-chat history archived as markdown session files | ✅ done | [#81](https://github.com/IngeniousArtist/hoopedorc/pull/81) |
 | F31 — engineering guidelines (coding/UX/security) in author+validator prompts | ✅ done | [#82](https://github.com/IngeniousArtist/hoopedorc/pull/82) |
-| F29 — documentation guidelines for the docs-role model | ⬜ | |
+| F29 — documentation guidelines for the docs-role model | ✅ done | |
 | F30 — per-task documentation stage in the merge pipeline | ⬜ | |
 | F32 — rate-limit wait-and-retry + fallback alerts on Telegram | ⬜ | |
 | F33 — model test round-trip shows the model's own reply | ⬜ | |
@@ -1183,7 +1183,56 @@ section renders between Risky Change Rules and Projects with all three
 textareas populated (screenshotted); editing a field flips the Save
 button from disabled to enabled (proving the dirty-tracking wiring);
 saving shows "Settings saved.", re-disables Save, and the edit was
-independently confirmed via a follow-up curl GET. Next up: F29.
+independently confirmed via a follow-up curl GET.
+
+**F29 — done.** New `DOCS_GUIDELINES` const in `packages/engine/src/
+guidelines.ts` (README/CHANGELOG/helper-docs standards from the plan) —
+a fixed engine constant, not an operator-editable Settings field, per
+the plan's own reasoning (three textareas is already enough surface).
+`buildEngineeringStandardsBlock` gained a third `includeDocs` parameter
+(default `false`, so every existing call site and test stayed
+backward-compatible unchanged); both `orchestrator.ts`'s author prompt
+and `validator.ts`'s review prompt now pass `task.role === "docs"` for
+it, alongside the existing frontend/ux wiring — a docs task's prompt
+gets coding + security + docs, matching the plan's explicit note that
+this is correct (docs tasks still touch the repo). `buildDocsTaskDraft`
+(the standing "Project documentation" task every project gets) now
+also demands a CHANGELOG.md and references the quickstart-commands-
+must-be-real rule in both its description and acceptance criteria;
+`scopePaths` extended to include `CHANGELOG.md`. Verified: typecheck/
+build green across every workspace; `npm test -w @orc/adapters` (4/4)
+and `-w @orc/server` (51/51) unaffected; `npm test -w @orc/engine`
+**48/48 (6 new)** — 4 new cases in `guidelines.test.ts` (docs section
+excluded by default, included when `includeDocs` is true, appears even
+with zero `Settings.guidelines` configured since `DOCS_GUIDELINES` is
+fixed, and the constant's own content covers README/CHANGELOG/
+package.json) plus one integration test each in `orchestrator.test.ts`
+and `validator.test.ts` capturing the real prompt for a docs-role task
+vs. a frontend task. **Live-verified with a real, full pipeline** — not
+just a planner chat call like F27/F28's verification, but the actual
+author → gates → validator → merge loop: created a real private GitHub
+repo via the app's own `createRepo: true` path, materialized a single
+real docs-role task via `POST .../tasks` (correctly auto-routed to
+`grok` per `routing.byRole.docs`), started the project, and let it run
+for real. The validator (claude) approved with reasons that explicitly
+cite the guidelines — *"README.md and CHANGELOG.md both exist and
+accurately reflect the actual package.json… No fabricated commands,
+badges, or feature claims; the README correctly states there are no
+runnable scripts rather than inventing ones"* — proving the standard
+was genuinely applied, not just present in the prompt. B11's vacuous-
+gate rail correctly caught this scratch repo's absent test/lint
+scripts and required approval before merging (expected, unrelated to
+F29); approved it after eyeballing the actual PR diff via `gh pr diff`
+— the README honestly stated "no scripts defined... so there are no
+commands to run" instead of inventing any, and CHANGELOG.md followed
+Keep-a-Changelog format exactly (`## [0.0.0] - date`, `### Added`).
+Task ended `done`, PR genuinely merged on GitHub. Total live-
+verification cost: ~$0.19. One cleanup note: the throwaway GitHub repo
+(`IngeniousArtist/f29-livetest`) could not be deleted afterward — the
+`gh` CLI token on this box lacks the `delete_repo` scope, and granting
+it wasn't something to do unilaterally; it's a harmless empty private
+repo, delete manually or extend the token's scope
+(`gh auth refresh -s delete_repo`) if you want it gone. Next up: F30.
 
 ---
 

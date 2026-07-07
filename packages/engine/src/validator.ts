@@ -130,6 +130,7 @@ export class ValidatorImpl implements Validator {
     const standards = buildEngineeringStandardsBlock(
       this.settings.guidelines,
       task.role === "frontend",
+      task.role === "docs",
     );
     return `You are a code reviewer. Grade the implementation of this task against its acceptance criteria, using the diff below as the primary evidence.
 

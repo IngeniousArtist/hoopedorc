@@ -127,3 +127,23 @@ test("F31: no guidelines configured leaves the review prompt unchanged (no flag-
   assert.doesNotMatch(prompts[0]!, /## Engineering standards/);
   assert.doesNotMatch(prompts[0]!, /clearly violates the Engineering standards/);
 });
+
+test("F29: a docs-role task's review prompt includes the docs guidelines; a frontend task's doesn't", async () => {
+  const prompts: string[] = [];
+  // No Settings.guidelines configured — DOCS_GUIDELINES is a fixed engine
+  // constant, not operator-editable, so it must still appear for review too.
+  const settings = baseSettings();
+  const validator = new ValidatorImpl(capturingAdapterFactory(prompts), settings);
+
+  await validator.review(PROJECT, task({ role: "docs" }), GATE, "deepseek-flash");
+  await validator.review(PROJECT, task({ role: "frontend" }), GATE, "deepseek-flash");
+
+  assert.equal(prompts.length, 2);
+  const [docsPrompt, frontendPrompt] = prompts;
+
+  assert.match(docsPrompt!, /## Engineering standards/);
+  assert.match(docsPrompt!, /### Docs/);
+  assert.match(docsPrompt!, /Keep a Changelog shape/);
+
+  assert.doesNotMatch(frontendPrompt!, /### Docs/);
+});

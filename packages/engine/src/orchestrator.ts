@@ -1211,6 +1211,7 @@ export class Orchestrator implements Scheduler {
     prompt += buildEngineeringStandardsBlock(
       this.deps.settings.guidelines,
       task.role === "frontend",
+      task.role === "docs",
     );
 
     if (fixInstructions) {

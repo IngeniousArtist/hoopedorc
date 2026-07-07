@@ -929,3 +929,43 @@ test("F31: no guidelines configured leaves the author prompt unchanged", async (
   assert.equal(capturedPrompts.length, 1);
   assert.doesNotMatch(capturedPrompts[0]!, /## Engineering standards/);
 });
+
+test("F29: a docs-role task's author prompt includes the docs guidelines; a frontend task's doesn't", async () => {
+  const capturedPrompts: string[] = [];
+  const capturingAdapter: AgentAdapter = {
+    runner: "opencode",
+    async run(opts): Promise<AgentRunResult> {
+      capturedPrompts.push(opts.prompt);
+      return {
+        ok: true,
+        exitReason: "completed",
+        costUsd: 0.01,
+        tokensIn: 1,
+        tokensOut: 1,
+        summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+      };
+    },
+  };
+  // No Settings.guidelines configured at all — DOCS_GUIDELINES is a fixed
+  // engine constant, not operator-editable, so it must still appear.
+  const s = settings();
+
+  const docsTask = task("docs-task", [], { role: "docs" });
+  await new Orchestrator(
+    fakeDeps({ settings: s, adapterFor: () => capturingAdapter }, []),
+  ).start(PROJECT, [docsTask]);
+
+  const frontendTask = task("frontend-task", [], { role: "frontend" });
+  await new Orchestrator(
+    fakeDeps({ settings: s, adapterFor: () => capturingAdapter }, []),
+  ).start(PROJECT, [frontendTask]);
+
+  assert.equal(capturedPrompts.length, 2);
+  const [docsPrompt, frontendPrompt] = capturedPrompts;
+
+  assert.match(docsPrompt!, /## Engineering standards/);
+  assert.match(docsPrompt!, /### Docs/);
+  assert.match(docsPrompt!, /Keep a Changelog shape/);
+
+  assert.doesNotMatch(frontendPrompt!, /### Docs/);
+});
