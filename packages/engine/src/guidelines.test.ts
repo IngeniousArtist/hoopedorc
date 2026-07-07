@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildEngineeringStandardsBlock } from "./guidelines.js";
+import { DOCS_GUIDELINES, buildEngineeringStandardsBlock } from "./guidelines.js";
 
 test("buildEngineeringStandardsBlock: undefined guidelines produces nothing", () => {
   assert.equal(buildEngineeringStandardsBlock(undefined, false), "");
@@ -52,4 +52,34 @@ test("buildEngineeringStandardsBlock: only the configured fields appear", () => 
 test("buildEngineeringStandardsBlock: field text is trimmed", () => {
   const block = buildEngineeringStandardsBlock({ coding: "  Keep it simple.  \n" }, false);
   assert.match(block, /### Coding\nKeep it simple\./);
+});
+
+// ── F29: docs guidelines ──
+
+test("buildEngineeringStandardsBlock: docs section excluded by default", () => {
+  const block = buildEngineeringStandardsBlock({ coding: "Write clean code." }, false);
+  assert.doesNotMatch(block, /### Docs/);
+});
+
+test("buildEngineeringStandardsBlock: docs section included when includeDocs is true", () => {
+  const block = buildEngineeringStandardsBlock({ coding: "Write clean code." }, false, true);
+  assert.match(block, /### Docs/);
+  assert.match(block, /Keep a Changelog shape/);
+});
+
+test("buildEngineeringStandardsBlock: docs section appears even with no Settings.guidelines at all", () => {
+  // DOCS_GUIDELINES is a fixed engine constant, not operator-editable — it
+  // must show up for a docs-role task even on a fresh install with no
+  // guidelines configured at all.
+  const block = buildEngineeringStandardsBlock(undefined, false, true);
+  assert.match(block, /## Engineering standards/);
+  assert.match(block, /### Docs/);
+  assert.doesNotMatch(block, /### Coding/);
+  assert.doesNotMatch(block, /### Security/);
+});
+
+test("DOCS_GUIDELINES covers README, CHANGELOG, and helper docs", () => {
+  assert.match(DOCS_GUIDELINES, /README/);
+  assert.match(DOCS_GUIDELINES, /CHANGELOG/i);
+  assert.match(DOCS_GUIDELINES, /package\.json/);
 });

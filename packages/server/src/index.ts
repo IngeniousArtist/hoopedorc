@@ -151,30 +151,41 @@ function materializeTasks(
 /**
  * A standing documentation task: no dependencies, so it dispatches immediately
  * alongside the first coding tasks instead of waiting for everything else to
- * land first ("docs while others code"). Scoped to README.md/docs/** so it
- * can never collide with any coding task's scope.
+ * land first ("docs while others code"). Scoped to README.md/CHANGELOG.md/
+ * docs/** so it can never collide with any coding task's scope.
+ *
+ * F29: description + acceptance criteria also demand a CHANGELOG.md and
+ * spell out the "verify quickstart commands against package.json, never
+ * invent them" rule — the same standard `DOCS_GUIDELINES` (packages/engine/
+ * src/guidelines.ts) holds the docs-role author to on every task, restated
+ * here since this task's own acceptance criteria are what the validator
+ * actually grades against.
  */
 function buildDocsTaskDraft(settings: SettingsType): DraftTask {
   return {
     title: "Project documentation",
     description:
-      "Write thorough project documentation in README.md: what the project does, how to " +
+      "Write thorough project documentation: README.md (what the project does, how to " +
       "install dependencies, how to run it locally (dev server, build, start/production), " +
-      "and the key dependencies and why they're used. Base this on the PRD and whatever " +
-      "code already exists in the repo when you run — other tasks may still be in progress " +
-      "in parallel, so describe what's planned vs. what's already implemented rather than " +
-      "claiming everything is done. Prefer accuracy over completeness.",
+      "and the key dependencies and why they're used) and CHANGELOG.md (Keep a Changelog " +
+      "shape, one entry for this initial version). Verify every command you document " +
+      "against the repo's actual package.json scripts — never invent a script name. " +
+      "Base this on the PRD and whatever code already exists in the repo when you run — " +
+      "other tasks may still be in progress in parallel, so describe what's planned vs. " +
+      "what's already implemented rather than claiming everything is done. Prefer " +
+      "accuracy over completeness.",
     difficulty: "easy",
     role: "docs",
     acceptanceCriteria: [
       "README.md exists at the repo root",
       "README explains what the project does in plain language",
       "README lists exact install commands",
-      "README lists exact commands to run it locally and to build/start for production",
+      "README lists exact commands to run it locally and to build/start for production, verified against package.json's real scripts",
       "README lists key dependencies and what each is for",
+      "CHANGELOG.md exists with an entry for the initial version",
     ],
     dependsOn: [],
-    scopePaths: ["README.md", "docs/**"],
+    scopePaths: ["README.md", "CHANGELOG.md", "docs/**"],
     assignedModel: pickAssignedModel(settings.routing, "easy", "docs"),
   };
 }
