@@ -1069,7 +1069,7 @@ specific evidence. Notable finds/decisions:
 | F29 — documentation guidelines for the docs-role model | ✅ done | [#83](https://github.com/IngeniousArtist/hoopedorc/pull/83) |
 | F30 — per-task documentation stage in the merge pipeline | ✅ done | [#84](https://github.com/IngeniousArtist/hoopedorc/pull/84) |
 | F32 — rate-limit wait-and-retry + fallback alerts on Telegram | ✅ done | [#85](https://github.com/IngeniousArtist/hoopedorc/pull/85) |
-| F33 — model test round-trip shows the model's own reply | ⬜ | |
+| F33 — model test round-trip shows the model's own reply | ✅ done | [#86](https://github.com/IngeniousArtist/hoopedorc/pull/86) |
 | F34 — skills strategy: docs + per-project skill hints in prompts | ⬜ | |
 | F35 — quota usage in the Setup health panel | ⬜ | |
 
@@ -1395,7 +1395,54 @@ exhausting a real subscription's quota or faking the adapter response —
 which is exactly what the unit tests above already do against the real
 orchestration code, so a "live" run would only re-prove the same author
 → gates → validator plumbing F29/F30 already exercised, not anything
-F32-specific. Next up: F33.
+F32-specific.
+
+**F33 — done.** Much smaller than F30/F32 — the plan's own "what exists
+already" note was accurate: `testModels` already ran a real prompt
+through every enabled model and returned `reply`, and SetupView already
+rendered it. Two files, no new types/tests needed. `setup.ts`: the
+prompt changed from `"Reply with exactly the two characters: OK"`
+(proves liveness, not identity) to `"Say hello and state which AI model
+you are (name and version), in one short line."`; the reply capture cap
+raised from 80 to 200 chars (`res.summary.trim().slice(0, 200)`) since a
+real self-identifying sentence runs longer than "OK". `SetupView.tsx`:
+the reply moved from a small muted fine-print footnote to the primary
+result line (`text-sm text-neutral-100`, quoted in curly quotes), with
+cost/latency demoted to a small caption below it instead of the
+top-right corner; the description paragraph was reworded to match the
+new prompt, and a new small honesty-note paragraph (per the plan's
+explicit ask) tells the user models self-identify approximately and an
+exact name match isn't promised — the cost/latency next to the reply is
+the real signal the wiring reached a live model. Investigated whether
+`/api/setup/test-models` has any mock-mode branching before assuming the
+"mock mode unaffected" acceptance line was trivially true — it doesn't:
+neither the route nor `@orc/adapters` special-case `ENV.mock` anywhere,
+so "Test models" always spends real money regardless of mock/non-mock,
+same before and after this change; nothing to break. Verified:
+typecheck/build green across every workspace; `npm test -w @orc/engine`
+(55/55), `-w @orc/adapters` (4/4), and `-w @orc/server` (51/51) all
+unaffected (no test additions — the plan's acceptance criteria for this
+item is entirely live/visual, not unit-testable). **Live-verified in a
+real browser against a real running (non-mock) server**: first attempt
+accidentally exercised a stale `@orc/server` build (rebuilt `@orc/web`
+but not `@orc/server` after editing `setup.ts` — caught immediately
+because Claude/DeepSeek all replied literally `"OK"`, the tell that the
+old prompt was still baked into the running process); rebuilt and
+restarted, then re-ran "Test models" for real against six models
+(temporarily disabled `glm`/`grok` in Settings to keep the live spend
+small, added a throwaway `bogus-model` pointed at a nonexistent
+`opencodeModel` for the mis-mapped-model check) — Claude replied *"Hello!
+I'm Claude, Sonnet 5 (model ID: claude-sonnet-5)."*, DeepSeek v4 Pro
+*"Hello! I'm DeepSeek V4 Pro (deepseek/deepseek-v4-pro)."*, DeepSeek v4
+Flash *"Hello! I'm DeepSeek V4 Flash."* — all three rendered as the
+primary line with cost/latency correctly demoted to the caption below,
+screenshotted. The deliberately mis-mapped model failed visibly (red
+dot, `error: no output`) exactly as the acceptance criteria asked;
+Nex N2 Pro also failed the same way for unrelated real-world reasons
+(OpenRouter free-tier access), incidentally reinforcing that the error
+path renders correctly for a genuine, not just a staged, failure. Total
+live-verification cost: ~$0.30 (includes the stale-build retry). Next
+up: F34.
 
 ---
 
