@@ -1065,7 +1065,7 @@ specific evidence. Notable finds/decisions:
 | T1 — real `@orc/server` test package | ✅ done | [#80](https://github.com/IngeniousArtist/hoopedorc/pull/80) |
 | F27 — plan-mode attachments (images/PDF/files → project context folder) | ✅ done | [#81](https://github.com/IngeniousArtist/hoopedorc/pull/81) |
 | F28 — plan-chat history archived as markdown session files | ✅ done | [#81](https://github.com/IngeniousArtist/hoopedorc/pull/81) |
-| F31 — engineering guidelines (coding/UX/security) in author+validator prompts | ⬜ | |
+| F31 — engineering guidelines (coding/UX/security) in author+validator prompts | ✅ done | [#82](https://github.com/IngeniousArtist/hoopedorc/pull/82) |
 | F29 — documentation guidelines for the docs-role model | ⬜ | |
 | F30 — per-task documentation stage in the merge pipeline | ⬜ | |
 | F32 — rate-limit wait-and-retry + fallback alerts on Telegram | ⬜ | |
@@ -1145,7 +1145,45 @@ basil." — asked "what's the secret ingredient," got back exactly
 `"Basil"`, proving the planner actually read the file with its own
 tools rather than guessing. A second real turn confirmed the *same*
 session file gets rewritten (not a new one) and now contains both
-turns. Total live-verification cost: ~$0.24. Next up: F31.
+turns. Total live-verification cost: ~$0.24.
+
+**F31 — done.** New `Settings.guidelines?: { coding?, ux?, security? }`
+(`@orc/types`), shipped with real ~15-line-each defaults in
+`defaultSettings()`; capped at 4000 chars per field on
+`PUT /api/settings`. The actual rendering logic
+(`buildEngineeringStandardsBlock`) lives in a new shared
+`packages/engine/src/guidelines.ts` — not in either `orchestrator.ts`
+or `validator.ts` — specifically so neither has to import from the
+other; both call it with the same guidelines and their own
+`task.role === "frontend"` check, so the author is told the standards
+up front and the validator grades against the *exact same text*. The
+validator's prompt gets one extra instruction sentence (flag clear
+violations, lean `request_changes` for substantive ones, don't nitpick
+unmentioned style) — only present when there's actually a standards
+block to reference. Settings.tsx gained a "Guidelines" section (three
+labeled textareas) using U4's existing dirty/save machinery unchanged.
+Per-project overrides deliberately out of scope (global only, per the
+plan). Verified: typecheck/build green across every workspace;
+`npm test -w @orc/adapters` (4/4) unaffected; `npm test -w @orc/engine`
+**42/42 (10 new)** — `guidelines.test.ts` (6, the pure block-renderer:
+undefined/blank guidelines produce nothing, ux excluded when
+`includeUx` is false, only configured fields appear, text is trimmed)
+plus real dispatch-level integration tests in `orchestrator.test.ts`
+and a new `validator.test.ts` (2 each) that capture the actual prompt
+handed to a fake adapter for a frontend vs. non-frontend task, proving
+the wiring — not just the pure function — behaves correctly; `npm test
+-w @orc/server` unaffected (51/51, no server-side unit tests needed —
+the cap validation is a simple inline check, live-verified instead).
+**Live-verified against a real (non-mock) built server**: a fresh DB's
+`GET /api/settings` already shows the shipped defaults for all three
+fields; a 4001-char `guidelines.coding` → 400 with a clear message; a
+valid edit round-trips and persists across a fresh GET. Then in a real
+browser (`agent-browser`) against that same server: the Guidelines
+section renders between Risky Change Rules and Projects with all three
+textareas populated (screenshotted); editing a field flips the Save
+button from disabled to enabled (proving the dirty-tracking wiring);
+saving shows "Settings saved.", re-disables Save, and the edit was
+independently confirmed via a follow-up curl GET. Next up: F29.
 
 ---
 

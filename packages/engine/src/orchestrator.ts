@@ -14,6 +14,7 @@ import type {
 } from "@orc/types";
 import type { AgentRunResult } from "@orc/adapters";
 import { STUCK_DETECTION } from "./constants.js";
+import { buildEngineeringStandardsBlock } from "./guidelines.js";
 import { SelfReviewError } from "./validator.js";
 import type { EngineEvents, Scheduler, SchedulerDeps } from "./index.js";
 
@@ -1207,6 +1208,10 @@ export class Orchestrator implements Scheduler {
       `## Acceptance Criteria\n${task.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}\n\n`;
     prompt +=
       `## Allowed Files\n${task.scopePaths.map((s) => `- ${s}`).join("\n") || "(no restrictions)"}\n`;
+    prompt += buildEngineeringStandardsBlock(
+      this.deps.settings.guidelines,
+      task.role === "frontend",
+    );
 
     if (fixInstructions) {
       prompt += `\n## Issues to Fix\n${fixInstructions}\n`;

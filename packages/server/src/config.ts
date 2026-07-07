@@ -65,6 +65,39 @@ export const DEFAULT_MODELS: ModelConfig[] = [
   },
 ];
 
+/**
+ * F31: shipped defaults for Settings.guidelines — operator-editable, but a
+ * fresh install shouldn't start from a blank textarea. Concise and
+ * imperative on purpose (these get injected into every author/validator
+ * prompt, so bulk here is bulk on every single run).
+ */
+export const DEFAULT_GUIDELINES = {
+  coding: `- Follow this repo's existing conventions before inventing new ones — check how similar code already does it.
+- Keep modules small and focused; one clear responsibility per file/function.
+- Never leave dead or commented-out code; delete what isn't used.
+- Handle errors at the boundary that can actually act on them — don't catch-and-ignore.
+- Avoid \`any\`-typed escape hatches in TypeScript; narrow real types instead of bypassing them.
+- Separate pure logic from I/O so it stays testable without a live server/DB/network.
+- Write or update tests for any new behavior you add; don't ship untested logic.
+- Don't add a new dependency for something the standard library or an existing one already does.
+- Match the surrounding file's existing formatting and style.`,
+  ux: `- Every async action shows a loading state while it's in flight.
+- Every action that can fail surfaces its error to the user — no silent failures.
+- Empty states explain what to do next, not just "no data."
+- Interactive elements are reachable and operable via keyboard, not just mouse/touch.
+- Layouts hold up at phone width (~375px) — no horizontal scroll, no clipped content.
+- Text has readable contrast against its background.
+- Destructive actions (delete, stop, discard) require confirmation before executing.
+- Loading, empty, and error states are visually distinct from each other.`,
+  security: `- Never hardcode secrets, tokens, or credentials in source — read them from environment/config.
+- Validate and bound all external input (request bodies, query params, uploaded files, path segments) before using it.
+- Use parameterized queries for anything touching a database; never build SQL by string concatenation.
+- Never use \`eval\`, dynamic \`require\`/\`import\` of untrusted input, or shell string interpolation of external input.
+- Don't add a dependency for something achievable with the standard library — every dependency is attack surface.
+- Never log credentials, tokens, or full request bodies that might contain secrets.
+- Sanitize and contain any filesystem path built from user input — never trust a client-supplied path as-is.`,
+};
+
 export function defaultSettings(): Settings {
   return {
     models: DEFAULT_MODELS,
@@ -114,6 +147,7 @@ export function defaultSettings(): Settings {
     // Token is read from the env var named here, never stored raw. Set the var
     // + chatId and flip enabled to turn the bot on.
     telegram: { enabled: false, botTokenRef: "TELEGRAM_BOT_TOKEN" },
+    guidelines: { ...DEFAULT_GUIDELINES },
   };
 }
 

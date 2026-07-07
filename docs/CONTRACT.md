@@ -79,6 +79,21 @@ scratch tmp dir instead of the seed project's real (and here, misleading)
 `localPath: "."`, so `npm run mock` stays exercisable without writing into
 this repo.
 
+`Settings.guidelines` (F31) — `{ coding?, ux?, security? }`, each a free-text
+string capped at 4000 chars on `PUT /api/settings`. Rendered by
+`packages/engine/src/guidelines.ts`'s `buildEngineeringStandardsBlock` into
+a `## Engineering standards` prompt block used by **both**
+`orchestrator.ts`'s author prompt and `validator.ts`'s review prompt — the
+same text on both sides, so "meets the standards" is checkable rather than
+vibes. `coding`/`security` are always included when set; `ux` only when the
+task looks UI-flavored (`task.role === "frontend"`). The validator's prompt
+additionally gets one instruction: flag clear violations as reasons (and
+lean toward `request_changes` for a substantive one), but don't nitpick
+style the standards don't mention. `defaultSettings()` ships real defaults
+for all three; blanking a field in Settings removes just that section from
+every future prompt. Global only — no per-project override (a future hook,
+not built).
+
 F28: every planning session (the existing `planning_messages`/
 `planning_prd`/`planning_draft_tasks` DB fields — starts empty, ends when
 `/plan/commit` clears it) is also archived as a human-readable markdown
