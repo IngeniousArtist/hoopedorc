@@ -13,7 +13,7 @@ import type {
   Task,
 } from "@orc/types";
 import type { AgentRunResult } from "@orc/adapters";
-import { STUCK_DETECTION } from "./constants.js";
+import { DOCS_STAGE_TIMEOUT_MS, STUCK_DETECTION } from "./constants.js";
 import { buildEngineeringStandardsBlock } from "./guidelines.js";
 import { SelfReviewError } from "./validator.js";
 import type { EngineEvents, Scheduler, SchedulerDeps } from "./index.js";
@@ -76,6 +76,9 @@ const RISKY_AUTH_OR_SECRET_FILE =
 export function isAuthOrSecretFile(path: string): boolean {
   return RISKY_AUTH_OR_SECRET_FILE.test(path);
 }
+
+/** F30: the only paths the per-task documenter is allowed to touch. */
+const DOCS_ALLOWED_SCOPE = ["CHANGELOG.md", "README.md", "docs/**"];
 
 /**
  * Build the auto-escalation fallback chain for a task. Starts with the
@@ -904,6 +907,14 @@ export class Orchestrator implements Scheduler {
         return;
       }
 
+      // F30: document the change in the same worktree/PR right after
+      // validator approval — branch → PR → merge stays sacred, and the docs
+      // land atomically with the code they describe. Strictly best-effort:
+      // never blocks a validated merge, so no bailout on failure here — only
+      // a Stop press (checked right after) can still cut it off.
+      await this.runDocsStage(project, task, path, branch);
+      if (this.bailIfStopRequested(task)) return;
+
       // Bring the branch up to date with main before merging. A sibling task
       // may have merged overlapping files (commonly shared entry-point wiring
       // like index.html) since this branch's no-conflict gate passed, which
@@ -1155,6 +1166,128 @@ export class Orchestrator implements Scheduler {
     }
   }
 
+  /**
+   * F30: after validator approval, run a docs-role-routed model in the same
+   * worktree to update CHANGELOG.md (and README/docs/** only if this change
+   * makes them wrong), then commit + push so the docs ride the same PR.
+   * Strictly best-effort — every failure path here warn-logs and returns
+   * without throwing, so a documentation hiccup can never block a validated
+   * merge. `path`/`branch` are the task's worktree path and branch (already
+   * resolved by the caller — same values `runAuthor`/`commitAll`/`push` use).
+   */
+  private async runDocsStage(
+    project: Project,
+    task: Task,
+    path: string,
+    branch: string,
+  ): Promise<void> {
+    if (project.config?.perTaskDocs === false) return;
+
+    const docsModel =
+      this.deps.settings.routing.byRole.updates ?? this.deps.settings.routing.byRole.docs;
+    if (!docsModel || !this.deps.settings.models.some((m) => m.id === docsModel)) {
+      this.emit(
+        "warn",
+        "engine",
+        "No documenter model routed (byRole.updates/docs) — skipping per-task docs stage",
+        task.id,
+      );
+      return;
+    }
+
+    this.emit("info", "engine", `Documenting merged change with ${docsModel}…`, task.id);
+
+    const runId = `run-${task.id}-docs`;
+    const startedAt = new Date().toISOString();
+    const controller = new AbortController();
+    this.taskAbortControllers.set(task.id, controller);
+    const timer = setTimeout(() => controller.abort(), DOCS_STAGE_TIMEOUT_MS);
+    this.emitRunEvent(task, null, "running", docsModel, startedAt, runId);
+
+    let result: AgentRunResult;
+    try {
+      result = await this.deps.adapterFor(docsModel).run({
+        model: docsModel,
+        prompt: this.buildDocsPrompt(project, task),
+        cwd: path,
+        signal: controller.signal,
+        onLog: (line) =>
+          this.deps.events.onLog({
+            projectId: this.projectId,
+            runId,
+            taskId: task.id,
+            ts: new Date().toISOString(),
+            level: "debug",
+            source: "agent",
+            message: line,
+          }),
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.emit(
+        "warn",
+        "engine",
+        `Documentation stage errored (${message}) — merging without a docs update`,
+        task.id,
+      );
+      this.emitRunEvent(task, null, "failed", docsModel, startedAt, runId);
+      return;
+    } finally {
+      clearTimeout(timer);
+      this.taskAbortControllers.delete(task.id);
+    }
+
+    this.emitRunEvent(task, result, result.ok ? "passed" : "failed", docsModel, startedAt, runId);
+    if (!result.ok) {
+      this.emit(
+        "warn",
+        "engine",
+        `Documentation stage failed (${result.exitReason}) — merging without a docs update`,
+        task.id,
+      );
+      return;
+    }
+
+    try {
+      // The documenter is prompted to touch only docs, but this is the
+      // actual enforcement — it never gets to change code, regardless of
+      // what it was told.
+      const reverted = await this.deps.worktrees.revertOutOfScope(task, DOCS_ALLOWED_SCOPE);
+      if (reverted.length > 0) {
+        this.emit(
+          "warn",
+          "engine",
+          `Documenter edited files outside its allowed scope — reverted: ${reverted.join(", ")}`,
+          task.id,
+        );
+      }
+      await this.deps.git.commitAll(path, `docs: ${task.title}`);
+      await this.deps.git.push(path, branch);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.emit(
+        "warn",
+        "engine",
+        `Documentation stage's commit/push failed (${message}) — merging without a docs update`,
+        task.id,
+      );
+    }
+  }
+
+  private buildDocsPrompt(project: Project, task: Task): string {
+    let prompt = `## Document this merged change: ${task.title}\n\n${task.description}\n\n`;
+    prompt +=
+      `This task (attempt ${task.attempts}, authored by ${task.assignedModel}) has ` +
+      `already been implemented and approved by the validator — do not change any code. ` +
+      `Inspect what actually changed yourself (\`git diff ${project.defaultBranch}...HEAD --stat\` ` +
+      `and targeted diffs as needed), then:\n` +
+      `- Update CHANGELOG.md with an entry for this change (create it if it doesn't exist).\n` +
+      `- Touch README.md or docs/** ONLY if this change makes something there wrong or incomplete.\n` +
+      `- Modify nothing else.\n`;
+    prompt += buildEngineeringStandardsBlock(this.deps.settings.guidelines, false, true);
+    return prompt;
+  }
+
   private emit(
     level: LogLevel,
     source: LogEvent["source"],
@@ -1178,9 +1311,12 @@ export class Orchestrator implements Scheduler {
     status: RunStatus,
     model: ModelId | undefined,
     startedAt: string,
+    // F30: the docs stage passes its own `run-<taskId>-docs` id since it
+    // isn't tied to an attempt number the way author runs are.
+    runId: string = `run-${task.id}-${task.attempts}`,
   ): void {
     const run: Run = {
-      id: `run-${task.id}-${task.attempts}`,
+      id: runId,
       projectId: this.projectId,
       taskId: task.id,
       model: model ?? task.assignedModel,

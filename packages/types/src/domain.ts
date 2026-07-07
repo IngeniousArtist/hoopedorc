@@ -214,6 +214,16 @@ export interface ProjectConfig {
    * not add a new dispatch mechanism, just triggers the existing one.
    */
   schedule?: ProjectSchedule;
+  /**
+   * F30: after the validator approves a task (including the approve_anyway /
+   * escalate-approve paths) and before the merge, run a docs-role-routed
+   * model in the same worktree to update CHANGELOG.md (and README.md/docs/**
+   * only if this change makes them wrong) so the docs commit rides the same
+   * PR as the code it describes. Default true (the owner's requested
+   * standard workflow); set false to opt a project out entirely. Strictly
+   * best-effort — a documentation failure never blocks a validated merge.
+   */
+  perTaskDocs?: boolean;
 }
 
 /**

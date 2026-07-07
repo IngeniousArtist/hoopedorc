@@ -1067,7 +1067,7 @@ specific evidence. Notable finds/decisions:
 | F28 — plan-chat history archived as markdown session files | ✅ done | [#81](https://github.com/IngeniousArtist/hoopedorc/pull/81) |
 | F31 — engineering guidelines (coding/UX/security) in author+validator prompts | ✅ done | [#82](https://github.com/IngeniousArtist/hoopedorc/pull/82) |
 | F29 — documentation guidelines for the docs-role model | ✅ done | [#83](https://github.com/IngeniousArtist/hoopedorc/pull/83) |
-| F30 — per-task documentation stage in the merge pipeline | ⬜ | |
+| F30 — per-task documentation stage in the merge pipeline | ✅ done | [#84](https://github.com/IngeniousArtist/hoopedorc/pull/84) |
 | F32 — rate-limit wait-and-retry + fallback alerts on Telegram | ⬜ | |
 | F33 — model test round-trip shows the model's own reply | ⬜ | |
 | F34 — skills strategy: docs + per-project skill hints in prompts | ⬜ | |
@@ -1232,7 +1232,90 @@ verification cost: ~$0.19. One cleanup note: the throwaway GitHub repo
 `gh` CLI token on this box lacks the `delete_repo` scope, and granting
 it wasn't something to do unilaterally; it's a harmless empty private
 repo, delete manually or extend the token's scope
-(`gh auth refresh -s delete_repo`) if you want it gone. Next up: F30.
+(`gh auth refresh -s delete_repo`) if you want it gone.
+
+**F30 — done.** New `ProjectConfig.perTaskDocs?: boolean` (default true
+when unset — the owner's requested standard workflow), validated as a
+boolean on `PATCH /api/projects/:id` alongside the other config
+booleans. The stage itself (`Orchestrator.runDocsStage`, `orchestrator.ts`)
+sits exactly where the plan specified: after the attempts loop exits
+approved (past the `prNumber == null` guard) and before
+`syncBranchWithMain`, so a documented PR still goes through F15's
+GitHub-checks gate and the normal risk-based merge decision unchanged.
+Resolves the documenter via `routing.byRole.updates ?? routing.byRole.docs`
+— both already default to `grok` in `defaultSettings()`, so a fresh
+install gets a working docs stage with zero extra configuration; no
+model routed (or its `ModelConfig` missing) warn-logs and skips.
+Reuses `emitRunEvent` (given a new optional `runId` param, defaulting to
+the existing attempt-based id so every other call site is untouched) to
+emit a `run-<taskId>-docs` running→terminal pair through the same
+`onRunUpdated` path author runs use — proven live below to actually
+reach the `runs`/`costs` tables, not just asserted. A dedicated
+`DOCS_STAGE_TIMEOUT_MS` (5 min, `constants.ts`) aborts a hung documenter
+via the same `AbortController` map `stopTask` already reaches, so a Stop
+press during the docs wait genuinely kills the process instead of being
+ignored. Scope is hard-enforced, not just prompted: new
+`WorktreeManager.revertOutOfScope(task, allowedPatterns)` diffs
+uncommitted changes (`git diff HEAD` for tracked edits + `ls-files
+--others` for brand-new files, since a fresh CHANGELOG.md wouldn't show
+up in a HEAD diff), reverts tracked edits via `git checkout --` and
+deletes untracked ones outright, restricted to `CHANGELOG.md`/
+`README.md`/`docs/**`. Every failure path (no model routed, adapter
+throws, adapter returns `ok:false`, commit/push throws) warn-logs and
+falls through to the normal merge unchanged — only a `bailIfStopRequested`
+check placed right after the stage (mirroring F15's identical pattern)
+can still cut a documented task off, and only for an actual Stop press,
+never a docs failure. Verified: typecheck/build green across every
+workspace; `npm test -w @orc/adapters` (4/4) and `-w @orc/server` (51/51)
+unaffected; `npm test -w @orc/engine` **52/52 (4 new)** covering all four
+acceptance scenarios — (a) the docs stage runs after approval and before
+the merge (asserted via call ordering, not just both happening), the
+task still ends `done`, and a `running`→`passed` run-row pair lands
+under the `run-<taskId>-docs` id; (b) a documenter that throws doesn't
+fail the task or block the merge, warn-logged, no `docs:` commit made;
+(c) `perTaskDocs: false` never invokes the documenter model at all; (d)
+an out-of-scope documenter edit is reverted (asserted against the exact
+`["CHANGELOG.md", "README.md", "docs/**"]` pattern list) before the docs
+commit, which still lands afterward. **Live-verified against a real,
+full pipeline** — not a planner chat call, the actual author → gates →
+validator → docs → merge loop: booted the real (non-mock) server
+against a scratch DB, created a real private GitHub repo
+(`IngeniousArtist/f30-livetest`) via the app's own `createRepo: true`
+path, materialized one real code task (add `greet.txt`, `deepseek-flash`,
+easy) via `POST .../tasks`, and started the project. The real pipeline
+ran exactly as designed: author committed, validator (`claude`) approved,
+then **grok** ran the docs stage — its own log stream shows it writing
+CHANGELOG.md and then running `git status --short` to confirm only that
+file changed before finishing, all within ~21 seconds. B11's vacuous-gate
+rail correctly flagged the scratch repo's absent scripts as risky
+(expected, unrelated to F30) and held for approval; approving it let
+`gh pr merge` complete. `gh pr view --json commits` on the merged PR
+shows exactly two commits — `feat: Add a greet.txt file (attempt 1)`
+then `docs: Add a greet.txt file` — proving the docs commit genuinely
+rode the same PR as the code. The scratch DB's `runs` table has
+`run-<taskId>-docs` as `model: grok, status: passed` with a real
+21-second `started_at`/`ended_at` span and non-zero `cost_usd`, and that
+exact amount appears in the `costs` table too — confirming the reused
+`emitRunEvent`/`onRunUpdated` path really does post a cost row for the
+docs stage, not just for author runs. One interaction worth recording,
+not a bug: the pre-existing mechanical `git.appendChangelogEntry` (a
+terse, guaranteed, PR-linked one-liner, written straight to `main` right
+after merge — unchanged by F30) still fires independently of the docs
+stage, so a project with both enabled ends up with two CHANGELOG
+entries for the same change under different date-heading conventions —
+confirmed exactly this in the live test's merged `CHANGELOG.md` (a
+`## 2026-07-07` mechanical entry alongside grok's own
+`## [Unreleased] - 2026-07-08` section). Left as-is rather than
+deduping: the mechanical entry is the only one of the two *guaranteed*
+to exist (and to carry a PR link) regardless of whether a documenter is
+routed or its run succeeds, so dropping it when the docs stage succeeds
+would trade a small cosmetic duplication for a real regression risk;
+out of this item's narrow scope to redesign. Total live-verification
+cost: ~$0.27 (`claude` $0.21 validator + `grok` $0.056 docs + `deepseek-flash`
+$0.004 author). Same cleanup note as F29: the throwaway repo
+(`IngeniousArtist/f30-livetest`) couldn't be deleted afterward (no
+`delete_repo` token scope) — a harmless merged private repo, left in
+place. Next up: F32.
 
 ---
 

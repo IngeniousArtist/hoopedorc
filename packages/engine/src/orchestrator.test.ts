@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { AgentAdapter, AgentRunResult } from "@orc/adapters";
 import type { GateResult, Project, Run, Settings, Task } from "@orc/types";
 import { Orchestrator, isAuthOrSecretFile, scopesOverlap } from "./orchestrator.js";
-import type { GitService, SchedulerDeps } from "./index.js";
+import type { GitService, SchedulerDeps, WorktreeManager } from "./index.js";
 
 function settings(): Settings {
   return {
@@ -50,11 +50,14 @@ const approveAdapter: AgentAdapter = {
 };
 
 function fakeDeps(
-  over: Partial<Omit<SchedulerDeps, "git">> & { git?: Partial<GitService> },
+  over: Partial<Omit<SchedulerDeps, "git" | "worktrees">> & {
+    git?: Partial<GitService>;
+    worktrees?: Partial<WorktreeManager>;
+  },
   merged: number[],
   changed: string[] = ["src/example.ts"],
 ): SchedulerDeps {
-  const { git: gitOver, ...restOver } = over;
+  const { git: gitOver, worktrees: worktreesOver, ...restOver } = over;
   return {
     settings: settings(),
     opencodeBaseUrl: "",
@@ -64,6 +67,8 @@ function fakeDeps(
       async remove() {},
       async changedFiles() { return changed; },
       async changedFilesInScope() { return true; },
+      async revertOutOfScope() { return []; },
+      ...worktreesOver,
     },
     git: {
       async ensureClone() {}, async commitAll() {}, async push() {},
@@ -968,4 +973,208 @@ test("F29: a docs-role task's author prompt includes the docs guidelines; a fron
   assert.match(docsPrompt!, /Keep a Changelog shape/);
 
   assert.doesNotMatch(frontendPrompt!, /### Docs/);
+});
+
+function docsSettings(): Settings {
+  const s = settings();
+  s.routing.byRole.updates = "deepseek-pro";
+  return s;
+}
+
+test("F30: docs stage runs after validator approval and before merge; task still ends done", async () => {
+  const merged: number[] = [];
+  const runs: Run[] = [];
+  const commits: { message: string }[] = [];
+  const order: string[] = [];
+
+  const deps = fakeDeps(
+    {
+      settings: docsSettings(),
+      adapterFor: (m) =>
+        m === "deepseek-pro"
+          ? {
+              runner: "opencode" as const,
+              async run(): Promise<AgentRunResult> {
+                order.push("docs-run");
+                return { ok: true, exitReason: "completed", costUsd: 0.001, tokensIn: 1, tokensOut: 1, summary: "" };
+              },
+            }
+          : approveAdapter,
+      git: {
+        async commitAll(_path, message) {
+          commits.push({ message });
+        },
+        async mergePr(_p, n) {
+          order.push(`merge:${n}`);
+          merged.push(n);
+        },
+      },
+      events: {
+        onLog() {},
+        onTaskUpdated() {},
+        onRunUpdated: (r) => runs.push(r),
+        onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.equal(t1.status, "done");
+  assert.deepEqual(order, ["docs-run", "merge:1"], "the docs stage must run before the merge");
+
+  const docsRuns = runs.filter((r) => r.id === "run-t1-docs");
+  assert.equal(docsRuns.length, 2, "expected a running row then a terminal row for the docs stage");
+  assert.equal(docsRuns[0]!.status, "running");
+  assert.equal(docsRuns[0]!.endedAt, undefined);
+  assert.equal(docsRuns[1]!.status, "passed");
+
+  const docsCommits = commits.filter((c) => c.message.startsWith("docs: "));
+  assert.equal(docsCommits.length, 1);
+  assert.equal(docsCommits[0]!.message, "docs: t1");
+});
+
+test("F30: a documenter that throws doesn't block the merge", async () => {
+  const merged: number[] = [];
+  const logs: { level: string; message: string }[] = [];
+  const commits: { message: string }[] = [];
+
+  const deps = fakeDeps(
+    {
+      settings: docsSettings(),
+      adapterFor: (m) =>
+        m === "deepseek-pro"
+          ? {
+              runner: "opencode" as const,
+              async run(): Promise<AgentRunResult> {
+                throw new Error("boom");
+              },
+            }
+          : approveAdapter,
+      git: {
+        async commitAll(_path, message) {
+          commits.push({ message });
+        },
+      },
+      events: {
+        onLog(e) {
+          logs.push({ level: e.level, message: e.message });
+        },
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.equal(t1.status, "done", "a docs-stage error must not fail the task");
+  assert.equal(merged.length, 1);
+  assert.ok(
+    logs.some((l) => l.level === "warn" && /Documentation stage errored/.test(l.message)),
+  );
+  assert.ok(
+    !commits.some((c) => c.message.startsWith("docs: ")),
+    "no docs commit should have been made",
+  );
+});
+
+test("F30: perTaskDocs: false skips the docs stage entirely", async () => {
+  const merged: number[] = [];
+  let docsRunCount = 0;
+  const project = { ...PROJECT, config: { perTaskDocs: false } };
+
+  const deps = fakeDeps(
+    {
+      settings: docsSettings(),
+      adapterFor: (m) =>
+        m === "deepseek-pro"
+          ? {
+              runner: "opencode" as const,
+              async run(): Promise<AgentRunResult> {
+                docsRunCount++;
+                return { ok: true, exitReason: "completed", costUsd: 0, tokensIn: 0, tokensOut: 0, summary: "" };
+              },
+            }
+          : approveAdapter,
+    },
+    merged,
+  );
+
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(project, [t1]);
+
+  assert.equal(t1.status, "done");
+  assert.equal(merged.length, 1);
+  assert.equal(docsRunCount, 0, "the documenter model should never have been invoked");
+});
+
+test("F30: out-of-scope documenter edits are reverted before the docs commit", async () => {
+  const merged: number[] = [];
+  const logs: { level: string; message: string }[] = [];
+  const commits: { message: string }[] = [];
+  const revertCalls: string[][] = [];
+
+  const deps = fakeDeps(
+    {
+      settings: docsSettings(),
+      adapterFor: (m) =>
+        m === "deepseek-pro"
+          ? {
+              runner: "opencode" as const,
+              async run(): Promise<AgentRunResult> {
+                return { ok: true, exitReason: "completed", costUsd: 0.001, tokensIn: 1, tokensOut: 1, summary: "" };
+              },
+            }
+          : approveAdapter,
+      worktrees: {
+        async revertOutOfScope(_task, allowedPatterns) {
+          revertCalls.push(allowedPatterns);
+          return ["src/oops.ts"];
+        },
+      },
+      git: {
+        async commitAll(_path, message) {
+          commits.push({ message });
+        },
+      },
+      events: {
+        onLog(e) {
+          logs.push({ level: e.level, message: e.message });
+        },
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.equal(t1.status, "done");
+  assert.deepEqual(revertCalls[0], ["CHANGELOG.md", "README.md", "docs/**"]);
+  assert.ok(
+    logs.some(
+      (l) => l.level === "warn" && /reverted: src\/oops\.ts/.test(l.message),
+    ),
+  );
+  // The docs commit still lands afterward — the revert happens on disk
+  // (mocked here), it doesn't cancel the commit itself.
+  assert.ok(commits.some((c) => c.message === "docs: t1"));
 });

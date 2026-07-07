@@ -254,4 +254,42 @@ export class WorktreeManagerImpl implements WorktreeManager {
       task.scopePaths.some((pattern) => minimatch(file, pattern, { dot: true })),
     );
   }
+
+  async revertOutOfScope(task: Task, allowedPatterns: string[]): Promise<string[]> {
+    const worktreePath = task.worktreePath;
+    if (!worktreePath) return [];
+
+    // `git diff --name-only HEAD` catches both staged and unstaged changes to
+    // already-tracked files; `ls-files --others` catches brand-new files
+    // (e.g. a freshly created CHANGELOG.md) that diff-against-HEAD can't see
+    // since they aren't tracked yet.
+    const [modifiedOut, untrackedOut] = await Promise.all([
+      git(["diff", "--name-only", "HEAD"], worktreePath).catch(() => ""),
+      git(["ls-files", "--others", "--exclude-standard"], worktreePath).catch(() => ""),
+    ]);
+    const modified = modifiedOut.split("\n").map((f) => f.trim()).filter(Boolean);
+    const untracked = untrackedOut.split("\n").map((f) => f.trim()).filter(Boolean);
+
+    const isAllowed = (f: string) =>
+      allowedPatterns.some((p) => minimatch(f, p, { dot: true }));
+
+    const revertModified = modified.filter((f) => !isAllowed(f));
+    const revertUntracked = untracked.filter((f) => !isAllowed(f));
+
+    if (revertModified.length > 0) {
+      // Restores tracked files (including deletions) to their last-committed
+      // content — `checkout --` can't touch untracked paths, hence the
+      // separate branch below.
+      await git(["checkout", "--", ...revertModified], worktreePath);
+    }
+    for (const f of revertUntracked) {
+      try {
+        rmSync(join(worktreePath, f), { recursive: true, force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+
+    return [...revertModified, ...revertUntracked];
+  }
 }

@@ -389,6 +389,13 @@ function parseProjectConfig(
     value.githubChecksTimeoutMin = n;
   }
 
+  if (raw.perTaskDocs !== undefined) {
+    if (typeof raw.perTaskDocs !== "boolean") {
+      return { error: "config.perTaskDocs must be a boolean" };
+    }
+    value.perTaskDocs = raw.perTaskDocs;
+  }
+
   if (raw.schedule !== undefined) {
     if (typeof raw.schedule !== "object" || raw.schedule === null) {
       return { error: "config.schedule must be an object" };
