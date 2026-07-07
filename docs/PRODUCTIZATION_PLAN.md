@@ -24,8 +24,18 @@ ARCHITECTURE, NEXT_STEPS, CONTRACT). It has four parts:
   Tailscale tailnet, planned and supervised from any device — often a phone —
   running near-autonomously): six fixes for defects/footguns confirmed in the
   current code, then a quality-of-life wave aimed at that remote deployment.
-  Completed 2026-07-07 — this closes out every part of the plan currently
-  written.
+  Completed 2026-07-07.
+- **Part 6 — Owner-requested QoL wave + Phase 10 audit fixes** (added 2026-07-07
+  after Part 5 completed, from Fable's audit of the merged Phase 10 code plus
+  eight new quality-of-life requests from the owner): three small fixes
+  confirmed against the current code/docs, then a feature wave centered on
+  planning-context uploads (attachments + archived plan-chat sessions),
+  documentation quality (real guidelines for the docs-role model and a per-task
+  documentation step in the merge pipeline), engineering-standards prompts for
+  authors and validators, rate-limit resilience with Telegram alerts, an honest
+  model round-trip test, and a skills strategy. Also picks up two leftovers
+  Parts 4–5 deliberately deferred: the `@orc/server` test package and quota
+  usage in the health panel.
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
@@ -1044,6 +1054,29 @@ specific evidence. Notable finds/decisions:
   — confirmed the new amber warning renders, then repeated with a
   succeeding fake to confirm the ordinary green "Enabled." path still
   works unchanged.
+
+### Phase 11 — Part 6: owner-requested QoL wave + audit fixes — ⬜ OPEN
+
+| Item | Status | PR |
+|---|---|---|
+| B25 — USER_GUIDE's `tailscale serve` example uses the wrong port | ⬜ | |
+| B26 — old pending approvals can fall off the notification fetch | ⬜ | |
+| B27 — `update.sh` systemd-unit detection is version-fragile | ⬜ | |
+| T1 — real `@orc/server` test package | ⬜ | |
+| F27 — plan-mode attachments (images/PDF/files → project context folder) | ⬜ | |
+| F28 — plan-chat history archived as markdown session files | ⬜ | |
+| F31 — engineering guidelines (coding/UX/security) in author+validator prompts | ⬜ | |
+| F29 — documentation guidelines for the docs-role model | ⬜ | |
+| F30 — per-task documentation stage in the merge pipeline | ⬜ | |
+| F32 — rate-limit wait-and-retry + fallback alerts on Telegram | ⬜ | |
+| F33 — model test round-trip shows the model's own reply | ⬜ | |
+| F34 — skills strategy: docs + per-project skill hints in prompts | ⬜ | |
+| F35 — quota usage in the Setup health panel | ⬜ | |
+
+Work top-down in the suggested batches: (1) B25–B27 together; (2) T1;
+(3) F27+F28; (4) F31; (5) F29; (6) F30; (7) F32; (8) F33; (9) F34;
+(10) F35. Update this table as each lands; tag `v0.3.0` when the wave
+closes (the standing wave-boundary tagging rule from Part 4).
 
 ---
 
@@ -2654,6 +2687,596 @@ once responded, it drops back into chronological order.
 
 ---
 
+## Part 6 — Owner-requested QoL wave + Phase 10 audit fixes (Fable, 2026-07-07)
+
+Two halves, same as Parts 3–5. First, the **audit record** for the merged
+Phase 10 work (PRs #64–#76): every item was re-verified against the actual
+code on `main`, all sixteen are genuinely implemented as specced, and the
+verification claims held up — the three fixes below are small gaps *around*
+that work, not rework. Second, the **owner's QoL wave**: eight requests from
+the owner (2026-07-07), specced as F27–F34 after reading the real code paths
+each one touches, plus the two leftovers from Part 4's "Beyond the UX wave"
+list that are now cheap enough to just do (T1, F35).
+
+**Decisions on the previously-deferred optional items** (so they stop
+haunting every wave):
+- `@orc/server` test package — **in scope now** (T1). Everything it needs to
+  test is pure or near-pure and already has exactly-shaped standalone-script
+  verifications from Phases 5–10 to port.
+- Quota usage in SetupView's health panel — **in scope now** (F35). One repo
+  function that already exists, one panel column.
+- **F13 phase 1 (gates-only sandbox) — still deferred, deliberately.** It's
+  the biggest remaining security-posture item, but it's also the biggest
+  chunk of work in the backlog, it needs Docker present on the deployment
+  box (an environment question the owner hasn't settled), and nothing in
+  this wave depends on it. It should be the headline item of the *next*
+  wave, not an add-on to this one.
+- F8's optional "pipe the run summary through the updates-role model" toggle
+  — **stays unbuilt**. F29/F30 give the docs-role model a real, structural
+  documentation job instead; a cosmetic rewording of the mechanical digest
+  adds model dependence for little value.
+- Service worker / push notifications — **still deferred** (unchanged from
+  Part 5's calibration note; Telegram covers the phone-ping channel).
+
+**Workflow (same as Parts 1–5):**
+- Branch → PR → merge; CI (F14) green on every PR; item IDs in commit
+  messages; update the Phase 11 table in Progress as you land.
+- Verification bar unchanged: typecheck/build/engine+adapter (+server, once
+  T1 lands) tests green, live verification for anything with a runtime
+  surface, evidence in PR descriptions — Fable re-verifies after merge.
+  Part 3's browser note still applies (pick the local macOS browser).
+- The verify-before-writing rule (F15/F17/F20) applies to every CLI/library
+  behavior this Part leans on — called out per item below.
+- Several items add prompt text that goes to real models. Keep every new
+  prompt block **bounded** (cap lengths on save, slice defensively at the
+  injection site) — an unbounded Settings textarea must never be able to
+  blow up every author prompt in the system.
+
+### Fixes (do these first, as one small batch)
+
+### B25. USER_GUIDE's `tailscale serve` example uses the wrong port — LOW (docs)
+
+**Where:** `docs/USER_GUIDE.md` ~line 223 (`tailscale serve --bg 3987`).
+
+**Problem:** the app's default port is **4317** (`config.ts` `ENV.port`,
+`.env.example`, `deploy/Dockerfile` all agree); the guide's example says
+`3987`. The parenthetical below it does say "replace with whatever PORT
+you've configured", but a copy-paste of the recommended remote-setup command
+on a default install proxies a port nothing listens on — exactly the kind of
+first-deploy stall F20 exists to prevent.
+
+**Fix:** change the example (and its parenthetical) to `4317`. Grep the
+whole `docs/` + `deploy/` tree for `3987` to catch any other stragglers.
+
+**Acceptance:** `grep -rn 3987 docs deploy` returns nothing; the example
+matches `.env.example`'s PORT.
+
+### B26. Old pending approvals can fall off the notification fetch — LOW
+
+**Where:** `packages/server/src/db/repo.ts` `getNotifications` (the B23
+`LIMIT 200`); consumers: `apps/web/src/pages/Notifications.tsx`, App.tsx's
+U1 badge seed.
+
+**Problem:** B23 was precise that *pruning* never deletes a pending
+approval, but the fetch limit has no such exemption: an approval that has
+sat unanswered while 200+ newer notifications accumulated (a long unattended
+multi-project run is exactly the scenario this app is for) silently drops
+off both the Notifications page and the U1 badge seed. The WS path masks it
+only until the next reload. B10 bounds the window (approvals expire on
+restart), but within one server uptime the one thing that blocks a run can
+become invisible.
+
+**Fix:** in `getNotifications`, always include pending approvals regardless
+of the limit — e.g. a `UNION` of (all rows with `requires_approval = 1 AND
+responded_with IS NULL`) with (the newest `LIMIT ?` rows), de-duplicated,
+newest-first. Keep the signature unchanged.
+
+**Acceptance:** new `@orc/server` test (lands with T1 — sequence these
+sensibly, or verify via a standalone script if B26 merges first): seed 1 old
+pending approval + 250 newer responded notifications → `getNotifications`
+returns the pending approval; the page and badge render it.
+
+### B27. `update.sh`'s systemd-unit detection is version-fragile — LOW
+
+**Where:** `scripts/update.sh` (the `systemctl list-unit-files
+hoopedorc.service` check).
+
+**Problem:** `systemctl list-unit-files <pattern>` only started exiting
+non-zero on zero matches in newer systemd releases; on older ones it prints
+"0 unit files listed." and exits 0 — so on such a box the script would run
+`sudo systemctl restart hoopedorc` against a unit that doesn't exist
+(harmless-ish, but it fails with a confusing error and possibly a sudo
+password prompt) instead of printing the manual-restart instruction. F24's
+verification never hit this because macOS has no systemd at all (the
+`command -v systemctl` guard short-circuits).
+
+**Fix:** make the detection output-based, not exit-code-based:
+`systemctl list-unit-files 'hoopedorc.service' 2>/dev/null | grep -q
+'^hoopedorc\.service'` (or `systemctl cat hoopedorc >/dev/null 2>&1`).
+Verify the chosen form against a real systemd box if one is reachable;
+otherwise mark it "verify on your box" in a comment, per the F20 precedent.
+
+**Acceptance:** on a box without the unit, the script prints the
+manual-restart instruction and never invokes sudo; shellcheck-clean
+(or at minimum `bash -n`) like the rest of the script.
+
+### T1. A real `@orc/server` test package — do before the feature items
+
+**Where:** `packages/server` (only workspace with no test script);
+`.github/workflows/ci.yml`; root `package.json`.
+
+**Problem:** Part 4 flagged it, Part 5 deferred it, and this wave adds
+several server-side behaviors (B26, F27's upload sanitization, F28's session
+files) that deserve real regression tests instead of one-off standalone
+scripts that get thrown away after each PR.
+
+**Fix:** add a `test` script to `@orc/server` using `node --test` (the same
+runner engine/adapters use — no new dependency). Port the already-designed
+standalone verifications into permanent tests: `scheduler.ts isScheduleDue`
+(the 13 cases from F19/A3), `budget.ts checkModelQuota` window math (F16),
+`db/backup.ts runBackup` (F17's three scenarios), `repo.pruneNotifications`
++ `getNotifications` (B23's pending-approval exemption + B26),
+`redactTokenFromUrl` (S7). Real in-memory SQLite via the actual `initDb`/
+`repo.*` functions, not mocks. Wire `npm test -w @orc/server` into CI next
+to the existing two test steps and into the standing verification bar.
+
+**Acceptance:** `npm test -w @orc/server` green locally and in CI on its own
+PR; the five areas above each have at least their historical acceptance
+scenarios covered.
+
+### QoL wave (the owner's eight requests, top-down)
+
+### F27. Plan-mode attachments: images/PDFs/files as planning context
+
+**Owner's ask:** "attach files like images, pdf and such in the chat as
+attachments. These files would get uploaded to a specific folder in the
+project folder as context."
+
+**Where:** `packages/server/src/index.ts` (plan routes, ~line 1184);
+`packages/server/src/planner.ts` (`buildChatPrompt`/`buildDeconstructPrompt`);
+`apps/web/src/pages/PlanView.tsx`; `@orc/types` `ROUTES` + CONTRACT.md;
+new dependency `@fastify/multipart` (v9 line — the Fastify v5-compatible
+major; check the actual compatibility table before pinning).
+
+**Design:** attachments live in the project's clone at
+`<project.localPath>/context/attachments/<name>`. That directory is the
+"specific folder in the project folder" — and because the planner already
+runs `claude -p` with the clone as its cwd (`resolvePlannerCwd`), the
+planning model can read the files with its own file tools; no
+base64-into-prompt plumbing, no size explosion in the transcript.
+
+**Fix:**
+1. **Routes:** `POST /api/projects/:id/plan/attachments` (multipart, one
+   file per request), `GET .../plan/attachments` (list: name, size, mtime),
+   `DELETE .../plan/attachments/:name`. Register in `ROUTES`, CONTRACT.md.
+2. **Storage safety (treat this with S-item care — it's a write-to-disk
+   endpoint):** take `basename` only; sanitize to `[A-Za-z0-9._-]`
+   (reject anything empty or dotfile-leading after sanitizing); resolve the
+   final path and require it to stay inside `context/attachments/`
+   (prefix check on the resolved path, the same containment reasoning S4
+   used); extension allowlist (`png jpg jpeg gif webp pdf md txt csv json`);
+   size cap ~25MB (multipart limits option); collision → suffix `-2`, `-3`….
+   `DELETE` applies the same sanitize+containment before unlinking.
+3. **Planner integration:** both `buildChatPrompt` and
+   `buildDeconstructPrompt` gain an "## Attached context files" block listing
+   the repo-relative paths that currently exist on disk (server passes the
+   list in), with one instruction line: read them with your file tools
+   before answering; images and PDFs included. **Verify against the real
+   CLI first** (the F15/F17 rule): confirm a headless `claude -p` run in a
+   cwd containing a PNG and a PDF can actually read both when the prompt
+   names them — don't assume it from Claude Code's interactive behavior.
+4. **UI:** an attach button (hidden `<input type="file">`) in PlanView's
+   chat composer; uploaded files render as small chips (name + remove ×)
+   above the input, seeded from the GET on mount so they survive reload.
+   Upload errors surface via the existing toast.
+5. **Mock mode:** the seed project's `localPath` is `"."` (the server's own
+   cwd) — writing uploads there would dirty this very repo. In `ENV.mock`,
+   root attachments at `<tmpdir>/hoopedorc-mock-attachments/<projectId>/`
+   instead so the UI stays fully exercisable.
+
+**Acceptance:** upload a PNG and a PDF from PlanView → files appear under
+`context/attachments/` with sanitized names; a filename like
+`../../evil.sh` or `x.sh` is rejected with a 400; a >25MB file is rejected;
+the next chat turn's prompt (verify via a log line or a temporary debug
+dump) lists both files; asking the planner "what's in the attached PDF?"
+gets a genuinely content-aware answer (live-verify once with a real file);
+chips survive a reload; delete removes the file and the chip.
+
+### F28. Plan-chat history archived as markdown session files
+
+**Owner's ask:** "our chat history in plan mode to be recorded in an .md
+file in said context folder. If i plan again it should create another .md
+file as a different session."
+
+**Where:** `packages/server/src/index.ts` (`/plan/chat`, `/plan/deconstruct`,
+`/plan/commit`); `packages/server/src/db` (planning session storage — add a
+`session_file` field the same way other columns were added, via the standard
+migration list); reuses F27's `context/` convention.
+
+**Design:** one markdown file per planning session at
+`<localPath>/context/plan-sessions/<YYYY-MM-DD-HHmm>.md`. A "session" is
+exactly what the existing planning-session row already models: it starts
+with the first chat turn after the row is empty and ends when `/plan/commit`
+clears it (existing behavior, untouched) — so "plan again" naturally starts
+a new file.
+
+**Fix:**
+1. On each successful `/plan/chat` turn: if the stored session has no
+   `session_file`, mint one from the current server-local time and persist
+   it; then (re)write the whole file from the stored transcript — a tiny
+   header (project name, session start, planner model) followed by
+   `## User` / `## Assistant` sections in order. Rewriting wholesale keeps
+   it correct without append bookkeeping.
+2. On `/plan/deconstruct`: append (same rewrite) a `## Deconstructed plan`
+   section — the PRD markdown plus a task list (title, difficulty, role,
+   dependsOn).
+3. On `/plan/commit`: write one final `## Committed` line (timestamp, task
+   count) *before* the session row is cleared. The file itself is the
+   durable archive; the cleared row just means the next chat mints a new
+   file.
+4. A failed file write must never fail the chat/commit request — warn-log
+   and continue (same posture as F17's backup failures).
+5. Session files are deliberately **not** git-committed by the server
+   (unlike the PRD, nothing downstream reads them; they're the owner's
+   archive). Note in the user guide that `context/` can be gitignored or
+   committed at the user's discretion.
+
+**Acceptance:** run a two-turn plan chat → one session file exists
+containing both turns and the reply; deconstruct → the section appends;
+commit → the `## Committed` line is present and the *next* chat turn creates
+a **new** file; a read-only `context/` directory (chmod it in the test)
+doesn't break the chat endpoint.
+
+### F31. Engineering guidelines (coding / UX / security) in author + validator prompts
+
+**Owner's ask:** "guidelines … in terms of UX, Coding structure, Security
+that we can add in as system prompts for the coding and validating agents.
+Just running the app properly isn't gonna cut it as good work."
+
+**Where:** `@orc/types` `Settings`; `packages/server/src/config.ts`
+(`defaultSettings`); `packages/engine/src/orchestrator.ts`
+(`buildAuthorPrompt`, ~line 1201); `packages/engine/src/validator.ts` (the
+review prompt); `apps/web/src/pages/Settings.tsx`; CONTRACT.md.
+
+**Design:** guidelines are operator-editable text with strong shipped
+defaults, injected into *both* sides of the loop — authors are told the
+standards up front, and the validator grades against the same text, so
+"meets the standards" is a checkable claim rather than vibes.
+
+**Fix:**
+1. **Types/defaults:** `Settings.guidelines?: { coding?: string; ux?:
+   string; security?: string }`. Ship real defaults in `defaultSettings()`
+   (concise, imperative, ~15–20 lines each — not essays):
+   - *coding:* follow the repo's existing conventions before inventing new
+     ones; small focused modules; no dead/commented-out code; handle errors
+     at the boundary that can act on them; no `any`-typed escape hatches in
+     TS repos; keep functions testable (pure logic separated from I/O);
+     write/update tests for behavior you add.
+   - *ux:* every async action shows a loading state and surfaces its errors
+     (no silent failures); empty states say what to do next; interactive
+     elements are keyboard-reachable; layouts hold up at phone width;
+     readable contrast; destructive actions confirm.
+   - *security:* never hardcode secrets or tokens; validate and bound all
+     external input (body, params, files); parameterized queries only; no
+     `eval`/dynamic `require`; don't add dependencies for what stdlib does;
+     don't log credentials.
+2. **Validation:** `PUT /api/settings` caps each field (~4000 chars) —
+   the bounded-prompt rule at the top of this Part.
+3. **Author injection:** `buildAuthorPrompt` appends an
+   `## Engineering standards` section: always `coding` + `security`; add
+   `ux` when the task looks UI-flavored (`task.role === "frontend"` — keep
+   the heuristic exactly that simple). Settings already reach the
+   orchestrator via `SchedulerDeps.settings`.
+4. **Validator injection:** the review prompt includes the same text and one
+   instruction: flag clear violations of these standards as reasons (and
+   `request_changes` when substantive), but do not nitpick style the
+   standards don't mention.
+5. **UI:** a "Guidelines" Settings section with three labeled textareas +
+   the standard dirty/save handling (U4's machinery already covers it).
+6. Per-project overrides are **out of scope** for this item (global only) —
+   note it as a future hook rather than building unused plumbing.
+
+**Acceptance:** engine unit test: `buildAuthorPrompt` output contains the
+standards section (and `ux` only for frontend-role tasks) — export or
+otherwise make it testable the way B12/B13 exported their pure helpers;
+validator prompt contains the same text (unit test at the same altitude);
+settings round-trip + cap enforced (400 past the cap); defaults visible in
+Settings UI on a fresh DB.
+
+### F29. Documentation guidelines for the docs-role model
+
+**Owner's ask:** "Grok needs to produce better documentation of the
+projects being created, create guidelines as a system prompt for grok to
+create solid readme, changelog and any helper documentation files."
+
+**Where:** `packages/engine/src/orchestrator.ts` (`buildAuthorPrompt`);
+`packages/server/src/index.ts` (`buildDocsTaskDraft`, ~line 146); the
+routing note: "Grok" here means *whatever model `routing.byRole.docs`
+points at* — the mechanism is role-based, the owner routes it to Grok.
+
+**Design:** same injection mechanism as F31 (build F31 first), one more
+guidelines block that applies only to docs-role work — both the standing
+"Project documentation" task every project gets and F30's per-task
+documenter.
+
+**Fix:**
+1. **The guidelines text** (a `DOCS_GUIDELINES` const in the engine — not a
+   Settings field; documentation standards are the product's opinion, and
+   three editable textareas is already enough surface):
+   - *README:* lead with what the project does and who it's for, in plain
+     language; then quickstart (the exact commands, verified against
+     `package.json` — never invent scripts), usage with a real example,
+     configuration table, troubleshooting. No fabricated badges, links, or
+     claims about features that don't exist yet — check the code before
+     asserting.
+   - *CHANGELOG:* Keep-a-Changelog shape (`## [version] - date`, grouped
+     Added/Changed/Fixed), newest first; entries describe user-visible
+     behavior, not commit messages.
+   - *Helper docs:* create `docs/` files only when a topic outgrows the
+     README (API reference, architecture); every doc says when it was last
+     true; cross-link rather than duplicate.
+2. **Injection:** `buildAuthorPrompt` appends `DOCS_GUIDELINES` when
+   `task.role === "docs"` (alongside F31's blocks; a docs task gets coding +
+   security + docs, which is correct — docs tasks still touch the repo).
+3. **Beef up `buildDocsTaskDraft`:** the standing task's description and
+   acceptance criteria should demand a CHANGELOG.md too ("CHANGELOG.md
+   exists with an entry for the initial version") and reference the
+   quickstart-commands-must-be-real rule.
+
+**Acceptance:** unit test — a docs-role task's author prompt contains the
+docs guidelines and a frontend task's doesn't; the standing docs task's
+draft includes the CHANGELOG criterion; live-verify once on a scratch
+project that the docs model actually produces a README following the
+structure (eyeball, not automated).
+
+### F30. Per-task documentation stage in the merge pipeline
+
+**Owner's ask:** "Once the said task is verified by our validation agent,
+each tasks in the kanban card will be documented by grok and then pushed
+commit merged" — i.e. the verify → document → push/commit/merge workflow
+this repo itself uses, applied to every task the orchestrator lands.
+
+**Where:** `packages/engine/src/orchestrator.ts` `executeTask` — after the
+attempts loop exits approved (past the `prNumber == null` guard, ~line 905)
+and **before** `syncBranchWithMain`; `@orc/types` `ProjectConfig`;
+`ProjectConfigFields.tsx`; CONTRACT.md.
+
+**Design:** after the validator approves (including the approve_anyway /
+escalate-approve paths), a documenter run executes in the *same worktree* so
+its commit rides the *same PR* — branch → PR → merge stays sacred, and the
+docs land atomically with the code they describe. The documenter is
+docs-role-routed (`routing.byRole.updates ?? routing.byRole.docs`) and
+scope-restricted to documentation files. It must be strictly best-effort: a
+documentation failure never blocks a validated merge.
+
+**Fix:**
+1. **Config:** `ProjectConfig.perTaskDocs?: boolean`, **default true** (this
+   is the owner's requested standard workflow; per-project off-switch for
+   repos where it's noise). Validate on PATCH like the other booleans.
+2. **The stage,** guarded by the toggle and by `bailIfStopRequested`:
+   - Resolve the documenter model; if none is routed, warn-log and skip.
+   - Prompt: the task's title/description/acceptance criteria, the attempt
+     count and final model, plus instructions: inspect the branch's actual
+     changes yourself (`git diff <defaultBranch>...HEAD --stat` and targeted
+     diffs); update `CHANGELOG.md` (create it if absent) with an entry for
+     this change; touch `README.md`/`docs/**` **only** if this change makes
+     them wrong or incomplete; modify nothing else; follow `DOCS_GUIDELINES`
+     (F29). Allowed files: `CHANGELOG.md`, `README.md`, `docs/**`.
+   - Run it via `adapterFor` with its own AbortController + a hard timeout
+     (5 min — docs, not a feature); reuse the `runAuthor` log-streaming
+     shape (source `"agent"`, its own run id like `run-<taskId>-docs` so the
+     cost and duration land in the runs/costs tables the same way author
+     runs do — verify a cost row actually appears, since that path flows
+     through `onRunUpdated`).
+   - After it returns: if `changedFiles` shows edits **outside** the allowed
+     doc paths, `git checkout --` them (revert), warn-log — the documenter
+     never gets to change code. Then `commitAll("docs: <task title>")` +
+     `push`. Zero changes → fine, continue silently.
+   - Any error/timeout: warn-log, continue to merge. Never `requestApproval`
+     for a docs failure.
+3. **Ordering note:** gates already ran before the validator; the docs
+   commit is deliberately not re-gated (it can't touch code — enforced
+   above). F15's GitHub-checks gate, when enabled, naturally sees the docs
+   commit since it runs after this stage — that's correct and worth a
+   sentence in CONTRACT.md.
+4. **Stuck-detector note (F15 precedent):** the wait happens inside an
+   adapter run with live log streaming, so the Board heartbeat stays honest;
+   no extra keepalive needed. Verify `STUCK_DETECTION` scoping doesn't apply
+   outside `runAuthor` before assuming (it didn't for F15, but re-check —
+   don't trust this paragraph over the code).
+
+**Acceptance:** engine unit tests with a fake adapter: (a) documenter runs
+after an `approve` verdict and before merge, and the task still ends `done`;
+(b) documenter throwing/timing out → merge still proceeds, warn logged; (c)
+`perTaskDocs: false` → no documenter call; (d) out-of-scope documenter edits
+are reverted before commit. Live-verify once on a scratch project with a
+real model: the merged PR contains a `docs:` commit with a sane CHANGELOG
+entry.
+
+### F32. Rate-limit wait-and-retry + fallback alerts on Telegram
+
+**Owner's ask:** "agents might get timedout … or when the usage limit runs
+out … add retries that pause the task and try again in a few minutes and
+then a fallback agent like deepseek can try to complete the task if retries
+doesn't work. I should get alerted in telegram in such cases."
+
+**Where:** `packages/engine/src/orchestrator.ts` `executeTask` (the
+`!authorResult.ok` branch, ~line 629); `packages/server/src/engine-runner.ts`
+(notifier wiring; the F6 cooldown watcher ~line 356); `packages/server/src/
+telegram.ts` (`ServerNotifier`); `@orc/types` `Settings.telegram`;
+`Settings.tsx`.
+
+**What exists already (don't rebuild it):** adapters classify rate-limited
+failures (`exitReason: "rate_limited"`, F6); a rate-limited run puts the
+model on a 5-minute *dispatch* cooldown so **new** tasks route around it
+(F6); fallback chains already escalate the *in-flight* task to the next
+model — with deepseek in the chain if routing says so (`buildFallbackChain`).
+The two gaps: (1) an in-flight task currently falls back **immediately** on
+a rate limit, burning a stronger model's slot on what's often a
+five-minute wait; (2) nothing pings the owner when any of this happens.
+
+**Fix:**
+1. **Wait-and-retry, same model:** in the `!authorResult.ok` branch, when
+   `exitReason === "rate_limited"` and the task has used fewer than
+   `RATE_LIMIT_RETRIES` (const, 2) waits: emit a warn log, wait
+   `RATE_LIMIT_WAIT_MS` (const, 5 min) in short (~5s) slices that check
+   `this.paused` and `stopRequested` each slice (a Stop press mid-wait must
+   bail immediately — same reasoning as F15's post-wait bail), bump
+   `task.maxAttempts++` so the wait doesn't consume a real attempt, then
+   `continue` **without** switching models. Track waits in a per-task
+   counter cleaned up in the `finally` like the other per-task maps. Only
+   `rate_limited` gets this treatment — `stuck`/`error` keep today's
+   immediate-fallback behavior (a hung or crashing model won't be fixed by
+   waiting; the misclassification risk runs the other way).
+2. **Alerts:** new optional `SchedulerDeps.events.onModelTrouble?(info: {
+   taskId; taskTitle; model; event: "rate_limit_wait" | "fallback" |
+   "exhausted"; detail: string })`, called at: the *first* wait for a task
+   (not every wait — one ping, not spam), every fallback switch (all of the
+   existing `Switching to fallback model` sites — there are several;
+   centralize into a tiny private helper while in there rather than
+   five copy-pasted calls), and terminal failure with no fallback left.
+   `EngineRunner` forwards to a new `ServerNotifier.modelTrouble(...)`
+   Telegram message (short: project, task title, model, what happened, what
+   the engine is doing about it) gated by a new
+   `Settings.telegram.modelAlerts?: boolean`, **default true** (the owner
+   asked for these explicitly; the off-switch is for later). Settings UI
+   checkbox next to the existing digest control. `"exhausted"` also fires
+   when the *task fails terminally* from the author-failure path even if
+   Telegram's digest would already cover the failed status — the digest says
+   *what*, this says *why*.
+3. **Interplay notes:** the F6 dispatch cooldown is untouched and
+   complementary. The known-and-accepted B19 escalation overshoot note
+   still stands. Don't add waits to the opencode adapter's internal
+   transient-startup retry — that's a different layer handling sub-second
+   races, and it's fine.
+
+**Acceptance:** engine unit tests with a fake adapter that fails
+rate-limited N times then succeeds: (a) same model retried after the wait
+(shrink the wait via an injected/overridable constant — don't sleep 5 real
+minutes in CI), attempts budget not consumed by waits; (b) retries exhausted
+→ falls back to the next model, `onModelTrouble` saw one `rate_limit_wait` +
+one `fallback`; (c) Stop during the wait ends the task promptly with
+nothing merged. Telegram side: verified with the scripted-fetch double (the
+B8 technique) — the real bot needs the owner's token, mark it "verify on
+your deployment".
+
+### F33. Model test round-trip: show the model's own reply
+
+**Owner's ask:** "we do a simple prompt such as 'Write the word hello and
+your model name' and wait for a response like 'hello, my model is claude
+sonnet 5' and show it to me the user so i can verify it works."
+
+**Where:** `packages/server/src/setup.ts` `testModels` (~line 101);
+`apps/web/src/pages/SetupView.tsx` (~line 224).
+
+**What exists already:** `testModels` already runs a real prompt through
+every enabled model via the real adapters and already returns `reply` —
+and SetupView already renders it, truncated to 80 chars in a footnote style.
+The gaps are the prompt (asks for "OK", proving liveness but not identity)
+and the presentation.
+
+**Fix:**
+1. Prompt → `Say hello and state which AI model you are (name and version),
+   in one short line.` Raise the reply capture from 80 → ~200 chars.
+2. SetupView: make the reply the *primary* result line for a passing model
+   (quoted, readable size), with cost/latency as the secondary caption —
+   not the current fine-print footnote.
+3. **Honesty note (put it in the UI copy, small):** models self-identify
+   approximately — some report a family or an older base-model name rather
+   than the marketing name the operator knows. The point of the check is
+   "the wiring reaches a live model that answers as roughly the right
+   family", corroborated by the cost/latency shown next to it; an exact
+   name match is not promised. (This is why the old prompt asked for "OK" —
+   keep the new copy from overclaiming.)
+
+**Acceptance:** "Test models" on a live setup shows each model's actual
+one-line self-description prominently; a deliberately mis-mapped model
+(point an opencode id at the wrong provider) is visibly caught by its reply
+or its error; mock mode unaffected.
+
+### F34. Skills strategy: docs + per-project skill hints in prompts
+
+**Owner's ask:** "Figure out a way to efficiently use skills in our
+projects by the agents… It might be different in different projects. Or
+some skills could be used for all agents in all projects. Im a bit confused
+on that so we can figure it out together."
+
+**The mechanics, stated plainly (this is the "figure it out" half):**
+- **Skills are a Claude Code feature.** The `claude` runner discovers them
+  from two places: `~/.claude/skills/` (user-level → every project on the
+  box) and `<repo>/.claude/skills/` (committed to a repo → that project
+  only, for anyone/anything running Claude Code in it). Discovery is
+  automatic; *reliable* use is not — a headless agent uses a skill when the
+  task at hand matches the skill's description, and the strongest lever is
+  simply naming the skill in the prompt.
+- **opencode models have no skills mechanism.** The equivalent lever is
+  instructions text (their `AGENTS.md` convention, or just prompt content).
+  So anything "skills" must degrade gracefully to plain prompt text.
+- **Therefore the policy:** *universal* skills (things every project
+  benefits from) belong at user level on the deployment box, installed
+  once; *project-specific* skills belong in the target repo's
+  `.claude/skills/`, committed like code; and Hoopedorc's job is just to
+  **nudge**: tell the author model which skills matter for this project so
+  it reaches for them instead of hoping discovery fires.
+
+**Fix (deliberately small — the mechanism, not a skills marketplace):**
+1. `ProjectConfig.skillHints?: string[]` — free-text lines, each "skill
+   name — when to use it" (e.g. `frontend-design-guidelines — read before
+   building any UI component`). Validate: array of strings, each ≤200
+   chars, ≤20 entries (bounded-prompt rule).
+2. `buildAuthorPrompt` appends an `## Skills` section when hints exist:
+   "The following skills are available in this environment; invoke each
+   when its condition applies:" + the lines. Sent to every runner —
+   claude-code acts on it natively; for opencode it reads as ordinary
+   (harmless, often still useful) instructions.
+3. `ProjectConfigFields` Advanced accordion: a small textarea (one hint per
+   line).
+4. **Docs:** a "Using skills with your agents" section in USER_GUIDE.md
+   covering the mechanics + policy above, including the one-time
+   "install universal skills at user level on the EC2 box" step and the
+   fact that skills only affect the `claude` runner.
+
+**Acceptance:** unit test — hints appear in the author prompt, absent when
+unset; guide section exists; live-verify once: a scratch project whose repo
+has a trivial committed skill (e.g. one that makes the agent write a marker
+file) plus a hint naming it → the marker appears in the agent's output/
+worktree, proving the nudge → discovery → use chain end-to-end.
+
+### F35. Quota usage in the Setup health panel
+
+**Where:** `packages/server/src/setup.ts` / the health-panel data route
+SetupView reads; `repo.getModelUsageSince` (exists since F16);
+`SetupView.tsx`.
+
+**Problem:** F16 enforces quotas invisibly — the operator can't see "how
+much of my Claude window have I used" without hitting the wall.
+
+**Fix:** for each model with a `quota` configured, include `windowUsage:
+{ runs, costUsd, windowHours }` (one `getModelUsageSince` call) in the
+health payload; SetupView renders "N runs / $X this window" (with the
+`maxRuns`/`maxCostUsd` limits alongside, e.g. "3/50 runs") in the existing
+per-model health row. No new table, no chart.
+
+**Acceptance:** a model with a quota shows its current window usage in
+Setup & Health; models without a quota show nothing new; the figures match
+a hand-run of the F16 standalone-verification math (or the T1 test's
+fixtures).
+
+### What Part 6 deliberately does NOT include (for calibration)
+
+- **F13 phase 1 (gates-only sandbox)** — explicitly deferred again, see the
+  decisions block at the top of this Part. It should headline the next
+  security-focused wave once the owner settles the Docker-on-EC2 question.
+- **Per-project guideline overrides** (F31 is global-only) and **editable
+  docs guidelines** (F29 ships as a product-opinion constant) — both are
+  cheap later if real use demands them.
+- **Service worker / push notifications** — unchanged from Part 5.
+- **Automatic model-name assertion in F33** — the test shows the reply and
+  lets the human judge; string-matching model self-IDs would fail honestly
+  wired setups.
+
+---
+
 ## Suggested execution order
 
 | Phase | Items | Rationale | Status |
@@ -2668,17 +3291,19 @@ once responded, it drops back into chronological order.
 | 8 | F14, F15, F16, F17, F18, F19 | Second feature wave: CI first (F14 — every later PR benefits), then external-CI gate, quota awareness, backups, sandbox doc, scheduled runs (F19 opted into 2026-07-06). | ✅ done |
 | 9 | A1–A5, U1–U10 | Post-plan audit fixes, then the UX wave from the full-app walkthrough — badge/header/board layout first (U1–U4 are the high-impact ones), trivial polish after. | ✅ done |
 | 10 | B20–B24, S7, F20–F26, U11–U14 | Post-UX-wave audit fixes (the Projects-page Pause footgun first), then the remote-deployment QoL wave: docs → routing → approval context → stop-all → update story → polish → WS/PWA. | ✅ done |
+| 11 | B25–B27, T1, F27–F35 | Phase 10 audit fixes (all small), then the server test package (T1 — later items lean on it), then the owner's QoL wave: planning context (F27+F28) → standards prompts (F31 → F29 → F30, in that order — F29/F30 build on F31's injection mechanism) → resilience + alerts (F32) → model test (F33) → skills (F34) → quota panel (F35). Tag `v0.3.0` at the end. | ⬜ open |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
 
-Parts 1–5 (Phases 1–10) are **all done** — Phases 1–6 tagged `v0.1.0`,
+Parts 1–5 (Phases 1–10) are **done** — Phases 1–6 tagged `v0.1.0`,
 Phases 7–8 plus the post-plan audit fixes tagged `v0.2.0` (package.json's own
 `version` field, previously stale at `0.1.0`, was corrected to match as part
 of F24), Phase 9 (A1–A5, U1–U10) closed out Parts 1–4, and Phase 10
-(B20–B24, S7, F20–F26, U11–U14) closes out Part 5 — every item currently in
-this plan. F13 remains future work — F18 covers its design doc only — and
-Part 4's "Beyond the UX wave" list plus Part 5's "deliberately does NOT
-include" note are where to look for what's next. Fable independently
-re-verifies each wave after merge; verification evidence is in each item's PR
-description and in this doc's Progress section above.
+(B20–B24, S7, F20–F26, U11–U14) closed out Part 5. **Part 6 (Phase 11) is the
+open wave**: B25–B27 + T1 + F27–F35, specced above — work it top-down and tag
+`v0.3.0` when it closes. F13 remains future work — F18 covers its design doc
+only; see Part 6's decisions block for why it was deferred again and what
+would unblock it. Fable independently re-verifies each wave after merge;
+verification evidence is in each item's PR description and in this doc's
+Progress section above.
