@@ -67,7 +67,17 @@ echo
 # automatically — print the manual restart instruction instead of guessing
 # how this instance is actually being run (npm run start in a screen/tmux
 # session, some other process manager, etc).
-if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files hoopedorc.service >/dev/null 2>&1; then
+#
+# B27: detection is output-based, not exit-code-based — on some systemd
+# versions `list-unit-files <pattern>` exits 0 even on zero matches
+# (printing "0 unit files listed." rather than failing), which would have
+# made this branch fire `sudo systemctl restart` against a unit that
+# doesn't exist. NOT verified against a real systemd box in this
+# environment (macOS has none installed) — verify on your box before
+# relying on it, the same rule the Remote setup section's tailscale
+# commands already follow.
+if command -v systemctl >/dev/null 2>&1 && \
+   systemctl list-unit-files 'hoopedorc.service' 2>/dev/null | grep -q '^hoopedorc\.service'; then
   echo "Restarting hoopedorc.service..."
   sudo systemctl restart hoopedorc
   echo "Done — restarted via systemd."

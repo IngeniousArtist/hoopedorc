@@ -1055,13 +1055,13 @@ specific evidence. Notable finds/decisions:
   succeeding fake to confirm the ordinary green "Enabled." path still
   works unchanged.
 
-### Phase 11 — Part 6: owner-requested QoL wave + audit fixes — ⬜ OPEN
+### Phase 11 — Part 6: owner-requested QoL wave + audit fixes — 🔶 IN PROGRESS
 
 | Item | Status | PR |
 |---|---|---|
-| B25 — USER_GUIDE's `tailscale serve` example uses the wrong port | ⬜ | |
-| B26 — old pending approvals can fall off the notification fetch | ⬜ | |
-| B27 — `update.sh` systemd-unit detection is version-fragile | ⬜ | |
+| B25 — USER_GUIDE's `tailscale serve` example uses the wrong port | ✅ done | [#79](https://github.com/IngeniousArtist/hoopedorc/pull/79) |
+| B26 — old pending approvals can fall off the notification fetch | ✅ done | [#79](https://github.com/IngeniousArtist/hoopedorc/pull/79) |
+| B27 — `update.sh` systemd-unit detection is version-fragile | ✅ done | [#79](https://github.com/IngeniousArtist/hoopedorc/pull/79) |
 | T1 — real `@orc/server` test package | ⬜ | |
 | F27 — plan-mode attachments (images/PDF/files → project context folder) | ⬜ | |
 | F28 — plan-chat history archived as markdown session files | ⬜ | |
@@ -1077,6 +1077,18 @@ Work top-down in the suggested batches: (1) B25–B27 together; (2) T1;
 (3) F27+F28; (4) F31; (5) F29; (6) F30; (7) F32; (8) F33; (9) F34;
 (10) F35. Update this table as each lands; tag `v0.3.0` when the wave
 closes (the standing wave-boundary tagging rule from Part 4).
+
+**Batch 1 (B25–B27, PR #79) — done.** All three verified with more than
+typecheck/build: B26 against a real in-memory SQLite DB via the actual
+`repo.ts` functions (a pending approval seeded older than 250 newer
+responded notifications still surfaces at both the default limit and a
+small one, with no duplicate when the pending row is already in-window);
+B27 by faking `systemctl` in `PATH` to reproduce the exact old-systemd
+"exits 0 with zero matches" quirk the fix targets, confirming the new
+output-based check falls through to the manual-restart path instead of
+firing `sudo systemctl restart` against a nonexistent unit (also checked
+the real-match and no-systemctl-at-all cases). Full evidence in the PR
+description. Next up: T1.
 
 ---
 

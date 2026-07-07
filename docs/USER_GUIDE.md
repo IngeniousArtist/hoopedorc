@@ -220,9 +220,10 @@ tailnet — see B24 in `docs/PRODUCTIZATION_PLAN.md`).
 3. Run (as the same user hosting the app, or via a systemd drop-in if you
    want this to survive reboots):
    ```bash
-   tailscale serve --bg 3987
+   tailscale serve --bg 4317
    ```
-   (replace `3987` with whatever `PORT` you've configured). This was **not
+   (replace `4317` with whatever `PORT` you've configured — `4317` is this
+   app's own default). This was **not
    run against a live tailnet while writing this doc** — the exact flags
    can drift between Tailscale versions, so run `tailscale serve --help` and
    `tailscale serve status` once on your box to confirm the invocation
