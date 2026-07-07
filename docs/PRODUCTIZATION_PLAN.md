@@ -1063,8 +1063,8 @@ specific evidence. Notable finds/decisions:
 | B26 — old pending approvals can fall off the notification fetch | ✅ done | [#79](https://github.com/IngeniousArtist/hoopedorc/pull/79) |
 | B27 — `update.sh` systemd-unit detection is version-fragile | ✅ done | [#79](https://github.com/IngeniousArtist/hoopedorc/pull/79) |
 | T1 — real `@orc/server` test package | ✅ done | [#80](https://github.com/IngeniousArtist/hoopedorc/pull/80) |
-| F27 — plan-mode attachments (images/PDF/files → project context folder) | ✅ done | |
-| F28 — plan-chat history archived as markdown session files | ✅ done | |
+| F27 — plan-mode attachments (images/PDF/files → project context folder) | ✅ done | [#81](https://github.com/IngeniousArtist/hoopedorc/pull/81) |
+| F28 — plan-chat history archived as markdown session files | ✅ done | [#81](https://github.com/IngeniousArtist/hoopedorc/pull/81) |
 | F31 — engineering guidelines (coding/UX/security) in author+validator prompts | ⬜ | |
 | F29 — documentation guidelines for the docs-role model | ⬜ | |
 | F30 — per-task documentation stage in the merge pipeline | ⬜ | |
@@ -1145,7 +1145,7 @@ basil." — asked "what's the secret ingredient," got back exactly
 `"Basil"`, proving the planner actually read the file with its own
 tools rather than guessing. A second real turn confirmed the *same*
 session file gets rewritten (not a new one) and now contains both
-turns. Total live-verification cost: ~$0.24.
+turns. Total live-verification cost: ~$0.24. Next up: F31.
 
 ---
 
