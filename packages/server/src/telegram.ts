@@ -76,11 +76,26 @@ export interface ApprovalContext {
   reasons?: string[];
 }
 
+/**
+ * F32: what EngineRunner forwards from the engine's `onModelTrouble` event —
+ * the project name added here (the engine's own payload has no project
+ * concept), everything else passed straight through.
+ */
+export interface ModelTroubleNotification {
+  projectName: string;
+  taskTitle: string;
+  model: string;
+  event: "rate_limit_wait" | "fallback" | "exhausted";
+  detail: string;
+}
+
 /** Outbound surface the engine pushes to. No-ops when Telegram is disabled. */
 export interface ServerNotifier {
   approvalRequested(n: Notification, context?: ApprovalContext): void;
   taskStatus(digest: TaskDigest): void;
   info(text: string): void;
+  /** F32: gated by `Settings.telegram.modelAlerts` (default true) at the call site. */
+  modelTrouble(n: ModelTroubleNotification): void;
 }
 
 interface TgUpdate {
@@ -323,5 +338,15 @@ export class TelegramBot implements ServerNotifier {
 
   info(text: string): void {
     void this.send(text);
+  }
+
+  modelTrouble(n: ModelTroubleNotification): void {
+    const icon =
+      n.event === "exhausted" ? "🛑" : n.event === "fallback" ? "🔀" : "⏳";
+    const lines = [
+      `${icon} ${n.projectName} — ${n.taskTitle}`,
+      `${n.model}: ${n.detail}`,
+    ];
+    void this.send(lines.join("\n"));
   }
 }

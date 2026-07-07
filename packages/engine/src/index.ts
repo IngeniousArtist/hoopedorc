@@ -41,6 +41,20 @@ export interface EngineEvents {
     message: string;
     options: string[];
   }) => Promise<string>;
+  /**
+   * F32: fired when a task's author model hits trouble worth telling a human
+   * about — the *first* rate-limit wait for a task (not every wait, so it's
+   * one ping, not spam), every fallback-model switch, and a terminal failure
+   * with no fallback left. Optional; if omitted, the engine still does the
+   * wait-and-retry/fallback logic itself, it just has no one to tell.
+   */
+  onModelTrouble?: (info: {
+    taskId: string;
+    taskTitle: string;
+    model: ModelId;
+    event: "rate_limit_wait" | "fallback" | "exhausted";
+    detail: string;
+  }) => void;
 }
 
 /** Creates/removes an isolated working directory per task. */
@@ -193,6 +207,12 @@ export interface SchedulerDeps {
    * enforcement is applied.
    */
   checkModelQuota?: (modelId: ModelId) => string | null;
+  /**
+   * F32: overrides `RATE_LIMIT_WAIT_MS` (the default 5-minute wait-and-retry
+   * delay for a rate-limited author run). Production leaves this unset;
+   * unit tests shrink it so a rate-limit retry test doesn't sleep for real.
+   */
+  rateLimitWaitMs?: number;
   /**
    * F12: shared per-model concurrency accounting, so `ModelConfig.maxConcurrent`
    * holds across every concurrently-running project, not just within one

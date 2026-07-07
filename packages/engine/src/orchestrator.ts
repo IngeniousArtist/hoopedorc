@@ -13,7 +13,12 @@ import type {
   Task,
 } from "@orc/types";
 import type { AgentRunResult } from "@orc/adapters";
-import { DOCS_STAGE_TIMEOUT_MS, STUCK_DETECTION } from "./constants.js";
+import {
+  DOCS_STAGE_TIMEOUT_MS,
+  RATE_LIMIT_RETRIES,
+  RATE_LIMIT_WAIT_MS,
+  STUCK_DETECTION,
+} from "./constants.js";
 import { buildEngineeringStandardsBlock } from "./guidelines.js";
 import { SelfReviewError } from "./validator.js";
 import type { EngineEvents, Scheduler, SchedulerDeps } from "./index.js";
@@ -137,6 +142,10 @@ export class Orchestrator implements Scheduler {
   private readonly capacityBlockedWarned = new Set<string>();
   /** F16: tasks already logged as quota-blocked this run, to avoid log spam. */
   private readonly quotaBlockedWarned = new Set<string>();
+  /** F32: how many rate-limit wait-and-retries a task has used on its
+   *  CURRENT model, so it falls back after RATE_LIMIT_RETRIES instead of
+   *  waiting forever; cleared per-task in executeTask's finally. */
+  private readonly rateLimitWaits = new Map<string, number>();
   /** How many times each task has been requeued for a merge-time conflict,
    *  so a perpetually-conflicting task can't loop forever. */
   private readonly mergeConflicts = new Map<string, number>();
@@ -506,6 +515,44 @@ export class Orchestrator implements Scheduler {
     return true;
   }
 
+  /** F32: tiny wrapper around the optional onModelTrouble hook, so every
+   *  call site is one line instead of a repeated `this.deps.events
+   *  .onModelTrouble?.({ taskId: task.id, taskTitle: task.title, ... })`. */
+  private notifyModelTrouble(
+    task: Task,
+    model: ModelId,
+    event: "rate_limit_wait" | "fallback" | "exhausted",
+    detail: string,
+  ): void {
+    this.deps.events.onModelTrouble?.({
+      taskId: task.id,
+      taskTitle: task.title,
+      model,
+      event,
+      detail,
+    });
+  }
+
+  /**
+   * F32: wait out a rate limit in short slices, checking `paused`/
+   * `stopRequested` each slice so a Pause or Stop press mid-wait bails
+   * promptly instead of sleeping the whole `waitMs` regardless (same
+   * reasoning as F15's post-wait bail check). Returns `"aborted"` the
+   * moment either fires; the caller distinguishes Stop (bailIfStopRequested)
+   * from Pause (falls through to the existing `return;` pattern).
+   */
+  private async waitOutRateLimit(task: Task, waitMs: number): Promise<"done" | "aborted"> {
+    const SLICE_MS = 5000;
+    let elapsed = 0;
+    while (elapsed < waitMs) {
+      if (this.paused || this.stopRequested.has(task.id)) return "aborted";
+      const slice = Math.min(SLICE_MS, waitMs - elapsed);
+      await new Promise((r) => setTimeout(r, slice));
+      elapsed += slice;
+    }
+    return this.paused || this.stopRequested.has(task.id) ? "aborted" : "done";
+  }
+
   /** Run a single task through the full pipeline (manual dispatch). */
   async runTask(project: Project, task: Task): Promise<void> {
     this.paused = false;
@@ -637,12 +684,55 @@ export class Orchestrator implements Scheduler {
             `Author run failed: ${authorResult.exitReason}`,
             task.id,
           );
-          // Immediately escalate to the next fallback model on adapter/stuck errors.
+
+          // F32: a rate limit is often a five-minute problem, not a
+          // this-model-can't-do-it problem — wait and retry the SAME model a
+          // couple of times before burning a fallback's slot on it. Only
+          // rate_limited gets this treatment; stuck/error still escalate
+          // immediately below (a hung or crashing model won't be fixed by
+          // waiting).
+          if (authorResult.exitReason === "rate_limited") {
+            const waits = this.rateLimitWaits.get(task.id) ?? 0;
+            if (waits < RATE_LIMIT_RETRIES) {
+              this.rateLimitWaits.set(task.id, waits + 1);
+              const waitMs = this.deps.rateLimitWaitMs ?? RATE_LIMIT_WAIT_MS;
+              this.emit(
+                "warn",
+                "engine",
+                `Rate-limited — waiting ${Math.round(waitMs / 60_000)}m before retrying ` +
+                  `${currentModel} (${waits + 1}/${RATE_LIMIT_RETRIES})`,
+                task.id,
+              );
+              if (waits === 0) {
+                this.notifyModelTrouble(
+                  task,
+                  currentModel,
+                  "rate_limit_wait",
+                  `Rate-limited — waiting before retrying the same model`,
+                );
+              }
+              // The wait/retry must not consume a real attempt — the for
+              // loop's own `attempts++` on `continue` below is compensated
+              // by this bump.
+              task.maxAttempts++;
+              const outcome = await this.waitOutRateLimit(task, waitMs);
+              if (outcome === "aborted") {
+                if (this.bailIfStopRequested(task)) return;
+                return; // paused
+              }
+              continue;
+            }
+          }
+
+          // Immediately escalate to the next fallback model on adapter/stuck
+          // errors, or once rate-limit wait-and-retries on the same model
+          // are exhausted.
           const next = fallbackChain[fallbackIdx + 1];
           if (next) {
             fallbackIdx++;
             currentModel = next;
             this.switchRunningModel(task.id, next);
+            this.rateLimitWaits.delete(task.id);
             if (task.attempts >= task.maxAttempts) task.maxAttempts++;
             this.emit(
               "warn",
@@ -650,8 +740,20 @@ export class Orchestrator implements Scheduler {
               `Switching to fallback model: ${currentModel}`,
               task.id,
             );
+            this.notifyModelTrouble(
+              task,
+              currentModel,
+              "fallback",
+              `Switched to fallback model after ${authorResult.exitReason}`,
+            );
             continue;
           }
+          this.notifyModelTrouble(
+            task,
+            currentModel,
+            "exhausted",
+            `No fallback model left after ${authorResult.exitReason}`,
+          );
           task.status = "failed";
           this.deps.events.onTaskUpdated(task);
           return;
@@ -692,6 +794,7 @@ export class Orchestrator implements Scheduler {
             fallbackIdx++;
             currentModel = next;
             this.switchRunningModel(task.id, next);
+            this.rateLimitWaits.delete(task.id);
             task.maxAttempts++;
             this.emit(
               "warn",
@@ -699,9 +802,21 @@ export class Orchestrator implements Scheduler {
               `No changes produced, switching to fallback model: ${currentModel}`,
               task.id,
             );
+            this.notifyModelTrouble(
+              task,
+              currentModel,
+              "fallback",
+              "Switched to fallback model after no changes were produced",
+            );
             continue;
           }
 
+          this.notifyModelTrouble(
+            task,
+            currentModel,
+            "exhausted",
+            "No fallback model left after no changes were produced",
+          );
           task.status = "failed";
           this.deps.events.onTaskUpdated(task);
           return;
@@ -771,6 +886,7 @@ export class Orchestrator implements Scheduler {
             fallbackIdx++;
             currentModel = next;
             this.switchRunningModel(task.id, next);
+            this.rateLimitWaits.delete(task.id);
             task.maxAttempts++;
             this.emit(
               "warn",
@@ -778,9 +894,21 @@ export class Orchestrator implements Scheduler {
               `Gates still failing, switching to fallback model: ${currentModel}`,
               task.id,
             );
+            this.notifyModelTrouble(
+              task,
+              currentModel,
+              "fallback",
+              "Switched to fallback model after gates kept failing",
+            );
             continue;
           }
 
+          this.notifyModelTrouble(
+            task,
+            currentModel,
+            "exhausted",
+            "No fallback model left after gates kept failing",
+          );
           task.status = "failed";
           this.deps.events.onTaskUpdated(task);
           return;
@@ -826,12 +954,19 @@ export class Orchestrator implements Scheduler {
             fallbackIdx++;
             currentModel = next;
             this.switchRunningModel(task.id, next);
+            this.rateLimitWaits.delete(task.id);
             task.maxAttempts++;
             this.emit(
               "warn",
               "engine",
               `Switching to fallback model: ${currentModel}`,
               task.id,
+            );
+            this.notifyModelTrouble(
+              task,
+              currentModel,
+              "fallback",
+              "Switched to fallback model after a validator/author routing collision",
             );
             continue;
           }
@@ -840,6 +975,12 @@ export class Orchestrator implements Scheduler {
             "engine",
             "No remaining fallback model avoids the validator collision — fix routing in Settings (byDifficulty/byRole vs validatorByDifficulty).",
             task.id,
+          );
+          this.notifyModelTrouble(
+            task,
+            currentModel,
+            "exhausted",
+            "No fallback model left avoiding a validator/author routing collision",
           );
           task.status = "failed";
           this.deps.events.onTaskUpdated(task);
@@ -1054,6 +1195,7 @@ export class Orchestrator implements Scheduler {
       this.deps.events.onTaskUpdated(task);
     } finally {
       this.stopRequested.delete(task.id);
+      this.rateLimitWaits.delete(task.id);
       try {
         await this.deps.worktrees.remove(project, task);
       } catch {

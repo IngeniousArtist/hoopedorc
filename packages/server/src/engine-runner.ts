@@ -390,6 +390,28 @@ export class EngineRunner {
           });
           this.hub.broadcast({ type: "merge.decision", payload: d });
         },
+        onModelTrouble: (info) => {
+          repo.createAuditEntry(this.db, {
+            projectId: project.id,
+            taskId: info.taskId,
+            kind: "model_trouble",
+            actor: "engine",
+            summary: `${info.model} — ${info.event}: ${info.detail}`,
+            detail: { event: info.event, model: info.model },
+          });
+          // F32: default true (unset counts as enabled) — the owner
+          // explicitly asked to be alerted on these, independent of the
+          // task-status `digest` setting.
+          if (settings.telegram?.modelAlerts !== false) {
+            this.notifier?.modelTrouble({
+              projectName: project.name,
+              taskTitle: info.taskTitle,
+              model: info.model,
+              event: info.event,
+              detail: info.detail,
+            });
+          }
+        },
         requestApproval: (args) => {
           // F5/F22: give the human enough to decide without opening the app
           // (or, on the web, without hunting the Board for the task's

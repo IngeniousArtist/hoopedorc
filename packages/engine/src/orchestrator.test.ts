@@ -1178,3 +1178,139 @@ test("F30: out-of-scope documenter edits are reverted before the docs commit", a
   // (mocked here), it doesn't cancel the commit itself.
   assert.ok(commits.some((c) => c.message === "docs: t1"));
 });
+
+interface ModelTroubleCall {
+  taskId: string;
+  taskTitle: string;
+  model: string;
+  event: "rate_limit_wait" | "fallback" | "exhausted";
+  detail: string;
+}
+
+test("F32: a rate-limited author run waits and retries the SAME model, without consuming the attempt budget", async () => {
+  const merged: number[] = [];
+  const trouble: ModelTroubleCall[] = [];
+  let authorCalls = 0;
+  const modelsUsed: string[] = [];
+
+  const deps = fakeDeps(
+    {
+      rateLimitWaitMs: 5,
+      adapterFor: () => ({
+        runner: "opencode" as const,
+        async run(opts): Promise<AgentRunResult> {
+          authorCalls++;
+          modelsUsed.push(opts.model);
+          if (authorCalls <= 2) {
+            return { ok: false, exitReason: "rate_limited", costUsd: 0, tokensIn: 0, tokensOut: 0, summary: "" };
+          }
+          return { ok: true, exitReason: "completed", costUsd: 0.01, tokensIn: 1, tokensOut: 1, summary: "" };
+        },
+      }),
+      events: {
+        onLog() {},
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        onModelTrouble: (info) => trouble.push(info),
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+
+  const t1 = task("t1", [], { maxAttempts: 2 });
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.equal(t1.status, "done");
+  assert.equal(authorCalls, 3, "2 rate-limited attempts then a successful 3rd");
+  assert.deepEqual(
+    modelsUsed,
+    ["deepseek-flash", "deepseek-flash", "deepseek-flash"],
+    "must retry the SAME model, never switch",
+  );
+  // Started at attempts=1/maxAttempts=2 (headroom 1); each wait bumps both
+  // in lockstep, so the headroom right after the final successful attempt
+  // must still be exactly 1 — proof the waits didn't eat into the real
+  // attempt budget.
+  assert.equal(t1.maxAttempts - t1.attempts, 1);
+
+  assert.equal(trouble.length, 1, "only the FIRST wait should notify, not every wait");
+  assert.equal(trouble[0]!.event, "rate_limit_wait");
+  assert.equal(trouble[0]!.model, "deepseek-flash");
+  assert.equal(trouble[0]!.taskId, "t1");
+});
+
+test("F32: rate-limit retries exhausted falls back to the next model", async () => {
+  const merged: number[] = [];
+  const trouble: ModelTroubleCall[] = [];
+
+  const deps = fakeDeps(
+    {
+      rateLimitWaitMs: 5,
+      adapterFor: (m) =>
+        m === "deepseek-flash"
+          ? {
+              runner: "opencode" as const,
+              async run(): Promise<AgentRunResult> {
+                return { ok: false, exitReason: "rate_limited", costUsd: 0, tokensIn: 0, tokensOut: 0, summary: "" };
+              },
+            }
+          : approveAdapter,
+      events: {
+        onLog() {},
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        onModelTrouble: (info) => trouble.push(info),
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.equal(t1.status, "done", "should complete on the fallback model (deepseek-pro)");
+  assert.equal(merged.length, 1);
+
+  const events = trouble.map((t) => t.event);
+  assert.deepEqual(events, ["rate_limit_wait", "fallback"]);
+  assert.equal(trouble[1]!.model, "deepseek-pro");
+});
+
+test("F32: a Stop during a rate-limit wait ends the task promptly with nothing merged", async () => {
+  const merged: number[] = [];
+  let authorCalls = 0;
+
+  const deps = fakeDeps(
+    {
+      rateLimitWaitMs: 150,
+      adapterFor: () => ({
+        runner: "opencode" as const,
+        async run(): Promise<AgentRunResult> {
+          authorCalls++;
+          return { ok: false, exitReason: "rate_limited", costUsd: 0, tokensIn: 0, tokensOut: 0, summary: "" };
+        },
+      }),
+    },
+    merged,
+  );
+
+  const t1 = task("t1");
+  const orch = new Orchestrator(deps);
+  const runPromise = orch.start(PROJECT, [t1]);
+  await new Promise((r) => setTimeout(r, 30)); // let dispatch reach the wait
+  const stopped = orch.stopTask(t1.id);
+  assert.equal(stopped, true);
+  await runPromise;
+
+  assert.equal(t1.status, "blocked");
+  assert.equal(merged.length, 0);
+  assert.equal(authorCalls, 1, "must not have retried after the stop");
+});

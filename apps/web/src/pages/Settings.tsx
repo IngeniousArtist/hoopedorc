@@ -243,6 +243,19 @@ export function Settings({
     setSaved(false);
   }
 
+  function updateTelegramModelAlerts(modelAlerts: boolean) {
+    setSettings((prev) =>
+      prev
+        ? {
+            ...prev,
+            telegram: { ...(prev.telegram ?? { enabled: false }), modelAlerts },
+          }
+        : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
   async function sendTelegramTest() {
     setTelegramTesting(true);
     setTelegramTestMsg(null);
@@ -613,6 +626,17 @@ export function Settings({
             <option value="off">Off — approvals only, no status chatter</option>
           </select>
         </div>
+
+        <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={settings.telegram?.modelAlerts ?? true}
+            onChange={(e) => updateTelegramModelAlerts(e.target.checked)}
+            className="rounded border-neutral-700 bg-neutral-800"
+          />
+          Alert me when a model hits trouble (rate limit, fallback switch, or
+          exhausted with no fallback left)
+        </label>
 
         <details>
           <summary className="cursor-pointer text-[11px] text-neutral-400">

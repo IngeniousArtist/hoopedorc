@@ -58,6 +58,25 @@ a failed commit/push all warn-log and fall through to the normal merge
 unchanged — a docs failure never blocks a validated merge. Set
 `perTaskDocs: false` to opt a project out entirely.
 
+`EngineEvents.onModelTrouble` (F32, optional) fires when a task's author
+model hits trouble: the *first* rate-limit wait for a task (not every
+wait — one ping, not spam), every fallback-model switch, and a terminal
+failure with no fallback left (`event: "rate_limit_wait" | "fallback" |
+"exhausted"`). A rate-limited author run (F6's `classifyFailure`) now
+waits and retries the SAME model up to `RATE_LIMIT_RETRIES` (2) times
+before falling back — a 5-minute rate limit is often not a
+this-model-can't-do-it problem — via `SchedulerDeps.rateLimitWaitMs`
+(overridable; production uses the real `RATE_LIMIT_WAIT_MS`, 5 min).
+Each wait bumps `task.maxAttempts` in lockstep so it never consumes the
+task's real attempt budget; a Pause or Stop press mid-wait bails
+promptly instead of sleeping it out. `stuck`/`error` exit reasons are
+unaffected — they still escalate to the next fallback model immediately,
+same as before F32. `EngineRunner` forwards every `onModelTrouble` event
+to both an audit-log entry (`kind: "model_trouble"`) and — gated by the
+new `Settings.telegram.modelAlerts` (boolean, default true when unset,
+independent of `digest`) — a short Telegram push via the new
+`ServerNotifier.modelTrouble`.
+
 `Notification.context` (F22) is `{ prUrl?: string; reasons?: string[] }` —
 the same PR link + top validator reasons Telegram's approval message
 already carries (`ApprovalContext` in `packages/server/src/telegram.ts`),
