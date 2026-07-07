@@ -784,7 +784,15 @@ export function getNotification(db: Db, id: string): Notification | null {
 
 /** B23: newest-first, capped so months of autonomous runs don't hand the
  *  Notifications page (and the U1 nav badge's seed fetch) an ever-growing
- *  list — mirrors the bound `pruneNotifications` below enforces at rest. */
+ *  list — mirrors the bound `pruneNotifications` below enforces at rest.
+ *  B26: the cap alone has no pending-approval exemption the way
+ *  `pruneNotifications` does — a pending approval that's sat unanswered
+ *  while `limit` newer notifications piled up (a long unattended run) would
+ *  silently drop off both the Notifications page and the U1 nav badge's
+ *  seed fetch. Union the newest `limit` rows with every still-pending
+ *  approval regardless of age, then re-sort; UNION's own row-level dedup
+ *  collapses the common case where a pending approval is already within
+ *  the newest `limit`. */
 export function getNotifications(
   db: Db,
   projectId?: string,
@@ -794,12 +802,26 @@ export function getNotifications(
   if (projectId) {
     rows = db
       .prepare(
-        "SELECT * FROM notifications WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
+        `SELECT * FROM (
+           SELECT * FROM notifications WHERE project_id = ? ORDER BY created_at DESC LIMIT ?
+         )
+         UNION
+         SELECT * FROM notifications
+         WHERE project_id = ? AND requires_approval = 1 AND responded_with IS NULL
+         ORDER BY created_at DESC`,
       )
-      .all(projectId, limit) as Record<string, unknown>[];
+      .all(projectId, limit, projectId) as Record<string, unknown>[];
   } else {
     rows = db
-      .prepare("SELECT * FROM notifications ORDER BY created_at DESC LIMIT ?")
+      .prepare(
+        `SELECT * FROM (
+           SELECT * FROM notifications ORDER BY created_at DESC LIMIT ?
+         )
+         UNION
+         SELECT * FROM notifications
+         WHERE requires_approval = 1 AND responded_with IS NULL
+         ORDER BY created_at DESC`,
+      )
       .all(limit) as Record<string, unknown>[];
   }
   return rows.map(mapNotification);
