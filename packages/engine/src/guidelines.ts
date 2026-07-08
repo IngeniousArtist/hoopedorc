@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { Settings } from "@orc/types";
 
 /**
@@ -57,5 +59,22 @@ export function buildSkillsBlock(skillHints: string[] | undefined): string {
   return (
     `\n## Skills\nThe following skills are available in this environment; invoke each ` +
     `when its condition applies:\n${skillHints.map((h) => `- ${h}`).join("\n")}\n`
+  );
+}
+
+/**
+ * F38: nudges the author to read a generated AGENTS.md at the repo root
+ * before starting, when one exists. codex/opencode discover AGENTS.md
+ * natively and Claude Code sees it via a committed CLAUDE.md `@AGENTS.md`
+ * import — this line is a belt-and-suspenders reminder for whichever runner
+ * needs prompting to actually read it, F34-skills-style. Returns "" for a
+ * project with no AGENTS.md at all (e.g. one planned before F38, or one
+ * whose planning never ran through deconstruct) — an unchanged prompt.
+ */
+export function buildAgentsMdBlock(worktreePath: string): string {
+  if (!existsSync(join(worktreePath, "AGENTS.md"))) return "";
+  return (
+    `\n## Project context\nRead AGENTS.md at the repo root before starting — it defines ` +
+    `this project's structure and conventions.\n`
   );
 }

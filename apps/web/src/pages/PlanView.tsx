@@ -113,6 +113,10 @@ export function PlanView({
 
   // Draft plan
   const [prd, setPrd] = useState<string | null>(null);
+  // F38: generated AGENTS.md content — operator-editable alongside the PRD,
+  // same lifecycle (set on deconstruct, restored on reload, cleared on
+  // commit/no-draft).
+  const [agentsMd, setAgentsMd] = useState<string | null>(null);
   const [tasks, setTasks] = useState<UiTask[] | null>(null);
   const [deconstructing, setDeconstructing] = useState(false);
   const [committing, setCommitting] = useState(false);
@@ -152,9 +156,11 @@ export function PlanView({
         if (sessionRes.draftTasks && sessionRes.draftTasks.length > 0) {
           setTasks(uiTasksFromDraft(sessionRes.draftTasks));
           setPrd(sessionRes.prd ?? null);
+          setAgentsMd(sessionRes.agentsMd ?? null);
         } else {
           setTasks(null);
           setPrd(null);
+          setAgentsMd(null);
         }
         setAttachments(attachmentsRes.attachments);
       })
@@ -208,13 +214,17 @@ export function PlanView({
     saveDraftTimer.current = setTimeout(() => {
       api("planSaveDraft", {
         params: { id: projectId },
-        body: { prdMarkdown: prd ?? "", tasks: draftTasksFromUi(tasks) },
+        body: {
+          prdMarkdown: prd ?? "",
+          tasks: draftTasksFromUi(tasks),
+          agentsMd: agentsMd ?? "",
+        },
       }).catch(() => {});
     }, 1000);
     return () => {
       if (saveDraftTimer.current) clearTimeout(saveDraftTimer.current);
     };
-  }, [tasks, prd, committed, projectId]);
+  }, [tasks, prd, agentsMd, committed, projectId]);
 
   async function sendChat() {
     if (!projectId || !input.trim() || chatting) return;
@@ -255,6 +265,7 @@ export function PlanView({
       });
       setPlanCost((c) => c + res.costUsd);
       setPrd(res.prdMarkdown);
+      setAgentsMd(res.agentsMd ?? null);
       setTasks(uiTasksFromDraft(res.tasks));
     } catch (e) {
       setError(String(e));
@@ -318,10 +329,15 @@ export function PlanView({
     try {
       const res = await api<PlanCommitResponse>("planCommit", {
         params: { id: projectId },
-        body: { prdMarkdown: prd ?? "", tasks: draftTasksFromUi(tasks) },
+        body: {
+          prdMarkdown: prd ?? "",
+          tasks: draftTasksFromUi(tasks),
+          agentsMd: agentsMd ?? "",
+        },
       });
       setCommitted(res);
       setTasks(null);
+      setAgentsMd(null);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -551,6 +567,24 @@ export function PlanView({
               <pre className="max-h-60 overflow-y-auto px-4 pb-4 pt-2 font-mono text-xs leading-relaxed text-neutral-300 whitespace-pre-wrap">
                 {prd}
               </pre>
+            </details>
+          )}
+
+          {/* F38: generated AGENTS.md — the project-context file coding
+              agents read (natively for Codex/opencode; Claude Code via a
+              committed CLAUDE.md import). Editable before commit, unlike the
+              read-only PRD preview above. */}
+          {agentsMd && (
+            <details className="rounded-lg border border-neutral-800 bg-neutral-900">
+              <summary className="cursor-pointer px-4 py-2 text-xs font-medium text-neutral-400 hover:text-neutral-200">
+                AGENTS.md (click to expand — edit before approving)
+              </summary>
+              <textarea
+                value={agentsMd}
+                onChange={(e) => setAgentsMd(e.target.value)}
+                rows={16}
+                className="w-full resize-y border-t border-neutral-800 bg-neutral-950 px-4 py-3 font-mono text-xs leading-relaxed text-neutral-300"
+              />
             </details>
           )}
 

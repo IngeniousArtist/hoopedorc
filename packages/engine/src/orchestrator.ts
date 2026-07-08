@@ -19,7 +19,11 @@ import {
   RATE_LIMIT_WAIT_MS,
   STUCK_DETECTION,
 } from "./constants.js";
-import { buildEngineeringStandardsBlock, buildSkillsBlock } from "./guidelines.js";
+import {
+  buildAgentsMdBlock,
+  buildEngineeringStandardsBlock,
+  buildSkillsBlock,
+} from "./guidelines.js";
 import { SelfReviewError } from "./validator.js";
 import type { EngineEvents, Scheduler, SchedulerDeps } from "./index.js";
 
@@ -82,8 +86,10 @@ export function isAuthOrSecretFile(path: string): boolean {
   return RISKY_AUTH_OR_SECRET_FILE.test(path);
 }
 
-/** F30: the only paths the per-task documenter is allowed to touch. */
-const DOCS_ALLOWED_SCOPE = ["CHANGELOG.md", "README.md", "docs/**"];
+/** F30: the only paths the per-task documenter is allowed to touch. F38 adds
+ *  AGENTS.md so a merged change that alters the project's structure can
+ *  keep the generated project-context file current. */
+const DOCS_ALLOWED_SCOPE = ["CHANGELOG.md", "README.md", "AGENTS.md", "docs/**"];
 
 /**
  * Build the auto-escalation fallback chain for a task. Starts with the
@@ -1463,6 +1469,8 @@ export class Orchestrator implements Scheduler {
       `and targeted diffs as needed), then:\n` +
       `- Update CHANGELOG.md with an entry for this change (create it if it doesn't exist).\n` +
       `- Touch README.md or docs/** ONLY if this change makes something there wrong or incomplete.\n` +
+      `- Touch AGENTS.md ONLY if this change alters the project's structure, commands, or ` +
+      `conventions (it may not exist — only touch it if it does).\n` +
       `- Modify nothing else.\n`;
     prompt += buildEngineeringStandardsBlock(this.deps.settings.guidelines, false, true);
     return prompt;
@@ -1531,6 +1539,7 @@ export class Orchestrator implements Scheduler {
       task.role === "docs",
     );
     prompt += buildSkillsBlock(project.config?.skillHints);
+    if (task.worktreePath) prompt += buildAgentsMdBlock(task.worktreePath);
 
     if (fixInstructions) {
       prompt += `\n## Issues to Fix\n${fixInstructions}\n`;

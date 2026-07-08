@@ -42,6 +42,9 @@ export interface PlannedTask {
 export interface PlanOutput {
   prdMarkdown: string;
   tasks: PlannedTask[];
+  /** F38: generated AGENTS.md content — a project-context file for coding
+   *  agents, committed alongside the PRD at /plan/commit. */
+  agentsMd: string;
 }
 
 const PLAN_TIMEOUT_MS = 5 * 60 * 1000;
@@ -49,6 +52,7 @@ const PLAN_TIMEOUT_MS = 5 * 60 * 1000;
 const DECONSTRUCT_SHAPE = `Respond with ONLY a JSON object, no markdown fences, in this exact shape:
 {
   "prd": "markdown string",
+  "agentsMd": "markdown string",
   "tasks": [
     {
       "title": "...",
@@ -82,7 +86,24 @@ Rules for each task:
   standard project documentation (e.g. a specific API reference doc).
 - acceptanceCriteria: concrete, checkable statements
 - dependsOn: indices of earlier tasks that must finish first
-- scopePaths: glob(s) the task is allowed to modify`;
+- scopePaths: glob(s) the task is allowed to modify
+
+agentsMd: real AGENTS.md content for the coding agents that will implement these tasks —
+committed to the repo root and read natively by Codex/opencode (Claude Code reads it via a
+one-line CLAUDE.md import). This file is entirely about the PROJECT being built, never about
+Hoopedorc's own worktree/PR/gate machinery. Cap it around 120 lines — a context file, not a
+book — and cover, in order:
+- One paragraph: what the project is and what it does.
+- The stack and target platform (e.g. "Next.js 15 App Router, TypeScript, deployed to Vercel").
+- The intended directory structure: a brief tree or bullet list of the main folders/files and
+  what lives in each.
+- The real dev/test/build/lint commands — these MUST match the scaffold task's actual
+  package.json scripts exactly (the ones that task creates), never invented ones.
+- Coding conventions and best practices specific to this stack (naming, file organization,
+  patterns to prefer or avoid) — tailor these to whatever is actually being built, not generic
+  advice.
+- Brief "how to work here" notes for an agent making a change (e.g. where tests live, what to
+  update alongside a given kind of change).`;
 
 /**
  * The same shape `DECONSTRUCT_SHAPE` describes in prose, as a JSON Schema for
@@ -104,6 +125,7 @@ const DECONSTRUCT_JSON_SCHEMA = {
   type: "object",
   properties: {
     prd: { type: "string" },
+    agentsMd: { type: "string" },
     tasks: {
       type: "array",
       items: {
@@ -133,7 +155,7 @@ const DECONSTRUCT_JSON_SCHEMA = {
       },
     },
   },
-  required: ["prd", "tasks"],
+  required: ["prd", "agentsMd", "tasks"],
   additionalProperties: false,
 } as const;
 
@@ -482,6 +504,7 @@ const DIFFICULTIES = new Set<Difficulty>(["easy", "medium", "hard"]);
 function parsePlanOutput(text: string, projectName: string, goal = ""): PlanOutput {
   const parsed = JSON.parse(extractJsonObject(text)) as {
     prd?: string;
+    agentsMd?: string;
     tasks?: unknown[];
   };
 
@@ -511,6 +534,7 @@ function parsePlanOutput(text: string, projectName: string, goal = ""): PlanOutp
 
   return {
     prdMarkdown: String(parsed.prd ?? `# ${projectName}\n\n${goal}`),
+    agentsMd: String(parsed.agentsMd ?? ""),
     tasks,
   };
 }

@@ -133,16 +133,22 @@ export interface PlanDeconstructResponse {
   prdMarkdown: string;
   tasks: DraftTask[];
   costUsd: number;
+  /** F38: generated project-context file for coding agents (Codex/opencode
+   *  read it natively; Claude via a committed one-line CLAUDE.md import).
+   *  Operator-editable in PlanView before commit, same as prdMarkdown. */
+  agentsMd?: string;
 }
 
 export interface PlanCommitRequest {
   prdMarkdown: string;
   tasks: DraftTask[];
+  agentsMd?: string;
 }
 export interface PlanCommitResponse {
   project: Project;
   tasks: Task[];
   prdMarkdown: string;
+  agentsMd?: string;
 }
 
 /** Persisted planning state for a project — fetched on Plan page load. */
@@ -151,11 +157,13 @@ export interface PlanningSessionResponse {
   prd?: string;
   draftTasks?: DraftTask[];
   planCostUsd: number;
+  agentsMd?: string;
 }
 
 export interface SaveDraftRequest {
   prdMarkdown: string;
   tasks: DraftTask[];
+  agentsMd?: string;
 }
 export interface SaveDraftResponse {
   ok: true;
