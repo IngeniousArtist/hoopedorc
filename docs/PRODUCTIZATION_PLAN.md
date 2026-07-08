@@ -1559,7 +1559,7 @@ docs/PRODUCTIZATION_PLAN.md (Parts 1–6), is now done.**
 | U17 — Projects-row orphan "·" + pause/stop icon inconsistency | ✅ done | [#93](https://github.com/IngeniousArtist/hoopedorc/pull/93) |
 | U18 — unknown hash silently ignored, URL and UI disagree | ✅ done | [#93](https://github.com/IngeniousArtist/hoopedorc/pull/93) |
 | F36 — Codex CLI as a first-class runner | ✅ done | [#95](https://github.com/IngeniousArtist/hoopedorc/pull/95) |
-| F37 — swappable planner runner (Claude Code ↔ Codex) | ⬜ | |
+| F37 — swappable planner runner (Claude Code ↔ Codex) | ✅ done | [#97](https://github.com/IngeniousArtist/hoopedorc/pull/97) |
 | F38 — AGENTS.md generation in the planning pipeline | ⬜ | |
 | F13-P1 — gates-only Docker sandbox (phase 1 of docs/specs/sandbox.md) | ⬜ | |
 | F39 — EC2 deploy checklist, prebuilt systemd start, Apple-split docs | ⬜ | |
