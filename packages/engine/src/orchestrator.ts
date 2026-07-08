@@ -19,7 +19,7 @@ import {
   RATE_LIMIT_WAIT_MS,
   STUCK_DETECTION,
 } from "./constants.js";
-import { buildEngineeringStandardsBlock } from "./guidelines.js";
+import { buildEngineeringStandardsBlock, buildSkillsBlock } from "./guidelines.js";
 import { SelfReviewError } from "./validator.js";
 import type { EngineEvents, Scheduler, SchedulerDeps } from "./index.js";
 
@@ -1205,14 +1205,14 @@ export class Orchestrator implements Scheduler {
   }
 
   private async runAuthor(
-    _project: Project,
+    project: Project,
     task: Task,
     fixInstructions?: string,
     effectiveModel?: ModelId,
   ): Promise<AgentRunResult | null> {
     const model = effectiveModel ?? task.assignedModel;
     const adapter = this.deps.adapterFor(model);
-    const prompt = this.buildAuthorPrompt(task, fixInstructions);
+    const prompt = this.buildAuthorPrompt(project, task, fixInstructions);
 
     const controller = new AbortController();
     this.taskAbortControllers.set(task.id, controller);
@@ -1478,6 +1478,7 @@ export class Orchestrator implements Scheduler {
   }
 
   private buildAuthorPrompt(
+    project: Project,
     task: Task,
     fixInstructions?: string,
   ): string {
@@ -1491,6 +1492,7 @@ export class Orchestrator implements Scheduler {
       task.role === "frontend",
       task.role === "docs",
     );
+    prompt += buildSkillsBlock(project.config?.skillHints);
 
     if (fixInstructions) {
       prompt += `\n## Issues to Fix\n${fixInstructions}\n`;
