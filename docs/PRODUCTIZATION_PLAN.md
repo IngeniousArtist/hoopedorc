@@ -1549,11 +1549,11 @@ confirming the at-limit highlight fires on real data, not just in theory.
 Tagged `v0.3.0` after both F34 and F35 merged — **Part 6, and the entire
 docs/PRODUCTIZATION_PLAN.md (Parts 1–6), is now done.**
 
-### Phase 12 — Part 7: Codex + agents-context + sandbox wave — ⬜ OPEN
+### Phase 12 — Part 7: Codex + agents-context + sandbox wave — 🔶 IN PROGRESS
 
 | Item | Status | PR |
 |---|---|---|
-| B28 — removing/renaming a model leaves dangling routing/task references | ⬜ | |
+| B28 — removing/renaming a model leaves dangling routing/task references | ✅ done | [#91](https://github.com/IngeniousArtist/hoopedorc/pull/91) |
 | U15 — approve/reject buttons visually identical on Notifications | ⬜ | |
 | U16 — estimate copy duplication + fake-precision cost formatting | ⬜ | |
 | U17 — Projects-row orphan "·" + pause/stop icon inconsistency | ⬜ | |
@@ -3860,6 +3860,52 @@ reference; duplicate ids → 400; a dispatch against a since-removed
 `assignedModel` requeues to backlog with the clear log line (engine test);
 Settings' model add shows the opencode datalist; removal of a referenced
 model prompts before removing.
+
+**B28 — done (PR [#91](https://github.com/IngeniousArtist/hoopedorc/pull/91)).**
+`PUT /api/settings` now rejects duplicate/empty model ids and any routing
+field (`planner`/`byDifficulty.*`/`byRole.*`/`validatorByDifficulty.*`)
+naming a model not in `merged.models`, listing every offending reference in
+one message. A successful save separately warn-logs (non-blocking — a task
+is a row, not a setting) any non-terminal task whose `assignedModel` still
+went dangling from that exact edit. `Orchestrator` gained two guards: the
+dispatch loop's pre-existing (but silent-forever, non-deduped) "no
+ModelConfig" check now requeues to `backlog` with a warn-once log via a new
+`missingModelWarned` Set (mirroring `budgetBlockedWarned`'s exact shape);
+the attempt loop gained a matching check on `currentModel` right before
+`runAuthor` — this is the one that actually matters for the crash, since
+manual dispatch (`runTask`) had no pre-check at all, and a fallback-chain
+model can go dangling mid-task after the initial dispatch-time check
+already passed. Both requeue to `backlog` and log `Assigned model "<id>" no
+longer configured — reassign it` instead of letting `adapterFor`'s throw
+surface as `Fatal:`. `ModelsEditor`'s ✕ now calls a new `routingReferences`
+helper before removing and `window.confirm`s (naming every reference) only
+when the model is actually routed; `Settings.tsx` fetches the real
+`GET /api/setup/models` roster (previously only the onboarding wizard did)
+and passes it down, so "+ Add model" gets the same datalist. Verified:
+typecheck/build green across every workspace; `npm test -w @orc/adapters`
+(4/4) and `-w @orc/server` (51/51) unaffected; `npm test -w @orc/engine`
+**61/61 (3 new)** — a dangling-model task requeues to backlog with the
+exact log line; the warn-once dedup holds across several ~250ms polls
+while a second task keeps the loop alive (same two-task proof technique
+F16/B18 established, since a single stuck task lets the loop exit after one
+pass); manual `runTask` against a dangling model requeues to backlog and
+never logs `Fatal:`. **Live-verified against a real running (non-mock)
+server**: removing a routing-referenced model → 400 naming both
+references exactly; a duplicate id → 400; an empty id → 400; a
+routing-safe edit round-trips; rerouting away from a model then removing
+it saves fine and the log shows the precise warn line for a real task (via
+the app's own project/task-creation API) still pointed at it. **Live-
+verified in a real browser** (`npm run mock`, the established
+`window.confirm`-stub technique from U4's verification history since a
+real native confirm blocks browser automation): clicking ✕ on a
+routing-referenced model fires `confirm()` with the exact expected
+message naming both references (`Author by difficulty → hard`,
+`Role override → frontend`); returning `false` leaves the model in place,
+returning `true` removes it and flips the dirty/"Unsaved changes" state;
+clicking ✕ on an unreferenced model never invokes `confirm()` at all. The
+roster datalist (`#opencode-model-roster`) rendered with 422 real ids
+(a genuine `opencode models` call, not a stub) and every opencode-runner
+row — including a freshly-added one — had its `list` attribute wired to it.
 
 ### U15. Approve/reject buttons are visually identical on Notifications
 
