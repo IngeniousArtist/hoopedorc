@@ -2,7 +2,7 @@
 
 **Audience: the implementing model (Sonnet).** This doc was produced by a full read of
 the codebase (all of `packages/*` and `apps/web`) plus the existing docs (PRD,
-ARCHITECTURE, NEXT_STEPS, CONTRACT). It has four parts:
+ARCHITECTURE, NEXT_STEPS, CONTRACT). It has seven parts:
 
 - **Part 1 — Fix first**: real bugs and security issues found in the current code,
   ordered by severity, each with a concrete fix. Do these before any Part 2 feature.
@@ -35,8 +35,20 @@ ARCHITECTURE, NEXT_STEPS, CONTRACT). It has four parts:
   authors and validators, rate-limit resilience with Telegram alerts, an honest
   model round-trip test, and a skills strategy. Also picks up two leftovers
   Parts 4–5 deliberately deferred: the `@orc/server` test package and quota
-  usage in the health panel. Completed 2026-07-08 — **every part of this
-  plan (1–6) is now done.**
+  usage in the health panel. Completed 2026-07-08.
+- **Part 7 — Codex + agents-context + sandbox wave** (added 2026-07-08 after
+  Part 6 completed, from Fable's audit of the merged Phase 11 code, a full
+  design-critique walkthrough of the running app, and four owner decisions:
+  Codex CLI as an interchangeable alternative to Claude Code — the owner has
+  a ChatGPT Plus/Pro subscription; gates-only sandbox THIS wave — the EC2
+  deploy target is Linux, which dissolves the macOS-Keychain blocker F13 was
+  deferred over; EC2 runs web/extension projects while Apple/Xcode projects
+  stay on the local Mac; and the usual split of Fable specs → Sonnet
+  implements → Fable re-verifies): one referential-integrity fix confirmed
+  against the current code, four small UX items from the critique, then the
+  wave — a native Codex runner, a swappable planner, AGENTS.md generation in
+  the planning pipeline, the long-deferred gates-only Docker sandbox, and an
+  EC2 deploy checklist. The owner deploys to EC2 right after this wave.
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
@@ -1536,6 +1548,29 @@ the Model Health panel showed "quota: 3/5 runs, $2.55/$10.00 in the last
 confirming the at-limit highlight fires on real data, not just in theory.
 Tagged `v0.3.0` after both F34 and F35 merged — **Part 6, and the entire
 docs/PRODUCTIZATION_PLAN.md (Parts 1–6), is now done.**
+
+### Phase 12 — Part 7: Codex + agents-context + sandbox wave — ⬜ OPEN
+
+| Item | Status | PR |
+|---|---|---|
+| B28 — removing/renaming a model leaves dangling routing/task references | ⬜ | |
+| U15 — approve/reject buttons visually identical on Notifications | ⬜ | |
+| U16 — estimate copy duplication + fake-precision cost formatting | ⬜ | |
+| U17 — Projects-row orphan "·" + pause/stop icon inconsistency | ⬜ | |
+| U18 — unknown hash silently ignored, URL and UI disagree | ⬜ | |
+| F36 — Codex CLI as a first-class runner | ⬜ | |
+| F37 — swappable planner runner (Claude Code ↔ Codex) | ⬜ | |
+| F38 — AGENTS.md generation in the planning pipeline | ⬜ | |
+| F13-P1 — gates-only Docker sandbox (phase 1 of docs/specs/sandbox.md) | ⬜ | |
+| F39 — EC2 deploy checklist, prebuilt systemd start, Apple-split docs | ⬜ | |
+
+Work top-down in the suggested batches: (1) B28; (2) U15–U18 together;
+(3) F36; (4) F37; (5) F38; (6) F13-P1; (7) F39. Update this table as each
+lands; tag `v0.4.0` when the wave closes. **F36 and F37 need the owner to
+install and authenticate Codex CLI before live verification** (`npm i -g
+@openai/codex`, then the owner runs `codex login` themselves — suggest
+typing `! codex login` in the session); build + unit-verify first, then
+ask for the login when you reach the live-verification step.
 
 ---
 
@@ -3736,6 +3771,510 @@ fixtures).
 
 ---
 
+## Part 7 — Codex + agents-context + sandbox wave (Fable, 2026-07-08)
+
+**Context for the implementing model.** Produced from three inputs: (1)
+Fable's audit of the merged Phase 11 code (verdict below), (2) a full
+design-critique walkthrough of the running app (every page, desktop, using
+the design-taste review lens plus code scans), and (3) four owner decisions
+made 2026-07-08: Codex CLI becomes an interchangeable alternative to Claude
+Code (the owner holds a ChatGPT Plus/Pro subscription); the gates-only
+sandbox ships THIS wave (the deploy target is a Linux EC2 box inside the
+owner's tailnet — Linux keeps Claude Code auth in a plain file, so the
+macOS-Keychain blocker that deferred F13 twice does not apply there); EC2
+runs web/extension/server projects while Apple (Xcode) projects stay on the
+owner's local Mac as a second instance; and the standing workflow continues
+(this doc is the spec, Sonnet implements top-down, Fable re-verifies each
+item post-merge — keep verification evidence in PR descriptions).
+
+**Phase 11 audit verdict (all 13 items):** genuinely implemented; claims in
+the Progress section held up against the merged code; all 113 tests green
+(58 engine / 51 server / 4 adapters). B25/B26/B27 verified against
+docs/`repo.getNotifications`' UNION shape/`update.sh`'s output-based check
+respectively; F27's attachments module has the S-item-grade validation it
+claims (basename → charset → leading-dot rejection → extension allowlist →
+containment double-check → collision suffixing); F28 rewrites one session
+file per DB-row lifecycle exactly as described; F32's wait-and-retry
+compensates the attempt counter correctly, notifies once per task (not per
+wait), and gates Telegram on `modelAlerts !== false` with the audit entry
+unconditional. One defect found (B28 below) plus the UX findings folded
+into U15–U18.
+
+**Design-critique verdict:** the app passes the convergence test — a
+coherent industrial/utilitarian dark dashboard with a single blue accent,
+semantic amber/red/green, mono for identifiers, asymmetric layouts, and no
+AI-slop signals (code scans clean: no pure `#000`, no `transition-all`, no
+arbitrary spacing values). Findings are polish-level; **do not restyle
+anything beyond the specific items below.** Design brief for any UI work in
+this wave: direction *industrial/utilitarian dark* (keep); density
+*compact*; surface *cards on near-black*; type *technical, mono for ids,
+small-caps section labels*; motion *color transitions only*. Do: keep the
+single blue accent + semantic colors, Title Case button labels, icons only
+where they disambiguate. Don't: add gradients/glassmorphism, equalize
+primary/destructive button weights, introduce new accent colors.
+
+### B28. Removing/renaming a model leaves dangling routing/task references
+
+**Where:** `packages/server/src/index.ts` (`PUT /api/settings` validation,
+right after the existing self-review-collision check), `apps/web/src/
+components/ModelsEditor.tsx`, `apps/web/src/pages/Settings.tsx`.
+
+**Problem (confirmed against current code):** `ModelsEditor` lets you
+remove a model (the ✕ button) or edit its `id` freely, and `PUT
+/api/settings` validates self-review collisions and quota shapes but never
+that `routing.planner`, `routing.byDifficulty.*`, `routing.byRole.*`, and
+`routing.validatorByDifficulty.*` still reference model ids that exist in
+`settings.models`. A dangling reference saves fine and only surfaces at
+dispatch time, when `EngineRunner`'s `adapterFor` throws `no ModelConfig
+for <id>` — the task dies with a cryptic `Fatal:` log. Existing tasks'
+`assignedModel` can dangle the same way.
+
+**Fix:**
+1. Server: after the collision check, validate every routing reference
+   resolves to a model in `merged.models`; 400 with a message naming both
+   the reference and the missing id (e.g. `routing.byDifficulty.hard
+   references "glm" which is not in models`). A dangling reference must be
+   impossible to save, whichever side (models or routing) the user edited.
+2. Server: in the same pass, reject duplicate model ids and empty ids —
+   currently nothing stops two models sharing an id (`find` silently
+   returns the first).
+3. Tasks are rows, not settings — don't block the save over them. Instead,
+   on a successful save, warn-log (server) any non-terminal task whose
+   `assignedModel` no longer exists; at dispatch time this already fails,
+   but ALSO make the dispatch/attempt path requeue-to-backlog with a clear
+   log (`assigned model "<id>" no longer configured — reassign it`) instead
+   of the current throw-to-Fatal, mirroring the budget/quota requeue shape.
+4. UI: `ModelsEditor`'s ✕ asks for confirmation when the model is
+   referenced by routing (pass routing down, or lift the check to
+   Settings), naming what references it; Settings now also passes
+   `roster` (from the existing `GET /api/setup/models`) so adding a model
+   in Settings gets the same datalist the onboarding wizard already has —
+   the machinery exists, it's just not wired here.
+5. UI: add a one-line caption to the ROLES checkbox row clarifying that
+   `hard`/`medium` are difficulty tiers (used by "Author by difficulty")
+   while the rest are true roles — the current row silently mixes the two
+   taxonomies.
+
+**Acceptance:** unit/live: removing a routed model → 400 naming the
+reference; duplicate ids → 400; a dispatch against a since-removed
+`assignedModel` requeues to backlog with the clear log line (engine test);
+Settings' model add shows the opencode datalist; removal of a referenced
+model prompts before removing.
+
+### U15. Approve/reject buttons are visually identical on Notifications
+
+**Where:** `apps/web/src/pages/Notifications.tsx` (options rendering).
+
+**Problem:** the single most consequential control in the app — approving a
+code merge — renders `approve` and `reject` as two identical solid-blue
+buttons, lowercase, with zero weight distinction. A phone user tapping
+quickly gets no visual guardrail. (Telegram's inline buttons have the same
+labels but that's Telegram's own chrome — this is ours.)
+
+**Fix:** approve keeps the solid blue primary treatment; reject becomes the
+established secondary/destructive treatment already used elsewhere
+(bordered, red text — same family as the Stop buttons). Title Case both
+("Approve" / "Reject"), matching every other button in the app. Apply to
+whatever renders the generic `options` array too (options other than
+approve/reject keep the neutral secondary style; only the "positive
+default" gets primary weight).
+
+**Acceptance:** screenshot on the mock seed's pending approval: Approve
+solid blue, Reject bordered red, Title Case; other pages' buttons
+untouched.
+
+### U16. Estimate copy duplication + fake-precision cost formatting
+
+**Where:** `apps/web/src/pages/CostView.tsx` (estimate panel),
+`apps/web/src/pages/PlanView.tsx` (planning-cost caption),
+`apps/web/src/lib/format.ts` (`formatUsd` exists since U8).
+
+**Problem (both confirmed on screen):** the estimate panel renders "Low
+confidence: some models have no run history yet, so rough defaults were
+used. **(low confidence)**" — the parenthetical repeats the sentence's
+first two words. And the per-task estimate ranges render 4-decimal
+precision (`$0.2200–$0.6600`) directly under that low-confidence banner —
+fake precision; U8 deliberately kept 4 decimals for *actual* micro-costs,
+but an estimate RANGE is not a micro-cost. PlanView's header separately
+shows `planning cost $0.0000` (raw 4-decimal format for a headline zero —
+exactly what U8 fixed elsewhere).
+
+**Fix:** drop the duplicated parenthetical (keep the sentence); format
+estimate range endpoints with `formatUsd`; use `formatUsd` for PlanView's
+planning-cost caption. Per-run/per-task actual-cost rows keep their
+existing 4-decimal `usd()` treatment (U8's decision stands — this item is
+about estimates and headlines only).
+
+**Acceptance:** screenshots: estimate panel reads "…rough defaults were
+used." once, ranges like `$0.22–$0.66`; PlanView shows `planning cost
+$0.00` (or `$0.0012`-style only when genuinely sub-cent nonzero).
+
+### U17. Projects-row orphan "·" + pause/stop icon inconsistency
+
+**Where:** `apps/web/src/pages/ProjectsView.tsx` (row meta line),
+`apps/web/src/components/ProjectHeader.tsx` + wherever `⏸`/`⏹` literals
+appear (`grep -rn "⏸\|⏹" apps/web/src`).
+
+**Problem (both on screen):** each Projects row renders a stray lone "·"
+under the name when there's no schedule chip or other meta to join — a
+separator with nothing to separate. And the stop-family controls are
+iconed inconsistently: `⏸ Pause` (icon), `Stop now` (no icon), `⏹ Stop
+all` (icon).
+
+**Fix:** only render the meta line's separator between two present items
+(or hide the line entirely when empty). Pick one icon convention for the
+family and apply it everywhere the three appear (ProjectsView rows,
+ProjectHeader, the top bar) — either all three get their icon or none do;
+prefer icons since ⏸/⏹ genuinely disambiguate at a glance.
+
+**Acceptance:** screenshot of a schedule-less project row with no orphan
+dot; Pause/Stop now/Stop all share one convention across all surfaces.
+
+### U18. Unknown hash silently ignored — URL and UI disagree
+
+**Where:** `apps/web/src/App.tsx` (`onHashChange`, and the module-load
+`initialHashState` path).
+
+**Problem (confirmed live):** navigating an open tab to an unparseable
+hash (e.g. `#/notifications` — notifications is project-scoped, so its
+real hash is `#/p/<id>/notifications`) hits `parseHash` → null →
+`onHashChange` returns early. The page keeps showing the previous view
+while the address bar shows the bogus hash — URL and UI disagree until the
+next real navigation.
+
+**Fix:** when `parseHash` returns null in `onHashChange`, normalize the
+hash back to the current state (`history.replaceState(null, "",
+hashFor(page, selectedProjectId))`) instead of returning silently —
+mirroring what the hash-sync effect already does on mount for an empty
+hash. Don't touch the initial-load path (an invalid initial hash already
+falls through to defaults, and the first hash-sync write replaces it).
+
+**Acceptance:** with the app on Board, setting `location.hash =
+"#/garbage"` snaps the hash back to the Board's canonical hash within a
+tick; back/forward still work (the replaced entry doesn't grow the stack).
+
+### F36. Codex CLI as a first-class runner
+
+**Owner's ask:** "I would like to have the option for codex to be set
+instead of claude code, so i can interchange if needed."
+
+**What exists:** `RunnerKind = "claude-code" | "opencode"`
+(`packages/types/src/domain.ts`), `ClaudeAdapter`/`OpenCodeAdapter` +
+`makeAdapter` (`packages/adapters/src/index.ts`), S5's `sanitizedEnv`
+(`packages/adapters/src/env.ts`), setup checks (`packages/server/src/
+setup.ts`), the ModelsEditor runner dropdown. Codex models are *already*
+reachable via the opencode runner (`opencode/gpt-5.x-codex`, API-billed) —
+this item is specifically about the **native Codex CLI** so the owner's
+ChatGPT subscription's flat rate applies, exactly like `claude-code` is the
+native path for the Claude subscription.
+
+**Codex CLI facts (researched 2026-07-08 from developers.openai.com/codex —
+RE-VERIFY against the installed CLI before writing code, the F15 rule; the
+CLI is NOT currently installed on the dev machine):**
+- Install `npm i -g @openai/codex`; auth via `codex login` (ChatGPT OAuth,
+  browser flow) → credential file at `~/.codex/auth.json` (`CODEX_HOME`
+  overrides `~/.codex`); `CODEX_API_KEY` is the per-token API-key
+  alternative. For headless boxes the documented pattern is: log in on a
+  browser machine, copy `auth.json` to the box ("treat like a password").
+- Headless mode: `codex exec` — reads the prompt from **stdin** when given
+  `-` (matches B7's stdin-not-argv pattern exactly).
+- `--json` → JSONL event stream on stdout: `thread.started`,
+  `turn.started/completed/failed`, `item.started/completed` (item types
+  include agent messages, command execution, file changes), `error`. The
+  `turn.completed` event carries `usage` with
+  `input_tokens`/`cached_input_tokens`/`output_tokens`.
+- `--output-last-message <path>` writes the final assistant message to a
+  file (simplest robust way to capture `summary`).
+- `-C/--cd <dir>` sets the working directory; `--skip-git-repo-check`
+  exists but worktrees ARE git dirs so it shouldn't be needed — verify.
+- Sandbox/approvals: `--sandbox read-only|workspace-write|
+  danger-full-access`; also `--dangerously-bypass-approvals-and-sandbox`.
+  For runner parity with the other two adapters (which run unsandboxed on
+  the host), start with `--sandbox danger-full-access` so gates/deps/network
+  behave identically across runners; note in a code comment that
+  `workspace-write` is the better long-term default once F13's story
+  covers agents (its default blocks network, which would break `npm
+  install` mid-task). Verify which approval flag `exec` mode actually
+  needs for fully unattended runs against the real CLI.
+- **No cost-USD in the output** — subscription-billed. Be honest about it:
+  `costUsd: 0`, real token counts from `usage`. Cost views will show $0 for
+  codex runs (same as any subscription-side spend the app can't see);
+  `ModelConfig.quota` (`maxRuns` + `windowHours`) is the right cap lever
+  for a codex model and already works since F16 counts runs, not dollars.
+
+**Fix:**
+1. `@orc/types`: `RunnerKind` gains `"codex"`; `ModelConfig.codexModel?:
+   string` (the `-m/--model` value, optional — omitted uses the CLI's
+   default, mirroring `claudeModel`).
+2. `@orc/adapters`: new `CodexAdapter` — spawn `codex exec - --json
+   --output-last-message <tmpfile> -C <cwd>` + the sandbox/approval flags
+   verified above, `-m` when `codexModel` set, prompt written to stdin,
+   `env: sanitizedEnv({ PWD: opts.cwd })` (the same $PWD lesson as the
+   other two adapters). Parse JSONL for token usage + stream lines to
+   `opts.onLog`; read the last-message file for `summary`; map
+   `turn.failed`/nonzero exit → `ok: false` and run the result through
+   `classifyFailure` (check codex's real rate-limit phrasing against the
+   CLI and extend the regex if needed). `makeAdapter` routes
+   `runner === "codex"`.
+3. `sanitizedEnv` allowlist: add `CODEX_API_KEY` and `CODEX_HOME` (the
+   `/KEY/` denylist pattern currently strips both — same reasoning as the
+   existing `ANTHROPIC_API_KEY` allowlist entry). Extend the S5 env test.
+4. `setup.ts`: add a `Codex CLI (codex)` check (`codex --version`) to
+   `runSetupChecks` — but only as a warn-grade entry when no model has
+   `runner: "codex"` configured, so a claude/opencode-only setup doesn't
+   show a red X for a CLI it doesn't use (match how the page presents it —
+   simplest: include it with `ok: true, detail: "not configured"` when
+   unused; don't fail `allOk` over an unused runner).
+5. UI: ModelsEditor's runner select gains `codex`, with a `codexModel`
+   field (placeholder `gpt-5.2-codex`) shown for that runner, mirroring
+   the claude/opencode conditional fields.
+6. Docs: USER_GUIDE gains a Codex subsection (install, `codex login`, the
+   EC2 seed-auth.json pattern, the honest $0-cost note, quota-as-cap
+   advice); `.env.example` mentions `CODEX_API_KEY` as the API-key
+   alternative.
+
+**Acceptance:** adapter unit test with a scripted child process is NOT
+required (the other adapters don't have one) — instead: typecheck/build
+green; S5 env test extended; setup check renders sanely with codex both
+absent and installed; **live**: after the owner installs + logs in, a real
+`codex exec` round-trip through the adapter (the F33 "Test models" button
+is the cheapest full-path proof — add a codex model, test it, see its
+self-ID reply + token counts + $0 cost), then one real easy task authored
+end-to-end by a codex-runner model on a scratch repo (author → gates →
+validator → merge), F29/F30-style.
+
+### F37. Swappable planner runner (Claude Code ↔ Codex)
+
+**Owner's ask:** the "interchange" above explicitly includes what Claude
+Code does today beyond authoring — planning is Claude-only right now.
+
+**What exists:** `packages/server/src/planner.ts` — `runClaudeJson`
+(spawns `claude -p --output-format json`) with `runPlannerChat` /
+`runPlannerDeconstruct` / `runPlanner` on top; `ENV.plannerChatModel` /
+`plannerDeconstructModel` alias envs (`sonnet`/`opus`); `routing.planner`
+already selects a model id, and `ModelConfig` already knows that model's
+runner — the wiring just ignores it and always shells `claude`.
+
+**Fix:**
+1. `planner.ts`: introduce a runner dispatch — resolve `routing.planner`'s
+   `ModelConfig`; `claude-code` → existing `runClaudeJson` unchanged
+   (aliases still apply); `codex` → a `runCodexJson` twin using `codex
+   exec - --json --output-last-message` (chat) and `--output-schema
+   <file>` for deconstruct (codex can enforce the DAG JSON schema
+   natively — write the JSON Schema for `PlanDeconstructResponse`'s
+   task-array shape and let the CLI guarantee parseability; keep the
+   existing lenient JSON-extraction fallback for the claude path
+   unchanged). `opencode`-runner planners stay unsupported (400 with a
+   clear message at the routes) — conversational planning quality is the
+   point of the two subscription CLIs; don't silently degrade.
+2. The planner cwd/attachments/session-file mechanics (F27/F28) are
+   runner-agnostic already — they hand a prompt + cwd to whatever runs.
+   Verify attachments still resolve for a codex planner (it has file tools
+   and runs in the same clone cwd; the "Attached context files" block is
+   plain prompt text).
+3. UI copy: PlanView's "Chat with Claude" header and NewProject's "chat
+   with Claude" sentence become the planner model's `displayName`
+   (`models.find(id === routing.planner)`), falling back to "the planner".
+   These are the only two hardcoded "Claude" strings on those pages —
+   `grep -rn "Claude" apps/web/src` and fix any planning-flow ones.
+4. Planner cost: codex reports no USD — record the planner cost row with
+   `costUsd: 0` + real tokens (same honesty rule as F36; the F8 report
+   card and Costs page just show what's recorded).
+
+**Acceptance:** with a codex model routed as planner: a real chat turn, a
+deconstruct that yields a valid editable task table (schema-enforced), and
+a commit that materializes tasks — live on a scratch project. With claude
+routed back: behavior byte-identical to today (existing planner tests /
+mock flows unaffected). PlanView header names whichever model is routed.
+
+### F38. AGENTS.md generation in the planning pipeline
+
+**Owner's ask:** "add a structure like claude.md or agents.md so agents can
+see what the structure of the app would be like, best practices, how to
+code and such… Have claude/codex create that file when planning and
+creating cards."
+
+**Runner-facts that shape the design (verified 2026-07-08):** `AGENTS.md`
+is the cross-tool convention — Codex CLI and opencode read it natively;
+**Claude Code does NOT read AGENTS.md** (it reads `CLAUDE.md`; the
+`@AGENTS.md` import inside CLAUDE.md is the official bridge —
+anthropics/claude-code#34235 is the still-open feature request). So:
+**AGENTS.md is the canonical generated file, plus a one-line committed
+`CLAUDE.md` containing exactly `@AGENTS.md`** — every runner then sees the
+same content natively, no duplication to drift.
+
+**What exists to build on:** `/plan/commit` already writes the PRD into
+the repo via `git.commitFile(project, prdPath, prdMarkdown, "docs: update
+PRD (hoopedorc)")` (`index.ts` ~1452) — AGENTS.md rides the exact same
+mechanism. `buildDeconstructPrompt` (planner.ts) already produces the
+PRD + task JSON in one call.
+
+**Fix:**
+1. Deconstruct also produces the agents file: extend the deconstruct
+   prompt to emit an `agentsMd` alongside `prdMarkdown` and `tasks` —
+   contents: what the project is (one paragraph), the stack + target
+   platform, the intended directory structure, the real commands
+   (dev/test/build/lint — consistent with the scaffold task's gate
+   scripts, per B11's standing scaffold instruction), coding conventions
+   and best practices for THIS stack (the planner tailors to what's being
+   built: a Next.js site, a browser extension, a Swift app…), and "how to
+   work here" notes for agents (worktree/PR flow is Hoopedorc's own —
+   keep the file about the project, not the orchestrator). Cap ~120 lines
+   in the prompt instructions — this is a context file, not a book.
+2. `PlanDeconstructResponse.agentsMd?: string` (+ CONTRACT.md + mock);
+   PlanView shows it as a third editable artifact next to the PRD before
+   commit (same textarea treatment as the PRD — it's operator-editable,
+   per the owner's "we can figure it out together" instinct).
+3. `/plan/commit` commits `AGENTS.md` (repo root) and — only when absent,
+   never overwriting a hand-maintained one — the one-line `CLAUDE.md`
+   pointer, alongside the existing PRD commit. Persist `agentsMd` on the
+   planning-session row like `prd` so a reload mid-planning keeps it.
+4. `buildAuthorPrompt` (orchestrator.ts) gains one standing line when the
+   project's clone has an `AGENTS.md` at root: "Read AGENTS.md at the repo
+   root before starting — it defines this project's structure and
+   conventions." (A nudge, F34-style — codex/opencode/claude each also
+   pick it up natively via their own discovery; the nudge covers the
+   models that need prompting to actually read it.) Cheapest correct
+   check: the orchestrator already knows `task.worktreePath` — check
+   existence there at prompt-build time.
+5. F30's docs stage: add `AGENTS.md` to the documenter's allowed scope
+   (`revertOutOfScope`'s pattern list + the docs prompt's "touch only if
+   wrong" list) so a merged change that alters project structure can keep
+   the file current.
+6. `USER_GUIDE.md`: a short "AGENTS.md — the project context file" section
+   (what gets generated, that all three runners read it — Claude via the
+   CLAUDE.md import line — and that it's editable both at plan time and as
+   a normal committed file afterward).
+
+**Acceptance:** unit: deconstruct response carries `agentsMd`; commit
+writes both files (and does NOT clobber a pre-existing CLAUDE.md); author
+prompt includes the nudge exactly when AGENTS.md exists (engine test with
+a real temp worktree). Live, on a scratch project: plan → deconstruct
+shows an editable AGENTS.md alongside the PRD → commit lands `AGENTS.md`
++ `CLAUDE.md` in the repo's first commits → a real authored task's prompt
+carried the nudge, and the merged repo's AGENTS.md accurately names the
+scaffold's real commands.
+
+### F13-P1. Gates-only Docker sandbox (phase 1 of docs/specs/sandbox.md)
+
+**Why now:** the owner settled the Docker-on-EC2 question (Docker is fine
+on the box), and the deploy target is Linux, where the sandbox doc's
+hardest problem (Claude auth in the macOS Keychain) doesn't exist. Phase 1
+deliberately covers only the **repo-controlled code the host currently
+runs unsandboxed**: gate scripts (`GateRunnerImpl`'s npm/execFile calls)
+AND `WorktreeManager.ensureDeps`' `npm ci|install` (postinstall hooks are
+repo code too — the sneakiest of the lot). Agents stay on the host (phase
+2/3, future wave, per the spec doc).
+
+**Where:** `packages/engine/src/gate-runner.ts`,
+`packages/engine/src/worktree-manager.ts`, new
+`packages/engine/src/sandbox.ts`; `@orc/types` Settings + ProjectConfig;
+`packages/server/src/index.ts` (settings validation);
+`ProjectConfigFields.tsx`; `docs/specs/sandbox.md` (update status),
+USER_GUIDE.
+
+**Fix:**
+1. New `Settings.sandboxGates?: "off" | "auto" | "required"` (default
+   `"auto"`) + `ProjectConfig.gateImage?: string` (default `node:22`,
+   validated as a plausible image ref, ≤200 chars). `"auto"`: use Docker
+   when the daemon responds, fall back to host with a warn-once log when
+   it doesn't. `"required"`: no daemon → gates fail loudly (for the EC2
+   box once proven). `"off"`: byte-identical to today.
+2. New `sandbox.ts`: `detectDocker()` (cached `docker version` probe) and
+   `sandboxedExecFile(image, cwd, cmd, args, opts)` building `docker run
+   --rm -v <cwd>:/work -w /work --entrypoint <cmd> <image> <args…>` (or
+   `sh -lc` composition if entrypoint routing proves awkward against the
+   real CLI — verify). Network stays ON for phase 1 (`npm ci` needs the
+   registry — the spec doc already flags this tension; the isolation win
+   is the filesystem: the container sees ONLY the worktree, not $HOME,
+   not the DB, not CLI credentials). Set `HOME=/tmp` inside the container
+   and pass a minimal allowlist env (NODE_*, npm_config_*), NOT the
+   host env — stricter than S5's host-side denylist, per the spec doc's
+   two-layer note.
+3. `GateRunnerImpl`: every place it currently `execFile`s npm or the
+   `testCommand` goes through the sandbox runner when enabled (the
+   `hasNpmScript` package.json checks are host-side reads and stay as-is).
+   `ensureDeps`: same switch for its `npm ci|install`. Keep the existing
+   timeout semantics; docker adds its own startup latency — bump the gate
+   timeout by a fixed grace (e.g. +30s) only in sandboxed mode.
+4. UI: a read-only line in Setup & Health ("Gate sandbox: docker
+   (node:22) / host — docker not detected") so the operator can see which
+   mode a box actually runs; the `gateImage` override lives in the
+   Advanced accordion next to the gate script fields.
+5. Docs: sandbox.md gets a "phase 1 shipped" status note; USER_GUIDE gains
+   a short section (what's sandboxed and what isn't — be explicit that
+   agents still run on the host; how to install Docker on the EC2 box;
+   the `required` recommendation once verified there).
+
+**Acceptance:** engine tests with a fake exec layer cover mode selection
+(off/auto-with/auto-without/required-without daemon); **live on this Mac
+(Docker Desktop or colima) or skipped-with-a-note if no daemon is
+available locally** — a real gate run of the mock-seed scratch repo inside
+`node:22`, confirming: pass/fail parity with host mode on the same repo, a
+worktree-only mount (a gate script that tries `ls ~/.claude` or the DB
+path fails), and the Setup line reporting the active mode. The EC2 box
+verification happens during F39's deploy pass.
+
+### F39. EC2 deploy checklist, prebuilt systemd start, Apple-split docs
+
+**Why:** the owner deploys to EC2 immediately after this wave — this item
+is the ship gate. Three concrete problems found reviewing the deploy
+surface against that target:
+
+1. **`ExecStart=/usr/bin/npm run start` rebuilds every workspace on every
+   service (re)start** (`npm run start` = build + serve). On a small
+   instance that's minutes of restart latency and a real OOM risk (vite +
+   tsup builds on 1–2GB RAM). Fix: add a root `start:prebuilt` script
+   (serve only, no build) and switch the unit to
+   `ExecStart=… npm run start:prebuilt` with the build done by
+   `npm run update` / initial setup instead; keep `npm run start` for dev
+   convenience. Also add a commented `MemoryMax=` example and a note on
+   adding swap for the build step on ≤2GB instances.
+2. **No single ordered EC2 checklist** — the pieces all exist
+   (USER_GUIDE's EC2/headless auth section, deploy/README's systemd steps,
+   Tailscale section, backups, update flow) but a deploying user hops
+   between five sections. Add a "Deploying to EC2 — checklist" section to
+   USER_GUIDE that sequences them: instance sizing (≥2GB or swap; Node 22;
+   git; docker for F13-P1), clone + `npm run setup`, the four CLI auths in
+   order (`GH_TOKEN`, `claude setup-token`, opencode auth.json copy,
+   codex auth.json copy — F36's section), `.env` (PORT/HOST/DB_PATH/
+   API_TOKEN/DB_BACKUP_DIR), `tailscale serve`, systemd unit + enable,
+   first-boot verification (Setup & Health all green, `journalctl -u
+   hoopedorc -f` for logs), and where the DB/backups live.
+3. **The Mac↔EC2 split needs one explicit rule.** Apple/Xcode projects
+   can't build on Linux — the owner runs a second instance on the Mac for
+   those. Document: **one project lives on exactly one box.** Two
+   instances pointed at the same repo would both schedule/dispatch it —
+   nothing deduplicates across servers (each has its own DB); that's by
+   design, not a bug to fix this wave. A short "Two boxes: EC2 for
+   web/extensions, your Mac for Apple targets" subsection covering: which
+   projects go where, that Settings/models/budgets are per-box, and that
+   the Telegram bot token can be shared (chat-id restricted) or split per
+   box — recommend two bots so alerts name their origin.
+
+**Acceptance:** `systemd-analyze verify` passes on the updated unit (or a
+note if unavailable); a fresh-checkout dry run of the checklist's command
+sequence on this Mac (through `npm run setup` + `start:prebuilt` serving
+the built app) works as written; USER_GUIDE renders the checklist +
+two-box section; deploy/README cross-links instead of duplicating.
+
+### What Part 7 deliberately does NOT include (for calibration)
+
+- **Agents in the sandbox (F13 phases 2–3)** — gates first, on purpose;
+  agents keep host access this wave. Headline candidate for the next wave
+  once phase 1 has run on the EC2 box for a while.
+- **Multi-host orchestration** (EC2 delegating Apple builds to the Mac) —
+  the owner chose the two-instances split; a remote-worker feature is a
+  future architectural wave if the split chafes.
+- **Cross-instance project dedup** — documented as a rule (F39) instead of
+  built.
+- **opencode-runner planners** (F37 supports the two subscription CLIs;
+  API-billed opencode models stay author/validator-only).
+- **Restyling beyond U15–U18** — the critique's verdict is the direction
+  is right; resist drive-by polish.
+
+---
+
 ## Suggested execution order
 
 | Phase | Items | Rationale | Status |
@@ -3751,17 +4290,20 @@ fixtures).
 | 9 | A1–A5, U1–U10 | Post-plan audit fixes, then the UX wave from the full-app walkthrough — badge/header/board layout first (U1–U4 are the high-impact ones), trivial polish after. | ✅ done |
 | 10 | B20–B24, S7, F20–F26, U11–U14 | Post-UX-wave audit fixes (the Projects-page Pause footgun first), then the remote-deployment QoL wave: docs → routing → approval context → stop-all → update story → polish → WS/PWA. | ✅ done |
 | 11 | B25–B27, T1, F27–F35 | Phase 10 audit fixes (all small), then the server test package (T1 — later items lean on it), then the owner's QoL wave: planning context (F27+F28) → standards prompts (F31 → F29 → F30, in that order — F29/F30 build on F31's injection mechanism) → resilience + alerts (F32) → model test (F33) → skills (F34) → quota panel (F35). Tag `v0.3.0` at the end. | ✅ done |
+| 12 | B28, U15–U18, F36–F39, F13-P1 | Referential-integrity fix first (B28 — an autonomy footgun), the four small UX items together (U15–U18), then the wave in dependency order: Codex runner (F36) → swappable planner (F37, needs F36's adapter) → AGENTS.md pipeline (F38, planner-produced so it benefits from F37 landing first) → gates sandbox (F13-P1) → EC2 deploy checklist (F39 — the ship gate, last so it documents everything the wave added). Tag `v0.4.0` at the end; the owner deploys to EC2 right after. | ⬜ open |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
 
-**All 11 phases are done.** Phases 1–6 tagged `v0.1.0`, Phases 7–8 plus the
-post-plan audit fixes tagged `v0.2.0` (package.json's own `version` field,
-previously stale at `0.1.0`, was corrected to match as part of F24), Phase 9
-(A1–A5, U1–U10) closed out Parts 1–4, Phase 10 (B20–B24, S7, F20–F26,
+Phases 1–11 (Parts 1–6) are **done** — Phases 1–6 tagged `v0.1.0`, Phases 7–8
+plus the post-plan audit fixes tagged `v0.2.0` (package.json's own `version`
+field, previously stale at `0.1.0`, was corrected to match as part of F24),
+Phase 9 (A1–A5, U1–U10) closed out Parts 1–4, Phase 10 (B20–B24, S7, F20–F26,
 U11–U14) closed out Part 5, and Phase 11 (B25–B27, T1, F27–F35) closed out
-Part 6, tagged `v0.3.0`. F13 remains future work — F18 covers its design doc
-only; see Part 6's decisions block for why it was deferred again and what
-would unblock it. Fable independently re-verifies each wave after merge;
+Part 6, tagged `v0.3.0`. **Part 7 (Phase 12) is the open wave**: B28 +
+U15–U18 + F36–F39 + F13-P1, specced above — work it top-down and tag `v0.4.0`
+when it closes. F13's phase 1 (gates-only sandbox) ships in this wave;
+phases 2–3 (agents in the sandbox) remain future work per docs/specs/
+sandbox.md. Fable independently re-verifies each wave after merge;
 verification evidence is in each item's PR description and in this doc's
 Progress section above.
