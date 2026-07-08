@@ -1,4 +1,4 @@
-import type { ModelConfig, Role, RunnerKind } from "@orc/types";
+import type { ModelConfig, Role, RoutingPolicy, RunnerKind } from "@orc/types";
 
 const ALL_ROLES: Role[] = [
   "planner",
@@ -16,6 +16,29 @@ const inputCls =
   "w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200";
 
 /**
+ * B28: everywhere `routing` can name a model id — used before removing one,
+ * so the confirmation names exactly what would go dangling instead of a
+ * generic "are you sure?". Kept in sync with the server's own reference
+ * check in `PUT /api/settings` by construction: both walk the same four
+ * `RoutingPolicy` fields.
+ */
+function routingReferences(routing: RoutingPolicy | undefined, modelId: string): string[] {
+  if (!routing) return [];
+  const refs: string[] = [];
+  if (routing.planner === modelId) refs.push("Planner");
+  for (const d of ["easy", "medium", "hard"] as const) {
+    if (routing.byDifficulty[d] === modelId) refs.push(`Author by difficulty → ${d}`);
+    if (routing.validatorByDifficulty[d] === modelId) {
+      refs.push(`Validator by difficulty → ${d}`);
+    }
+  }
+  for (const [role, id] of Object.entries(routing.byRole)) {
+    if (id === modelId) refs.push(`Role override → ${role}`);
+  }
+  return refs;
+}
+
+/**
  * Add / remove / edit the model roster (settings.models). Edits bubble up to the
  * parent Settings page and persist via the shared Save button (PUT /api/settings).
  */
@@ -23,19 +46,37 @@ export function ModelsEditor({
   models,
   onChange,
   roster,
+  routing,
 }: {
   models: ModelConfig[];
   onChange: (models: ModelConfig[]) => void;
   /** Real `opencode models` output, offered as a datalist on the opencode
    *  model field so mapping a model is picking from a real id instead of
-   *  typing one blind (F1's onboarding wizard passes this; Settings doesn't
-   *  need to). */
+   *  typing one blind (F1's onboarding wizard already passes this; B28
+   *  wires the same call into Settings so its own "+ Add model" gets it
+   *  too). */
   roster?: string[];
+  /** B28: current routing, so removing a model can warn before leaving a
+   *  dangling reference behind (the server rejects the save either way —
+   *  this just tells the user why up front, naming what references it). */
+  routing?: RoutingPolicy;
 }) {
   function patch(idx: number, partial: Partial<ModelConfig>) {
     onChange(models.map((m, i) => (i === idx ? { ...m, ...partial } : m)));
   }
   function remove(idx: number) {
+    const model = models[idx];
+    const refs = model ? routingReferences(routing, model.id) : [];
+    if (
+      refs.length > 0 &&
+      !window.confirm(
+        `"${model!.displayName}" is still assigned in Settings → Routing:\n\n` +
+          refs.map((r) => `- ${r}`).join("\n") +
+          `\n\nRemoving it will fail to save until you reassign those. Remove anyway?`,
+      )
+    ) {
+      return;
+    }
     onChange(models.filter((_, i) => i !== idx));
   }
   function add() {
@@ -251,6 +292,11 @@ export function ModelsEditor({
               <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                 Roles
               </label>
+              <p className="mb-1 text-[10px] text-neutral-600">
+                "hard"/"medium" mark this model eligible for Routing's
+                "Author by difficulty" tiers; the rest ("frontend", "docs",
+                "validator", "updates"…) are true task roles.
+              </p>
               <div className="flex flex-wrap gap-2">
                 {ALL_ROLES.map((role) => {
                   const on = m.roles.includes(role);

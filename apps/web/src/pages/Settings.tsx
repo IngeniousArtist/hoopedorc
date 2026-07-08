@@ -2,6 +2,7 @@ import {
   SECRET_SENTINEL,
   type MergePolicy,
   type ModelId,
+  type ModelRosterResponse,
   type RoutingPolicy,
   type Settings as SettingsType,
   type TelegramTestResponse,
@@ -90,11 +91,21 @@ export function Settings({
   const [saved, setSaved] = useState(false);
   const [telegramTesting, setTelegramTesting] = useState(false);
   const [telegramTestMsg, setTelegramTestMsg] = useState<string | null>(null);
+  // B28: same roster the onboarding wizard already offers on its model-
+  // mapping step (`GET /api/setup/models`, shells `opencode models`) — the
+  // machinery existed but wasn't wired into Settings' own "+ Add model", so
+  // adding a model here meant typing an opencode id blind.
+  const [roster, setRoster] = useState<string[]>([]);
 
   useEffect(() => {
     api<{ settings: SettingsType }>("getSettings")
       .then((r) => setSettings(r.settings))
       .catch((e) => setError(String(e)));
+    api<ModelRosterResponse>("setupModels")
+      .then((r) => setRoster(r.models))
+      .catch(() => {
+        /* advisory only — ModelsEditor falls back to a blind text field */
+      });
   }, []);
 
   if (!settings) {
@@ -314,7 +325,12 @@ export function Settings({
         </div>
       )}
 
-      <ModelsEditor models={settings.models} onChange={updateModels} />
+      <ModelsEditor
+        models={settings.models}
+        onChange={updateModels}
+        routing={settings.routing}
+        roster={roster}
+      />
 
       <RoutingEditor
         routing={settings.routing}

@@ -1362,3 +1362,109 @@ test("F32: a Stop during a rate-limit wait ends the task promptly with nothing m
   assert.equal(merged.length, 0);
   assert.equal(authorCalls, 1, "must not have retried after the stop");
 });
+
+test("B28: a task whose assignedModel has no ModelConfig is requeued to backlog with a clear log line, not left stuck in ready", async () => {
+  const logs: string[] = [];
+  const deps = fakeDeps(
+    {
+      events: {
+        onLog: (e) => logs.push(e.message),
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    [],
+  );
+
+  const t1 = task("t1", [], { assignedModel: "ghost-model", status: "ready" });
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.equal(t1.status, "backlog");
+  const matches = logs.filter((m) =>
+    m.includes('Assigned model "ghost-model" no longer configured'),
+  );
+  assert.equal(matches.length, 1);
+});
+
+test("B28: the missing-model warning doesn't spam while another task keeps the loop polling", async () => {
+  const logs: string[] = [];
+  const taskUpdates: string[] = [];
+  const slowAdapter: AgentAdapter = {
+    runner: "opencode",
+    async run(): Promise<AgentRunResult> {
+      await new Promise((r) => setTimeout(r, 600));
+      return {
+        ok: true,
+        exitReason: "completed",
+        costUsd: 0.01,
+        tokensIn: 1,
+        tokensOut: 1,
+        summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+      };
+    },
+  };
+  const deps = fakeDeps(
+    {
+      adapterFor: () => slowAdapter,
+      events: {
+        onLog: (e) => logs.push(e.message),
+        onTaskUpdated: (t) => taskUpdates.push(t.id),
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    [],
+  );
+
+  const ghost = task("ghost", [], { assignedModel: "ghost-model", status: "ready" });
+  const slow = task("slow", [], { assignedModel: "deepseek-flash" });
+  await new Orchestrator(deps).start(PROJECT, [ghost, slow]);
+
+  assert.equal(ghost.status, "backlog");
+  assert.equal(slow.status, "done");
+  const matches = logs.filter((m) =>
+    m.includes('Assigned model "ghost-model" no longer configured'),
+  );
+  assert.equal(matches.length, 1, "must log exactly once despite several polls");
+  const ghostUpdates = taskUpdates.filter((id) => id === "ghost").length;
+  assert.equal(ghostUpdates, 1, "must broadcast the backlog transition exactly once");
+});
+
+test("B28: a manual dispatch (runTask) against a since-removed assignedModel requeues to backlog instead of crashing to Fatal", async () => {
+  const logs: string[] = [];
+  const deps = fakeDeps(
+    {
+      events: {
+        onLog: (e) => logs.push(e.message),
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    [],
+  );
+
+  const t1 = task("t1", [], { assignedModel: "ghost-model" });
+  await new Orchestrator(deps).runTask(PROJECT, t1);
+
+  assert.equal(t1.status, "backlog");
+  assert.equal(
+    logs.some((m) => m.includes('Assigned model "ghost-model" no longer configured')),
+    true,
+  );
+  assert.equal(
+    logs.some((m) => m.startsWith("Fatal:")),
+    false,
+    "must not surface as a Fatal crash",
+  );
+});

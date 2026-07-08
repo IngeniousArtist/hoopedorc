@@ -142,6 +142,9 @@ export class Orchestrator implements Scheduler {
   private readonly capacityBlockedWarned = new Set<string>();
   /** F16: tasks already logged as quota-blocked this run, to avoid log spam. */
   private readonly quotaBlockedWarned = new Set<string>();
+  /** B28: tasks already logged as having a dangling assignedModel this run,
+   *  to avoid log spam. */
+  private readonly missingModelWarned = new Set<string>();
   /** F32: how many rate-limit wait-and-retries a task has used on its
    *  CURRENT model, so it falls back after RATE_LIMIT_RETRIES instead of
    *  waiting forever; cleared per-task in executeTask's finally. */
@@ -256,6 +259,7 @@ export class Orchestrator implements Scheduler {
     this.cooldownBlockedWarned.clear();
     this.capacityBlockedWarned.clear();
     this.quotaBlockedWarned.clear();
+    this.missingModelWarned.clear();
 
     // Orphan recovery: this Orchestrator instance starts with empty
     // activeTaskIds, so any task already "in_progress" or "in_review" was
@@ -333,14 +337,27 @@ export class Orchestrator implements Scheduler {
           (m) => m.id === task.assignedModel,
         );
         if (!cfg) {
-          this.emit(
-            "error",
-            "engine",
-            `No ModelConfig for ${task.assignedModel}`,
-            task.id,
-          );
+          // B28: don't just hold this forever in "ready" — requeue it to
+          // backlog (same shape as the budget/cooldown/quota guards below)
+          // once, so the Board reflects that it needs a human to reassign
+          // the model rather than that it's about to run. Both the log and
+          // the status/broadcast are gated on the warned-set so a task
+          // that's already backlogged for this reason doesn't re-emit or
+          // re-broadcast on every ~250ms poll.
+          if (!this.missingModelWarned.has(task.id)) {
+            this.missingModelWarned.add(task.id);
+            this.emit(
+              "error",
+              "engine",
+              `Assigned model "${task.assignedModel}" no longer configured — reassign it`,
+              task.id,
+            );
+            task.status = "backlog";
+            this.deps.events.onTaskUpdated(task);
+          }
           continue;
         }
+        this.missingModelWarned.delete(task.id);
 
         // Budget guard: refuse to dispatch new work once a cap is hit. Once
         // every ready task is budget-blocked and nothing is in flight, the loop
@@ -628,6 +645,27 @@ export class Orchestrator implements Scheduler {
         // very first attempt (already "in_progress" from before this loop).
         task.status = "in_progress";
         this.deps.events.onTaskUpdated(task);
+
+        // B28: currentModel (task.assignedModel on the first attempt, a
+        // fallback-chain entry after an escalation) may no longer be
+        // configured — removed or renamed out from under this task since it
+        // was created/assigned. Requeue-to-backlog here, same shape as the
+        // budget/quota checks below, instead of letting runAuthor's
+        // adapterFor throw surface as a cryptic "Fatal:" failure. Manual
+        // dispatch (runTask) has no earlier dispatch-time guard for this at
+        // all, so this is the only check standing between a dangling
+        // reference and that crash on that path.
+        if (!this.deps.settings.models.some((m) => m.id === currentModel)) {
+          this.emit(
+            "error",
+            "engine",
+            `Assigned model "${currentModel}" no longer configured — reassign it`,
+            task.id,
+          );
+          task.status = "backlog";
+          this.deps.events.onTaskUpdated(task);
+          return;
+        }
 
         // Stop spending mid-task if a budget cap has since been hit. Checked
         // against currentModel (which may be a fallback by this point), not
