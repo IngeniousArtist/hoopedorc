@@ -2048,6 +2048,54 @@ async function main() {
       });
     }
 
+    // B28: nothing else stops two models sharing an id (or an empty one) —
+    // `settings.models.find(m => m.id === x)` would then silently resolve to
+    // whichever one comes first, and routing/dispatch can't tell them apart.
+    {
+      const seen = new Set<string>();
+      for (const m of merged.models) {
+        if (!m.id || !m.id.trim()) {
+          return reply.code(400).send({ error: "every model must have a non-empty id" });
+        }
+        if (seen.has(m.id)) {
+          return reply.code(400).send({ error: `duplicate model id: ${m.id}` });
+        }
+        seen.add(m.id);
+      }
+    }
+
+    // B28: a routing field pointing at a model id that isn't (or is no
+    // longer) in `merged.models` saves fine here and only surfaces at
+    // dispatch time as a cryptic `no ModelConfig for <id>` Fatal — catch it
+    // at save time instead, whichever side (models or routing) changed.
+    {
+      const ids = new Set(merged.models.map((m) => m.id));
+      const missing: string[] = [];
+      if (!ids.has(merged.routing.planner)) {
+        missing.push(`routing.planner references "${merged.routing.planner}"`);
+      }
+      for (const d of ["easy", "medium", "hard"] as const) {
+        const authorId = merged.routing.byDifficulty[d];
+        if (!ids.has(authorId)) {
+          missing.push(`routing.byDifficulty.${d} references "${authorId}"`);
+        }
+        const validatorId = merged.routing.validatorByDifficulty[d];
+        if (!ids.has(validatorId)) {
+          missing.push(`routing.validatorByDifficulty.${d} references "${validatorId}"`);
+        }
+      }
+      for (const [role, modelId] of Object.entries(merged.routing.byRole)) {
+        if (modelId && !ids.has(modelId)) {
+          missing.push(`routing.byRole.${role} references "${modelId}"`);
+        }
+      }
+      if (missing.length > 0) {
+        return reply.code(400).send({
+          error: `${missing.join("; ")} which ${missing.length === 1 ? "is" : "are"} not in models`,
+        });
+      }
+    }
+
     // F16: a quota with a window but no actual limit doesn't mean anything
     // — catch it here rather than silently having checkModelQuota never fire.
     for (const m of merged.models) {
@@ -2091,6 +2139,30 @@ async function main() {
 
     const saved = repo.upsertSettings(db, merged);
     configureTelegram(); // apply enable/disable/token/chatId changes live
+
+    // B28: this edit itself can only produce a routing-referenced model
+    // that exists (checked above) — but a task's own `assignedModel` is a
+    // row, not a setting, so it can still dangle here (this exact save
+    // removed/renamed the model a still-active task points at). Not
+    // blocking: the orchestrator's own dispatch/attempt-loop guards are the
+    // actual safety net (requeue-to-backlog instead of a Fatal crash) —
+    // this is purely an operator-visible heads-up in the server log.
+    const validModelIds = new Set(merged.models.map((m) => m.id));
+    for (const p of repo.getProjects(db)) {
+      for (const t of repo.getTasks(db, p.id)) {
+        if (
+          t.status !== "done" &&
+          t.status !== "failed" &&
+          !validModelIds.has(t.assignedModel)
+        ) {
+          app.log.warn(
+            `task ${t.id} ("${t.title}") in project ${p.id} is assigned to ` +
+              `model "${t.assignedModel}", which no longer exists in Settings`,
+          );
+        }
+      }
+    }
+
     return { settings: redactSettings(saved) };
   });
 
