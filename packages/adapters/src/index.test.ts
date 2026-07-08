@@ -7,6 +7,7 @@ test("classifyFailure recognizes rate-limit-shaped failures", () => {
   assert.equal(classifyFailure("rate-limited by upstream"), "rate_limited");
   assert.equal(classifyFailure("HTTP 429 Too Many Requests"), "rate_limited");
   assert.equal(classifyFailure("quota exceeded for this billing period"), "rate_limited");
+  assert.equal(classifyFailure("You've hit your usage limit."), "rate_limited");
 });
 
 test("classifyFailure treats everything else as a plain error", () => {

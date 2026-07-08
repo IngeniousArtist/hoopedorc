@@ -42,9 +42,14 @@ async function check(
  * everything is green before spending money. Each must exit 0:
  *  - `gh auth status`  → GitHub auth (push/PR/merge),
  *  - `claude --version`→ Claude Code present (planner/validator),
- *  - `opencode auth list` → OpenCode model credentials.
+ *  - `opencode auth list` → OpenCode model credentials,
+ *  - `codex --version` → Codex CLI present, but only checked (and only able
+ *    to fail `allOk`) when a model in the roster is actually configured to
+ *    use it — a claude/opencode-only setup shouldn't show a red X for a CLI
+ *    it never calls.
  */
-export async function runSetupChecks(): Promise<SetupHealthResponse> {
+export async function runSetupChecks(settings: Settings): Promise<SetupHealthResponse> {
+  const codexConfigured = settings.models.some((m) => m.runner === "codex");
   const checks = await Promise.all([
     check("GitHub CLI (gh)", "gh", ["auth", "status"], (s) => {
       const acct = s.match(/Logged in to [^\s]+ account (\S+)/);
@@ -57,6 +62,9 @@ export async function runSetupChecks(): Promise<SetupHealthResponse> {
         .filter((l) => l.trim() && !/^opencode|credentials|^\s*$/i.test(l));
       return creds.length ? `${creds.length} credential(s)` : firstLine(s);
     }),
+    codexConfigured
+      ? check("Codex CLI (codex)", "codex", ["--version"])
+      : Promise.resolve({ name: "Codex CLI (codex)", ok: true, detail: "not configured" }),
   ]);
   return { checks, allOk: checks.every((c) => c.ok) };
 }

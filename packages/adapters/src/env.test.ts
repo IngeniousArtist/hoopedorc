@@ -14,6 +14,8 @@ test("sanitizedEnv strips secret-shaped keys but keeps the CLI allowlist", () =>
     process.env.NODE_AUTH_TOKEN = "keep-me"; // npm needs this; matches TOKEN but allowlisted via NODE_
     process.env.npm_config_registry = "https://registry.example";
     process.env.ANTHROPIC_API_KEY = "keep-me-too";
+    process.env.CODEX_API_KEY = "keep-codex-key";
+    process.env.CODEX_HOME = "/home/x/.codex";
     process.env.LC_ALL = "C";
     process.env.PATH = "/usr/bin";
     process.env.HOME = "/home/x";
@@ -31,6 +33,8 @@ test("sanitizedEnv strips secret-shaped keys but keeps the CLI allowlist", () =>
     assert.equal(env.NODE_AUTH_TOKEN, "keep-me");
     assert.equal(env.npm_config_registry, "https://registry.example");
     assert.equal(env.ANTHROPIC_API_KEY, "keep-me-too");
+    assert.equal(env.CODEX_API_KEY, "keep-codex-key");
+    assert.equal(env.CODEX_HOME, "/home/x/.codex");
     assert.equal(env.LC_ALL, "C");
     assert.equal(env.PATH, "/usr/bin");
     assert.equal(env.HOME, "/home/x");
