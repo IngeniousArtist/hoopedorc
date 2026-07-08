@@ -384,6 +384,19 @@ export interface ModelHealthEntry {
   medianDurationMs: number | null;
   /** ISO timestamp; present only while a rate-limit cooldown is active. */
   coolingDownUntil?: string;
+  /**
+   * F35: current usage within this model's configured subscription quota
+   * window (`ModelConfig.quota`), alongside its configured limits — lets the
+   * operator see "how much of my window is used" before hitting F16's
+   * invisible enforcement wall. Absent when the model has no quota configured.
+   */
+  windowUsage?: {
+    runs: number;
+    costUsd: number;
+    windowHours: number;
+    maxRuns?: number;
+    maxCostUsd?: number;
+  };
 }
 export interface ModelHealthResponse {
   models: ModelHealthEntry[];
