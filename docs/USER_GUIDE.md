@@ -165,6 +165,37 @@ daily run fires within a few minutes of its set time; if the server was
 boot — an unattended machine starting a paid model run at an unexpected
 hour would be worse than skipping a night.
 
+## Using skills with your agents
+
+"Skills" are a **Claude Code** feature — a folder of instructions (and
+optionally scripts) that Claude Code discovers on its own and reaches for
+when a task matches the skill's description. They come from two places:
+
+- **User-level** (`~/.claude/skills/` on the machine running Hoopedorc) —
+  available to every project on that box. Install here anything you want
+  *every* agent, on *every* repo, to have access to (e.g. a general code
+  review or security-audit skill). This is a one-time setup step on the
+  deployment machine, not something Hoopedorc manages.
+- **Repo-level** (`<target repo>/.claude/skills/`) — committed to the
+  project's own repository, like code. Use this for anything specific to
+  that project (its own design system, its own release process). Anyone —
+  human or agent — running Claude Code in that repo gets it.
+
+**`opencode` models have no skills mechanism.** They don't discover
+`.claude/skills/` at all — the equivalent lever is plain instructions in the
+prompt (or that project's own `AGENTS.md`, if it has one).
+
+Discovery alone isn't reliable for a headless agent: it only reaches for a
+skill when the task at hand clearly matches the skill's description.
+Hoopedorc's job is to **nudge** — a project's **Advanced** settings has a
+**"Skill hints for the author model"** textarea (one per line, `skill name —
+when to use it`, e.g. `frontend-design-guidelines — read before building any
+UI component`). Every hint is appended to the author's prompt under a
+`## Skills` heading: Claude Code treats it as a strong signal to invoke the
+named skill; other runners just see it as ordinary instructions (harmless,
+often still useful). Hints are per-project because relevant skills vary by
+repo — a design-heavy frontend and a backend service need different nudges.
+
 ## Backups & data
 
 Everything lives in two places: the SQLite DB (`DB_PATH`, default

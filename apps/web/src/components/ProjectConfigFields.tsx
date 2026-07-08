@@ -24,6 +24,8 @@ export interface ProjectConfigForm {
   scheduleIntervalHours: string;
   scheduleHour: string;
   scheduleMinute: string;
+  /** F34: one skill hint per line, e.g. "skill-name — when to use it". */
+  skillHints: string;
 }
 
 export const EMPTY_PROJECT_CONFIG_FORM: ProjectConfigForm = {
@@ -46,6 +48,7 @@ export const EMPTY_PROJECT_CONFIG_FORM: ProjectConfigForm = {
   scheduleIntervalHours: "",
   scheduleHour: "",
   scheduleMinute: "",
+  skillHints: "",
 };
 
 export function projectConfigToForm(config: ProjectConfig | undefined): ProjectConfigForm {
@@ -73,6 +76,7 @@ export function projectConfigToForm(config: ProjectConfig | undefined): ProjectC
       config.schedule?.intervalHours != null ? String(config.schedule.intervalHours) : "",
     scheduleHour: config.schedule?.hour != null ? String(config.schedule.hour) : "",
     scheduleMinute: config.schedule?.minute != null ? String(config.schedule.minute) : "",
+    skillHints: config.skillHints?.join("\n") ?? "",
   };
 }
 
@@ -130,6 +134,13 @@ export function projectConfigFromForm(form: ProjectConfigForm): ProjectConfig | 
       config.schedule = { enabled: form.scheduleEnabled, mode: "daily", hour, minute };
     }
   }
+
+  const hints = form.skillHints
+    .split("\n")
+    .map((h) => h.trim())
+    .filter((h) => h.length > 0)
+    .slice(0, 20);
+  if (hints.length > 0) config.skillHints = hints;
 
   return Object.keys(config).length > 0 ? config : undefined;
 }
@@ -343,6 +354,28 @@ export function ProjectConfigFields({
               Skip the automatic docs commit (CHANGELOG/README) after each
               task merges
             </label>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-neutral-400">
+              Skill hints for the author model — one per line, "skill name — when to use it"
+            </label>
+            <textarea
+              value={form.skillHints}
+              onChange={(e) => set("skillHints", e.target.value)}
+              placeholder={
+                "frontend-design-guidelines — read before building any UI component"
+              }
+              rows={3}
+              className={`${inputCls} resize-y font-mono`}
+            />
+            <p className="mt-1 text-[10px] text-neutral-600">
+              Nudges the author toward skills it should use in this repo.
+              Only Claude Code has a real skills mechanism (
+              <code>~/.claude/skills/</code> or the repo's own{" "}
+              <code>.claude/skills/</code>); other runners just see this as
+              extra instructions.
+            </p>
           </div>
 
           <div>

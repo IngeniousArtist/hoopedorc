@@ -396,6 +396,24 @@ function parseProjectConfig(
     value.perTaskDocs = raw.perTaskDocs;
   }
 
+  if (raw.skillHints !== undefined) {
+    if (!Array.isArray(raw.skillHints)) {
+      return { error: "config.skillHints must be an array of strings" };
+    }
+    if (raw.skillHints.length > 20) {
+      return { error: "config.skillHints must have at most 20 entries" };
+    }
+    const hints: string[] = [];
+    for (const h of raw.skillHints) {
+      if (typeof h !== "string" || h.length > 200) {
+        return { error: "config.skillHints entries must be strings of at most 200 chars" };
+      }
+      const trimmed = h.trim();
+      if (trimmed) hints.push(trimmed);
+    }
+    if (hints.length > 0) value.skillHints = hints;
+  }
+
   if (raw.schedule !== undefined) {
     if (typeof raw.schedule !== "object" || raw.schedule === null) {
       return { error: "config.schedule must be an object" };

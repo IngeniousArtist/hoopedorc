@@ -975,6 +975,54 @@ test("F29: a docs-role task's author prompt includes the docs guidelines; a fron
   assert.doesNotMatch(frontendPrompt!, /### Docs/);
 });
 
+test("F34: skillHints appear in the author prompt when configured, absent when unset", async () => {
+  const capturedPrompts: string[] = [];
+  const capturingAdapter: AgentAdapter = {
+    runner: "opencode",
+    async run(opts): Promise<AgentRunResult> {
+      capturedPrompts.push(opts.prompt);
+      return {
+        ok: true,
+        exitReason: "completed",
+        costUsd: 0.01,
+        tokensIn: 1,
+        tokensOut: 1,
+        summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+      };
+    },
+  };
+  const s = settings();
+
+  const projectWithHints: Project = {
+    ...PROJECT,
+    config: {
+      skillHints: [
+        "frontend-design-guidelines — read before building any UI component",
+        "security-review — run before touching auth code",
+      ],
+    },
+  };
+  await new Orchestrator(
+    fakeDeps({ settings: s, adapterFor: () => capturingAdapter }, []),
+  ).start(projectWithHints, [task("t1")]);
+
+  await new Orchestrator(
+    fakeDeps({ settings: s, adapterFor: () => capturingAdapter }, []),
+  ).start(PROJECT, [task("t2")]);
+
+  assert.equal(capturedPrompts.length, 2);
+  const [withHints, withoutHints] = capturedPrompts;
+
+  assert.match(withHints!, /## Skills/);
+  assert.match(
+    withHints!,
+    /- frontend-design-guidelines — read before building any UI component/,
+  );
+  assert.match(withHints!, /- security-review — run before touching auth code/);
+
+  assert.doesNotMatch(withoutHints!, /## Skills/);
+});
+
 function docsSettings(): Settings {
   const s = settings();
   s.routing.byRole.updates = "deepseek-pro";

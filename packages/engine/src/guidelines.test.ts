@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DOCS_GUIDELINES, buildEngineeringStandardsBlock } from "./guidelines.js";
+import { DOCS_GUIDELINES, buildEngineeringStandardsBlock, buildSkillsBlock } from "./guidelines.js";
 
 test("buildEngineeringStandardsBlock: undefined guidelines produces nothing", () => {
   assert.equal(buildEngineeringStandardsBlock(undefined, false), "");
@@ -82,4 +82,21 @@ test("DOCS_GUIDELINES covers README, CHANGELOG, and helper docs", () => {
   assert.match(DOCS_GUIDELINES, /README/);
   assert.match(DOCS_GUIDELINES, /CHANGELOG/i);
   assert.match(DOCS_GUIDELINES, /package\.json/);
+});
+
+// ── F34: skill hints ──
+
+test("buildSkillsBlock: undefined/empty skillHints produces nothing", () => {
+  assert.equal(buildSkillsBlock(undefined), "");
+  assert.equal(buildSkillsBlock([]), "");
+});
+
+test("buildSkillsBlock: renders each hint as a bullet under a Skills header", () => {
+  const block = buildSkillsBlock([
+    "frontend-design-guidelines — read before building any UI component",
+    "security-review — run before touching auth code",
+  ]);
+  assert.match(block, /## Skills/);
+  assert.match(block, /- frontend-design-guidelines — read before building any UI component/);
+  assert.match(block, /- security-review — run before touching auth code/);
 });

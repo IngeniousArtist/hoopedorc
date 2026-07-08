@@ -224,6 +224,16 @@ export interface ProjectConfig {
    * best-effort — a documentation failure never blocks a validated merge.
    */
   perTaskDocs?: boolean;
+  /**
+   * F34: free-text nudges naming skills the author model should reach for
+   * in this project — each line is "skill name — when to use it" (e.g.
+   * "frontend-design-guidelines — read before building any UI component").
+   * Only `claude` (Claude Code) has a real skills mechanism (discovered from
+   * `~/.claude/skills/` or the target repo's own `.claude/skills/`); for
+   * other runners this just reads as ordinary prompt instructions. Bounded
+   * like other free-text prompt inputs: each entry <=200 chars, <=20 entries.
+   */
+  skillHints?: string[];
 }
 
 /**

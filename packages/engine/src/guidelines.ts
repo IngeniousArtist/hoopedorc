@@ -41,3 +41,21 @@ export function buildEngineeringStandardsBlock(
   if (sections.length === 0) return "";
   return `\n## Engineering standards\n${sections.join("\n\n")}\n`;
 }
+
+/**
+ * F34: renders a project's `ProjectConfig.skillHints` into a "## Skills"
+ * author-prompt block — a nudge, not a mechanism. Claude Code discovers
+ * skills on its own (user-level `~/.claude/skills/` or the target repo's own
+ * `.claude/skills/`) but only *uses* one reliably when the task at hand is
+ * explicitly pointed at it; other runners have no skills concept at all, so
+ * for them this just reads as ordinary instructions (harmless, often still
+ * useful). Returns "" when there are no hints — an unset/empty project
+ * leaves the author prompt byte-identical to before this feature existed.
+ */
+export function buildSkillsBlock(skillHints: string[] | undefined): string {
+  if (!skillHints || skillHints.length === 0) return "";
+  return (
+    `\n## Skills\nThe following skills are available in this environment; invoke each ` +
+    `when its condition applies:\n${skillHints.map((h) => `- ${h}`).join("\n")}\n`
+  );
+}
