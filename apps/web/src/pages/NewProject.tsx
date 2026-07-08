@@ -1,5 +1,5 @@
-import type { CreateProjectResponse } from "@orc/types";
-import { useState } from "react";
+import type { CreateProjectResponse, GetSettingsResponse } from "@orc/types";
+import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import {
   EMPTY_PROJECT_CONFIG_FORM,
@@ -23,6 +23,20 @@ export function NewProject({
   const [configForm, setConfigForm] = useState(EMPTY_PROJECT_CONFIG_FORM);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // F37: routing.planner may be Claude, Codex, or (rejected server-side)
+  // opencode — name it instead of hardcoding "Claude" below.
+  const [plannerName, setPlannerName] = useState("the planner");
+
+  useEffect(() => {
+    api<GetSettingsResponse>("getSettings")
+      .then((r) => {
+        const cfg = r.settings.models.find((m) => m.id === r.settings.routing.planner);
+        if (cfg) setPlannerName(cfg.displayName);
+      })
+      .catch(() => {
+        /* keep the "the planner" fallback */
+      });
+  }, []);
 
   const scheduleError = projectConfigFormError(configForm);
 
@@ -60,7 +74,7 @@ export function NewProject({
       <p className="text-xs text-neutral-400">
         Create the project, then use the{" "}
         <span className="font-medium text-neutral-300">Plan</span> tab to chat
-        with Claude and build the task list before starting the run.
+        with {plannerName} and build the task list before starting the run.
       </p>
 
       {error && (
