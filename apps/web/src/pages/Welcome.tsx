@@ -26,6 +26,10 @@ const CHECK_HINTS: Record<string, { install: string; login: string }> = {
     install: "curl -fsSL https://opencode.ai/install | bash",
     login: "opencode auth login",
   },
+  "Codex CLI (codex)": {
+    install: "npm install -g @openai/codex",
+    login: "codex login   (or set CODEX_API_KEY in .env)",
+  },
 };
 
 const inputCls =

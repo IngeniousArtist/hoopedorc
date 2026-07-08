@@ -30,7 +30,7 @@ export type Role =
   | "updates";
 
 /** How the orchestrator actually executes a model. */
-export type RunnerKind = "claude-code" | "opencode";
+export type RunnerKind = "claude-code" | "opencode" | "codex";
 
 export interface ModelConfig {
   id: ModelId;
@@ -48,6 +48,11 @@ export interface ModelConfig {
    * back both a cheap model and a high-leverage one. Omitted => CLI default.
    */
   claudeModel?: string;
+  /**
+   * For runner === "codex": the `codex exec -m/--model` id to target (e.g.
+   * "gpt-5.2-codex"). Omitted => CLI default, mirroring `claudeModel`.
+   */
+  codexModel?: string;
   roles: Role[];
   enabled: boolean;
   /** Cost accounting + budget caps (USD). */

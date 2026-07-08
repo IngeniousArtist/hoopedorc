@@ -1,15 +1,21 @@
 // @orc/adapters — how the orchestrator actually runs a model on a task.
 //
-// Two runners:
+// Three runners:
 //   - ClaudeAdapter   -> Claude Code headless (`claude -p`), uses the Pro sub
 //   - OpenCodeAdapter -> the `opencode run` CLI (every other model)
+//   - CodexAdapter    -> the native Codex CLI (`codex exec`), uses the
+//                        ChatGPT subscription's flat rate
 //
-// Both stream output to onLog AND capture the model's final text into
+// All three stream output to onLog AND capture the model's final text into
 // `summary` (the Validator parses summary for its JSON verdict).
 //
 // Depend ONLY on @orc/types.
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { readFile, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ModelConfig, ModelId } from "@orc/types";
 import { sanitizedEnv } from "./env.js";
 
@@ -42,7 +48,10 @@ export interface AgentRunResult {
 // run.updated events and marks the model "cooling down" for a few minutes so
 // the orchestrator's dispatch loop routes new work to a fallback instead of
 // burning attempts against a model that's about to reject them anyway.
-const RATE_LIMIT_PATTERN = /rate.?limit|429|too many requests|quota/i;
+// "usage limit" covers Codex CLI's own phrasing ("You've hit your usage
+// limit" — verified against the installed CLI's binary strings, 2026-07-08),
+// which doesn't otherwise match "rate limit"/"429"/"quota".
+const RATE_LIMIT_PATTERN = /rate.?limit|429|too many requests|quota|usage limit/i;
 
 /** Exported for unit testing — see index.test.ts. */
 export function classifyFailure(summary: string): "error" | "rate_limited" {
@@ -50,7 +59,7 @@ export function classifyFailure(summary: string): "error" | "rate_limited" {
 }
 
 export interface AgentAdapter {
-  readonly runner: "claude-code" | "opencode";
+  readonly runner: "claude-code" | "opencode" | "codex";
   run(opts: AgentRunOptions): Promise<AgentRunResult>;
 }
 
@@ -395,12 +404,202 @@ export class OpenCodeAdapter implements AgentAdapter {
   }
 }
 
+/**
+ * Native Codex CLI (`codex exec`) — the ChatGPT-subscription-billed path for
+ * OpenAI's Codex models, parallel to how ClaudeAdapter is the Claude-
+ * subscription-billed path (Codex models are also reachable via
+ * OpenCodeAdapter, but that's API-billed).
+ *
+ * Verified against the real CLI (`codex-cli 0.143.0`, 2026-07-08):
+ *  - `codex exec -` reads the prompt from stdin (same stdin-not-argv
+ *    reasoning as ClaudeAdapter/OpenCodeAdapter).
+ *  - `--json` emits JSONL on stdout: `thread.started`, `turn.started`,
+ *    `item.started`/`item.updated`/`item.completed` (item types include
+ *    `agent_message`, `reasoning`, `command_execution`, `file_change`,
+ *    `error`, …), `turn.completed` (carries `usage` with `input_tokens`/
+ *    `cached_input_tokens`/`output_tokens`), `turn.failed` (carries
+ *    `error.message`). Rust-side log lines land on stderr, not stdout.
+ *  - `--output-last-message <file>` is the most robust way to capture the
+ *    final message, but the file is only written on a *successful* turn —
+ *    confirmed empty/absent after a failed one, so the JSONL-derived text
+ *    is still needed as a fallback.
+ *  - No cost-USD anywhere in the output — it's subscription-billed, so
+ *    `costUsd` is always 0 here (same honesty as any other subscription
+ *    spend the app can't see into).
+ *  - Non-interactive `exec` mode has no separate approval flag (only
+ *    `--dangerously-bypass-approvals-and-sandbox`, which also drops
+ *    sandboxing entirely) — confirmed live that an unattended run neither
+ *    hangs nor prompts; `--sandbox` alone is the full gate.
+ */
+const CODEX_SANDBOX = "danger-full-access";
+
+export class CodexAdapter implements AgentAdapter {
+  readonly runner = "codex" as const;
+
+  /** Optional `codex exec -m` id (e.g. "gpt-5.2-codex"). */
+  constructor(private readonly codexModel?: string) {}
+
+  async run(opts: AgentRunOptions): Promise<AgentRunResult> {
+    const outputFile = join(tmpdir(), `codex-summary-${randomUUID()}.txt`);
+    try {
+      return await this.runOnce(opts, outputFile);
+    } finally {
+      await unlink(outputFile).catch(() => {});
+    }
+  }
+
+  private async runOnce(
+    opts: AgentRunOptions,
+    outputFile: string,
+  ): Promise<AgentRunResult> {
+    const args = [
+      "exec",
+      "-",
+      "--json",
+      "--output-last-message",
+      outputFile,
+      "-C",
+      opts.cwd,
+      // Runner parity with Claude/OpenCode, which run unsandboxed on the
+      // host: gates/deps/network need to behave identically across
+      // runners. `workspace-write`'s default network block would break
+      // `npm install` mid-task — this is the right default until F13's
+      // sandbox story covers agents generally, not just gates.
+      "--sandbox",
+      CODEX_SANDBOX,
+    ];
+    if (this.codexModel) args.push("-m", this.codexModel);
+
+    return new Promise((resolve) => {
+      const proc = spawn("codex", args, {
+        cwd: opts.cwd,
+        // Same $PWD lesson as the other two adapters — belt and suspenders
+        // alongside the explicit -C flag above.
+        env: sanitizedEnv({ PWD: opts.cwd }),
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      proc.stdin?.end(opts.prompt);
+
+      let tokensIn = 0;
+      let tokensOut = 0;
+      let assistantText = "";
+      let lastError = "";
+      let lineBuf = "";
+      let killed = false;
+
+      const handleEvent = (obj: Record<string, unknown>) => {
+        const type = obj.type;
+        if (type === "item.completed") {
+          const item = obj.item as
+            | { type?: string; text?: string; message?: string }
+            | undefined;
+          if (item?.type === "agent_message" && typeof item.text === "string") {
+            assistantText += item.text;
+          } else if (item?.type === "error" && typeof item.message === "string") {
+            lastError = item.message;
+          }
+        } else if (type === "turn.completed") {
+          const usage = obj.usage as
+            | { input_tokens?: number; output_tokens?: number }
+            | undefined;
+          if (usage) {
+            tokensIn = usage.input_tokens ?? tokensIn;
+            tokensOut = usage.output_tokens ?? tokensOut;
+          }
+        } else if (type === "turn.failed") {
+          const err = obj.error as { message?: string } | undefined;
+          if (err?.message) lastError = err.message;
+        } else if (type === "error" && typeof obj.message === "string") {
+          lastError = obj.message;
+        }
+      };
+
+      const onData = (chunk: Buffer) => {
+        const text = chunk.toString("utf8");
+        opts.onLog(text);
+        lineBuf += text;
+        const lines = lineBuf.split("\n");
+        lineBuf = lines.pop() ?? "";
+        for (const line of lines) {
+          const t = line.trim();
+          if (!t) continue;
+          try {
+            handleEvent(JSON.parse(t));
+          } catch {
+            /* non-JSON log line, already streamed */
+          }
+        }
+      };
+
+      proc.stdout?.on("data", onData);
+      proc.stderr?.on("data", (c: Buffer) => opts.onLog(c.toString("utf8")));
+
+      wireAbort(proc, opts.signal, () => {
+        killed = true;
+      });
+
+      const finish = async (code: number | null) => {
+        const tail = lineBuf.trim();
+        if (tail) {
+          try {
+            handleEvent(JSON.parse(tail));
+          } catch {
+            /* not JSON */
+          }
+        }
+        if (killed || opts.signal?.aborted) {
+          resolve({
+            ok: false,
+            exitReason: "killed",
+            costUsd: 0,
+            tokensIn,
+            tokensOut,
+            summary: assistantText || lastError,
+          });
+          return;
+        }
+        // --output-last-message is the most robust summary source (it's the
+        // model's actual final message, not a text fragment reassembled
+        // from JSONL) but is only written on a successful turn.
+        const fileSummary = await readFile(outputFile, "utf8").catch(() => "");
+        const ok = code === 0;
+        const finalSummary = fileSummary.trim() || assistantText || lastError;
+        resolve({
+          ok,
+          exitReason: ok ? "completed" : classifyFailure(finalSummary),
+          costUsd: 0,
+          tokensIn,
+          tokensOut,
+          summary: finalSummary,
+        });
+      };
+
+      proc.on("error", (err) => {
+        opts.onLog(`[codex] spawn error: ${err.message}\n`);
+        resolve({
+          ok: false,
+          exitReason: "error",
+          costUsd: 0,
+          tokensIn,
+          tokensOut,
+          summary: err.message,
+        });
+      });
+
+      proc.on("close", (code) => {
+        void finish(code);
+      });
+    });
+  }
+}
+
 /** Resolve a ModelConfig to a ready-to-use adapter. */
 export function makeAdapter(
   cfg: ModelConfig,
   opencodeBaseUrl: string,
 ): AgentAdapter {
   if (cfg.runner === "claude-code") return new ClaudeAdapter(cfg.claudeModel);
+  if (cfg.runner === "codex") return new CodexAdapter(cfg.codexModel);
   if (!cfg.opencodeModel) {
     throw new Error(`model ${cfg.id} is runner=opencode but has no opencodeModel`);
   }

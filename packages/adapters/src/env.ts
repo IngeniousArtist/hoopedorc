@@ -10,7 +10,18 @@
 // actually need to run.
 const SECRET_PATTERN = /TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL|TELEGRAM/i;
 
-const EXACT_ALLOWLIST = new Set(["PATH", "HOME", "SHELL", "TMPDIR", "LANG"]);
+const EXACT_ALLOWLIST = new Set([
+  "PATH",
+  "HOME",
+  "SHELL",
+  "TMPDIR",
+  "LANG",
+  // Codex CLI reads its own credentials/config location from these even
+  // under a sanitized env — same reasoning as the ANTHROPIC_ allowlist
+  // below, just without a shared prefix to key off of.
+  "CODEX_API_KEY",
+  "CODEX_HOME",
+]);
 
 function isAllowlisted(key: string): boolean {
   return (

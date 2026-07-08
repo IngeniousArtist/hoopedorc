@@ -10,7 +10,7 @@ const ALL_ROLES: Role[] = [
   "updates",
 ];
 
-const RUNNERS: RunnerKind[] = ["opencode", "claude-code"];
+const RUNNERS: RunnerKind[] = ["opencode", "claude-code", "codex"];
 
 const inputCls =
   "w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200";
@@ -168,7 +168,9 @@ export function ModelsEditor({
                 <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                   {m.runner === "claude-code"
                     ? "claude --model (e.g. sonnet / opus)"
-                    : "opencode model (provider/model from `opencode models`)"}
+                    : m.runner === "codex"
+                      ? "codex exec -m (optional — omit for the CLI default)"
+                      : "opencode model (provider/model from `opencode models`)"}
                 </label>
                 {m.runner === "claude-code" ? (
                   <input
@@ -177,6 +179,15 @@ export function ModelsEditor({
                       patch(idx, { claudeModel: e.target.value || undefined })
                     }
                     placeholder="sonnet"
+                    className={inputCls + " font-mono"}
+                  />
+                ) : m.runner === "codex" ? (
+                  <input
+                    value={m.codexModel ?? ""}
+                    onChange={(e) =>
+                      patch(idx, { codexModel: e.target.value || undefined })
+                    }
+                    placeholder="gpt-5.2-codex"
                     className={inputCls + " font-mono"}
                   />
                 ) : (

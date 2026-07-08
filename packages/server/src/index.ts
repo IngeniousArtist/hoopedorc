@@ -2222,7 +2222,8 @@ async function main() {
 
   // ── Setup / health check ──
   app.get("/api/setup", async () => {
-    return runSetupChecks();
+    const settings = repo.getSettings(db) ?? defaultSettings();
+    return runSetupChecks(settings);
   });
 
   // Live-test every enabled model with a trivial prompt (costs a little).

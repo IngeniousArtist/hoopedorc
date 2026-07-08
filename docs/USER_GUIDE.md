@@ -49,6 +49,20 @@ merge — rather than either babysitting every diff or trusting a black box.
   them: disable whichever you don't have from Settings → Models, and
   re-point the routing at what's left (Settings → Routing, or the
   onboarding wizard's routing step).
+- **Codex (optional)** — if you'd rather have a model run through OpenAI's
+  own [Codex CLI](https://developers.openai.com/codex) than pay per-token
+  through OpenCode, install it and log in with your ChatGPT plan:
+  ```bash
+  npm i -g @openai/codex
+  codex login
+  ```
+  then in Settings → Models add (or edit) a model with runner `codex` and
+  an optional `codex exec -m` id (blank uses the CLI's default model).
+  Codex is subscription-billed the same way Claude is — Hoopedorc can't see
+  into that spend, so codex-runner tasks always show **$0.0000** in cost
+  views (real token counts still show; they're just not priced). Use the
+  model's **quota** (max runs per window) rather than a cost cap to keep it
+  in check, since a dollar cap can never trigger for a run that costs $0.
 - Run `npm install && npm run setup` from the repo root — `setup` creates
   `.env` from `.env.example` if you don't have one yet, and checks all
   three CLIs (`gh`/`claude`/`opencode`) for you.
@@ -359,6 +373,17 @@ your own setup, per the note on each step.
     problem is macOS/container-specific and doesn't apply to a normal
     (non-containerized) Linux systemd deployment, which is what this
     section assumes.
+- **`codex`** (only if you've configured a model with runner `codex` —
+  otherwise skip this entirely, the Setup page won't even check for it):
+  same shape as `opencode`'s pattern above. `codex login` is an interactive
+  ChatGPT OAuth flow, so run it once on a machine with a browser and copy
+  the resulting credential file (`~/.codex/auth.json`, or wherever
+  `$CODEX_HOME` points) over to the server under the same OS user that will
+  run Hoopedorc — **treat it like a password**, same as any other CLI
+  credential file in this section. `CODEX_API_KEY` in `.env` is the
+  non-interactive alternative if you'd rather not seed a credential file at
+  all, at the cost of per-token billing instead of the subscription's flat
+  rate.
 - Once all three check out (`npm run setup` re-runs the same checks Setup
   page does), follow `deploy/README.md`'s "Native + systemd" steps for the
   actual service setup, see **Backups & data** above for where the DB and
