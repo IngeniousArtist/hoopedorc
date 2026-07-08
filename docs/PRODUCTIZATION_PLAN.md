@@ -1554,10 +1554,10 @@ docs/PRODUCTIZATION_PLAN.md (Parts 1–6), is now done.**
 | Item | Status | PR |
 |---|---|---|
 | B28 — removing/renaming a model leaves dangling routing/task references | ✅ done | [#91](https://github.com/IngeniousArtist/hoopedorc/pull/91) |
-| U15 — approve/reject buttons visually identical on Notifications | ⬜ | |
-| U16 — estimate copy duplication + fake-precision cost formatting | ⬜ | |
-| U17 — Projects-row orphan "·" + pause/stop icon inconsistency | ⬜ | |
-| U18 — unknown hash silently ignored, URL and UI disagree | ⬜ | |
+| U15 — approve/reject buttons visually identical on Notifications | ✅ done | [#93](https://github.com/IngeniousArtist/hoopedorc/pull/93) |
+| U16 — estimate copy duplication + fake-precision cost formatting | ✅ done | [#93](https://github.com/IngeniousArtist/hoopedorc/pull/93) |
+| U17 — Projects-row orphan "·" + pause/stop icon inconsistency | ✅ done | [#93](https://github.com/IngeniousArtist/hoopedorc/pull/93) |
+| U18 — unknown hash silently ignored, URL and UI disagree | ✅ done | [#93](https://github.com/IngeniousArtist/hoopedorc/pull/93) |
 | F36 — Codex CLI as a first-class runner | ⬜ | |
 | F37 — swappable planner runner (Claude Code ↔ Codex) | ⬜ | |
 | F38 — AGENTS.md generation in the planning pipeline | ⬜ | |
@@ -3998,6 +3998,54 @@ falls through to defaults, and the first hash-sync write replaces it).
 **Acceptance:** with the app on Board, setting `location.hash =
 "#/garbage"` snaps the hash back to the Board's canonical hash within a
 tick; back/forward still work (the replaced entry doesn't grow the stack).
+
+**U15–U18 — done (PR [#93](https://github.com/IngeniousArtist/hoopedorc/pull/93)).**
+All four web-only; no engine/adapter/server changes, so the full test suite
+(61/61 / 4/4 / 51/51) is unaffected by construction — verification is
+entirely live/visual, matching the plan's own acceptance criteria for this
+batch. **U15**: new `formatOptionLabel` (Notifications.tsx) Title-Cases an
+option id (`approve_merge` → "Approve Merge"); the button's class is chosen
+by `option.startsWith("approve")` — primary blue for anything approve-shaped,
+the same bordered-red secondary style used everywhere else (ModelsEditor's
+✕, TaskCard's Stop, PlanView's remove) for reject and anything else,
+covering every real `options` array in the codebase (`["approve",
+"reject"]`, `["approve_merge", "reject"]`, `["approve_anyway", "reject"]`,
+`["reject"]`). **U16**: `CostView.tsx`'s estimate note is now colored
+green/amber directly instead of appending a separate `(low/high confidence)`
+fragment that literally repeated "low confidence" from the note's own
+prose; both the header total and per-task ranges switched from the local
+4-decimal `usd()` helper to the already-imported `formatUsd` — per-task/
+per-run actual costs elsewhere on the page keep `usd()` unchanged, per U8.
+`PlanView.tsx` needed a new `formatUsd` import for its own planning-cost
+caption. **U17**: `⏸`/`⏹` added to `ProjectHeader.tsx`'s "Pause (finish
+current)"/"Stop now" and `ProjectsView.tsx`'s "Stop now" — `ProjectsView`'s
+own "⏸ Pause" and every surface's "▶ Start"/"▶ Resume" already had icons,
+so this was purely additive, no icon removed anywhere. **U18**:
+`onHashChange`'s early `return` on a failed `parseHash` became an
+`else`-free `if (!parsed) { history.replaceState(...); return; }` writing
+back the current page's own canonical hash. **Notable correction to this
+batch's own originating spec**: the design-critique write-up (in #90)
+described "each Projects row renders a stray lone `·` with nothing to
+separate," but re-reading the code (`ProjectsView.tsx`'s `{p.localPath}`
+line) and re-screenshotting the mock seed showed that character is the
+literal `localPath` field value ("." — the seed project's real, dogfooded
+path) rendering correctly, not a separator artifact; a real project has a
+real filesystem path there. No fix applied for that half of U17 — only the
+icon-consistency half (verified above) was a genuine finding. **Live-
+verified in a real browser** (`npm run mock`, fresh tabs throughout — a
+reused tab from an earlier session hit a `window.confirm` left in a
+dirty-Settings state from prior testing, freezing script injection with
+"Script injection timed out" errors exactly as the browser tool's own
+guidance warns about; closing that tab and opening a new one resolved it
+immediately, a useful reminder for future sessions): Notifications shows
+"Approve" solid blue / "Reject" bordered red, Title Case; Costs shows the
+estimate note once in amber with `$0.85–$2.54` / `$0.22–$0.66`-style
+ranges and no duplicated parenthetical; Projects/Board/ProjectHeader all
+render `⏸ Pause` / `⏹ Stop now` consistently; and the U18 hash-repair was
+proven two ways — a direct `location.hash = "#/garbage"` snapped back
+within a tick, and a board→plan→garbage→back()→back() sequence reached
+board in exactly two steps, the same count a garbage-free board→plan→
+back() would need, proving the replaced entry added nothing to the stack.
 
 ### F36. Codex CLI as a first-class runner
 
