@@ -3,6 +3,73 @@
 All notable changes to Hoopedorc are recorded here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] — 2026-07-08
+
+Part 6 of `docs/PRODUCTIZATION_PLAN.md` is complete as of this tag: three
+Phase 10 audit fixes, a real `@orc/server` test package, and the owner's
+quality-of-life wave — planning-context attachments, engineering-standards
+prompts for authors and validators, per-task documentation, rate-limit
+resilience with Telegram alerts, an honest model-identity test, a skills
+strategy, and quota visibility.
+
+## Phase 10 audit fixes (B25–B27)
+
+- **B25** — fixed the wrong port in `USER_GUIDE.md`'s `tailscale serve`
+  example.
+- **B26** — old still-pending approvals no longer fall off the
+  notifications fetch once 250+ newer, already-responded notifications
+  exist.
+- **B27** — `update.sh`'s systemd-unit detection no longer misfires against
+  older `systemctl` versions that exit 0 with zero matches.
+
+## T1 — a real `@orc/server` test package
+
+- 35 new tests (`node --import tsx --test`, wired into CI) covering the
+  scheduler's due-check math, quota window math, DB backup rotation against
+  real files on disk, notification pruning/pending-approval exemption, and
+  Telegram-URL token redaction — previously only verified by standalone
+  scripts, not a real test suite.
+
+## Planning context (F27, F28)
+
+- **F27 — Plan-mode attachments.** Upload images/PDFs/files from the
+  planning chat into the project's `context/attachments/` folder; the
+  planner reads them with its own file tools.
+- **F28 — Plan-chat session history.** Every planning chat/deconstruct
+  session is archived as a markdown file under `context/plan-sessions/`.
+
+## Engineering standards (F31, F29, F30)
+
+- **F31 — Coding/UX/security guidelines.** Settings-editable house rules
+  are injected into both the author's and the validator's prompts, so
+  "meets the standards" is a checkable claim rather than vibes.
+- **F29 — Documentation guidelines.** Fixed README/CHANGELOG conventions
+  for docs-role tasks (and the standing per-project docs task).
+- **F30 — Per-task documentation stage.** After the validator approves a
+  task (and before the merge), a docs-role model updates CHANGELOG.md (and
+  README.md/docs/** only if needed) in the same PR — scope-enforced,
+  strictly best-effort, opt-out per project (`ProjectConfig.perTaskDocs`).
+
+## Resilience (F32, F33)
+
+- **F32 — Rate-limit wait-and-retry.** A rate-limited author run waits and
+  retries the same model (bounded, abortable) before falling back to the
+  next model; Telegram alerts fire on a wait, a fallback switch, or an
+  exhausted retry chain.
+- **F33 — Honest model-identity test.** "Test models" now asks each model
+  to say hello and name itself, showing the real reply instead of a bare
+  "OK" — with a note that self-identification is approximate.
+
+## Skills + quota visibility (F34, F35)
+
+- **F34 — Per-project skill hints.** A free-text nudge (`skill name — when
+  to use it`) is appended to the author prompt as a `## Skills` section,
+  pointing Claude Code toward project-specific or user-level skills that
+  headless discovery alone wouldn't reliably reach for.
+- **F35 — Quota usage in Setup & Health.** Each model with a subscription
+  quota configured (F16) now shows its current window usage (runs and
+  spend against the configured limits) instead of enforcing invisibly.
+
 ## [0.2.0] — 2026-07-06
 
 Part 3 of `docs/PRODUCTIZATION_PLAN.md` is complete as of this tag: the
