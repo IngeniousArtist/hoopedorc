@@ -1558,19 +1558,20 @@ docs/PRODUCTIZATION_PLAN.md (Parts 1–6), is now done.**
 | U16 — estimate copy duplication + fake-precision cost formatting | ✅ done | [#93](https://github.com/IngeniousArtist/hoopedorc/pull/93) |
 | U17 — Projects-row orphan "·" + pause/stop icon inconsistency | ✅ done | [#93](https://github.com/IngeniousArtist/hoopedorc/pull/93) |
 | U18 — unknown hash silently ignored, URL and UI disagree | ✅ done | [#93](https://github.com/IngeniousArtist/hoopedorc/pull/93) |
-| F36 — Codex CLI as a first-class runner | ⬜ | |
+| F36 — Codex CLI as a first-class runner | ✅ done | [#95](https://github.com/IngeniousArtist/hoopedorc/pull/95) |
 | F37 — swappable planner runner (Claude Code ↔ Codex) | ⬜ | |
 | F38 — AGENTS.md generation in the planning pipeline | ⬜ | |
 | F13-P1 — gates-only Docker sandbox (phase 1 of docs/specs/sandbox.md) | ⬜ | |
 | F39 — EC2 deploy checklist, prebuilt systemd start, Apple-split docs | ⬜ | |
+| B29 — `ensureDeps` fingerprints the stale primary clone, not the merged worktree | ⬜ | |
 
 Work top-down in the suggested batches: (1) B28; (2) U15–U18 together;
-(3) F36; (4) F37; (5) F38; (6) F13-P1; (7) F39. Update this table as each
-lands; tag `v0.4.0` when the wave closes. **F36 and F37 need the owner to
-install and authenticate Codex CLI before live verification** (`npm i -g
-@openai/codex`, then the owner runs `codex login` themselves — suggest
-typing `! codex login` in the session); build + unit-verify first, then
-ask for the login when you reach the live-verification step.
+(3) F36; (4) F37; (5) F38; (6) F13-P1; (7) F39; (8) B29. Update this table
+as each lands; tag `v0.4.0` when the wave closes. **F36 and F37 need the
+owner to install and authenticate Codex CLI before live verification**
+(`npm i -g @openai/codex`, then the owner runs `codex login` themselves —
+suggest typing `! codex login` in the session); build + unit-verify first,
+then ask for the login when you reach the live-verification step.
 
 ---
 
@@ -3906,6 +3907,60 @@ clicking ✕ on an unreferenced model never invokes `confirm()` at all. The
 roster datalist (`#opencode-model-roster`) rendered with 422 real ids
 (a genuine `opencode models` call, not a stub) and every opencode-runner
 row — including a freshly-added one — had its `list` attribute wired to it.
+
+### B29. `ensureDeps` fingerprints the stale primary clone, not the merged worktree — MEDIUM (found live-verifying F36, 2026-07-08)
+
+**Where:** `packages/engine/src/worktree-manager.ts`, `ensureDeps()`.
+
+**Problem:** found by accident during F36's live verification, on a real
+multi-task run (owner's `f36-livetest` scratch repo) — not specific to the
+Codex runner; would reproduce identically with claude-code or opencode as
+the author. A task that adds/changes dependencies (a scaffold task adding
+real `test`/`build`/`lint`/`typecheck` scripts + devDependencies) merges
+fine. But the *next* task's worktree — correctly branched off the freshly-
+fetched `origin/<defaultBranch>` per `create()`'s own comment ("Always
+branch off the latest remote default branch, not the primary clone's local
+HEAD") — still fails those same gates for missing dependencies. Root cause:
+`ensureDeps(project, worktreePath)` never reads `worktreePath` for its
+dependency check at all — it fingerprints `project.localPath`'s (the
+primary clone's) `package.json`/lockfile and runs `npm ci`/`install` there,
+then symlinks the *worktree's* `node_modules` to the *primary clone's*.
+Nothing in the codebase ever updates the primary clone's working files
+after a merge (`create()`'s `git fetch` only updates the `origin/main` ref,
+never the local branch or working tree) — so once the very first task
+changes `package.json`, the primary clone is permanently stale and
+`ensureDeps` compares against that stale snapshot forever, silently
+symlinking every later worktree to an empty/outdated `node_modules`.
+
+**Confirmed live:** after a real scaffold task's PR merged, the primary
+clone's checked-out `package.json` was still the pre-scaffold stub (`git
+log` showed local `main` one commit behind `origin/main`) and its
+`node_modules` was empty. A same-difficulty follow-up task (any model)
+would fail `typecheck`/`lint`/`build` gates indefinitely — not a flake, a
+permanent state until something else happens to touch the lockfile in a
+way that changes its hash relative to whatever stale copy is on disk.
+
+**Fix (not attempted yet — scoping notes for whoever picks this up):**
+`ensureDeps` needs to fingerprint and install against the *worktree's*
+freshly-checked-out `package.json`/lockfile, not the primary clone's. The
+shared-`node_modules`-symlink optimization can stay (still worth avoiding a
+per-task reinstall), but the fingerprint comparison and the `npm ci`
+working directory should point at something that reflects the latest
+merged `main` — either read the worktree's own files for the fingerprint
+while still installing into the shared primary-clone `node_modules`
+directory, or `git fetch` + reset the primary clone's working tree (not
+just the ref) before computing the fingerprint. Watch out for the existing
+concurrency caveat in the comment above `ensureDeps` (concurrent worktrees
+share one `node_modules`) — whatever fix lands must not reintroduce a race
+between two sibling tasks' installs.
+
+**Acceptance:** a task that adds a dependency, merged, followed by a
+second task (different task, same or different model) whose gates need
+that dependency — the second task's gates see the real installed package,
+not a stale/empty `node_modules`. Add an engine test: two sequential
+worktree creations against a project whose `package.json` changes on disk
+between them (simulating a merge) — `ensureDeps` reinstalls for the second
+one instead of silently reusing the first's stale marker.
 
 ### U15. Approve/reject buttons are visually identical on Notifications
 
