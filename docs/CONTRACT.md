@@ -139,6 +139,28 @@ existing messages/prd/draftTasks clear) so the next chat turn starts a
 genuinely new file. A failed write never fails the underlying request
 (warn-logged and swallowed, same posture as F17's DB backups).
 
+F38: `/plan/deconstruct` also produces `agentsMd` — generated `AGENTS.md`
+content (project summary, stack/platform, directory structure, the real
+dev/test/build/lint commands matching the scaffold task's actual
+`package.json` scripts, stack-specific conventions, "how to work here"
+notes — capped ~120 lines, entirely about the project, never about
+Hoopedorc's own worktree/PR machinery). Persisted alongside the other
+planning_* scratch fields (`planning_agents_md` DB column) so a reload
+mid-planning keeps it, and shown in PlanView as an editable textarea next
+to the (read-only) PRD preview. At `/plan/commit`, a non-empty `agentsMd`
+is committed to the repo root via the same `gitForPlanning.commitFile`
+mechanism as the PRD, plus a one-line `CLAUDE.md` containing exactly
+`@AGENTS.md` — written only when no `CLAUDE.md` already exists, never
+clobbering a hand-maintained one. Rationale: Codex CLI and opencode read
+`AGENTS.md` natively; Claude Code only reads `CLAUDE.md`, and `@AGENTS.md`
+is its official import syntax for pulling in another file's content — so
+every runner ends up seeing the same content with no duplication to drift.
+`orchestrator.ts`'s author prompt (`guidelines.ts`'s `buildAgentsMdBlock`)
+adds a one-line nudge to read `AGENTS.md` at the repo root whenever the
+task's worktree actually has one; F30's per-task documenter is also
+allowed to touch `AGENTS.md` (added to `DOCS_ALLOWED_SCOPE`), only when a
+merged change actually alters the project's structure/commands/conventions.
+
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.
 
@@ -149,6 +171,11 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 | `GET /api/projects` | → `ListProjectsResponse` |
 | `GET /api/projects/:id` | → `GetProjectResponse` |
 | `POST /api/projects/:id/plan` | `PlanProjectRequest` → `PlanProjectResponse` |
+| `POST /api/projects/:id/plan/chat` | `PlanChatRequest` → `PlanChatResponse` |
+| `POST /api/projects/:id/plan/deconstruct` | `PlanDeconstructRequest` → `PlanDeconstructResponse` (incl. F38's `agentsMd`) |
+| `POST /api/projects/:id/plan/save-draft` | `SaveDraftRequest` → `SaveDraftResponse` |
+| `GET /api/projects/:id/plan/session` | → `PlanningSessionResponse` (incl. F38's `agentsMd`) |
+| `POST /api/projects/:id/plan/commit` | `PlanCommitRequest` → `PlanCommitResponse` |
 | `GET /api/projects/:id/plan/attachments` | (F27) → `ListPlanAttachmentsResponse` |
 | `POST /api/projects/:id/plan/attachments` | (F27) multipart file upload → `ListPlanAttachmentsResponse` |
 | `DELETE /api/projects/:id/plan/attachments/:name` | (F27) → `ListPlanAttachmentsResponse` |

@@ -47,6 +47,10 @@ export function initDb(path: string = ENV.dbPath): Db {
     // separate from the other planning_* columns so it can be cleared
     // independently at /plan/commit (see plan-sessions.ts).
     "ALTER TABLE projects ADD COLUMN planning_session_file TEXT",
+    // F38: AGENTS.md draft from the last deconstruct, alongside the other
+    // planning_* scratch fields — persisted so a reload mid-planning keeps
+    // the operator's edits, cleared at /plan/commit like planning_prd.
+    "ALTER TABLE projects ADD COLUMN planning_agents_md TEXT",
   ]) {
     try { db.exec(col); } catch { /* column already exists */ }
   }

@@ -1368,11 +1368,13 @@ async function main() {
       );
       recordPlanningCost(id, costUsd);
       const tasks = withAssignedModels(output, settings);
-      // Persist draft tasks + PRD so the Plan tab can restore them on reload.
+      // Persist draft tasks + PRD + AGENTS.md (F38) so the Plan tab can
+      // restore them on reload.
       repo.savePlanningSession(db, id, {
         messages,
         prd: output.prdMarkdown,
         draftTasks: tasks,
+        agentsMd: output.agentsMd,
       });
       recordPlanDeconstruct(
         db,
@@ -1384,7 +1386,7 @@ async function main() {
         plannerModelLabel(plannerModel),
         (msg) => app.log.warn(msg),
       );
-      return { prdMarkdown: output.prdMarkdown, tasks, costUsd };
+      return { prdMarkdown: output.prdMarkdown, tasks, costUsd, agentsMd: output.agentsMd };
     } catch (err) {
       return reply.code(502).send({
         error: `deconstruction failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -1396,10 +1398,11 @@ async function main() {
   app.post("/api/projects/:id/plan/save-draft", async (req, reply) => {
     const { id } = req.params as RouteParams;
     if (!repo.getProject(db, id)) return reply.code(404).send({ error: "project not found" });
-    const body = req.body as { prdMarkdown?: string; tasks?: DraftTask[] };
+    const body = req.body as { prdMarkdown?: string; tasks?: DraftTask[]; agentsMd?: string };
     repo.savePlanningSession(db, id, {
       prd: body.prdMarkdown,
       draftTasks: body.tasks ?? null,
+      agentsMd: body.agentsMd,
     });
     return { ok: true };
   });
@@ -1479,7 +1482,7 @@ async function main() {
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
 
-    const body = req.body as { prdMarkdown?: string; tasks?: DraftTask[] };
+    const body = req.body as { prdMarkdown?: string; tasks?: DraftTask[]; agentsMd?: string };
     if (!Array.isArray(body.tasks) || body.tasks.length === 0) {
       return reply.code(400).send({ error: "tasks required" });
     }
@@ -1523,6 +1526,7 @@ async function main() {
       messages: [],
       prd: null,
       draftTasks: null,
+      agentsMd: null,
       sessionFile: null,
     });
 
@@ -1531,6 +1535,30 @@ async function main() {
       .commitFile(project, prdPath, prdMarkdown, "docs: update PRD (hoopedorc)")
       .catch(() => {});
 
+    // F38: commit the generated AGENTS.md alongside the PRD, plus a one-line
+    // CLAUDE.md pointer (`@AGENTS.md`) so Claude Code — which doesn't read
+    // AGENTS.md natively — sees the same content via its own import
+    // mechanism. Only written when genuinely produced (a v2 iteration where
+    // the operator cleared the field just skips this, same as an empty PRD
+    // falling back to the prior one above) and never clobbers a hand-
+    // maintained CLAUDE.md.
+    if (body.agentsMd?.trim()) {
+      void gitForPlanning
+        .commitFile(project, "AGENTS.md", body.agentsMd, "docs: update AGENTS.md (hoopedorc)")
+        .then(async () => {
+          const claudeMdPath = join(project.localPath, "CLAUDE.md");
+          if (!existsSync(claudeMdPath)) {
+            await gitForPlanning.commitFile(
+              project,
+              "CLAUDE.md",
+              "@AGENTS.md",
+              "docs: add CLAUDE.md pointer to AGENTS.md (hoopedorc)",
+            );
+          }
+        })
+        .catch(() => {});
+    }
+
     broadcast({ type: "project.updated", payload: repo.getProject(db, id)! });
     for (const t of created) broadcast({ type: "task.updated", payload: t });
 
@@ -1538,6 +1566,7 @@ async function main() {
       project: repo.getProject(db, id)!,
       tasks: repo.getTasks(db, id),
       prdMarkdown,
+      agentsMd: body.agentsMd,
     };
   });
 

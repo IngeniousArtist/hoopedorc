@@ -163,3 +163,33 @@ test("getNotifications: works with no projectId (global) too", () => {
   const result = repo.getNotifications(db);
   assert.equal(result.some((n) => n.id === "pending-1"), true);
 });
+
+// ── F38: AGENTS.md planning-session persistence ──
+
+test("savePlanningSession/getPlanningSession: agentsMd round-trips alongside prd/draftTasks", () => {
+  const db = setup();
+  repo.savePlanningSession(db, "proj-1", {
+    messages: [{ role: "user", content: "hi" }],
+    prd: "# PRD",
+    draftTasks: [],
+    agentsMd: "# Project context\n\nA test project.",
+  });
+  const session = repo.getPlanningSession(db, "proj-1");
+  assert.equal(session.prd, "# PRD");
+  assert.equal(session.agentsMd, "# Project context\n\nA test project.");
+});
+
+test("savePlanningSession: agentsMd: null clears a previously saved value", () => {
+  const db = setup();
+  repo.savePlanningSession(db, "proj-1", { agentsMd: "# Draft" });
+  assert.equal(repo.getPlanningSession(db, "proj-1").agentsMd, "# Draft");
+
+  repo.savePlanningSession(db, "proj-1", { agentsMd: null });
+  assert.equal(repo.getPlanningSession(db, "proj-1").agentsMd, undefined);
+});
+
+test("getPlanningSession: agentsMd is undefined when never set", () => {
+  const db = setup();
+  const session = repo.getPlanningSession(db, "proj-1");
+  assert.equal(session.agentsMd, undefined);
+});

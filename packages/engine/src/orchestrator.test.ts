@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { AgentAdapter, AgentRunResult } from "@orc/adapters";
 import type { GateResult, Project, Run, Settings, Task } from "@orc/types";
@@ -1023,6 +1026,68 @@ test("F34: skillHints appear in the author prompt when configured, absent when u
   assert.doesNotMatch(withoutHints!, /## Skills/);
 });
 
+test("F38: the AGENTS.md nudge appears in the author prompt exactly when the file exists in the real worktree", async () => {
+  const capturedPrompts: string[] = [];
+  const capturingAdapter: AgentAdapter = {
+    runner: "opencode",
+    async run(opts): Promise<AgentRunResult> {
+      capturedPrompts.push(opts.prompt);
+      return {
+        ok: true,
+        exitReason: "completed",
+        costUsd: 0.01,
+        tokensIn: 1,
+        tokensOut: 1,
+        summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+      };
+    },
+  };
+  const s = settings();
+
+  // A real temp directory, not the default fake `/tmp/${id}` path — the
+  // nudge is a real existsSync check against task.worktreePath, so it needs
+  // an actual file on disk to prove out.
+  const dirWithAgents = mkdtempSync(join(tmpdir(), "hoopedorc-agentsmd-orch-"));
+  const dirWithout = mkdtempSync(join(tmpdir(), "hoopedorc-agentsmd-orch-"));
+  writeFileSync(join(dirWithAgents, "AGENTS.md"), "# Project context\n");
+
+  try {
+    await new Orchestrator(
+      fakeDeps({
+        settings: s,
+        adapterFor: () => capturingAdapter,
+        worktrees: {
+          async create(_p, t) {
+            return { branch: `orc/${t.id}`, path: dirWithAgents };
+          },
+        },
+      }, []),
+    ).start(PROJECT, [task("t1")]);
+
+    await new Orchestrator(
+      fakeDeps({
+        settings: s,
+        adapterFor: () => capturingAdapter,
+        worktrees: {
+          async create(_p, t) {
+            return { branch: `orc/${t.id}`, path: dirWithout };
+          },
+        },
+      }, []),
+    ).start(PROJECT, [task("t2")]);
+
+    assert.equal(capturedPrompts.length, 2);
+    const [withAgents, withoutAgents] = capturedPrompts;
+
+    assert.match(withAgents!, /## Project context/);
+    assert.match(withAgents!, /Read AGENTS\.md at the repo root before starting/);
+    assert.doesNotMatch(withoutAgents!, /## Project context/);
+  } finally {
+    rmSync(dirWithAgents, { recursive: true, force: true });
+    rmSync(dirWithout, { recursive: true, force: true });
+  }
+});
+
 function docsSettings(): Settings {
   const s = settings();
   s.routing.byRole.updates = "deepseek-pro";
@@ -1216,7 +1281,7 @@ test("F30: out-of-scope documenter edits are reverted before the docs commit", a
   await new Orchestrator(deps).start(PROJECT, [t1]);
 
   assert.equal(t1.status, "done");
-  assert.deepEqual(revertCalls[0], ["CHANGELOG.md", "README.md", "docs/**"]);
+  assert.deepEqual(revertCalls[0], ["CHANGELOG.md", "README.md", "AGENTS.md", "docs/**"]);
   assert.ok(
     logs.some(
       (l) => l.level === "warn" && /reverted: src\/oops\.ts/.test(l.message),

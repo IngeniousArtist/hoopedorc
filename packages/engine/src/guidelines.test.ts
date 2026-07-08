@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
-import { DOCS_GUIDELINES, buildEngineeringStandardsBlock, buildSkillsBlock } from "./guidelines.js";
+import {
+  DOCS_GUIDELINES,
+  buildAgentsMdBlock,
+  buildEngineeringStandardsBlock,
+  buildSkillsBlock,
+} from "./guidelines.js";
 
 test("buildEngineeringStandardsBlock: undefined guidelines produces nothing", () => {
   assert.equal(buildEngineeringStandardsBlock(undefined, false), "");
@@ -99,4 +107,27 @@ test("buildSkillsBlock: renders each hint as a bullet under a Skills header", ()
   assert.match(block, /## Skills/);
   assert.match(block, /- frontend-design-guidelines — read before building any UI component/);
   assert.match(block, /- security-review — run before touching auth code/);
+});
+
+// ── F38: AGENTS.md nudge ──
+
+test("buildAgentsMdBlock: no AGENTS.md at the worktree root produces nothing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hoopedorc-agentsmd-"));
+  try {
+    assert.equal(buildAgentsMdBlock(dir), "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("buildAgentsMdBlock: a real AGENTS.md at the worktree root produces the nudge", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hoopedorc-agentsmd-"));
+  try {
+    writeFileSync(join(dir, "AGENTS.md"), "# Project context\n");
+    const block = buildAgentsMdBlock(dir);
+    assert.match(block, /## Project context/);
+    assert.match(block, /Read AGENTS\.md at the repo root before starting/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
