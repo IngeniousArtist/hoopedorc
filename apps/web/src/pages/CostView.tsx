@@ -123,20 +123,21 @@ export function CostView({ projectId }: { projectId: string }) {
               {est.tasks.length === 1 ? "" : "s"} left)
             </h3>
             <span className="text-sm font-mono text-blue-100">
-              {usd(est.totalExpectedUsd)}–{usd(est.totalHighUsd)}
+              {formatUsd(est.totalExpectedUsd)}–{formatUsd(est.totalHighUsd)}
             </span>
           </div>
-          <p className="mb-3 text-[11px] text-neutral-400">
-            {est.note}{" "}
-            <span
-              className={
-                est.confidence === "high"
-                  ? "text-green-400"
-                  : "text-amber-400"
-              }
-            >
-              ({est.confidence} confidence)
-            </span>
+          {/* U16: `est.note` already states the confidence level in prose
+              ("Low confidence: …" / "Based on your historical…") — a
+              separate "(low confidence)" parenthetical just repeated the
+              same two words. Color the note itself instead of duplicating
+              it, so the semantic green/amber signal survives. */}
+          <p
+            className={
+              "mb-3 text-[11px] " +
+              (est.confidence === "high" ? "text-green-400" : "text-amber-400")
+            }
+          >
+            {est.note}
           </p>
           <div className="space-y-1">
             {est.tasks.map((t) => (
@@ -151,7 +152,7 @@ export function CostView({ projectId }: { projectId: string }) {
                   {t.model} → {t.validatorModel}
                 </span>
                 <span className="w-28 text-right font-mono text-neutral-200">
-                  {usd(t.expectedUsd)}–{usd(t.highUsd)}
+                  {formatUsd(t.expectedUsd)}–{formatUsd(t.highUsd)}
                 </span>
                 {!t.hasHistory && (
                   <span className="text-amber-500" title="no run history">

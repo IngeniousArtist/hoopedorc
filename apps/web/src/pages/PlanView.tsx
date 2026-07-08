@@ -18,6 +18,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, apiUpload } from "../api/client";
 import { ModelSelect } from "../components/ModelSelect";
 import { useToast } from "../hooks/useToast";
+import { formatUsd } from "../lib/format";
 
 const DIFFICULTIES: Difficulty[] = ["easy", "medium", "hard"];
 
@@ -361,7 +362,7 @@ export function PlanView({
           </span>
         </h2>
         <span className="text-[11px] text-neutral-400">
-          planning cost ${planCost.toFixed(4)}
+          planning cost {formatUsd(planCost)}
         </span>
       </div>
 

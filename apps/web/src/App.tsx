@@ -185,7 +185,17 @@ export function App() {
   useEffect(() => {
     function onHashChange() {
       const parsed = parseHash(location.hash);
-      if (!parsed) return;
+      if (!parsed) {
+        // U18: an unparseable hash (a bad paste, a stale link to a page
+        // that no longer exists) previously left location.hash sitting at
+        // the bogus value while the UI kept showing whatever it already
+        // was — URL and UI silently disagreed until the next real
+        // navigation. Snap the address bar back to the current page's own
+        // canonical hash instead (replace, not push — this isn't a real
+        // navigation the user should be able to "back" out of).
+        history.replaceState(null, "", hashFor(page, selectedProjectId));
+        return;
+      }
       if (
         page === "settings" &&
         settingsDirtyRef.current &&

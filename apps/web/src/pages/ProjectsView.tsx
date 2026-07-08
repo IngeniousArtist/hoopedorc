@@ -180,7 +180,7 @@ export function ProjectsView({
                     title="Abort any running task immediately and requeue it to backlog"
                     className="rounded border border-red-800 px-2 py-1 text-[11px] text-red-300 hover:bg-red-950/40 disabled:opacity-50"
                   >
-                    {busyId === p.id ? "…" : "Stop now"}
+                    {busyId === p.id ? "…" : "⏹ Stop now"}
                   </button>
                 </>
               ) : (

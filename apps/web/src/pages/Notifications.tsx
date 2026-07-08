@@ -18,6 +18,16 @@ const SEVERITY_BG: Record<string, string> = {
   action_required: "bg-red-950/30",
 };
 
+/** U15: `approve`/`approve_merge`/`approve_anyway` etc. → "Approve",
+ *  "Approve Merge", "Approve Anyway"; `reject` → "Reject". Title Case to
+ *  match every other button label in the app. */
+function formatOptionLabel(option: string): string {
+  return option
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 /** U14: shared card render so the pending and non-pending groups below
  *  don't duplicate this markup. */
 function NotificationCard({
@@ -83,15 +93,27 @@ function NotificationCard({
         n.options &&
         !n.respondedWith && (
           <div className="mt-3 flex gap-2">
+            {/* U15: this is the highest-stakes control in the app (it
+                authorizes a merge to main) — approve and reject previously
+                rendered as two identical solid-blue buttons, giving a
+                phone-tapping user zero visual guardrail. Only the
+                "approve*" option gets the primary treatment; anything else
+                (reject, and any future option) gets the same bordered
+                secondary style used for every other reject/stop/remove
+                control in the app. */}
             {n.options.map((option) => (
               <button
                 key={option}
                 onClick={() =>
                   onRespond(n.id, option)
                 }
-                className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500"
+                className={
+                  option.startsWith("approve")
+                    ? "rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500"
+                    : "rounded border border-red-900 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-950/50"
+                }
               >
-                {option}
+                {formatOptionLabel(option)}
               </button>
             ))}
           </div>
