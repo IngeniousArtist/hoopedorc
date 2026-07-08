@@ -35,7 +35,8 @@ ARCHITECTURE, NEXT_STEPS, CONTRACT). It has four parts:
   authors and validators, rate-limit resilience with Telegram alerts, an honest
   model round-trip test, and a skills strategy. Also picks up two leftovers
   Parts 4–5 deliberately deferred: the `@orc/server` test package and quota
-  usage in the health panel.
+  usage in the health panel. Completed 2026-07-08 — **every part of this
+  plan (1–6) is now done.**
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
@@ -1055,7 +1056,7 @@ specific evidence. Notable finds/decisions:
   succeeding fake to confirm the ordinary green "Enabled." path still
   works unchanged.
 
-### Phase 11 — Part 6: owner-requested QoL wave + audit fixes — 🔶 IN PROGRESS
+### Phase 11 — Part 6: owner-requested QoL wave + audit fixes — ✅ DONE
 
 | Item | Status | PR |
 |---|---|---|
@@ -1070,13 +1071,14 @@ specific evidence. Notable finds/decisions:
 | F30 — per-task documentation stage in the merge pipeline | ✅ done | [#84](https://github.com/IngeniousArtist/hoopedorc/pull/84) |
 | F32 — rate-limit wait-and-retry + fallback alerts on Telegram | ✅ done | [#85](https://github.com/IngeniousArtist/hoopedorc/pull/85) |
 | F33 — model test round-trip shows the model's own reply | ✅ done | [#86](https://github.com/IngeniousArtist/hoopedorc/pull/86) |
-| F34 — skills strategy: docs + per-project skill hints in prompts | ⬜ | |
-| F35 — quota usage in the Setup health panel | ⬜ | |
+| F34 — skills strategy: docs + per-project skill hints in prompts | ✅ done | [#87](https://github.com/IngeniousArtist/hoopedorc/pull/87) |
+| F35 — quota usage in the Setup health panel | ✅ done | [#88](https://github.com/IngeniousArtist/hoopedorc/pull/88) |
 
 Work top-down in the suggested batches: (1) B25–B27 together; (2) T1;
 (3) F27+F28; (4) F31; (5) F29; (6) F30; (7) F32; (8) F33; (9) F34;
-(10) F35. Update this table as each lands; tag `v0.3.0` when the wave
-closes (the standing wave-boundary tagging rule from Part 4).
+(10) F35. Tagged `v0.3.0` when the wave closed (the standing
+wave-boundary tagging rule from Part 4). **This closes out Phase 11 and
+Part 6 — every item in Parts 1–6 of this plan is now done.**
 
 **Batch 1 (B25–B27, PR #79) — done.** All three verified with more than
 typecheck/build: B26 against a real in-memory SQLite DB via the actual
@@ -1443,6 +1445,97 @@ Nex N2 Pro also failed the same way for unrelated real-world reasons
 path renders correctly for a genuine, not just a staged, failure. Total
 live-verification cost: ~$0.30 (includes the stale-build retry). Next
 up: F34.
+
+**F34 — done (PR [#87](https://github.com/IngeniousArtist/hoopedorc/pull/87)).**
+New `ProjectConfig.skillHints?: string[]` (validated on `PATCH
+/api/projects/:id`: array of strings, each ≤200 chars, ≤20 entries — the
+same bounded-prompt-input shape as every other free-text config field).
+New `buildSkillsBlock` (`packages/engine/src/guidelines.ts`, alongside
+F31's `buildEngineeringStandardsBlock` rather than inline in
+`orchestrator.ts`, matching that file's existing "prompt-block builders
+live in guidelines.ts" convention) renders a `## Skills` section naming
+each hint; `buildAuthorPrompt` gained a `project` parameter (previously
+only took `task`/`fixInstructions` — `runAuthor`'s `_project` param was
+unused before this, now genuinely used) so it can read
+`project.config?.skillHints`. Per the plan's own "figure it out" framing:
+this is a nudge, not a mechanism — Claude Code discovers skills on its own
+(`~/.claude/skills/` user-level, or the target repo's own
+`.claude/skills/`) but only reaches for one reliably when a task
+description matches its own trigger phrasing, so naming it explicitly in
+the prompt is the actual lever; `opencode` models have no skills concept
+at all, so for them the block just reads as ordinary instructions
+(harmless, often useful anyway). New textarea in the shared
+`ProjectConfigFields` Advanced accordion (one hint per line,
+`projectConfigFromForm`/`projectConfigToForm` round-trip it same as every
+other field there). New "Using skills with your agents" section in
+`USER_GUIDE.md` covering the two-tier policy (universal skills installed
+once at user level on the deployment box; project-specific skills
+committed to that repo's own `.claude/skills/`) and the
+`opencode`-has-no-mechanism caveat. Verified: typecheck/build green across
+every workspace; `npm test -w @orc/adapters` (4/4) and `-w @orc/server`
+(51/51) unaffected; `npm test -w @orc/engine` **58/58 (2 new)** —
+`buildSkillsBlock`'s own pure-function test in `guidelines.test.ts`
+(undefined/empty → nothing; each hint renders as a bullet under `##
+Skills`) plus an `orchestrator.test.ts` integration test capturing the
+real prompt handed to a fake adapter for a project with `skillHints`
+configured vs. one without, proving the wiring (not just the pure
+renderer) reaches the actual author prompt. Server-side validation
+live-verified against a real running (non-mock) server via curl: >20
+entries → 400, a >200-char entry → 400, a non-array → 400, a valid hint
+round-trips through `PATCH`→`GET`. The Advanced-accordion textarea was
+live-verified against `npm run mock` in a real browser: typed a hint,
+saved, confirmed the "unsaved"/"Save advanced settings" dirty-tracking
+fired and cleared correctly, and a follow-up curl `GET` confirmed
+persistence. **The genuinely load-bearing verification, per the plan's
+own acceptance criteria** ("a scratch project whose repo has a trivial
+committed skill... plus a hint naming it → the marker appears... proving
+the nudge → discovery → use chain end-to-end"): built a scratch git repo
+with a committed `.claude/skills/write-verification-marker/SKILL.md`
+(instructs writing `MARKER.txt` containing a fixed string that appears
+nowhere in the prompt or task description), constructed the exact author
+prompt `buildAuthorPrompt` would produce (task description mentioning a
+"verification marker" + a `## Skills` hint naming the skill), and ran the
+real `claude -p --output-format stream-json --verbose --permission-mode
+bypassPermissions` invocation against it (matching `ClaudeAdapter`'s
+actual spawn args exactly, cwd = scratch repo). The transcript shows an
+explicit `"name":"Skill"` tool-use call immediately followed by a
+`"name":"Write"` call, and `MARKER.txt` landed with the exact
+skill-file-only content — proving discovery-and-invocation actually
+happened, not just that the model happened to write a plausible file.
+Live-verification cost: ~$0.17.
+
+**F35 — done (PR [#88](https://github.com/IngeniousArtist/hoopedorc/pull/88))
+— closes Phase 11 and the entire Part 6 wave.** New
+`ModelHealthEntry.windowUsage?: { runs, costUsd, windowHours, maxRuns?,
+maxCostUsd? }` (`@orc/types`), populated in `GET /api/setup/model-health`
+for exactly the models with a `quota` configured (F16) — computed with the
+same `repo.getModelUsageSince(db, model, sinceIso)` call `checkModelQuota`
+already uses, so the displayed figures are guaranteed to agree with what
+actually gates dispatch, not a parallel reimplementation. `SetupView.tsx`
+renders `quota: N/limit runs, $X/$limit in the last Nh` in the existing
+per-model health row, switching to amber once either configured limit is
+reached or exceeded (mirroring the existing amber "cooling down" badge's
+color convention) — models with no quota configured show nothing new, no
+new table or chart per the plan's explicit scope. No new pure logic
+needed unit tests of its own (the route is a thin, already-tested
+`getModelUsageSince` call plus a plain object literal), so `npm test -w
+@orc/engine` (58/58) and `-w @orc/server` (51/51) stayed unaffected;
+verification leaned on the plan's own suggested bar instead — **live,
+against a real running (non-mock) server**: set a real quota
+(`windowHours: 24, maxRuns: 5, maxCostUsd: 10`) on the `claude` model via
+`PUT /api/settings`, created a real project+task through the app's own
+API, seeded 3 real `runs`/`costs` rows ($0.85 each, $2.55 total) directly
+against the running server's SQLite file, then confirmed `GET
+/api/setup/model-health` returned `windowUsage: { runs: 3, costUsd: 2.55,
+windowHours: 24, maxRuns: 5, maxCostUsd: 10 }` — matching the seeded data
+exactly — while every other (quota-less) model had no `windowUsage` field
+at all. Browser-verified against the real built server (not the mock):
+the Model Health panel showed "quota: 3/5 runs, $2.55/$10.00 in the last
+24h" for Claude and nothing extra for any other model; lowering
+`maxRuns` to 3 (matching current usage) flipped the line to amber,
+confirming the at-limit highlight fires on real data, not just in theory.
+Tagged `v0.3.0` after both F34 and F35 merged — **Part 6, and the entire
+docs/PRODUCTIZATION_PLAN.md (Parts 1–6), is now done.**
 
 ---
 
@@ -3657,18 +3750,17 @@ fixtures).
 | 8 | F14, F15, F16, F17, F18, F19 | Second feature wave: CI first (F14 — every later PR benefits), then external-CI gate, quota awareness, backups, sandbox doc, scheduled runs (F19 opted into 2026-07-06). | ✅ done |
 | 9 | A1–A5, U1–U10 | Post-plan audit fixes, then the UX wave from the full-app walkthrough — badge/header/board layout first (U1–U4 are the high-impact ones), trivial polish after. | ✅ done |
 | 10 | B20–B24, S7, F20–F26, U11–U14 | Post-UX-wave audit fixes (the Projects-page Pause footgun first), then the remote-deployment QoL wave: docs → routing → approval context → stop-all → update story → polish → WS/PWA. | ✅ done |
-| 11 | B25–B27, T1, F27–F35 | Phase 10 audit fixes (all small), then the server test package (T1 — later items lean on it), then the owner's QoL wave: planning context (F27+F28) → standards prompts (F31 → F29 → F30, in that order — F29/F30 build on F31's injection mechanism) → resilience + alerts (F32) → model test (F33) → skills (F34) → quota panel (F35). Tag `v0.3.0` at the end. | ⬜ open |
+| 11 | B25–B27, T1, F27–F35 | Phase 10 audit fixes (all small), then the server test package (T1 — later items lean on it), then the owner's QoL wave: planning context (F27+F28) → standards prompts (F31 → F29 → F30, in that order — F29/F30 build on F31's injection mechanism) → resilience + alerts (F32) → model test (F33) → skills (F34) → quota panel (F35). Tag `v0.3.0` at the end. | ✅ done |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
 
-Parts 1–5 (Phases 1–10) are **done** — Phases 1–6 tagged `v0.1.0`,
-Phases 7–8 plus the post-plan audit fixes tagged `v0.2.0` (package.json's own
-`version` field, previously stale at `0.1.0`, was corrected to match as part
-of F24), Phase 9 (A1–A5, U1–U10) closed out Parts 1–4, and Phase 10
-(B20–B24, S7, F20–F26, U11–U14) closed out Part 5. **Part 6 (Phase 11) is the
-open wave**: B25–B27 + T1 + F27–F35, specced above — work it top-down and tag
-`v0.3.0` when it closes. F13 remains future work — F18 covers its design doc
+**All 11 phases are done.** Phases 1–6 tagged `v0.1.0`, Phases 7–8 plus the
+post-plan audit fixes tagged `v0.2.0` (package.json's own `version` field,
+previously stale at `0.1.0`, was corrected to match as part of F24), Phase 9
+(A1–A5, U1–U10) closed out Parts 1–4, Phase 10 (B20–B24, S7, F20–F26,
+U11–U14) closed out Part 5, and Phase 11 (B25–B27, T1, F27–F35) closed out
+Part 6, tagged `v0.3.0`. F13 remains future work — F18 covers its design doc
 only; see Part 6's decisions block for why it was deferred again and what
 would unblock it. Fable independently re-verifies each wave after merge;
 verification evidence is in each item's PR description and in this doc's
