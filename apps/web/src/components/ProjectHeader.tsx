@@ -140,7 +140,7 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
                 className="rounded border border-amber-800 px-3 py-1 text-xs text-amber-300 hover:bg-amber-950/40 disabled:opacity-50"
                 title="Stop dispatching new tasks; let anything already running finish"
               >
-                {busy ? "…" : "Pause (finish current)"}
+                {busy ? "…" : "⏸ Pause (finish current)"}
               </button>
               <button
                 onClick={stopNow}
@@ -148,7 +148,7 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
                 className="rounded border border-red-800 px-3 py-1 text-xs text-red-300 hover:bg-red-950/40 disabled:opacity-50"
                 title="Abort any running task immediately and requeue it to backlog"
               >
-                {busy ? "…" : "Stop now"}
+                {busy ? "…" : "⏹ Stop now"}
               </button>
             </>
           ) : (
