@@ -303,6 +303,28 @@ export function SetupView({
                     {m.medianDurationMs != null && (
                       <span>median {fmtDuration(m.medianDurationMs)}</span>
                     )}
+                    {m.windowUsage && (
+                      <span
+                        className={
+                          (m.windowUsage.maxRuns != null &&
+                            m.windowUsage.runs >= m.windowUsage.maxRuns) ||
+                          (m.windowUsage.maxCostUsd != null &&
+                            m.windowUsage.costUsd >= m.windowUsage.maxCostUsd)
+                            ? "text-amber-400"
+                            : undefined
+                        }
+                      >
+                        quota: {m.windowUsage.runs}
+                        {m.windowUsage.maxRuns != null && `/${m.windowUsage.maxRuns}`} runs
+                        {(m.windowUsage.maxCostUsd != null || m.windowUsage.costUsd > 0) &&
+                          `, $${m.windowUsage.costUsd.toFixed(2)}${
+                            m.windowUsage.maxCostUsd != null
+                              ? `/$${m.windowUsage.maxCostUsd.toFixed(2)}`
+                              : ""
+                          }`}{" "}
+                        in the last {m.windowUsage.windowHours}h
+                      </span>
+                    )}
                   </div>
                 </div>
               );

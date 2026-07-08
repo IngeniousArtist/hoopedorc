@@ -2196,6 +2196,22 @@ async function main() {
       const check = latestChecks.get(m.id);
       const stats = runStats.get(m.id);
       const coolingUntil = engine.getCoolingDownUntil(m.id);
+      const quota = m.quota;
+      const windowUsage = quota
+        ? (() => {
+            const sinceIso = new Date(
+              Date.now() - quota.windowHours * 60 * 60 * 1000,
+            ).toISOString();
+            const usage = repo.getModelUsageSince(db, m.id, sinceIso);
+            return {
+              runs: usage.runs,
+              costUsd: usage.costUsd,
+              windowHours: quota.windowHours,
+              maxRuns: quota.maxRuns,
+              maxCostUsd: quota.maxCostUsd,
+            };
+          })()
+        : undefined;
       return {
         id: m.id,
         displayName: m.displayName,
@@ -2214,6 +2230,7 @@ async function main() {
         failedRuns: stats?.failedRuns ?? 0,
         medianDurationMs: stats?.medianDurationMs ?? null,
         coolingDownUntil: coolingUntil ? new Date(coolingUntil).toISOString() : undefined,
+        windowUsage,
       };
     });
 
