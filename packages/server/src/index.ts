@@ -38,6 +38,7 @@ import {
   runPlannerChat,
   runPlannerDeconstruct,
   type PlanOutput,
+  type PlannerModel,
 } from "./planner";
 import { createGithubRepo, getPrDiff, slugifyRepoName } from "./github";
 import { checkBudget } from "./budget";
@@ -237,6 +238,45 @@ async function resolvePlannerCwd(project: Project): Promise<string> {
   } catch {
     return tmpdir();
   }
+}
+
+/**
+ * F37: resolve `routing.planner`'s `ModelConfig` to a `PlannerModel` — which
+ * CLI + model id `planner.ts` should actually shell out to, instead of
+ * hardcoding `claude`. `tier` only matters for the claude-code path: it picks
+ * between the two well-tuned env aliases (cheap Sonnet for many chat turns,
+ * pricier Opus for the one high-leverage deconstruct call) exactly as
+ * before F37 — "aliases still apply" per the spec, so routing a claude-code
+ * model as planner is a byte-identical no-op. Codex has no equivalent
+ * cheap/expensive split established, so both tiers use the same
+ * `cfg.codexModel`. opencode-runner planners throw — conversational planning
+ * quality is the point of the two subscription CLIs, not something to
+ * silently degrade; callers turn this into an explicit 400.
+ */
+function resolvePlannerModel(
+  settings: SettingsType,
+  tier: "chat" | "deconstruct",
+): PlannerModel {
+  const cfg = settings.models.find((m) => m.id === settings.routing.planner);
+  if (cfg?.runner === "codex") return { runner: "codex", model: cfg.codexModel };
+  if (cfg?.runner === "opencode") {
+    throw new Error(
+      `planner model "${cfg.displayName}" uses the opencode runner, which isn't supported for ` +
+        `planning — route Settings → Routing → Planner to a claude-code or codex model instead`,
+    );
+  }
+  return {
+    runner: "claude-code",
+    model: tier === "chat" ? ENV.plannerChatModel : ENV.plannerDeconstructModel,
+  };
+}
+
+/** Display label for the plan-session markdown's "Planner model:" line —
+ *  unchanged from before F37 for the claude-code path (just `pm.model`, the
+ *  existing alias string), qualified with "codex:" so a codex-routed planner
+ *  doesn't render as a bare, ambiguous model id. */
+function plannerModelLabel(pm: PlannerModel): string {
+  return pm.runner === "codex" ? `codex:${pm.model ?? "default"}` : (pm.model ?? "claude");
 }
 
 /**
@@ -1168,9 +1208,14 @@ async function main() {
     const createdTasks: Task[] = [];
 
     try {
-      // Real planner: Claude turns the goal into a PRD + dependency-ordered DAG.
+      // Real planner: whichever model routing.planner resolves to turns the
+      // goal into a PRD + dependency-ordered DAG (F37). A misconfigured
+      // opencode planner falls into this same try/catch's stub fallback below
+      // rather than a special-cased error — this legacy single-shot endpoint
+      // never hard-fails, by design.
+      const plannerModel = resolvePlannerModel(settings, "deconstruct");
       const cwd = await resolvePlannerCwd(project);
-      const plan = await runPlanner(goal, project.name, cwd, ENV.plannerDeconstructModel);
+      const plan = await runPlanner(goal, project.name, cwd, plannerModel);
       prdMarkdown = plan.prdMarkdown;
       // No review step on this single-shot path, so inject the standing docs
       // task here directly rather than relying on the Plan tab to add it.
@@ -1240,6 +1285,16 @@ async function main() {
       return reply.code(400).send({ error: "messages required" });
     }
 
+    // F37: an opencode-runner planner is a config problem, not a runtime
+    // failure — reject it up front with a clear 400 instead of letting it
+    // surface as an opaque 502 from deep inside the try block below.
+    let plannerModel: PlannerModel;
+    try {
+      plannerModel = resolvePlannerModel(repo.getSettings(db) ?? defaultSettings(), "chat");
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+
     try {
       const cwd = await resolvePlannerCwd(project);
       // F27: name-only list of whatever's currently in context/attachments/
@@ -1252,7 +1307,7 @@ async function main() {
         messages,
         project.name,
         cwd,
-        ENV.plannerChatModel,
+        plannerModel,
         buildPriorContext(db, project),
         attachmentNames,
       );
@@ -1261,8 +1316,13 @@ async function main() {
       // tab can restore it on reload or after a tab switch.
       const updatedMessages = [...messages, { role: "assistant" as const, content: text }];
       repo.savePlanningSession(db, id, { messages: updatedMessages });
-      recordPlanChatTurn(db, project, ENV.mock, updatedMessages, ENV.plannerChatModel, (msg) =>
-        app.log.warn(msg),
+      recordPlanChatTurn(
+        db,
+        project,
+        ENV.mock,
+        updatedMessages,
+        plannerModelLabel(plannerModel),
+        (msg) => app.log.warn(msg),
       );
       return { reply: text, costUsd };
     } catch (err) {
@@ -1284,6 +1344,15 @@ async function main() {
       return reply.code(400).send({ error: "messages required" });
     }
 
+    const settings = repo.getSettings(db) ?? defaultSettings();
+    // F37: same up-front rejection as /plan/chat above.
+    let plannerModel: PlannerModel;
+    try {
+      plannerModel = resolvePlannerModel(settings, "deconstruct");
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+
     try {
       const cwd = await resolvePlannerCwd(project);
       const attachmentNames = listAttachments(attachmentsDir(project, ENV.mock)).map(
@@ -1293,12 +1362,11 @@ async function main() {
         messages,
         project.name,
         cwd,
-        ENV.plannerDeconstructModel,
+        plannerModel,
         buildPriorContext(db, project),
         attachmentNames,
       );
       recordPlanningCost(id, costUsd);
-      const settings = repo.getSettings(db) ?? defaultSettings();
       const tasks = withAssignedModels(output, settings);
       // Persist draft tasks + PRD so the Plan tab can restore them on reload.
       repo.savePlanningSession(db, id, {
@@ -1313,7 +1381,7 @@ async function main() {
         messages,
         output.prdMarkdown,
         tasks,
-        ENV.plannerChatModel,
+        plannerModelLabel(plannerModel),
         (msg) => app.log.warn(msg),
       );
       return { prdMarkdown: output.prdMarkdown, tasks, costUsd };
@@ -1432,8 +1500,17 @@ async function main() {
 
     // F28: write the final "## Committed" marker into the session's archive
     // file BEFORE clearing the row below — it reads the about-to-be-cleared
-    // messages/draftTasks, so it must run first.
-    recordPlanCommit(db, project, ENV.mock, created.length, ENV.plannerChatModel, (msg) =>
+    // messages/draftTasks, so it must run first. The label is cosmetic only
+    // (this route doesn't itself call the planner) so a since-changed/invalid
+    // routing.planner falls back to a generic label rather than failing a
+    // commit over it.
+    let committedPlannerLabel = "planner";
+    try {
+      committedPlannerLabel = plannerModelLabel(resolvePlannerModel(settings, "chat"));
+    } catch {
+      /* leave the generic fallback */
+    }
+    recordPlanCommit(db, project, ENV.mock, created.length, committedPlannerLabel, (msg) =>
       app.log.warn(msg),
     );
 

@@ -1,10 +1,32 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { sanitizedEnv } from "@orc/adapters";
 import type { Difficulty, PlanChatMessage, Role } from "@orc/types";
 
-// Planning runs Claude Code headless. Two tiers (see docs/NEXT_STEPS.md):
-//   - chat turns           -> Sonnet (many cheap conversational turns)
-//   - final deconstruction  -> Opus  (one high-leverage call: plan -> task DAG)
-// Both go through `claude -p`; the model is selected with `--model`.
+// Planning runs headless, through whichever CLI `routing.planner`'s model
+// resolves to (F37):
+//   - claude-code -> `claude -p`, two tiers (see docs/NEXT_STEPS.md): chat
+//     turns on Sonnet (many cheap conversational turns), final
+//     deconstruction on Opus (one high-leverage call: plan -> task DAG).
+//     Unchanged from before F37 — this is the default, well-tuned path.
+//   - codex -> `codex exec`, one model for both tiers (no established
+//     cheap/expensive split for Codex the way Sonnet/Opus have); deconstruct
+//     uses `--output-schema` so the CLI enforces the task-DAG JSON shape
+//     natively instead of relying on the lenient markdown-fence extraction
+//     the claude path still needs.
+// opencode-runner planners are rejected before either path is reached (see
+// `resolvePlannerModel` in index.ts) — conversational planning quality is
+// the point of the two subscription CLIs, not something to silently degrade.
+
+/** Which CLI + model id to run the planner through (F37). */
+export interface PlannerModel {
+  runner: "claude-code" | "codex";
+  /** `claude --model` alias or `codex exec -m` id; omitted => CLI default. */
+  model?: string;
+}
 
 export interface PlannedTask {
   title: string;
@@ -61,6 +83,59 @@ Rules for each task:
 - acceptanceCriteria: concrete, checkable statements
 - dependsOn: indices of earlier tasks that must finish first
 - scopePaths: glob(s) the task is allowed to modify`;
+
+/**
+ * The same shape `DECONSTRUCT_SHAPE` describes in prose, as a JSON Schema for
+ * Codex's `--output-schema` (F37) — the CLI enforces this natively instead of
+ * relying on the lenient prose instruction + `extractJsonObject` fallback the
+ * claude path still uses. `role`'s allowed values match the 5 real overrides
+ * listed in the prose above (not the full `Role` union — "planner"/
+ * "validator" are pipeline-stage roles, never a task-authoring override).
+ *
+ * Every object needs `additionalProperties: false` and every property
+ * (including optional ones) listed in `required` — confirmed live against
+ * the real CLI 2026-07-08: omitting either gets a 400 `invalid_json_schema`
+ * ("'additionalProperties' is required... to be false") before the model
+ * even runs. A genuinely optional field (here: `role`) is modeled as
+ * nullable + required, with `null` meaning "not set" — also confirmed live,
+ * the model correctly emits `null` for tasks with no role override.
+ */
+const DECONSTRUCT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    prd: { type: "string" },
+    tasks: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          description: { type: "string" },
+          difficulty: { type: "string", enum: ["easy", "medium", "hard"] },
+          role: {
+            type: ["string", "null"],
+            enum: ["frontend", "docs", "hard", "medium", "updates", null],
+          },
+          acceptanceCriteria: { type: "array", items: { type: "string" } },
+          dependsOn: { type: "array", items: { type: "integer" } },
+          scopePaths: { type: "array", items: { type: "string" } },
+        },
+        required: [
+          "title",
+          "description",
+          "difficulty",
+          "role",
+          "acceptanceCriteria",
+          "dependsOn",
+          "scopePaths",
+        ],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["prd", "tasks"],
+  additionalProperties: false,
+} as const;
 
 // Auto-merge's objective gates (typecheck/lint/build/test) are just
 // `npm run <script> --if-present` — a repo with none of those scripts passes
@@ -257,6 +332,141 @@ function runClaudeJson(
   });
 }
 
+/**
+ * Run `codex exec` and return its final message text (F37's codex-planner
+ * twin of `runClaudeJson`). `outputSchema`, when given, is written to a temp
+ * file and passed as `--output-schema` so the CLI enforces the shape
+ * natively (used for deconstruct; omitted for free-text chat turns).
+ * `costUsd` is always 0 — subscription-billed, same honesty rule as F36's
+ * `CodexAdapter`.
+ */
+function runCodexJson(
+  prompt: string,
+  cwd: string,
+  model?: string,
+  outputSchema?: object,
+): Promise<ClaudeJsonResult> {
+  return new Promise((resolve, reject) => {
+    const outputFile = join(tmpdir(), `codex-plan-${randomUUID()}.txt`);
+    const schemaFile = outputSchema
+      ? join(tmpdir(), `codex-plan-schema-${randomUUID()}.json`)
+      : undefined;
+    if (schemaFile) writeFileSync(schemaFile, JSON.stringify(outputSchema));
+    const cleanup = () => {
+      if (schemaFile) {
+        try {
+          unlinkSync(schemaFile);
+        } catch {
+          /* best effort */
+        }
+      }
+      try {
+        unlinkSync(outputFile);
+      } catch {
+        /* best effort — may never have been created */
+      }
+    };
+
+    // Prompt on stdin (same argv-cap reasoning as runClaudeJson/CodexAdapter).
+    // --skip-git-repo-check: the planner's cwd is always the project's real
+    // clone (a git repo), so this is normally a no-op, but matches F36's
+    // CodexAdapter for the same reason (defense against any cwd that isn't
+    // one). --sandbox danger-full-access: parity with runClaudeJson, which
+    // also runs unsandboxed — the planner only reads/greps, never commits,
+    // but matching the coding adapters' sandbox keeps behavior uniform.
+    const args = [
+      "exec",
+      "-",
+      "--json",
+      "--output-last-message",
+      outputFile,
+      "-C",
+      cwd,
+      "--sandbox",
+      "danger-full-access",
+      "--skip-git-repo-check",
+    ];
+    if (model) args.push("-m", model);
+    if (schemaFile) args.push("--output-schema", schemaFile);
+
+    const proc = spawn("codex", args, {
+      cwd,
+      env: sanitizedEnv({ PWD: cwd }),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    proc.stdin?.end(prompt);
+
+    let lastError = "";
+    let lineBuf = "";
+    const timer = setTimeout(() => {
+      proc.kill("SIGKILL");
+      cleanup();
+      reject(new Error("planner timed out"));
+    }, PLAN_TIMEOUT_MS);
+
+    const handleEvent = (obj: Record<string, unknown>) => {
+      if (obj.type === "turn.failed") {
+        const err = obj.error as { message?: string } | undefined;
+        if (err?.message) lastError = err.message;
+      } else if (obj.type === "error" && typeof obj.message === "string") {
+        lastError = obj.message;
+      }
+    };
+
+    proc.stdout?.on("data", (c: Buffer) => {
+      lineBuf += c.toString("utf8");
+      const lines = lineBuf.split("\n");
+      lineBuf = lines.pop() ?? "";
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t) continue;
+        try {
+          handleEvent(JSON.parse(t));
+        } catch {
+          /* non-JSON log line */
+        }
+      }
+    });
+    proc.stderr?.on("data", () => {});
+
+    proc.on("error", (e) => {
+      clearTimeout(timer);
+      cleanup();
+      reject(e);
+    });
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      // --output-last-message is only written on a successful turn (verified
+      // live, F36) — an empty/missing file alongside a nonzero exit means the
+      // turn failed before producing a message.
+      let text = "";
+      try {
+        text = readFileSync(outputFile, "utf8");
+      } catch {
+        /* not written — turn failed before completing */
+      }
+      cleanup();
+      if (code !== 0 || !text.trim()) {
+        reject(new Error(`codex exited ${code}: ${(lastError || "no output").slice(0, 500)}`));
+        return;
+      }
+      resolve({ text: text.trim(), costUsd: 0 });
+    });
+  });
+}
+
+/** Dispatch to the right CLI for whichever model `routing.planner` resolves to. */
+function runPlannerJson(
+  prompt: string,
+  cwd: string,
+  plannerModel: PlannerModel,
+  outputSchema?: object,
+): Promise<ClaudeJsonResult> {
+  return plannerModel.runner === "codex"
+    ? runCodexJson(prompt, cwd, plannerModel.model, outputSchema)
+    : runClaudeJson(prompt, cwd, plannerModel.model);
+}
+
 function extractJsonObject(text: string): string {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fenced && fenced[1]) return fenced[1].trim();
@@ -310,42 +520,45 @@ export async function runPlanner(
   goal: string,
   projectName: string,
   cwd: string,
-  model?: string,
+  plannerModel: PlannerModel,
 ): Promise<PlanOutput> {
-  const { text } = await runClaudeJson(buildPrompt(goal, projectName), cwd, model);
+  const schema = plannerModel.runner === "codex" ? DECONSTRUCT_JSON_SCHEMA : undefined;
+  const { text } = await runPlannerJson(buildPrompt(goal, projectName), cwd, plannerModel, schema);
   return parsePlanOutput(text, projectName, goal);
 }
 
-/** One conversational planning turn (Sonnet). Returns reply text + cost. */
+/** One conversational planning turn (Sonnet, or the routed codex model). Returns reply text + cost. */
 export async function runPlannerChat(
   messages: PlanChatMessage[],
   projectName: string,
   cwd: string,
-  model?: string,
+  plannerModel: PlannerModel,
   priorContext?: string,
   attachments?: string[],
 ): Promise<{ reply: string; costUsd: number }> {
-  const { text, costUsd } = await runClaudeJson(
+  const { text, costUsd } = await runPlannerJson(
     buildChatPrompt(messages, projectName, priorContext, attachments),
     cwd,
-    model,
+    plannerModel,
   );
   return { reply: text.trim(), costUsd };
 }
 
-/** Deconstruct an agreed conversation into a strict task DAG (Opus). */
+/** Deconstruct an agreed conversation into a strict task DAG (Opus, or the routed codex model). */
 export async function runPlannerDeconstruct(
   messages: PlanChatMessage[],
   projectName: string,
   cwd: string,
-  model?: string,
+  plannerModel: PlannerModel,
   priorContext?: string,
   attachments?: string[],
 ): Promise<{ output: PlanOutput; costUsd: number }> {
-  const { text, costUsd } = await runClaudeJson(
+  const schema = plannerModel.runner === "codex" ? DECONSTRUCT_JSON_SCHEMA : undefined;
+  const { text, costUsd } = await runPlannerJson(
     buildDeconstructPrompt(messages, projectName, priorContext, attachments),
     cwd,
-    model,
+    plannerModel,
+    schema,
   );
   return { output: parsePlanOutput(text, projectName), costUsd };
 }

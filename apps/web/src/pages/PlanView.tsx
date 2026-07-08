@@ -88,6 +88,10 @@ export function PlanView({
 }) {
   const [project, setProject] = useState<Project | null>(null);
   const [models, setModels] = useState<ModelConfig[]>([]);
+  // F37: whichever model routing.planner resolves to may be Claude, Codex,
+  // or (rejected server-side) opencode — name it instead of hardcoding
+  // "Claude" throughout the chat UI below.
+  const [plannerModelId, setPlannerModelId] = useState<ModelId | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const toast = useToast();
@@ -135,6 +139,7 @@ export function PlanView({
       .then(([projRes, sessionRes, settingsRes, attachmentsRes]) => {
         setProject(projRes.project ?? null);
         setModels(settingsRes.settings.models);
+        setPlannerModelId(settingsRes.settings.routing.planner);
         // Strip [PLAN_COMPLETE] tokens from restored messages and detect readiness.
         const cleaned = sessionRes.messages.map((m) => {
           if (m.role !== "assistant") return m;
@@ -221,7 +226,7 @@ export function PlanView({
     setInput("");
     setChatting(true);
     setError(null);
-    setPlannerReady(false); // reset until Claude confirms again
+    setPlannerReady(false); // reset until the planner confirms again
     try {
       const res = await api<PlanChatResponse>("planChat", {
         params: { id: projectId },
@@ -327,6 +332,9 @@ export function PlanView({
   const inputCls =
     "w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200";
 
+  const plannerDisplayName =
+    models.find((m) => m.id === plannerModelId)?.displayName ?? "the planner";
+
   if (loading) {
     return <div className="text-sm text-neutral-400">Loading planning session…</div>;
   }
@@ -396,7 +404,7 @@ export function PlanView({
       {!committed && (
         <section className="space-y-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
           <h3 className="text-sm font-medium text-neutral-300">
-            Chat with Claude
+            Chat with {plannerDisplayName}
           </h3>
 
           {/* Iteration hint: project.prd is only set after a prior commit, so
@@ -404,9 +412,9 @@ export function PlanView({
           {project?.prd && messages.length === 0 && (
             <div className="rounded border border-blue-900/50 bg-blue-950/20 px-3 py-2 text-xs text-blue-200">
               This project already has a plan and shipped work. Describe the
-              changes or additions you want — Claude reads the prior PRD,
-              completed tasks, and activity log, then appends only the new tasks
-              to the board.
+              changes or additions you want — {plannerDisplayName} reads the
+              prior PRD, completed tasks, and activity log, then appends only
+              the new tasks to the board.
             </div>
           )}
 
@@ -429,14 +437,14 @@ export function PlanView({
                 }
               >
                 <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-400">
-                  {m.role === "user" ? "You" : "Claude"}
+                  {m.role === "user" ? "You" : plannerDisplayName}
                 </div>
                 <div className="whitespace-pre-wrap">{m.content}</div>
               </div>
             ))}
             {chatting && (
               <div className="px-3 py-2 text-xs text-neutral-400">
-                Claude is thinking…
+                {plannerDisplayName} is thinking…
               </div>
             )}
             <div ref={chatEndRef} />
@@ -508,7 +516,7 @@ export function PlanView({
             <div className="space-y-2">
               {plannerReady && !deconstructing && (
                 <div className="rounded border border-green-700/50 bg-green-900/20 px-3 py-2 text-xs text-green-300">
-                  Claude is done planning — click below to generate the task breakdown.
+                  {plannerDisplayName} is done planning — click below to generate the task breakdown.
                 </div>
               )}
               <button
@@ -522,7 +530,7 @@ export function PlanView({
                 }
               >
                 {deconstructing
-                  ? "Deconstructing with Opus…"
+                  ? `Deconstructing with ${plannerDisplayName}…`
                   : tasks
                     ? "Re-generate task table"
                     : "Generate task table →"}
