@@ -20,6 +20,22 @@ const MERGE_POLICY_LABELS: Record<MergePolicy, string> = {
   always_ask: "Always ask for approval",
 };
 
+type SandboxGatesMode = NonNullable<SettingsType["sandboxGates"]>;
+
+const SANDBOX_GATES_LABELS: Record<SandboxGatesMode, string> = {
+  auto: "Auto (default)",
+  off: "Off — always host",
+  required: "Required — fail if no Docker daemon",
+};
+
+/** F43: crib of USER_GUIDE.md's "Gate sandbox" section wording — keep in sync. */
+const SANDBOX_GATES_HELP: Record<SandboxGatesMode, string> = {
+  auto: "Sandbox when Docker responds to “docker version”, host otherwise. Safe to leave alone either way.",
+  off: "Always host — byte-identical to pre-sandbox behavior.",
+  required:
+    "No daemon => the gate fails loudly instead of silently running unsandboxed. Recommended once you've confirmed Docker is actually installed and working on this box.",
+};
+
 const RISKY_RULES: {
   key: keyof SettingsType["riskyChangeRules"];
   label: string;
@@ -144,6 +160,12 @@ export function Settings({
     setSettings((prev) =>
       prev ? { ...prev, holdWhileAwaitingApproval: value } : prev,
     );
+    setDirty(true);
+    setSaved(false);
+  }
+
+  function updateSandboxGates(mode: SandboxGatesMode) {
+    setSettings((prev) => (prev ? { ...prev, sandboxGates: mode } : prev));
     setDirty(true);
     setSaved(false);
   }
@@ -383,6 +405,33 @@ export function Settings({
           Trades slower overall runs for zero unsupervised spend while a
           decision is waiting on you — active tasks still finish normally,
           but nothing new starts until you respond.
+        </p>
+      </section>
+
+      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+        <h3 className="text-sm font-medium text-neutral-300">
+          Gate Sandbox
+        </h3>
+        <select
+          value={settings.sandboxGates ?? "auto"}
+          onChange={(e) =>
+            updateSandboxGates(e.target.value as SandboxGatesMode)
+          }
+          className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+        >
+          {(
+            Object.entries(SANDBOX_GATES_LABELS) as [
+              SandboxGatesMode,
+              string,
+            ][]
+          ).map(([key, label]) => (
+            <option key={key} value={key}>
+              {label}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-neutral-500">
+          {SANDBOX_GATES_HELP[settings.sandboxGates ?? "auto"]}
         </p>
       </section>
 

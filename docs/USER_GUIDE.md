@@ -213,8 +213,7 @@ CLI credentials. No daemon reachable => it transparently falls back to
 running on the host exactly as before, with a one-time log line noting the
 fallback.
 
-Three modes (`Settings.sandboxGates`, no UI toggle yet — set via the
-settings API/DB directly if you want something other than the default):
+Three modes (`Settings.sandboxGates`, a select in Settings → Gate Sandbox):
 
 - **`"auto"` (default).** Sandbox when Docker responds to `docker version`,
   host otherwise. Safe to leave alone either way.
