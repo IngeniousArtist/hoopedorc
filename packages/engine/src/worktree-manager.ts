@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -167,16 +168,30 @@ export class WorktreeManagerImpl implements WorktreeManager {
    * the rare case (and are flagged risky by the merge policy), and scope
    * serialization keeps most overlap out, so this trade is worth the massive
    * per-task time saving.
+   *
+   * B29: fingerprint (and install) against the WORKTREE's manifest, not the
+   * primary clone's. `create()` just branched this worktree off a freshly-
+   * fetched `origin/<defaultBranch>`, so its package.json/lockfile always
+   * reflect the latest merged state. The primary clone's own working tree
+   * doesn't: nothing here keeps it in sync (git-service.ts's syncPrimary()
+   * runs on a different lock, in a different module, after PR merges — a
+   * best-effort call this class doesn't coordinate with), so once any task
+   * changes package.json the primary clone can go stale indefinitely and
+   * every later task would otherwise silently symlink into deps installed
+   * for that stale snapshot. Copying the worktree's manifest(s) into primary
+   * before installing keeps the single shared node_modules (still the
+   * expensive part to avoid repeating) while guaranteeing what actually gets
+   * fingerprinted and installed is always current.
    */
   private async ensureDeps(project: Project, worktreePath: string): Promise<void> {
     const primary = project.localPath;
-    if (!existsSync(join(primary, "package.json"))) return; // not a node project
+    if (!existsSync(join(worktreePath, "package.json"))) return; // not a node project
 
     try {
-      const lockName = LOCKFILES.find((f) => existsSync(join(primary, f)));
+      const lockName = LOCKFILES.find((f) => existsSync(join(worktreePath, f)));
       const fingerprintFile = lockName ?? "package.json";
       const want = createHash("sha1")
-        .update(readFileSync(join(primary, fingerprintFile)))
+        .update(readFileSync(join(worktreePath, fingerprintFile)))
         .digest("hex");
 
       const nm = join(primary, "node_modules");
@@ -186,6 +201,11 @@ export class WorktreeManagerImpl implements WorktreeManager {
         : null;
 
       if (!existsSync(marker) || have !== want) {
+        copyFileSync(join(worktreePath, "package.json"), join(primary, "package.json"));
+        if (lockName) {
+          copyFileSync(join(worktreePath, lockName), join(primary, lockName));
+        }
+
         // `npm ci` is faster + reproducible when a lockfile exists; fall back
         // to `npm install` otherwise. Async (not execSync) so a multi-minute
         // install doesn't block the server's event loop. 10-min cap so a hung
