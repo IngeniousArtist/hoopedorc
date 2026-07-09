@@ -21,12 +21,22 @@ recipe.
 4. Edit `.env` — at minimum decide `HOST`/`PORT`; set `API_TOKEN` if `HOST`
    will be anything other than `127.0.0.1` (the server refuses to boot
    otherwise — see the main README's Security section).
-5. Copy `deploy/hoopedorc.service` to `/etc/systemd/system/hoopedorc.service`,
+5. `npm run build` — the unit itself doesn't build (see step 7); do it once
+   here so `apps/web/dist` exists before the first start.
+6. Copy `deploy/hoopedorc.service` to `/etc/systemd/system/hoopedorc.service`,
    editing `User=` and `WorkingDirectory=` for your setup.
-6. `sudo systemctl daemon-reload && sudo systemctl enable --now hoopedorc`
-7. `npm run start` (what the unit runs) builds every workspace and then
-   starts `@orc/server`, which serves the built web app itself once
-   `apps/web/dist` exists — one process, one port, nothing else to run.
+7. `sudo systemctl daemon-reload && sudo systemctl enable --now hoopedorc`
+8. The unit runs `npm run start:prebuilt` (serve only — starts `@orc/server`,
+   which serves the already-built web app itself on the same port, one
+   process, one port, nothing else to run) rather than `npm run start`
+   (build + serve): rebuilding on every restart costs minutes and risks OOM
+   on a small instance. `npm run update` (see `docs/USER_GUIDE.md`) rebuilds
+   for you on future deploys, so you only run `npm run build` by hand once,
+   here.
+
+For the full ordered walkthrough (instance sizing, all CLI auths, `.env`,
+Tailscale, first-boot verification) see USER_GUIDE's
+[Deploying to EC2 — checklist](../docs/USER_GUIDE.md#deploying-to-ec2--checklist).
 
 Persistence: the SQLite DB (`DB_PATH`, default `./hoopedorc.db`) and cloned
 repos (`REPOS_DIR`, default `~/.hoopedorc/repos`) both need to survive

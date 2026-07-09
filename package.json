@@ -22,7 +22,8 @@
     "db:init": "npm run db:init -w @orc/server",
     "setup": "node scripts/init.mjs",
     "update": "bash scripts/update.sh",
-    "start": "npm run build && npm run start -w @orc/server"
+    "start": "npm run build && npm run start -w @orc/server",
+    "start:prebuilt": "npm run start -w @orc/server"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",
