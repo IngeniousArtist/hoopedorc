@@ -48,7 +48,9 @@ ARCHITECTURE, NEXT_STEPS, CONTRACT). It has seven parts:
   against the current code, four small UX items from the critique, then the
   wave — a native Codex runner, a swappable planner, AGENTS.md generation in
   the planning pipeline, the long-deferred gates-only Docker sandbox, and an
-  EC2 deploy checklist. The owner deploys to EC2 right after this wave.
+  EC2 deploy checklist, plus B29 (a stale-dependency-fingerprint bug found
+  live-verifying F36). The owner deploys to EC2 right after this wave.
+  Completed 2026-07-09.
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
@@ -1549,7 +1551,7 @@ confirming the at-limit highlight fires on real data, not just in theory.
 Tagged `v0.3.0` after both F34 and F35 merged — **Part 6, and the entire
 docs/PRODUCTIZATION_PLAN.md (Parts 1–6), is now done.**
 
-### Phase 12 — Part 7: Codex + agents-context + sandbox wave — 🔶 IN PROGRESS
+### Phase 12 — Part 7: Codex + agents-context + sandbox wave — ✅ DONE
 
 | Item | Status | PR |
 |---|---|---|
@@ -1563,15 +1565,14 @@ docs/PRODUCTIZATION_PLAN.md (Parts 1–6), is now done.**
 | F38 — AGENTS.md generation in the planning pipeline | ✅ done | [#99](https://github.com/IngeniousArtist/hoopedorc/pull/99) |
 | F13-P1 — gates-only Docker sandbox (phase 1 of docs/specs/sandbox.md) | ✅ done | [#101](https://github.com/IngeniousArtist/hoopedorc/pull/101) |
 | F39 — EC2 deploy checklist, prebuilt systemd start, Apple-split docs | ✅ done | [#103](https://github.com/IngeniousArtist/hoopedorc/pull/103) |
-| B29 — `ensureDeps` fingerprints the stale primary clone, not the merged worktree | ⬜ | |
+| B29 — `ensureDeps` fingerprints the stale primary clone, not the merged worktree | ✅ done | [#104](https://github.com/IngeniousArtist/hoopedorc/pull/104) |
 
-Work top-down in the suggested batches: (1) B28; (2) U15–U18 together;
-(3) F36; (4) F37; (5) F38; (6) F13-P1; (7) F39; (8) B29. Update this table
-as each lands; tag `v0.4.0` when the wave closes. **F36 and F37 need the
-owner to install and authenticate Codex CLI before live verification**
-(`npm i -g @openai/codex`, then the owner runs `codex login` themselves —
-suggest typing `! codex login` in the session); build + unit-verify first,
-then ask for the login when you reach the live-verification step.
+All ten items merged to `main`; `npm run typecheck` and `npm test -w
+@orc/engine` (81/81, 3 new) green as of each merge. B29 (last item) was
+also live-verified end-to-end against a real git remote + primary clone +
+two real `create()` calls, with a `package.json` change pushed to origin
+between them to simulate a merge — primary's manifest was confirmed stale
+before the second call and correctly synced after it. Tagged `v0.4.0`.
 
 ---
 
@@ -4439,20 +4440,20 @@ two-box section; deploy/README cross-links instead of duplicating.
 | 9 | A1–A5, U1–U10 | Post-plan audit fixes, then the UX wave from the full-app walkthrough — badge/header/board layout first (U1–U4 are the high-impact ones), trivial polish after. | ✅ done |
 | 10 | B20–B24, S7, F20–F26, U11–U14 | Post-UX-wave audit fixes (the Projects-page Pause footgun first), then the remote-deployment QoL wave: docs → routing → approval context → stop-all → update story → polish → WS/PWA. | ✅ done |
 | 11 | B25–B27, T1, F27–F35 | Phase 10 audit fixes (all small), then the server test package (T1 — later items lean on it), then the owner's QoL wave: planning context (F27+F28) → standards prompts (F31 → F29 → F30, in that order — F29/F30 build on F31's injection mechanism) → resilience + alerts (F32) → model test (F33) → skills (F34) → quota panel (F35). Tag `v0.3.0` at the end. | ✅ done |
-| 12 | B28, U15–U18, F36–F39, F13-P1 | Referential-integrity fix first (B28 — an autonomy footgun), the four small UX items together (U15–U18), then the wave in dependency order: Codex runner (F36) → swappable planner (F37, needs F36's adapter) → AGENTS.md pipeline (F38, planner-produced so it benefits from F37 landing first) → gates sandbox (F13-P1) → EC2 deploy checklist (F39 — the ship gate, last so it documents everything the wave added). Tag `v0.4.0` at the end; the owner deploys to EC2 right after. | ⬜ open |
+| 12 | B28, U15–U18, F36–F39, F13-P1, B29 | Referential-integrity fix first (B28 — an autonomy footgun), the four small UX items together (U15–U18), then the wave in dependency order: Codex runner (F36) → swappable planner (F37, needs F36's adapter) → AGENTS.md pipeline (F38, planner-produced so it benefits from F37 landing first) → gates sandbox (F13-P1) → EC2 deploy checklist (F39 — the ship gate) → B29 (found live-verifying F36, fixed last). Tagged `v0.4.0`; the owner deploys to EC2 right after. | ✅ done |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
 
-Phases 1–11 (Parts 1–6) are **done** — Phases 1–6 tagged `v0.1.0`, Phases 7–8
+Phases 1–12 (Parts 1–7) are **done** — Phases 1–6 tagged `v0.1.0`, Phases 7–8
 plus the post-plan audit fixes tagged `v0.2.0` (package.json's own `version`
 field, previously stale at `0.1.0`, was corrected to match as part of F24),
 Phase 9 (A1–A5, U1–U10) closed out Parts 1–4, Phase 10 (B20–B24, S7, F20–F26,
-U11–U14) closed out Part 5, and Phase 11 (B25–B27, T1, F27–F35) closed out
-Part 6, tagged `v0.3.0`. **Part 7 (Phase 12) is the open wave**: B28 +
-U15–U18 + F36–F39 + F13-P1, specced above — work it top-down and tag `v0.4.0`
-when it closes. F13's phase 1 (gates-only sandbox) ships in this wave;
-phases 2–3 (agents in the sandbox) remain future work per docs/specs/
-sandbox.md. Fable independently re-verifies each wave after merge;
-verification evidence is in each item's PR description and in this doc's
-Progress section above.
+U11–U14) closed out Part 5, Phase 11 (B25–B27, T1, F27–F35) closed out
+Part 6 tagged `v0.3.0`, and Phase 12 (B28, U15–U18, F36–F39, F13-P1, B29)
+closed out Part 7, tagged `v0.4.0`. F13's phase 1 (gates-only sandbox)
+shipped in that wave; phases 2–3 (agents in the sandbox) remain future work
+per docs/specs/sandbox.md. The owner deploys to EC2 right after `v0.4.0`.
+Fable independently re-verifies each wave after merge; verification
+evidence is in each item's PR description and in this doc's Progress
+section above.
