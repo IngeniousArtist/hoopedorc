@@ -244,9 +244,9 @@ export class EngineRunner {
       return makeAdapter(cfg, ENV.opencodeBaseUrl);
     };
 
-    const worktrees = new WorktreeManagerImpl();
+    const worktrees = new WorktreeManagerImpl(settings);
     const git = new GitServiceImpl();
-    const gates = new GateRunnerImpl(worktrees);
+    const gates = new GateRunnerImpl(worktrees, settings);
     // Record validator spend: validation runs aren't author runs, so they have
     // no run row — without this their cost never reaches the costs table.
     const validator = new ValidatorImpl(

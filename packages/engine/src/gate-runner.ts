@@ -3,14 +3,42 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { sanitizedEnv } from "@orc/adapters";
-import type { GateResult, Project, ProjectConfig, Task } from "@orc/types";
+import type { GateResult, Project, ProjectConfig, Settings, Task } from "@orc/types";
 import type { GateRunner, WorktreeManager } from "./index.js";
+import {
+  DEFAULT_GATE_IMAGE,
+  resolveSandboxMode,
+  sandboxedExecFile,
+  SANDBOX_TIMEOUT_GRACE_MS,
+} from "./sandbox.js";
 
 // Async exec everywhere: gates run npm scripts (up to 2 min each) and git
 // commands. The old execSync versions blocked Node's single event loop for the
 // whole duration, so while ANY task was running its gates the server couldn't
 // answer HTTP/WS — it looked frozen. promisify(execFile) keeps the loop free.
 const pexecFile = promisify(execFile);
+
+const GATE_TIMEOUT_MS = 120_000;
+
+/** Resolved once per `run()` call and threaded through every gate so a
+ *  single task's gates don't each independently re-decide (and potentially
+ *  disagree on) whether they're sandboxed. */
+type GateExecContext =
+  | { sandboxed: false }
+  | { sandboxed: true; image: string; readOnlyMounts: string[] };
+
+/** F13-P1 test seam: lets gate-runner.test.ts cover Docker mode selection
+ *  and dispatch with a fake exec layer instead of a real daemon. Defaults to
+ *  the real implementations in production. */
+export interface SandboxDeps {
+  resolveMode: typeof resolveSandboxMode;
+  exec: typeof sandboxedExecFile;
+}
+
+const REAL_SANDBOX_DEPS: SandboxDeps = {
+  resolveMode: resolveSandboxMode,
+  exec: sandboxedExecFile,
+};
 
 /**
  * Whether `cwd`'s package.json declares a non-empty npm script named
@@ -36,7 +64,14 @@ function hasNpmScript(cwd: string, script: string): boolean {
 }
 
 export class GateRunnerImpl implements GateRunner {
-  constructor(private readonly worktrees: WorktreeManager) {}
+  constructor(
+    private readonly worktrees: WorktreeManager,
+    // Narrowed to just the one field this class reads (rather than the full
+    // `Settings`) so callers — tests especially — don't need to fabricate an
+    // entire valid Settings object just to pick a sandbox mode.
+    private readonly settings?: Pick<Settings, "sandboxGates">,
+    private readonly sandbox: SandboxDeps = REAL_SANDBOX_DEPS,
+  ) {}
 
   async run(project: Project, task: Task): Promise<GateResult> {
     const worktreePath = task.worktreePath;
@@ -44,11 +79,35 @@ export class GateRunnerImpl implements GateRunner {
       return this.allFail("no worktree path set");
     }
 
+    let ctx: GateExecContext;
+    try {
+      const resolved = await this.sandbox.resolveMode(this.settings?.sandboxGates);
+      if (resolved.useSandbox) {
+        // The worktree's node_modules (if any) is a symlink to an absolute
+        // path inside the project's PRIMARY clone (see worktree-manager.ts's
+        // ensureDeps) — the container's mount namespace can't see that path
+        // unless it's bind-mounted too, at the identical path so the symlink
+        // still resolves.
+        const primaryNodeModules = join(project.localPath, "node_modules");
+        ctx = {
+          sandboxed: true,
+          image: project.config?.gateImage || DEFAULT_GATE_IMAGE,
+          readOnlyMounts: existsSync(primaryNodeModules) ? [primaryNodeModules] : [],
+        };
+      } else {
+        ctx = { sandboxed: false };
+      }
+    } catch (err) {
+      // "required" with no daemon — fail loudly rather than silently running
+      // on the host, per Settings.sandboxGates's contract.
+      return this.allFail((err as Error).message);
+    }
+
     const gates = project.config?.gates;
-    const typecheck = await this.runGate(worktreePath, "typecheck", gates?.typecheckScript);
-    const lint = await this.runGate(worktreePath, "lint", gates?.lintScript);
-    const build = await this.runGate(worktreePath, "build", gates?.buildScript);
-    const tests = await this.runTestsGate(worktreePath, gates);
+    const typecheck = await this.runGate(worktreePath, "typecheck", gates?.typecheckScript, ctx);
+    const lint = await this.runGate(worktreePath, "lint", gates?.lintScript, ctx);
+    const build = await this.runGate(worktreePath, "build", gates?.buildScript, ctx);
+    const tests = await this.runTestsGate(worktreePath, gates, ctx);
     const noConflicts = await this.checkNoConflicts(project, worktreePath);
     const inScope = await this.worktrees.changedFilesInScope(project, task);
     // Every objective gate was a no-op (script-less repo, e.g. a brand-new
@@ -81,6 +140,7 @@ export class GateRunnerImpl implements GateRunner {
     cwd: string,
     slot: string,
     scriptOverride: string | false | undefined,
+    ctx: GateExecContext,
   ): Promise<{ passed: boolean; ran: boolean; output: string }> {
     if (scriptOverride === false) {
       return { passed: true, ran: false, output: `gate "${slot}" disabled by project config` };
@@ -96,18 +156,19 @@ export class GateRunnerImpl implements GateRunner {
         output: `configured gate script "${scriptOverride}" not found in package.json`,
       };
     }
-    return this.runScript(cwd, scriptOverride || slot);
+    return this.runScript(cwd, scriptOverride || slot, ctx);
   }
 
   private async runTestsGate(
     cwd: string,
     gates: ProjectConfig["gates"] | undefined,
+    ctx: GateExecContext,
   ): Promise<{ passed: boolean; ran: boolean; output: string }> {
     if (gates?.testScript === false) {
       return { passed: true, ran: false, output: 'gate "test" disabled by project config' };
     }
     if (gates?.testCommand) {
-      return this.runCommand(cwd, gates.testCommand);
+      return this.runCommand(cwd, gates.testCommand, ctx);
     }
     if (gates?.testScript) {
       if (!hasNpmScript(cwd, gates.testScript)) {
@@ -117,11 +178,11 @@ export class GateRunnerImpl implements GateRunner {
           output: `configured gate script "${gates.testScript}" not found in package.json`,
         };
       }
-      return this.runScript(cwd, gates.testScript);
+      return this.runScript(cwd, gates.testScript, ctx);
     }
     // Default: support either a "test" or "tests" npm script; both must pass if present.
-    const testRun = await this.runScript(cwd, "test");
-    const testsRun = await this.runScript(cwd, "tests");
+    const testRun = await this.runScript(cwd, "test", ctx);
+    const testsRun = await this.runScript(cwd, "tests", ctx);
     return {
       passed: testRun.passed && testsRun.passed,
       ran: testRun.ran || testsRun.ran,
@@ -139,17 +200,12 @@ export class GateRunnerImpl implements GateRunner {
   private async runCommand(
     cwd: string,
     command: string,
+    ctx: GateExecContext,
   ): Promise<{ passed: boolean; ran: boolean; output: string }> {
     const [cmd, ...args] = command.trim().split(/\s+/).filter(Boolean);
     if (!cmd) return { passed: true, ran: false, output: "empty testCommand" };
     try {
-      const { stdout } = await pexecFile(cmd, args, {
-        cwd,
-        encoding: "utf-8",
-        timeout: 120_000,
-        maxBuffer: 16 * 1024 * 1024,
-        env: sanitizedEnv({ PWD: cwd }),
-      });
+      const { stdout } = await this.exec(ctx, cwd, cmd, args);
       return { passed: true, ran: true, output: stdout };
     } catch (err: unknown) {
       const e = err as { stderr?: string; stdout?: string; message?: string; killed?: boolean };
@@ -164,22 +220,13 @@ export class GateRunnerImpl implements GateRunner {
   private async runScript(
     cwd: string,
     script: string,
+    ctx: GateExecContext,
   ): Promise<{ passed: boolean; ran: boolean; output: string }> {
     if (!hasNpmScript(cwd, script)) {
       return { passed: true, ran: false, output: `script "${script}" not defined in package.json` };
     }
     try {
-      const { stdout } = await pexecFile(
-        "npm",
-        ["run", script, "--if-present"],
-        {
-          cwd,
-          encoding: "utf-8",
-          timeout: 120_000,
-          maxBuffer: 16 * 1024 * 1024,
-          env: sanitizedEnv({ PWD: cwd }),
-        },
-      );
+      const { stdout } = await this.exec(ctx, cwd, "npm", ["run", script, "--if-present"]);
       return { passed: true, ran: true, output: stdout };
     } catch (err: unknown) {
       const e = err as {
@@ -207,6 +254,33 @@ export class GateRunnerImpl implements GateRunner {
       }
       return { passed: false, ran: true, output: String(out) };
     }
+  }
+
+  /** Dispatches to Docker or a direct host `execFile`, per the mode resolved
+   *  once at the top of `run()`. Sandboxed calls get a fixed extra grace on
+   *  top of the normal gate timeout — container startup isn't instant, and a
+   *  script that would have passed natively shouldn't fail purely from that
+   *  overhead. */
+  private async exec(
+    ctx: GateExecContext,
+    cwd: string,
+    cmd: string,
+    args: string[],
+  ): Promise<{ stdout: string; stderr?: string }> {
+    if (!ctx.sandboxed) {
+      return pexecFile(cmd, args, {
+        cwd,
+        encoding: "utf-8",
+        timeout: GATE_TIMEOUT_MS,
+        maxBuffer: 16 * 1024 * 1024,
+        env: sanitizedEnv({ PWD: cwd }),
+      });
+    }
+    return this.sandbox.exec(ctx.image, cwd, cmd, args, {
+      timeout: GATE_TIMEOUT_MS + SANDBOX_TIMEOUT_GRACE_MS,
+      maxBuffer: 16 * 1024 * 1024,
+      readOnlyMounts: ctx.readOnlyMounts,
+    });
   }
 
   private async checkNoConflicts(

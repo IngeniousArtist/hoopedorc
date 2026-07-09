@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { makeAdapter } from "@orc/adapters";
+import { DEFAULT_GATE_IMAGE, resolveSandboxMode } from "@orc/engine";
 import type {
   ModelRosterResponse,
   ModelTestResult,
@@ -65,8 +66,31 @@ export async function runSetupChecks(settings: Settings): Promise<SetupHealthRes
     codexConfigured
       ? check("Codex CLI (codex)", "codex", ["--version"])
       : Promise.resolve({ name: "Codex CLI (codex)", ok: true, detail: "not configured" }),
+    gateSandboxCheck(settings),
   ]);
   return { checks, allOk: checks.every((c) => c.ok) };
+}
+
+/**
+ * F13-P1: read-only status line, not a pass/fail gate on its own — "auto"
+ * falling back to host is a normal, fully-functional mode (just less
+ * isolated), so it never turns the overall banner red. Only "required" with
+ * no daemon is a real misconfiguration: every gate run would fail loudly the
+ * moment a task reaches review.
+ */
+async function gateSandboxCheck(settings: Settings): Promise<SetupCheck> {
+  const name = "Gate sandbox";
+  try {
+    const resolved = await resolveSandboxMode(settings.sandboxGates);
+    // Per-project `gateImage` overrides aren't visible here (this check has
+    // no project context) — show the default every project falls back to.
+    const detail = resolved.useSandbox
+      ? `docker (${DEFAULT_GATE_IMAGE}) — ${resolved.detail}`
+      : resolved.detail;
+    return { name, ok: true, detail };
+  } catch (err) {
+    return { name, ok: false, detail: (err as Error).message.slice(0, 200) };
+  }
 }
 
 /**

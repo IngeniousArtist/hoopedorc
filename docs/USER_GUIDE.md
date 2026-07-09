@@ -158,13 +158,52 @@ going on a always-on box.
 - **Rollback.** Any merged task has a one-click Rollback (reverts the merge
   commit on `main` via `git revert`) if something merged that shouldn't
   have.
-- **What's NOT sandboxed (yet).** Gate scripts and every model's own tool
-  use run **directly on the host machine** with your real `gh`/`claude`/
-  `opencode` auth — a repo's own `test`/`build` scripts execute as-is. Their
-  environment is stripped of anything secret-shaped before they run, but
-  they still have real filesystem/network access. Don't point this at a
-  repo you don't trust. A containerized sandbox mode is tracked as future
-  work (F13 in `docs/PRODUCTIZATION_PLAN.md`), not built yet.
+- **Gate sandbox (Docker, opt-in via `Settings.sandboxGates`).** Gate
+  scripts (typecheck/lint/build/test/`testCommand`) and the dependency
+  install (`npm ci`/`install`) can run inside a disposable Docker container
+  instead of directly on the host — see "Gate sandbox" below.
+- **What's NOT sandboxed (yet).** Every model's own tool use — the *author
+  agent* that actually edits your code — still runs **directly on the host
+  machine** with your real `gh`/`claude`/`opencode` auth, regardless of the
+  gate sandbox setting above. Its environment is stripped of anything
+  secret-shaped before it runs, but it still has real filesystem/network
+  access. Don't point this at a repo you don't trust. Sandboxing the author
+  agent itself is tracked as future work (F13 phases 2/3 in
+  `docs/specs/sandbox.md`), not built yet.
+
+## Gate sandbox
+
+Gate scripts run the target repo's own `typecheck`/`lint`/`build`/`test` (or
+a project's `testCommand` override) — and `npm ci`/`install` runs whatever
+`postinstall` hooks the repo's `package.json` declares. Both are repo-owned
+code, not Hoopedorc's, so by default (`Settings.sandboxGates: "auto"`) they
+run inside a disposable `docker run --rm` container instead of directly on
+the host whenever a Docker daemon is reachable: the container sees only the
+one task's git worktree (bind-mounted read-write) plus, read-only, the
+project's shared `node_modules` install — not your home directory, not
+Hoopedorc's own database, not any other task's worktree, and none of your
+CLI credentials. No daemon reachable => it transparently falls back to
+running on the host exactly as before, with a one-time log line noting the
+fallback.
+
+Three modes (`Settings.sandboxGates`, no UI toggle yet — set via the
+settings API/DB directly if you want something other than the default):
+
+- **`"auto"` (default).** Sandbox when Docker responds to `docker version`,
+  host otherwise. Safe to leave alone either way.
+- **`"off"`.** Always host — byte-identical to pre-sandbox behavior.
+- **`"required"`.** No daemon => the gate fails loudly instead of silently
+  running unsandboxed. Recommended once you've confirmed Docker is actually
+  installed and working on a given box (see the EC2 section below for the
+  deploy target), so a Docker outage there can't quietly downgrade every
+  gate run to unsandboxed without you noticing.
+
+Check **Setup & Health**'s "Gate sandbox" line to see which mode a given box
+is actually running in. A non-Node stack needs a different
+`ProjectConfig.gateImage` (Advanced accordion on the project, default
+`"node:22"`) — e.g. a Python repo's `testCommand: "pytest -q"` needs an
+image that actually has `pytest` installed, or it'll fail the same way
+running `pytest` on a machine that never installed it would.
 
 ## Scheduled runs
 
@@ -363,6 +402,15 @@ your own setup, per the note on each step.
 - **Prereqs**: Node >= 20 (22 recommended), `git`, and the three CLIs
   installed (`gh`, `claude`, `opencode`) — same as local install
   (`npm run setup` checks all three either way).
+- **Docker (optional, for the gate sandbox)**: install it via your distro's
+  package manager or
+  [Docker's own install docs](https://docs.docker.com/engine/install/), then
+  confirm `docker version` succeeds as the OS user that will run Hoopedorc
+  (add that user to the `docker` group if needed). Without it, gate
+  sandboxing (`Settings.sandboxGates`, see above) just falls back to host
+  execution — nothing else is affected. A full EC2 deploy checklist
+  (systemd unit, etc.) is tracked separately (F39 in
+  `docs/PRODUCTIZATION_PLAN.md`).
 - **`gh`**: the easiest of the three headlessly — it natively supports
   `GH_TOKEN` (confirmed via `gh help environment`: "an authentication token
   that will be used when a command targets github.com... takes precedence

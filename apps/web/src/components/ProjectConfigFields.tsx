@@ -16,6 +16,9 @@ export interface ProjectConfigForm {
   testScript: string;
   testSkip: boolean;
   testCommand: string;
+  /** F13-P1: Docker image gate scripts run inside when Settings.sandboxGates
+   *  isn't "off". Blank = DEFAULT_GATE_IMAGE ("node:22"). */
+  gateImage: string;
   requireGithubChecks: boolean;
   githubChecksTimeoutMin: string;
   docsDisabled: boolean;
@@ -40,6 +43,7 @@ export const EMPTY_PROJECT_CONFIG_FORM: ProjectConfigForm = {
   testScript: "",
   testSkip: false,
   testCommand: "",
+  gateImage: "",
   requireGithubChecks: false,
   githubChecksTimeoutMin: "",
   docsDisabled: false,
@@ -66,6 +70,7 @@ export function projectConfigToForm(config: ProjectConfig | undefined): ProjectC
     testScript: typeof g.testScript === "string" ? g.testScript : "",
     testSkip: g.testScript === false,
     testCommand: g.testCommand ?? "",
+    gateImage: config.gateImage ?? "",
     requireGithubChecks: config.requireGithubChecks ?? false,
     githubChecksTimeoutMin:
       config.githubChecksTimeoutMin != null ? String(config.githubChecksTimeoutMin) : "",
@@ -103,6 +108,8 @@ export function projectConfigFromForm(form: ProjectConfigForm): ProjectConfig | 
   addGate("testScript", form.testSkip, form.testScript);
   if (form.testCommand.trim()) gates.testCommand = form.testCommand.trim();
   if (Object.keys(gates).length > 0) config.gates = gates;
+
+  if (form.gateImage.trim()) config.gateImage = form.gateImage.trim();
 
   if (form.requireGithubChecks) config.requireGithubChecks = true;
   if (form.githubChecksTimeoutMin.trim()) {
@@ -320,6 +327,24 @@ export function ProjectConfigFields({
               placeholder="runs via execFile — no shell, split on spaces"
               className={inputCls}
             />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-neutral-400">
+              Gate sandbox image (Docker, only used when sandboxing is on)
+            </label>
+            <input
+              type="text"
+              value={form.gateImage}
+              onChange={(e) => set("gateImage", e.target.value)}
+              placeholder='default: "node:22"'
+              className={inputCls}
+            />
+            <p className="mt-1 text-[10px] text-neutral-600">
+              Only matters for a non-Node test command (e.g. "pytest -q")
+              when Setup &amp; Health shows the gate sandbox as active — the
+              image needs that stack installed.
+            </p>
           </div>
 
           <div>
