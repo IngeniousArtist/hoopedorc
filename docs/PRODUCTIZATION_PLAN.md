@@ -1588,7 +1588,7 @@ before the second call and correctly synced after it. Tagged `v0.4.0`.
 | Item | Status | PR |
 |---|---|---|
 | B30 — restart during a pending approval re-runs the whole task | ✅ done | [#109](https://github.com/IngeniousArtist/hoopedorc/pull/109) |
-| F40 — Telegram command wave (`/autonomous`, `/pending`, `/stopall`, `/retry`, `/digest`, `/health`) | ⬜ | |
+| F40 — Telegram command wave (`/autonomous`, `/pending`, `/stopall`, `/retry`, `/digest`, `/health`) | ✅ done | [#111](https://github.com/IngeniousArtist/hoopedorc/pull/111) |
 | F41 — optional hold-dispatch while an approval is pending | ⬜ | |
 | F43 — `sandboxGates` toggle in the Settings UI | ⬜ | |
 | F42 — `deploy/ec2-bootstrap.sh` | ⬜ | |
@@ -4602,6 +4602,37 @@ incl. the ambiguous case); live against the owner's real bot: each command
 round-trips, `/stopall` requires the confirmation tap, `/pending` re-sent
 approval buttons actually resolve, and an unauthorized chat id still gets
 silence.
+
+**F40 — done (PR [#111](https://github.com/IngeniousArtist/hoopedorc/pull/111)).**
+New `packages/server/src/commands.ts` (index.ts boots a real server as a
+side effect of being imported, so shared logic moved here instead, same
+reasoning budget.ts/scheduler.ts are their own modules) exports
+`stopAllProjects`, `retryTask`, `findTaskByIdPrefix`, `setMergePolicy`,
+and `computeModelHealth` — all six commands plus the three existing HTTP
+routes (stop-all, retry, model-health) now share one implementation each.
+`TelegramBot` gained `confirmStopAll()` + a `stopall:` callback prefix in
+`handleUpdate`, mirroring `approvalRequested`'s existing inline-keyboard
+shape. Verified: 8 new server tests (policy flip persists + audit-logs
+per project; prefix matching resolves/reports-no-match/lists-candidates-
+when-ambiguous; `stopAllProjects`'s DB/broadcast/audit behavior against a
+fake engine). 62/62 server, 84/84 engine, 4/4 adapters, typecheck green.
+**No real Telegram bot was configured in this dev environment** (`.env`
+had both `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` empty) — live-verified
+as close to real as achievable instead: drove the actual `TelegramBot`
+class's `handleUpdate` against real `commands.ts` functions, a real
+`EngineRunner`, and a real in-memory DB, faking only the outbound
+`api.telegram.org` `fetch` call. Confirmed the real Yes/No keyboard +
+callback_data wire format; tapping No leaves everything untouched;
+tapping Yes runs the real `stopAllProjects`/`engine.stopAll` pipeline
+end to end; `/pending`'s re-sent approval carries the real
+`appr:<id>:<option>` callback_data and genuinely resolves the
+notification when tapped; an ambiguous `/retry` prefix lists every
+match instead of guessing; an unauthorized chat id gets total silence.
+**The owner should still round-trip each command against the real bot
+once Telegram is configured** to confirm the Bot API itself behaves as
+documented (message formatting, button rendering) — this verification
+proves the server-side logic and wire format are correct, not that
+Telegram's own UI renders them as expected.
 
 ### F41. Optional hold-dispatch while an approval is pending — LOW
 
