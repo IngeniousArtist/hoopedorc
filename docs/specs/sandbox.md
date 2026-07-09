@@ -1,9 +1,14 @@
 # Sandbox mode for agents & gates (F13 design doc)
 
-**Status: design only. No implementation exists yet — do not build against
-this doc without re-confirming it against the code at implementation time,
-the same way every item in `docs/PRODUCTIZATION_PLAN.md` gets a real-CLI
-check before being trusted.**
+**Status: phase 1 (gates-only Docker sandbox, F13-P1) shipped** —
+`Settings.sandboxGates` ("off"/"auto"/"required"), `ProjectConfig.gateImage`,
+and `packages/engine/src/sandbox.ts` (`detectDocker`, `resolveSandboxMode`,
+`sandboxedExecFile`). `GateRunnerImpl`'s gate scripts/testCommand and
+`WorktreeManagerImpl.ensureDeps`'s `npm ci|install` route through it; the
+*author agent* still runs on the host exactly as this doc describes below —
+phases 2/3 (below) remain unbuilt. Re-confirm against the code before
+extending it, the same way every item in `docs/PRODUCTIZATION_PLAN.md` gets a
+real-CLI check before being trusted.
 
 ## Why this exists
 
@@ -206,13 +211,18 @@ write access to build/test output directories).
 
 ## Phased rollout
 
-1. **Gates-only sandbox.** Wrap `GateRunnerImpl.runScript`/`runCommand`/
-   `checkNoConflicts` to optionally execute inside a container instead of
-   directly on the host, gated by (e.g.) `SANDBOX=container`. No agent
-   changes at all in this phase — the author still runs natively. This
-   phase alone closes most of B11's "repo's own scripts execute arbitrary
-   code on the host" gap, since gate scripts are exactly the surface that
-   flagged.
+1. **Gates-only sandbox — ✅ shipped (F13-P1).** `GateRunnerImpl.runScript`/
+   `runCommand` and `WorktreeManagerImpl.ensureDeps`'s `npm ci|install`
+   optionally execute inside a container instead of directly on the host,
+   gated by `Settings.sandboxGates` ("off"/"auto"/"required", not the
+   `SANDBOX=container` env var originally sketched here).
+   `checkNoConflicts`'s `git fetch`/`merge` stayed on the host deliberately —
+   it's a git operation against the trusted `origin` remote, not repo-owned
+   code execution, so it doesn't need the same isolation gate scripts do. No
+   agent changes in this phase — the author still runs natively. This phase
+   alone closes most of B11's "repo's own scripts execute arbitrary code on
+   the host" gap, since gate scripts (and `postinstall` hooks) are exactly
+   the surface that flagged.
 2. **Agents, opt-in per model.** Extend the same container mechanism to
    `AgentAdapter.run()`, starting with whichever model's auth story is
    simplest to containerize first (likely `opencode`'s file-based auth

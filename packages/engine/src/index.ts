@@ -27,6 +27,13 @@ export { GateRunnerImpl } from "./gate-runner.js";
 export { ValidatorImpl, SelfReviewError } from "./validator.js";
 export type { ValidatorCostSink } from "./validator.js";
 export { Orchestrator } from "./orchestrator.js";
+export {
+  DEFAULT_GATE_IMAGE,
+  detectDocker,
+  isPlausibleImageRef,
+  resolveSandboxMode,
+} from "./sandbox.js";
+export type { SandboxMode } from "./sandbox.js";
 
 /** Callbacks the engine uses to report progress + ask humans for decisions. */
 export interface EngineEvents {

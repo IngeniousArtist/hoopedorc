@@ -23,7 +23,7 @@ import type {
 } from "@orc/types";
 import { SECRET_SENTINEL, TASK_STATUSES, WS_PATH, pickAssignedModel } from "@orc/types";
 import type { TaskStatus } from "@orc/types";
-import { GitServiceImpl } from "@orc/engine";
+import { GitServiceImpl, isPlausibleImageRef } from "@orc/engine";
 import { ENV, defaultSettings } from "./config";
 import { seed } from "./mock";
 import type { Db } from "./db/index";
@@ -355,6 +355,8 @@ const VALID_MERGE_POLICIES: MergePolicy[] = [
   "always_ask",
 ];
 
+const VALID_SANDBOX_MODES = ["off", "auto", "required"] as const;
+
 /**
  * Validate + normalize a project's config override (F9). Gate script names
  * and testCommand ride into `execFile` arg arrays downstream (gate-runner.ts)
@@ -452,6 +454,13 @@ function parseProjectConfig(
       if (trimmed) hints.push(trimmed);
     }
     if (hints.length > 0) value.skillHints = hints;
+  }
+
+  if (raw.gateImage !== undefined) {
+    if (typeof raw.gateImage !== "string" || !isPlausibleImageRef(raw.gateImage)) {
+      return { error: "config.gateImage must be a plausible Docker image reference (<=200 chars)" };
+    }
+    value.gateImage = raw.gateImage;
   }
 
   if (raw.schedule !== undefined) {
@@ -2226,6 +2235,18 @@ async function main() {
           error: `Model ${m.id}: quota.maxCostUsd must be a positive number`,
         });
       }
+    }
+
+    // F13-P1: an unvalidated string here would silently no-op (resolveSandboxMode
+    // treats anything that isn't "off"/"required" as "auto") rather than
+    // rejecting the operator's typo at save time.
+    if (
+      body.settings.sandboxGates !== undefined &&
+      !VALID_SANDBOX_MODES.includes(body.settings.sandboxGates as (typeof VALID_SANDBOX_MODES)[number])
+    ) {
+      return reply.code(400).send({
+        error: `settings.sandboxGates must be one of: ${VALID_SANDBOX_MODES.join(", ")}`,
+      });
     }
 
     // F31: cap each guidelines field — an unbounded Settings textarea must

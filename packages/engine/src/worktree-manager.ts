@@ -12,10 +12,18 @@ import {
 import { dirname, isAbsolute, join } from "node:path";
 import { minimatch } from "minimatch";
 import { sanitizedEnv } from "@orc/adapters";
-import type { Project, Task } from "@orc/types";
+import type { Project, Settings, Task } from "@orc/types";
 import type { WorktreeManager } from "./index.js";
+import {
+  DEFAULT_GATE_IMAGE,
+  resolveSandboxMode,
+  sandboxedExecFile,
+  SANDBOX_TIMEOUT_GRACE_MS,
+} from "./sandbox.js";
 
 const pexecFile = promisify(execFile);
+const DEPS_TIMEOUT_MS = 10 * 60 * 1000;
+const DEPS_MAX_BUFFER = 32 * 1024 * 1024;
 
 // Argument arrays only, never a shell — otherwise project.defaultBranch and
 // task.branch (both derived from HTTP-supplied fields) could smuggle shell
@@ -37,6 +45,12 @@ const DEPS_MARKER = ".hoopedorc-deps-hash";
 const GIT_EXCLUDE_ENTRIES = ["node_modules", ".hoopedorc-deps-hash"];
 
 export class WorktreeManagerImpl implements WorktreeManager {
+  constructor(
+    // Narrowed to just the one field this class reads — see the same choice
+    // on GateRunnerImpl in gate-runner.ts.
+    private readonly settings?: Pick<Settings, "sandboxGates">,
+  ) {}
+
   async create(
     project: Project,
     task: Task,
@@ -178,12 +192,26 @@ export class WorktreeManagerImpl implements WorktreeManager {
         // install can't wedge the run.
         const args =
           lockName === "package-lock.json" ? ["ci"] : ["install"];
-        await pexecFile("npm", args, {
-          cwd: primary,
-          timeout: 10 * 60 * 1000,
-          maxBuffer: 32 * 1024 * 1024,
-          env: sanitizedEnv({ PWD: primary }),
-        });
+        // F13-P1: postinstall hooks are repo code too — the sneakiest kind,
+        // since they run implicitly. Route through the same Docker sandbox
+        // as gate scripts when enabled; `resolveSandboxMode` throwing
+        // ("required" with no daemon) is caught by the outer try/catch below
+        // and treated the same as any other install failure — best effort,
+        // the actual gate run surfaces the real "no daemon" error loudly.
+        const sandbox = await resolveSandboxMode(this.settings?.sandboxGates);
+        if (sandbox.useSandbox) {
+          await sandboxedExecFile(project.config?.gateImage || DEFAULT_GATE_IMAGE, primary, "npm", args, {
+            timeout: DEPS_TIMEOUT_MS + SANDBOX_TIMEOUT_GRACE_MS,
+            maxBuffer: DEPS_MAX_BUFFER,
+          });
+        } else {
+          await pexecFile("npm", args, {
+            cwd: primary,
+            timeout: DEPS_TIMEOUT_MS,
+            maxBuffer: DEPS_MAX_BUFFER,
+            env: sanitizedEnv({ PWD: primary }),
+          });
+        }
         // A package.json with no dependencies leaves npm creating no
         // node_modules at all — make the dir so the marker (and the symlink
         // target) exist, and so we don't reinstall on every task forever.

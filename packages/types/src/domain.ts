@@ -239,6 +239,14 @@ export interface ProjectConfig {
    * like other free-text prompt inputs: each entry <=200 chars, <=20 entries.
    */
   skillHints?: string[];
+  /**
+   * F13-P1: Docker image gate scripts and `ensureDeps`'s `npm ci|install` run
+   * inside when `Settings.sandboxGates` isn't "off". Defaults to `"node:22"`
+   * (`DEFAULT_GATE_IMAGE` in `@orc/engine`'s sandbox.ts). Only matters for
+   * non-Node stacks (e.g. a `testCommand` like "pytest -q" needs an image
+   * that actually has pytest) — most projects never need to touch this.
+   */
+  gateImage?: string;
 }
 
 /**
@@ -524,6 +532,21 @@ export interface Settings {
     ux?: string;
     security?: string;
   };
+  /**
+   * F13-P1 (phase 1 of docs/specs/sandbox.md): run gate scripts and
+   * `ensureDeps`'s `npm ci|install` inside a Docker container instead of
+   * directly on the host — closes most of B11's "repo's own scripts execute
+   * arbitrary code on the host" gap for that surface. The *author agent*
+   * still runs on the host regardless of this setting (phase 2/3, future
+   * wave — see the spec doc's CLI-auth-in-a-container problem).
+   * - `"off"`: byte-identical to pre-F13-P1 behavior — always host.
+   * - `"auto"` (default): sandbox when a Docker daemon responds to
+   *   `docker version`, otherwise fall back to host with a warn-once log.
+   * - `"required"`: no daemon => the gate fails loudly instead of silently
+   *   running unsandboxed. Meant for a box (e.g. the EC2 deploy target)
+   *   where Docker's presence has already been verified.
+   */
+  sandboxGates?: "off" | "auto" | "required";
 }
 
 /**

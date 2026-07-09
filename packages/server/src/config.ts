@@ -139,6 +139,10 @@ export function defaultSettings(): Settings {
       outOfScopeEdits: true,
     },
     allowVacuousGates: false,
+    // F13-P1: sandbox gate scripts + dep installs in Docker when a daemon is
+    // available, host otherwise — see Settings.sandboxGates's own doc for
+    // the full off/auto/required contract.
+    sandboxGates: "auto",
     confidenceThreshold: 0.7,
     // Unset by default => falls back to ENV.reposDir at request time. Set from
     // the Settings UI to point new project clones somewhere readable, e.g.
