@@ -51,6 +51,15 @@ ARCHITECTURE, NEXT_STEPS, CONTRACT). It has seven parts:
   EC2 deploy checklist, plus B29 (a stale-dependency-fingerprint bug found
   live-verifying F36). The owner deploys to EC2 right after this wave.
   Completed 2026-07-09.
+- **Part 8 — Remote-supervision wave** (added 2026-07-09 after Part 7
+  completed and Fable's Phase 12 audit found no defects; the owner deploys
+  to EC2 while this wave is built): one efficiency fix confirmed by tracing
+  the restart path (a task that was only waiting for a human tap re-runs
+  from scratch after a restart), then the Telegram command wave the owner
+  asked for — switch merge policy from the phone, list/re-send pending
+  approvals, stop-all, retry, digest control, health summary — plus an
+  optional hold-dispatch-while-awaiting-approval mode, an EC2 bootstrap
+  script, and the missing sandbox-mode UI toggle.
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
@@ -1573,6 +1582,23 @@ also live-verified end-to-end against a real git remote + primary clone +
 two real `create()` calls, with a `package.json` change pushed to origin
 between them to simulate a merge — primary's manifest was confirmed stale
 before the second call and correctly synced after it. Tagged `v0.4.0`.
+
+### Phase 13 — Part 8: remote-supervision wave — 🔶 OPEN
+
+| Item | Status | PR |
+|---|---|---|
+| B30 — restart during a pending approval re-runs the whole task | ⬜ | |
+| F40 — Telegram command wave (`/autonomous`, `/pending`, `/stopall`, `/retry`, `/digest`, `/health`) | ⬜ | |
+| F41 — optional hold-dispatch while an approval is pending | ⬜ | |
+| F43 — `sandboxGates` toggle in the Settings UI | ⬜ | |
+| F42 — `deploy/ec2-bootstrap.sh` | ⬜ | |
+
+Work top-down: B30 first (it's the correctness/efficiency item; F40's
+`/pending` builds on its re-arm mechanism), then F40, then the three small
+ones in any order. Tag `v0.5.0` when the wave closes. Telegram items can be
+live-verified against the owner's real bot (Settings → Telegram → "Send
+test message" first); B30's restart scenario is verifiable locally by
+killing the server mid-approval.
 
 ---
 
@@ -4425,6 +4451,210 @@ two-box section; deploy/README cross-links instead of duplicating.
 
 ---
 
+## Part 8 — Remote-supervision wave (Fable, 2026-07-09)
+
+**Context for the implementing model.** Produced from two inputs: (1)
+Fable's audit of the merged Phase 12 code, and (2) the owner's requests on
+2026-07-09, made while preparing the EC2 deploy. The owner deploys to EC2
+**while this wave is being built** — every item here exists to make
+supervising that box from a phone better, so live-verify against the real
+Telegram bot where the acceptance criteria say so.
+
+**Phase 12 audit verdict (all 10 items):** genuinely implemented, no
+defects found. Sampled claims held up against the merged code: B28's
+settings validation + both orchestrator requeue guards; F36's CodexAdapter
+(stdin prompt, JSONL usage parse, `sanitizedEnv` allowlist extension);
+F37's runner dispatch with `--output-schema`-enforced deconstruct; F38's
+full `agentsMd` chain (planner prompt → JSON schema → parse → commit +
+CLAUDE.md pointer → author nudge in `guidelines.ts` → docs-stage scope);
+F13-P1's sandbox (allowlist env assembled from scratch, worktree-only rw
+mount, read-only shared-deps mount, uid/gid mapping); F39/B29 verified in
+the implementing session itself (B29 additionally against a real git
+remote with a mid-run origin push). 139 tests green (81 engine / 54
+server / 4 adapters). One benign interaction traced and accepted: B29's
+manifest copy briefly dirties the primary clone's working tree, but git's
+ff-merge tolerates a working-tree file that already matches the merge
+target and the next `syncPrimary` self-heals it — worst case is a skipped
+best-effort changelog/PRD commit. Also fixed during the audit session:
+README/ARCHITECTURE were still describing v0.2.0 (refreshed, PR #107).
+
+**Not an item: Grok 4.5.** Adding it to the coding/docs pool is pure
+configuration — opencode reports per-step cost natively so no pricing
+entry is needed. Owner: update the opencode CLI so `opencode models` lists
+it, then Settings → Models (edit the slug or add a new entry — the add
+field has the datalist), tick `hard`/`medium`/`docs` roles, point Routing
+at it, optionally raise `maxConcurrent`/declare a quota, and round-trip it
+with "Test models" before routing real work.
+
+### B30. Restart during a pending approval re-runs the whole task — MEDIUM (efficiency + spend)
+
+**Where:** `packages/engine/src/orchestrator.ts` (`start()`'s orphan
+recovery, ~line 277, and the merge-decision section of `executeTask`),
+`packages/server/src/engine-runner.ts` (`requestApproval`),
+`packages/server/src/index.ts` (B10's `expireStaleApprovals` boot pass).
+
+**Problem (confirmed by tracing the current code):** an approval pauses
+only the flagged task — `requestApproval` returns an unresolved Promise
+with no timeout, siblings keep flowing, and a Telegram tap resumes it.
+That part is right. But if the **server restarts** while one is pending
+(deploy, `npm run update`, crash, EC2 reboot): B10 stamps the notification
+`expired_restart`; resume-on-boot restarts the project; orphan recovery
+sees the task `in_review` with no active run and requeues it to `backlog`;
+and the scheduler **re-runs the entire task from scratch** — a full paid
+re-author + gates + validator cycle for work that had already passed
+everything and was only waiting for a human tap. Wasteful exactly when the
+owner is AFK, which is exactly when approvals sit pending.
+
+**Fix:** teach orphan recovery to distinguish "was mid-authoring" from
+"was awaiting a human." A task is resumable-at-decision when it is
+`in_review` **and** has an open PR (`prNumber` set) **and** its newest
+persisted `MergeDecision` exists for the current attempt. For those tasks,
+instead of requeueing to `backlog`: re-enter the merge-decision step
+directly — recompute `canAutoMerge` from the persisted decision (or re-run
+the cheap risky-change checks; NOT the validator, whose verdict is already
+persisted) and re-request approval via the normal `requestApproval` path,
+producing a fresh notification with the same context (PR link + reasons).
+Tasks that were genuinely mid-authoring keep the existing
+requeue-to-backlog behavior unchanged. Keep B10's expiry for the *old*
+notification exactly as is — the re-arm creates a new one; nothing ever
+resolves against a dead resolver. Watch out: `executeTask` is one long
+function — factor the decision step out far enough to re-enter it without
+re-running gates, or gate re-running is acceptable if the factoring gets
+ugly (gates are cheap relative to authoring; re-validating with a paid
+model call is the thing to avoid — say which way you went in the PR).
+
+**Acceptance:** engine test: a task seeded `in_review` with a `prNumber`
+and a persisted passing `MergeDecision` + a risky flag → on `start()`, no
+author adapter is ever invoked and `requestApproval` fires with the
+persisted reasons; a task seeded `in_review` with no PR → requeues to
+`backlog` exactly as today. Live: start a real risky-flagged task, kill
+the server while its approval is pending, restart — a fresh approval
+(same PR link) arrives on Telegram without the task re-authoring; approve
+it and the merge completes.
+
+### F40. Telegram command wave
+
+**Where:** `packages/server/src/index.ts` (`telegramCommand`, ~line 907 —
+the switch is the only file to grow), `packages/server/src/telegram.ts`
+(only if a new inline-keyboard shape is needed), `docs/USER_GUIDE.md`.
+
+**What exists:** `/help /status /cost /projects /start /pause`, inline
+approve/reject buttons on approval pushes, chat-id restriction on
+everything, `resolveNotification` (index.ts ~859) for approvals,
+`POST /api/engine/stop-all` (F23) and `POST /api/tasks/:id/retry` already
+implement the hard parts — the commands are thin wrappers.
+
+**Fix — add, reusing the existing route handlers' logic (extract shared
+functions where a route body would otherwise be duplicated):**
+1. `/autonomous on|off` — flips `Settings.mergePolicy` between
+   `fully_autonomous` and `hard_gate_flag_risky`, persists via the same
+   settings-update path the API uses (so validation runs), replies with
+   the new policy and a one-line reminder of what it means. Bare
+   `/autonomous` reports the current policy without changing it. Audit-log
+   the change (`actor: "telegram"`).
+2. `/pending` — lists open approval notifications (the repo query B26
+   fixed already exempts them from pruning) and **re-sends each one** with
+   its inline approve/reject keyboard, so a missed push is recoverable
+   from the phone. Empty state: "Nothing pending."
+3. `/stopall` — two-step: replies with an inline Yes/No keyboard naming
+   how many projects/tasks it will stop; Yes runs the F23 stop-all logic.
+   Never single-step — this is the highest-blast-radius command.
+4. `/retry <taskId-or-prefix>` — retries a `failed`/`changes_requested`/
+   `blocked` task via the existing retry logic; unique-prefix matching on
+   the id with an "ambiguous, matches: …" reply when not unique.
+5. `/digest off|terminal|all` — sets `Settings.telegram.digest`; bare
+   `/digest` reports the current value.
+6. `/health` — per-model one-liners: cooldown state, quota window usage
+   (the F35 numbers), last model-check result. Keep it under ~15 lines.
+7. Update `/help`, and USER_GUIDE's Telegram section, with all of these.
+
+**Acceptance:** server tests for the command handlers where they're pure
+(policy flip validates + persists + audit-logs; retry prefix matching
+incl. the ambiguous case); live against the owner's real bot: each command
+round-trips, `/stopall` requires the confirmation tap, `/pending` re-sent
+approval buttons actually resolve, and an unauthorized chat id still gets
+silence.
+
+### F41. Optional hold-dispatch while an approval is pending — LOW
+
+**Where:** `packages/engine/src/orchestrator.ts` (dispatch loop),
+`packages/server/src/engine-runner.ts` (a `SchedulerDeps` hook mirroring
+`checkBudget`/`checkModelCooldown`), `packages/types` + Settings UI.
+
+**Problem:** today a pending approval blocks only the flagged task. For an
+owner who wants "nothing new happens while a decision is waiting on me,"
+there's no mode for that — pausing the project by hand loses the queue.
+
+**Fix:** `Settings.holdWhileAwaitingApproval?: boolean` (default `false`,
+keep today's behavior). When true, the dispatch loop skips picking up new
+`ready` tasks for a project while any unresolved approval notification
+exists for it — active tasks finish naturally (drain semantics, like
+F3's pause-drain), a warn-once log names the blocking notification, and
+dispatch resumes the pass after it's resolved. Surface as a checkbox in
+Settings near mergePolicy, with copy that says exactly what it trades
+(slower overall runs for zero unsupervised spend during decisions).
+
+**Acceptance:** engine test mirroring the budget-skip test's shape: with
+the flag on and a pending approval, a second ready task is never
+dispatched until the approval resolves, then dispatches on the next pass;
+with the flag off, current behavior byte-identical.
+
+### F43. `sandboxGates` toggle in the Settings UI — TRIVIAL
+
+**Where:** `apps/web/src/pages/Settings.tsx`.
+
+USER_GUIDE's Gate sandbox section currently says "no UI toggle yet — set
+via the settings API/DB directly." The field, validation, and health-panel
+surfacing all exist (F13-P1); add a three-option select
+(`off`/`auto`/`required`) with one line of help text per mode (crib the
+USER_GUIDE wording), remove the "no UI toggle yet" caveat from the guide.
+
+**Acceptance:** flipping the select and saving round-trips through
+`PUT /api/settings`; Setup & Health's "Gate sandbox" line reflects the
+change after the next gate run (or immediately, if it reads settings).
+
+### F42. `deploy/ec2-bootstrap.sh` — one-command box setup
+
+**Where:** new `deploy/ec2-bootstrap.sh`, cross-linked from USER_GUIDE's
+EC2 checklist and `deploy/README.md`.
+
+**Fix:** an idempotent bash script automating checklist steps 1–2 and 6
+(the non-interactive parts): detect distro (support Amazon Linux 2023 +
+Ubuntu LTS; refuse others with a pointer to the manual checklist), install
+Node 22 + git + Docker (Docker optional behind a `--no-docker` flag), add
+swap when RAM < 2GB (the F39 snippet), clone the repo to `/opt/hoopedorc`
+(or `--dir`), `npm install && npm run setup && npm run build`, install the
+systemd unit with `User=`/`WorkingDirectory=` filled in from the invoking
+user, `daemon-reload` + `enable`. It must **stop and print next steps**
+rather than attempt the interactive parts: the CLI logins (checklist step
+3), `.env` editing (step 4), and `tailscale serve` (step 5). Re-running on
+a half-configured box must be safe (check-before-install everywhere, the
+B27 lesson: detect by output, not exit codes). Follow update.sh's existing
+conventions (`set -euo pipefail`, explicit refusals).
+
+**Acceptance:** shellcheck-clean; a dry-run mode (`--dry-run` printing the
+commands it would run) exercised in CI or locally; live-verified on the
+owner's actual EC2 instance during the deploy (this wave and the deploy
+are concurrent — coordinate with the owner, who runs it with `! bash
+deploy/ec2-bootstrap.sh` and pastes the output back).
+
+### What Part 8 deliberately does NOT include (for calibration)
+
+- **Agents in the sandbox (F13 phases 2–3)** — still the headline
+  candidate for the wave after this one, once the gates sandbox has run
+  on the EC2 box for a while.
+- **Telegram free-text chat with the planner** — commands only; a
+  conversational TG interface is a different product surface with real
+  prompt-injection considerations (anyone who compromises the chat
+  controls a code-pushing system).
+- **Multi-user Telegram** — the chat-id restriction stays single-operator.
+- **Approval timeouts / auto-decisions** — approvals wait forever by
+  design; an auto-approve-after-N-hours would defeat the entire safety
+  model.
+- **Cross-instance anything** — the two-box rule stands.
+
+---
+
 ## Suggested execution order
 
 | Phase | Items | Rationale | Status |
@@ -4441,6 +4671,7 @@ two-box section; deploy/README cross-links instead of duplicating.
 | 10 | B20–B24, S7, F20–F26, U11–U14 | Post-UX-wave audit fixes (the Projects-page Pause footgun first), then the remote-deployment QoL wave: docs → routing → approval context → stop-all → update story → polish → WS/PWA. | ✅ done |
 | 11 | B25–B27, T1, F27–F35 | Phase 10 audit fixes (all small), then the server test package (T1 — later items lean on it), then the owner's QoL wave: planning context (F27+F28) → standards prompts (F31 → F29 → F30, in that order — F29/F30 build on F31's injection mechanism) → resilience + alerts (F32) → model test (F33) → skills (F34) → quota panel (F35). Tag `v0.3.0` at the end. | ✅ done |
 | 12 | B28, U15–U18, F36–F39, F13-P1, B29 | Referential-integrity fix first (B28 — an autonomy footgun), the four small UX items together (U15–U18), then the wave in dependency order: Codex runner (F36) → swappable planner (F37, needs F36's adapter) → AGENTS.md pipeline (F38, planner-produced so it benefits from F37 landing first) → gates sandbox (F13-P1) → EC2 deploy checklist (F39 — the ship gate) → B29 (found live-verifying F36, fixed last). Tagged `v0.4.0`; the owner deploys to EC2 right after. | ✅ done |
+| 13 | B30, F40–F43 | Remote-supervision wave, built while the owner's EC2 deploy happens: approval re-arm on restart first (B30 — F40's `/pending` leans on its mechanism), then the Telegram commands (F40), then the three small ones (F41 hold-dispatch option, F43 sandbox UI toggle, F42 bootstrap script) in any order. Tag `v0.5.0` at the end. | ⬜ open |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
@@ -4451,9 +4682,12 @@ field, previously stale at `0.1.0`, was corrected to match as part of F24),
 Phase 9 (A1–A5, U1–U10) closed out Parts 1–4, Phase 10 (B20–B24, S7, F20–F26,
 U11–U14) closed out Part 5, Phase 11 (B25–B27, T1, F27–F35) closed out
 Part 6 tagged `v0.3.0`, and Phase 12 (B28, U15–U18, F36–F39, F13-P1, B29)
-closed out Part 7, tagged `v0.4.0`. F13's phase 1 (gates-only sandbox)
-shipped in that wave; phases 2–3 (agents in the sandbox) remain future work
-per docs/specs/sandbox.md. The owner deploys to EC2 right after `v0.4.0`.
+closed out Part 7, tagged `v0.4.0` — audited by Fable 2026-07-09, no
+defects found. **Part 8 (Phase 13) is the open wave**: B30 + F40–F43,
+specced above, built concurrently with the owner's EC2 deploy — work it
+top-down and tag `v0.5.0` when it closes. F13's phase 1 (gates-only
+sandbox) shipped in Part 7; phases 2–3 (agents in the sandbox) remain the
+headline candidate for the wave after Part 8, per docs/specs/sandbox.md.
 Fable independently re-verifies each wave after merge; verification
 evidence is in each item's PR description and in this doc's Progress
 section above.
