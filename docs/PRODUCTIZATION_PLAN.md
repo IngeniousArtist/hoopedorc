@@ -1587,7 +1587,7 @@ before the second call and correctly synced after it. Tagged `v0.4.0`.
 
 | Item | Status | PR |
 |---|---|---|
-| B30 — restart during a pending approval re-runs the whole task | ⬜ | |
+| B30 — restart during a pending approval re-runs the whole task | ✅ done | [#109](https://github.com/IngeniousArtist/hoopedorc/pull/109) |
 | F40 — Telegram command wave (`/autonomous`, `/pending`, `/stopall`, `/retry`, `/digest`, `/health`) | ⬜ | |
 | F41 — optional hold-dispatch while an approval is pending | ⬜ | |
 | F43 — `sandboxGates` toggle in the Settings UI | ⬜ | |
@@ -4531,6 +4531,34 @@ persisted reasons; a task seeded `in_review` with no PR → requeues to
 the server while its approval is pending, restart — a fresh approval
 (same PR link) arrives on Telegram without the task re-authoring; approve
 it and the merge completes.
+
+**B30 — done (PR [#109](https://github.com/IngeniousArtist/hoopedorc/pull/109)).**
+`findResumableDecision` (orchestrator.ts) recognizes an `in_review` task
+with an open PR and a `MergeDecision` persisted for its current attempt
+(`runId === run-<taskId>-<attempts>`) instead of treating it as orphaned.
+`recoverPendingApproval` re-asks whichever decision was pending —
+`request_changes`/`escalate` directly from the persisted reasons; an
+`approve` verdict (the risky-change case the acceptance criteria
+specifies) re-enters a new `resolveMergeOutcome` method, extracted
+verbatim from `executeTask`'s post-validator tail (docs stage → sync →
+optional GitHub-checks wait → `canAutoMerge` → merge-or-ask) so both the
+normal path and recovery share one implementation — nothing here ever
+re-runs the author or validator. New optional `SchedulerDeps.
+getMergeDecisions` hook, wired in `engine-runner.ts`. Verified: 3 new
+engine tests (approve+risky re-asks and completes the merge without
+touching author/validator; escalate re-asks that verdict; no-PR still
+requeues to backlog exactly as before) plus the full existing suite
+unaffected by the extraction — 84/84 engine, 54/54 server, 4/4 adapters,
+typecheck green. **Live-verified end-to-end** against a real scratch
+GitHub repo with a real open PR (not Telegram specifically, since no bot
+was configured in this environment — the notification-layer proof is
+identical either way): seeded a task `in_review` with that PR number, a
+real worktree, and a persisted risky "approve" decision; booted a real
+`EngineRunner` against a real SQLite DB (simulating the restart);
+confirmed zero run rows were created (no re-authoring) and the correct
+"Risky changes..." notification appeared; resolved it `approve_merge` and
+confirmed via `gh pr view` that the real PR was genuinely **MERGED** and
+`CHANGELOG.md` landed on `origin/main`.
 
 ### F40. Telegram command wave
 
