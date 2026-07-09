@@ -59,7 +59,7 @@ ARCHITECTURE, NEXT_STEPS, CONTRACT). It has seven parts:
   asked for — switch merge policy from the phone, list/re-send pending
   approvals, stop-all, retry, digest control, health summary — plus an
   optional hold-dispatch-while-awaiting-approval mode, an EC2 bootstrap
-  script, and the missing sandbox-mode UI toggle.
+  script, and the missing sandbox-mode UI toggle. Completed 2026-07-10.
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
@@ -1583,7 +1583,7 @@ two real `create()` calls, with a `package.json` change pushed to origin
 between them to simulate a merge — primary's manifest was confirmed stale
 before the second call and correctly synced after it. Tagged `v0.4.0`.
 
-### Phase 13 — Part 8: remote-supervision wave — 🔶 OPEN
+### Phase 13 — Part 8: remote-supervision wave — ✅ DONE
 
 | Item | Status | PR |
 |---|---|---|
@@ -1591,14 +1591,14 @@ before the second call and correctly synced after it. Tagged `v0.4.0`.
 | F40 — Telegram command wave (`/autonomous`, `/pending`, `/stopall`, `/retry`, `/digest`, `/health`) | ✅ done | [#111](https://github.com/IngeniousArtist/hoopedorc/pull/111) |
 | F41 — optional hold-dispatch while an approval is pending | ✅ done | [#113](https://github.com/IngeniousArtist/hoopedorc/pull/113) |
 | F43 — `sandboxGates` toggle in the Settings UI | ✅ done | [#115](https://github.com/IngeniousArtist/hoopedorc/pull/115) |
-| F42 — `deploy/ec2-bootstrap.sh` | ⬜ | |
+| F42 — `deploy/ec2-bootstrap.sh` | ✅ done | [#117](https://github.com/IngeniousArtist/hoopedorc/pull/117) |
 
-Work top-down: B30 first (it's the correctness/efficiency item; F40's
-`/pending` builds on its re-arm mechanism), then F40, then the three small
-ones in any order. Tag `v0.5.0` when the wave closes. Telegram items can be
-live-verified against the owner's real bot (Settings → Telegram → "Send
-test message" first); B30's restart scenario is verifiable locally by
-killing the server mid-approval.
+All five items merged to `main`; `npm run typecheck`, `npm test -w
+@orc/engine` (86/86, 6 new), `npm test -w @orc/server` (62/62, 8 new)
+green as of each merge. F42's shellcheck-clean + `--dry-run` verification
+(a real EC2 box/Docker daemon weren't available in this environment) is
+the one item whose *live* half is still owed — the owner should run it
+for real during the actual EC2 deploy and confirm. Tagged `v0.5.0`.
 
 ---
 
@@ -4721,6 +4721,24 @@ owner's actual EC2 instance during the deploy (this wave and the deploy
 are concurrent — coordinate with the owner, who runs it with `! bash
 deploy/ec2-bootstrap.sh` and pastes the output back).
 
+**F42 — done (PR [#117](https://github.com/IngeniousArtist/hoopedorc/pull/117)).**
+Cross-linked from USER_GUIDE's checklist and `deploy/README.md` instead
+of duplicating the steps; enables but does not start the systemd unit
+(starting before the interactive CLI-auth/`.env` steps would just crash-
+loop). Verified: shellcheck-clean (installed shellcheck via brew
+specifically to check — zero warnings, matching `scripts/update.sh`'s
+own clean result). `--dry-run` exercised locally: the distro-refusal
+path correctly fires on this Mac (no `/etc/os-release`); a scratch copy
+with `DISTRO_ID` forced to `"ubuntu"` (plus a faked `free`/`swapon`,
+neither of which exists on macOS) exercised the full path end to end —
+Node/git/Docker checks, both the low-RAM (adds swap) and sufficient-RAM
+(skips it) branches, clone/npm/systemd dry-run output, `--no-docker`,
+`--help`, and unknown-option handling all produced correct output. **No
+real EC2 instance or Docker daemon was available in this environment**
+for a fully live run — this item's live half is still owed: the owner
+should run it for real (`! bash deploy/ec2-bootstrap.sh`) during the
+actual EC2 deploy and confirm.
+
 ### What Part 8 deliberately does NOT include (for calibration)
 
 - **Agents in the sandbox (F13 phases 2–3)** — still the headline
@@ -4754,23 +4772,26 @@ deploy/ec2-bootstrap.sh` and pastes the output back).
 | 10 | B20–B24, S7, F20–F26, U11–U14 | Post-UX-wave audit fixes (the Projects-page Pause footgun first), then the remote-deployment QoL wave: docs → routing → approval context → stop-all → update story → polish → WS/PWA. | ✅ done |
 | 11 | B25–B27, T1, F27–F35 | Phase 10 audit fixes (all small), then the server test package (T1 — later items lean on it), then the owner's QoL wave: planning context (F27+F28) → standards prompts (F31 → F29 → F30, in that order — F29/F30 build on F31's injection mechanism) → resilience + alerts (F32) → model test (F33) → skills (F34) → quota panel (F35). Tag `v0.3.0` at the end. | ✅ done |
 | 12 | B28, U15–U18, F36–F39, F13-P1, B29 | Referential-integrity fix first (B28 — an autonomy footgun), the four small UX items together (U15–U18), then the wave in dependency order: Codex runner (F36) → swappable planner (F37, needs F36's adapter) → AGENTS.md pipeline (F38, planner-produced so it benefits from F37 landing first) → gates sandbox (F13-P1) → EC2 deploy checklist (F39 — the ship gate) → B29 (found live-verifying F36, fixed last). Tagged `v0.4.0`; the owner deploys to EC2 right after. | ✅ done |
-| 13 | B30, F40–F43 | Remote-supervision wave, built while the owner's EC2 deploy happens: approval re-arm on restart first (B30 — F40's `/pending` leans on its mechanism), then the Telegram commands (F40), then the three small ones (F41 hold-dispatch option, F43 sandbox UI toggle, F42 bootstrap script) in any order. Tag `v0.5.0` at the end. | ⬜ open |
+| 13 | B30, F40–F43 | Remote-supervision wave, built while the owner's EC2 deploy happens: approval re-arm on restart first (B30 — F40's `/pending` leans on its mechanism), then the Telegram commands (F40), then the three small ones (F41 hold-dispatch option, F43 sandbox UI toggle, F42 bootstrap script) in any order. Tagged `v0.5.0`. F42's live-on-real-EC2 half is still owed (no EC2 box/Docker daemon available in this environment). | ✅ done |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
 
-Phases 1–12 (Parts 1–7) are **done** — Phases 1–6 tagged `v0.1.0`, Phases 7–8
-plus the post-plan audit fixes tagged `v0.2.0` (package.json's own `version`
-field, previously stale at `0.1.0`, was corrected to match as part of F24),
-Phase 9 (A1–A5, U1–U10) closed out Parts 1–4, Phase 10 (B20–B24, S7, F20–F26,
-U11–U14) closed out Part 5, Phase 11 (B25–B27, T1, F27–F35) closed out
-Part 6 tagged `v0.3.0`, and Phase 12 (B28, U15–U18, F36–F39, F13-P1, B29)
-closed out Part 7, tagged `v0.4.0` — audited by Fable 2026-07-09, no
-defects found. **Part 8 (Phase 13) is the open wave**: B30 + F40–F43,
-specced above, built concurrently with the owner's EC2 deploy — work it
-top-down and tag `v0.5.0` when it closes. F13's phase 1 (gates-only
-sandbox) shipped in Part 7; phases 2–3 (agents in the sandbox) remain the
-headline candidate for the wave after Part 8, per docs/specs/sandbox.md.
-Fable independently re-verifies each wave after merge; verification
-evidence is in each item's PR description and in this doc's Progress
-section above.
+Phases 1–13 (Parts 1–8) are **done** — Phases 1–6 tagged `v0.1.0`, Phases
+7–8 plus the post-plan audit fixes tagged `v0.2.0` (package.json's own
+`version` field, previously stale at `0.1.0`, was corrected to match as
+part of F24), Phase 9 (A1–A5, U1–U10) closed out Parts 1–4, Phase 10
+(B20–B24, S7, F20–F26, U11–U14) closed out Part 5, Phase 11 (B25–B27, T1,
+F27–F35) closed out Part 6 tagged `v0.3.0`, Phase 12 (B28, U15–U18,
+F36–F39, F13-P1, B29) closed out Part 7 tagged `v0.4.0` — audited by
+Fable 2026-07-09, no defects found — and Phase 13 (B30, F40–F43) closed
+out Part 8, tagged `v0.5.0`. F13's phase 1 (gates-only sandbox) shipped
+in Part 7; phases 2–3 (agents in the sandbox) remain the headline
+candidate for the next wave, per docs/specs/sandbox.md. **F42's live
+half is still owed**: verified shellcheck-clean and via `--dry-run`
+locally, but no real EC2 instance or Docker daemon was available in this
+environment — the owner should run `deploy/ec2-bootstrap.sh` for real
+during the actual EC2 deploy and confirm it against this doc's F42
+acceptance criteria. Fable independently re-verifies each wave after
+merge; verification evidence is in each item's PR description and in
+this doc's Progress section above.

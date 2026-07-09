@@ -3,6 +3,50 @@
 All notable changes to Hoopedorc are recorded here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0] — 2026-07-10
+
+Part 8 of `docs/PRODUCTIZATION_PLAN.md` is complete as of this tag: a
+restart-safe approval mechanism, a Telegram command wave, an optional
+hold-dispatch mode, the missing gate-sandbox UI toggle, and a one-command
+EC2 bootstrap script.
+
+## B30 — restart during a pending approval no longer re-runs the task
+
+- A server restart while a task was waiting on an approval used to be
+  treated as an orphaned run and re-authored/re-validated from scratch.
+  It now re-arms the pending decision instead — no re-authoring, no
+  re-validating, just a fresh notification for whichever decision was
+  still open.
+
+## F40 — Telegram command wave
+
+- `/autonomous [on|off]` — view or flip the merge policy from your phone.
+- `/pending` — re-sends every still-open approval with its buttons.
+- `/stopall` — two-step (Yes/No confirm) global stop.
+- `/retry <taskId-or-prefix>` — retry a failed/blocked task by a short
+  unique id prefix.
+- `/digest [off|terminal|all]` and `/health` (per-model cooldown/quota/
+  last-check summary).
+
+## F41 — optional hold-dispatch while an approval is pending
+
+- New `Settings.holdWhileAwaitingApproval` (default off): when on, a
+  project's dispatch loop skips picking up new tasks while any of its
+  approvals is still pending — active tasks finish normally, nothing new
+  starts until you respond.
+
+## F43 — gate-sandbox toggle in Settings
+
+- The `sandboxGates` mode (`off`/`auto`/`required`) is now a select in
+  Settings instead of settings-API/DB-only.
+
+## F42 — `deploy/ec2-bootstrap.sh`
+
+- One-command setup for a fresh Amazon Linux 2023 or Ubuntu LTS box:
+  packages, swap on small instances, clone, install/build, and the
+  systemd unit — stopping short of the genuinely interactive steps (CLI
+  logins, `.env`, `tailscale serve`) and printing exactly what to do next.
+
 ## [0.4.0] — 2026-07-09
 
 Part 7 of `docs/PRODUCTIZATION_PLAN.md` is complete as of this tag: a
