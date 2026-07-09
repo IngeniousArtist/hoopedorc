@@ -1589,7 +1589,7 @@ before the second call and correctly synced after it. Tagged `v0.4.0`.
 |---|---|---|
 | B30 — restart during a pending approval re-runs the whole task | ✅ done | [#109](https://github.com/IngeniousArtist/hoopedorc/pull/109) |
 | F40 — Telegram command wave (`/autonomous`, `/pending`, `/stopall`, `/retry`, `/digest`, `/health`) | ✅ done | [#111](https://github.com/IngeniousArtist/hoopedorc/pull/111) |
-| F41 — optional hold-dispatch while an approval is pending | ⬜ | |
+| F41 — optional hold-dispatch while an approval is pending | ✅ done | [#113](https://github.com/IngeniousArtist/hoopedorc/pull/113) |
 | F43 — `sandboxGates` toggle in the Settings UI | ⬜ | |
 | F42 — `deploy/ec2-bootstrap.sh` | ⬜ | |
 
@@ -4657,6 +4657,22 @@ Settings near mergePolicy, with copy that says exactly what it trades
 the flag on and a pending approval, a second ready task is never
 dispatched until the approval resolves, then dispatches on the next pass;
 with the flag off, current behavior byte-identical.
+
+**F41 — done (PR [#113](https://github.com/IngeniousArtist/hoopedorc/pull/113)).**
+New `SchedulerDeps.getPendingApproval` hook (wired via a plain
+`repo.getNotifications` query) plus a `pendingApproval` check added
+alongside `draining` in the dispatch loop — both existing "nothing left
+to do" break conditions needed updating too, since a naive fix would
+have let the loop conclude while `activeTaskIds` was empty (the task
+that raised the approval can be running under a *different* Orchestrator
+instance, e.g. a manual dispatch, sharing the same project id). Settings
+UI checkbox added to the Merge Policy section. Verified: 2 new engine
+tests (held-then-resumes with exactly one warn log across all held
+polls; flag-off leaves a permanently-"pending" fake hook unconsulted).
+86/86 engine, 62/62 server, 4/4 adapters, typecheck green. Live-verified
+the checkbox in a real browser (`npm run mock`): toggled, saved,
+reloaded — round-tripped through `PUT /api/settings` with no unsaved-
+changes state left over.
 
 ### F43. `sandboxGates` toggle in the Settings UI — TRIVIAL
 
