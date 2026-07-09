@@ -9,14 +9,28 @@ User=YOUR_USERNAME
 WorkingDirectory=/opt/hoopedorc
 # .env holds PORT/HOST/DB_PATH/API_TOKEN/etc — see .env.example.
 EnvironmentFile=/opt/hoopedorc/.env
-# npm run start = build everything + run the server (which also serves the
-# built web app on the same port once apps/web/dist exists).
-ExecStart=/usr/bin/npm run start
+# F39: "npm run start" (build everything, then serve) is fine for local dev
+# but re-runs a full vite+tsup build on every (re)start — minutes of restart
+# latency and a real OOM risk on a small (1-2GB) instance. The build already
+# happened once during setup/update (npm run build, or npm run update which
+# calls it) — this unit only needs to serve what's already built, which is
+# what "npm run start:prebuilt" does. The server also serves the built web
+# app on this same port once apps/web/dist exists — one process, one port.
+ExecStart=/usr/bin/npm run start:prebuilt
 Restart=on-failure
 RestartSec=5
+# Uncomment and tune for small instances — caps the server process's memory
+# so a leak/spike gets restarted (Restart=on-failure above) instead of the
+# OOM killer picking an arbitrary process on the box:
+# MemoryMax=512M
 # gh/claude/opencode auth lives under this user's $HOME (~/.config/gh,
 # ~/.claude, opencode's own config dir) — the service's User= must be the
 # account those CLIs were authenticated as, or every run will fail auth.
+# On a <=2GB instance, add swap before the *build* step (npm run build /
+# npm run update) — vite+tsup can OOM on RAM alone even though the built
+# app itself, served via start:prebuilt, needs far less: e.g.
+#   sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && \
+#   sudo mkswap /swapfile && sudo swapon /swapfile
 
 [Install]
 WantedBy=multi-user.target

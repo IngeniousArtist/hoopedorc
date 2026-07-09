@@ -408,9 +408,9 @@ your own setup, per the note on each step.
   confirm `docker version` succeeds as the OS user that will run Hoopedorc
   (add that user to the `docker` group if needed). Without it, gate
   sandboxing (`Settings.sandboxGates`, see above) just falls back to host
-  execution — nothing else is affected. A full EC2 deploy checklist
-  (systemd unit, etc.) is tracked separately (F39 in
-  `docs/PRODUCTIZATION_PLAN.md`).
+  execution — nothing else is affected. See
+  [Deploying to EC2 — checklist](#deploying-to-ec2--checklist) below for the
+  full ordered setup, including the systemd unit.
 - **`gh`**: the easiest of the three headlessly — it natively supports
   `GH_TOKEN` (confirmed via `gh help environment`: "an authentication token
   that will be used when a command targets github.com... takes precedence
@@ -468,7 +468,109 @@ your own setup, per the note on each step.
   page does), follow `deploy/README.md`'s "Native + systemd" steps for the
   actual service setup, see **Backups & data** above for where the DB and
   its backups live on disk, and **Updating** below for keeping this box
-  current afterward (`npm run update` restarts the same systemd unit).
+  current afterward (`npm run update` restarts the same systemd unit). Or
+  just work through the ordered checklist below, which sequences all of the
+  above into one pass.
+
+## Deploying to EC2 — checklist
+
+Everything above (CLI auth, Tailscale, backups, updates) exists as its own
+section; this is the single ordered path through all of them for a first
+deploy, so you don't have to hop between five sections to do it. Each step
+links back to the section with the full detail if something doesn't go as
+expected.
+
+1. **Size the instance.** ≥2GB RAM (or a smaller instance plus swap — the
+   *build* step, not the running server, is what needs the headroom; see
+   the swap snippet in `deploy/hoopedorc.service`'s comments). Install
+   **Node 22** (`engines.node` requires ≥20; 22 is what this project is
+   developed against), **git**, and, if you want the [gate
+   sandbox](#gate-sandbox) instead of host-run gates, **Docker** (confirm
+   `docker version` works as the OS user that will run Hoopedorc).
+2. **Clone + install.**
+   ```bash
+   git clone <your fork/repo url> /opt/hoopedorc
+   cd /opt/hoopedorc
+   npm install
+   npm run setup
+   ```
+   `setup` creates `.env` from `.env.example` if missing and checks
+   `gh`/`claude`/`opencode` auth (and `codex`, if you've configured a
+   `codex`-runner model) — it'll tell you which of the next step's auths
+   are still outstanding.
+3. **Authenticate the CLIs, in this order** (cheapest/least-interactive
+   first) — do this as the **same OS user** the systemd service will run
+   as in step 6, since all of these store credentials under that user's
+   home directory. Full detail in [EC2 / headless
+   Linux](#ec2--headless-linux) above:
+   1. `GH_TOKEN` — set a fine-grained PAT in `.env`; no interactive login
+      needed for `gh` at all.
+   2. `claude setup-token` — bills your Pro/Max subscription flat rate
+      rather than per-token; run once, completes via a browser (yours,
+      not the headless box's).
+   3. `opencode` — run `opencode auth login` directly over SSH if its
+      OAuth flow prints a URL you can open elsewhere, or run it once on a
+      machine with a browser and copy the resulting `auth.json` over.
+   4. `codex` (only if a model uses runner `codex`) — same pattern as
+      `opencode`: run `codex login` on a machine with a browser, copy the
+      credential file over.
+4. **Configure `.env`.** At minimum: `PORT` (default `4317`), leave `HOST`
+   at `127.0.0.1` (Tailscale Serve, next step, is what makes it reachable —
+   don't widen `HOST` for this), `DB_PATH` if you want the DB somewhere
+   other than the working directory, `API_TOKEN` (required once anything
+   *does* bind non-loopback — set it regardless, as defense in depth), and
+   `DB_BACKUP_DIR` if you want backups somewhere other than the default
+   `backups/` next to the DB. See **Backups & data** above and
+   `.env.example`'s comments for the rest.
+5. **`tailscale serve --bg 4317`** (your `PORT`, if different) — see
+   [Remote setup (Tailscale)](#remote-setup-tailscale) for the fallback
+   path and why Funnel is never the right choice here.
+6. **Build once, install the unit, enable it:**
+   ```bash
+   npm run build
+   sudo cp deploy/hoopedorc.service /etc/systemd/system/hoopedorc.service
+   sudo $EDITOR /etc/systemd/system/hoopedorc.service   # set User=, WorkingDirectory=
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now hoopedorc
+   ```
+   The unit runs `npm run start:prebuilt` (serve only — see the unit's own
+   comments for why it doesn't rebuild on every restart). Future deploys
+   rebuild via `npm run update` (below), not this step.
+7. **Verify the first boot.** Open the app over your tailnet URL, check
+   **Setup & Health** shows all three (or four, with Codex) CLI checks
+   green and the gate-sandbox line matches what you expect; tail logs with
+   `journalctl -u hoopedorc -f` if anything's red. From here, **Updating**
+   above (`npm run update`) is how you keep the box current.
+
+Data lives at `DB_PATH` (default `./hoopedorc.db`, so
+`/opt/hoopedorc/hoopedorc.db` if you cloned to `/opt/hoopedorc`) plus its
+automatic backups at `DB_BACKUP_DIR` (default a `backups/` dir alongside
+it) — see **Backups & data** above.
+
+### Two boxes: EC2 for web/extensions, your Mac for Apple targets
+
+Apple/Xcode projects can't build on Linux, so if you have any of those,
+you'll run a second Hoopedorc instance on your Mac alongside the EC2 box —
+same install steps as above, minus Tailscale Serve/systemd if you'd rather
+just run it in the foreground there.
+
+**One project lives on exactly one box.** Point a project's repo at both
+instances and both will happily schedule and dispatch work against it —
+nothing deduplicates across servers, since each box has its own independent
+DB. That's by design, not a gap to work around: decide up front which box
+owns which project (Linux-buildable → EC2, Apple/Xcode → Mac) and only add
+each project on that one box.
+
+A few things follow from that split:
+- **Settings, model routing, and budgets are per-box** — configuring a
+  model or a cost cap on one instance doesn't touch the other. If you use
+  the same providers on both, you'll set them up twice.
+- **The Telegram bot token can be shared or split.** One bot (same token,
+  same chat id) works fine since Hoopedorc chat-id-restricts who it'll
+  respond to — you'll just get approvals from both boxes in the same chat
+  with no origin label. **Recommended:** two separate bots (one per box),
+  so every alert's sender name tells you which box it came from at a
+  glance.
 
 ## Troubleshooting
 
