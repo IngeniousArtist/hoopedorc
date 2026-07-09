@@ -547,6 +547,16 @@ export interface Settings {
    *   where Docker's presence has already been verified.
    */
   sandboxGates?: "off" | "auto" | "required";
+  /**
+   * F41: when true, a project's dispatch loop skips picking up new `ready`
+   * tasks while any of its notifications is an unresolved
+   * `requiresApproval` one — active tasks still finish naturally (the same
+   * drain semantics F3's pause uses), dispatch resumes on the next pass
+   * once the approval is resolved. Trades slower overall runs for zero
+   * unsupervised spend while a decision is pending. Default false (unset)
+   * — today's behavior, where a pending approval blocks only its own task.
+   */
+  holdWhileAwaitingApproval?: boolean;
 }
 
 /**

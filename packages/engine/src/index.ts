@@ -197,6 +197,15 @@ export interface SchedulerDeps {
    */
   getMergeDecisions?: (taskId: string) => MergeDecision[];
   /**
+   * F41: the project's oldest still-unresolved `requiresApproval`
+   * notification, if any — consulted once per dispatch pass (not per task)
+   * when `Settings.holdWhileAwaitingApproval` is true, to hold back new
+   * dispatch while a decision is pending. Optional; if omitted (or the
+   * setting is off), dispatch behavior is unaffected — a pending approval
+   * still blocks only its own task, exactly as before F41.
+   */
+  getPendingApproval?: (projectId: string) => { title: string } | undefined;
+  /**
    * Returns a reason string if running `modelId` would exceed a budget cap, or
    * `null` if within budget. Consulted before dispatching each task and before
    * each retry attempt so an unattended run stops once a cap is hit. Optional;

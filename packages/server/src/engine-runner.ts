@@ -277,6 +277,12 @@ export class EngineRunner {
       opencodeBaseUrl: ENV.opencodeBaseUrl,
       getTasks: () => repo.getTasks(this.db, project.id),
       getMergeDecisions: (taskId) => repo.getMergeDecisions(this.db, taskId),
+      getPendingApproval: (projectId) => {
+        const pending = repo
+          .getNotifications(this.db, projectId)
+          .find((n) => n.requiresApproval && !n.respondedWith);
+        return pending ? { title: pending.title } : undefined;
+      },
       checkBudget: (modelId) => checkBudget(this.db, project.id, modelId, settings),
       checkModelCooldown: (modelId) => this.checkModelCooldown(modelId),
       checkModelQuota: (modelId) => checkModelQuota(this.db, modelId, settings),
