@@ -48,6 +48,12 @@ export interface TelegramHandlers {
   ) => Promise<boolean> | boolean;
   /** A slash command arrived; return the reply text. */
   onCommand: (cmd: string, args: string[]) => Promise<string> | string;
+  /**
+   * F40: the human tapped Yes/No on a /stopall confirmation
+   * (confirmStopAll below). Returns the text to edit into that message —
+   * optional so a bot wired up without it just answers the tap silently.
+   */
+  onStopAllConfirm?: (confirmed: boolean) => Promise<string> | string;
 }
 
 /** Everything worth telling a human about a task that just finished. */
@@ -199,8 +205,8 @@ export class TelegramBot implements ServerNotifier {
   private async handleUpdate(u: TgUpdate): Promise<void> {
     if (u.callback_query) {
       const cq = u.callback_query;
-      // callback_data: "appr:<notificationId>:<choice>"
       const data = cq.data ?? "";
+      // callback_data: "appr:<notificationId>:<choice>"
       if (this.allowed(cq.message?.chat.id) && data.startsWith("appr:")) {
         const [, notificationId, choice] = data.split(":");
         if (notificationId && choice) {
@@ -220,6 +226,22 @@ export class TelegramBot implements ServerNotifier {
                 : `⚠️ Expired — the task will re-request approval if it's still needed.`,
             });
           }
+        }
+        // F40: callback_data "stopall:yes" | "stopall:no" from confirmStopAll below.
+      } else if (
+        this.allowed(cq.message?.chat.id) &&
+        data.startsWith("stopall:") &&
+        this.handlers.onStopAllConfirm
+      ) {
+        const confirmed = data === "stopall:yes";
+        const resultText = await this.handlers.onStopAllConfirm(confirmed);
+        await this.tg("answerCallbackQuery", { callback_query_id: cq.id });
+        if (cq.message) {
+          await this.tg("editMessageText", {
+            chat_id: cq.message.chat.id,
+            message_id: cq.message.message_id,
+            text: resultText,
+          });
         }
       } else {
         await this.tg("answerCallbackQuery", { callback_query_id: cq.id });
@@ -280,6 +302,28 @@ export class TelegramBot implements ServerNotifier {
       lines.push("", context.prUrl);
     }
     void this.sendApproval(lines.join("\n"), replyMarkup, n.id);
+  }
+
+  /**
+   * F40: /stopall's confirmation prompt — mirrors approvalRequested's inline-
+   * keyboard shape but with its own "stopall:" callback prefix (handled in
+   * handleUpdate above) since this isn't tied to any one notification id.
+   */
+  confirmStopAll(text: string): void {
+    if (!this.chatId) return;
+    const replyMarkup = {
+      inline_keyboard: [
+        [
+          { text: "Yes, stop everything", callback_data: "stopall:yes" },
+          { text: "No", callback_data: "stopall:no" },
+        ],
+      ],
+    };
+    void this.tg("sendMessage", {
+      chat_id: this.chatId,
+      text,
+      reply_markup: replyMarkup,
+    });
   }
 
   /**

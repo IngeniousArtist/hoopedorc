@@ -171,6 +171,33 @@ going on a always-on box.
   agent itself is tracked as future work (F13 phases 2/3 in
   `docs/specs/sandbox.md`), not built yet.
 
+## Telegram commands
+
+Beyond approve/reject buttons and the status digest, the bot understands a
+small command set (chat-id restricted, same as everything else Telegram —
+see "The safety model" above). Send `/help` any time for the live list.
+
+| Command | Does |
+|---|---|
+| `/status` | Every project's status and done/failed task counts. |
+| `/cost` | Spend this month, total and per project. |
+| `/projects` | Project ids (for the commands below that need one). |
+| `/start <projectId>` | Start a project's autonomous run. |
+| `/pause <projectId>` | Pause a project (finishes active tasks first). |
+| `/autonomous [on\|off]` | View, or flip, the merge policy between `fully_autonomous` (nothing ever asks) and `hard_gate_flag_risky` (the default — risky changes still ask). Bare `/autonomous` reports the current policy without changing it. |
+| `/pending` | Re-sends every still-open approval with its buttons — recovers a push you missed or dismissed. |
+| `/stopall` | Stops every running project. Two-step on purpose (the highest-blast-radius command here): replies with a Yes/No confirmation naming how many projects/tasks it'll hit; nothing stops until you tap Yes. |
+| `/retry <taskId-or-prefix>` | Retries a `failed`/`changes_requested`/`blocked` task. A short unique prefix of the id works — no need to type the full id on a phone keyboard; an ambiguous prefix lists every match instead of guessing. |
+| `/digest [off\|terminal\|all]` | View, or set, the status-digest level (mirrors Settings → Telegram → Digest). |
+| `/health` | One line per model: cooldown state, subscription-quota window usage, and the last "Test models" result. |
+
+`/autonomous` and `/digest` change the same `Settings` fields the web UI's
+Settings page does, so either surface reflects the other's changes. Flipping
+to `/autonomous on` means **no approval prompts at all** until you turn it
+back off — including for risky changes (DB migrations, new dependencies,
+auth/secret files, out-of-scope edits) — so treat it as a deliberate,
+temporary "trust everything" mode, not a default to leave on.
+
 ## Gate sandbox
 
 Gate scripts run the target repo's own `typecheck`/`lint`/`build`/`test` (or

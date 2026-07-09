@@ -42,6 +42,13 @@ import {
 } from "./planner";
 import { createGithubRepo, getPrDiff, slugifyRepoName } from "./github";
 import { checkBudget } from "./budget";
+import {
+  computeModelHealth,
+  findTaskByIdPrefix,
+  retryTask,
+  setMergePolicy,
+  stopAllProjects,
+} from "./commands";
 import { estimatePlan } from "./estimate";
 import { redactTokenFromUrl } from "./log-redact";
 import {
@@ -914,6 +921,12 @@ async function main() {
           "/projects — list project ids",
           "/start <projectId>",
           "/pause <projectId>",
+          "/autonomous [on|off] — view/flip the merge policy",
+          "/pending — re-send open approvals",
+          "/stopall — stop everything running (asks to confirm)",
+          "/retry <taskId-or-prefix> — retry a failed/blocked task",
+          "/digest [off|terminal|all] — view/set the status-digest level",
+          "/health — per-model cooldown/quota/last-check summary",
         ].join("\n");
       case "projects": {
         const ps = repo.getProjects(db);
@@ -958,6 +971,94 @@ async function main() {
         broadcast({ type: "project.updated", payload: repo.getProject(db, id)! });
         return `Paused ${project.name}`;
       }
+      case "autonomous": {
+        const settings = repo.getSettings(db) ?? defaultSettings();
+        const arg = (args[0] ?? "").toLowerCase();
+        if (!arg) {
+          return settings.mergePolicy === "fully_autonomous"
+            ? "Autonomous mode is ON — every validated change auto-merges, including risky ones."
+            : `Autonomous mode is OFF (merge policy: ${settings.mergePolicy}).`;
+        }
+        if (arg !== "on" && arg !== "off") return "Usage: /autonomous [on|off]";
+        const policy: MergePolicy = arg === "on" ? "fully_autonomous" : "hard_gate_flag_risky";
+        setMergePolicy(db, policy, "telegram");
+        return arg === "on"
+          ? "Autonomous mode ON — every validated change will auto-merge from now on, including risky ones. No more merge approval prompts until you turn this off."
+          : `Autonomous mode OFF — back to "${policy}" (risky changes ask before merging again).`;
+      }
+      case "pending": {
+        const notifs = repo
+          .getNotifications(db)
+          .filter((n) => n.requiresApproval && !n.respondedWith);
+        if (notifs.length === 0) return "Nothing pending.";
+        for (const n of notifs) {
+          telegram?.approvalRequested(n, n.context);
+        }
+        return `Re-sent ${notifs.length} pending approval${notifs.length === 1 ? "" : "s"}.`;
+      }
+      case "stopall": {
+        const projects = repo.getProjects(db);
+        const running = projects.filter((p) => p.status === "running");
+        if (running.length === 0) return "Nothing is running.";
+        const activeTasks = running.reduce(
+          (sum, p) =>
+            sum +
+            repo
+              .getTasks(db, p.id)
+              .filter((t) => t.status === "in_progress" || t.status === "in_review").length,
+          0,
+        );
+        telegram?.confirmStopAll(
+          `⚠️ This will stop ${running.length} running project${running.length === 1 ? "" : "s"} ` +
+            `(${activeTasks} active task${activeTasks === 1 ? "" : "s"}): ` +
+            `${running.map((p) => p.name).join(", ")}.`,
+        );
+        return ""; // confirmStopAll already sent its own message with the Yes/No keyboard
+      }
+      case "retry": {
+        const prefix = args[0];
+        if (!prefix) return "Usage: /retry <taskId-or-prefix>";
+        const found = findTaskByIdPrefix(db, prefix);
+        if (!found.ok) return found.error;
+        const result = retryTask(db, engine, broadcast, found.task.id, "telegram");
+        return result.ok ? `Retrying "${result.task.title}".` : `Could not retry: ${result.error}`;
+      }
+      case "digest": {
+        const settings = repo.getSettings(db) ?? defaultSettings();
+        const arg = (args[0] ?? "").toLowerCase();
+        if (!arg) return `Digest is currently: ${settings.telegram?.digest ?? "off"}`;
+        if (arg !== "off" && arg !== "terminal" && arg !== "all") {
+          return "Usage: /digest [off|terminal|all]";
+        }
+        if (!settings.telegram) return "Telegram isn't configured in Settings yet.";
+        repo.upsertSettings(db, {
+          ...settings,
+          telegram: { ...settings.telegram, digest: arg },
+        });
+        return `Digest set to: ${arg}`;
+      }
+      case "health": {
+        const models = computeModelHealth(db, engine);
+        if (models.length === 0) return "No models configured.";
+        const lines = models.map((m) => {
+          const parts: string[] = [];
+          if (m.coolingDownUntil) {
+            parts.push(`cooling until ${new Date(m.coolingDownUntil).toLocaleTimeString()}`);
+          }
+          if (m.windowUsage) {
+            const { runs, costUsd, maxRuns, maxCostUsd } = m.windowUsage;
+            const runsPart = maxRuns != null ? `${runs}/${maxRuns} runs` : `${runs} runs`;
+            const costPart = maxCostUsd != null ? `$${costUsd.toFixed(2)}/$${maxCostUsd.toFixed(2)}` : null;
+            parts.push([runsPart, costPart].filter(Boolean).join(", "));
+          }
+          if (m.lastCheck) {
+            parts.push(m.lastCheck.ok ? "last check ok" : `last check FAILED${m.lastCheck.error ? `: ${m.lastCheck.error}` : ""}`);
+          }
+          const prefix = m.enabled ? "" : "(disabled) ";
+          return `${prefix}${m.displayName}: ${parts.length ? parts.join(" — ") : "no data yet"}`;
+        });
+        return lines.slice(0, 15).join("\n");
+      }
       default:
         return `Unknown command /${cmd}. Try /help`;
     }
@@ -990,6 +1091,13 @@ async function main() {
           return resolveNotification(id, choice)?.resolved ?? false;
         },
         onCommand: telegramCommand,
+        onStopAllConfirm: async (confirmed) => {
+          if (!confirmed) return "Cancelled — nothing was stopped.";
+          const stoppedIds = await stopAllProjects(db, engine, broadcast, "telegram");
+          return stoppedIds.length > 0
+            ? `Stopped ${stoppedIds.length} project${stoppedIds.length === 1 ? "" : "s"}.`
+            : "Nothing to stop (already idle).";
+        },
       },
       (m) => app.log.info(m),
     );
@@ -1628,24 +1736,12 @@ async function main() {
   // Stop now. Always a hard stop, no drain option — this exists for "make
   // it stop NOW", not a graceful multi-project wind-down.
   app.post("/api/engine/stop-all", async () => {
-    const projects = repo.getProjects(db);
-    const stoppedIds = await engine.stopAll(projects);
-    for (const id of stoppedIds) {
-      repo.updateProject(db, id, { status: "paused" });
-      const updated = repo.getProject(db, id)!;
-      broadcast({ type: "project.updated", payload: updated });
-      // One audit entry per affected project (not one global entry) since
-      // AuditEntry.projectId is required and the Audit tab is per-project —
-      // every affected project's own audit trail should show it was
-      // stopped, with the full list of what else was hit alongside it.
-      repo.createAuditEntry(db, {
-        projectId: id,
-        kind: "stopped",
-        actor: "human",
-        summary: `Stopped via global "Stop all" (${stoppedIds.length} project${stoppedIds.length === 1 ? "" : "s"} affected)`,
-        detail: { affectedProjectIds: stoppedIds },
-      });
-    }
+    // One audit entry per affected project (not one global entry) since
+    // AuditEntry.projectId is required and the Audit tab is per-project —
+    // every affected project's own audit trail should show it was stopped,
+    // with the full list of what else was hit alongside it (see
+    // stopAllProjects above — shared with the Telegram /stopall command).
+    const stoppedIds = await stopAllProjects(db, engine, broadcast, "human");
     return { projectIds: stoppedIds };
   });
 
@@ -1943,64 +2039,13 @@ async function main() {
   // Retry a failed/blocked task from scratch (resets attempts, re-dispatches).
   app.post("/api/tasks/:id/retry", async (req, reply) => {
     const { id } = req.params as RouteParams;
-    const task = repo.getTask(db, id);
-    if (!task) return reply.code(404).send({ error: "task not found" });
-
-    const retryable = ["failed", "changes_requested", "blocked"];
-    if (!retryable.includes(task.status)) {
-      return reply
-        .code(409)
-        .send({ error: `task is ${task.status}; only ${retryable.join("/")} can be retried` });
-    }
-
-    // Same reasoning as /dispatch: a manual retry spins up an independent
-    // Orchestrator that shares no in-flight state with an active autonomous
-    // run on this project.
-    if (engine.isRunning(task.projectId)) {
-      return reply.code(409).send({
-        error: "project is running autonomously — pause it before retrying a task manually",
-      });
-    }
-
-    const settings = repo.getSettings(db);
-    if (!settings) return reply.code(500).send({ error: "settings not found" });
-
-    const budgetMsg = checkBudget(db, task.projectId, task.assignedModel, settings);
-    if (budgetMsg) return reply.code(403).send({ error: `budget cap: ${budgetMsg}` });
-
-    // Fresh attempt counter, then dispatch one run through the engine. As with
-    // /dispatch, the engine creates the authoritative run row itself — don't
-    // pre-create one here (was leaving a permanently-"running" $0 orphan row).
-    // Also clear prNumber/branch/worktreePath: a prior failed attempt may
-    // have already pushed to and opened a PR on `orc/<taskId>`. Without this,
-    // the new attempt's worktree (freshly branched off origin/<default>)
-    // can't push to that same branch name — its remote ref has diverged —
-    // and the push is rejected as non-fast-forward, failing every retry
-    // regardless of which model runs it.
-    repo.updateTask(
-      db,
-      id,
-      {
-        status: "in_progress",
-        attempts: 1,
-        prNumber: null,
-        branch: null,
-        worktreePath: null,
-      } as Record<string, unknown> as Parameters<typeof repo.updateTask>[2],
-    );
-    const updatedTask = repo.getTask(db, id)!;
-    repo.createAuditEntry(db, {
-      projectId: task.projectId,
-      taskId: id,
-      kind: "retry",
-      actor: "human",
-      summary: `Retried "${task.title}"`,
-    });
-    broadcast({ type: "task.updated", payload: updatedTask });
-
-    const project = repo.getProject(db, task.projectId)!;
-    void engine.dispatchOne(project, id);
-    return { task: updatedTask };
+    // retryTask (above main()) also backs the Telegram /retry command — a
+    // prior failed attempt's prNumber/branch/worktreePath are cleared there
+    // so the new attempt's freshly-branched worktree can push to the same
+    // branch name without a non-fast-forward rejection.
+    const result = retryTask(db, engine, broadcast, id, "human");
+    if (!result.ok) return reply.code(result.status).send({ error: result.error });
+    return { task: result.task };
   });
 
   // PR diff for a task (for the in-UI diff viewer).
@@ -2384,57 +2429,8 @@ async function main() {
   // health check, rolling failure rate + median duration from real runs, and
   // whether the model is currently cooling down from a rate limit.
   app.get("/api/setup/model-health", async () => {
-    const settings = repo.getSettings(db) ?? defaultSettings();
-    const latestChecks = new Map(
-      repo.getLatestModelChecks(db).map((c) => [c.modelId, c]),
-    );
-    const runStats = new Map(
-      repo.getModelRunStats(db).map((s) => [s.model, s]),
-    );
-
-    const models = settings.models.map((m) => {
-      const check = latestChecks.get(m.id);
-      const stats = runStats.get(m.id);
-      const coolingUntil = engine.getCoolingDownUntil(m.id);
-      const quota = m.quota;
-      const windowUsage = quota
-        ? (() => {
-            const sinceIso = new Date(
-              Date.now() - quota.windowHours * 60 * 60 * 1000,
-            ).toISOString();
-            const usage = repo.getModelUsageSince(db, m.id, sinceIso);
-            return {
-              runs: usage.runs,
-              costUsd: usage.costUsd,
-              windowHours: quota.windowHours,
-              maxRuns: quota.maxRuns,
-              maxCostUsd: quota.maxCostUsd,
-            };
-          })()
-        : undefined;
-      return {
-        id: m.id,
-        displayName: m.displayName,
-        enabled: m.enabled,
-        lastCheck: check
-          ? {
-              ok: check.ok,
-              ts: check.ts,
-              ms: check.ms,
-              costUsd: check.costUsd,
-              reply: check.reply,
-              error: check.error,
-            }
-          : undefined,
-        totalRuns: stats?.totalRuns ?? 0,
-        failedRuns: stats?.failedRuns ?? 0,
-        medianDurationMs: stats?.medianDurationMs ?? null,
-        coolingDownUntil: coolingUntil ? new Date(coolingUntil).toISOString() : undefined,
-        windowUsage,
-      };
-    });
-
-    return { models };
+    // computeModelHealth (above main()) also backs the Telegram /health command.
+    return { models: computeModelHealth(db, engine) };
   });
 
   // ── Realtime (WebSocket) ──
