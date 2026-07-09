@@ -506,6 +506,27 @@ deploy, so you don't have to hop between five sections to do it. Each step
 links back to the section with the full detail if something doesn't go as
 expected.
 
+**`deploy/ec2-bootstrap.sh` automates steps 1–2 and 6** (the non-interactive
+ones — OS packages, swap, clone, `npm install`/`setup`/`build`, and the
+systemd unit) on Amazon Linux 2023 or Ubuntu LTS. Clone straight to its
+default install path so its own clone step is a no-op, then run it from
+there:
+```bash
+sudo git clone https://github.com/IngeniousArtist/hoopedorc.git /opt/hoopedorc
+sudo chown -R "$(whoami)": /opt/hoopedorc
+cd /opt/hoopedorc
+bash deploy/ec2-bootstrap.sh --dry-run   # preview first
+bash deploy/ec2-bootstrap.sh             # then run for real
+```
+It stops there and prints steps 3–5 (CLI logins, `.env`, `tailscale serve`)
+for you to do by hand — genuinely interactive, so it doesn't try to guess
+at them. Safe to re-run; every step checks the box's current state first.
+`--no-docker` skips Docker if you don't want the gate sandbox; `--dir`/
+`--repo` override the install path/source (if you didn't clone to
+`/opt/hoopedorc`, or you're deploying from a fork). See the script's own
+`--help` for the full flag list. Skip it and follow the numbered steps
+below by hand on any other distro.
+
 1. **Size the instance.** ≥2GB RAM (or a smaller instance plus swap — the
    *build* step, not the running server, is what needs the headroom; see
    the swap snippet in `deploy/hoopedorc.service`'s comments). Install

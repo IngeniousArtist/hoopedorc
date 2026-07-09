@@ -11,6 +11,12 @@ recipe.
 
 ## Native + systemd (recommended)
 
+On Amazon Linux 2023 or Ubuntu LTS, `deploy/ec2-bootstrap.sh` automates
+steps 1–2 and 6 below (OS packages, swap, clone, install/setup/build, and
+the systemd unit) — see USER_GUIDE's
+[Deploying to EC2 — checklist](../docs/USER_GUIDE.md#deploying-to-ec2--checklist)
+for the one-command version. The manual steps:
+
 1. Clone the repo onto the box, e.g. `/opt/hoopedorc`.
 2. `cd /opt/hoopedorc && npm install`
 3. `npm run setup` — creates `.env` from `.env.example` if missing, and
