@@ -3,6 +3,68 @@
 All notable changes to Hoopedorc are recorded here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] — 2026-07-09
+
+Part 7 of `docs/PRODUCTIZATION_PLAN.md` is complete as of this tag: a
+referential-integrity fix, four small UX items, a native Codex runner, a
+swappable planner, AGENTS.md generation, the gates-only Docker sandbox, an
+EC2 deploy checklist, and a stale-dependency-fingerprint fix.
+
+## B28 — dangling model references
+
+- Removing or renaming a model in Settings now clears/remaps every
+  `Routing`/task reference to it instead of leaving dangling references
+  that silently misroute future dispatches.
+
+## UX polish (U15–U18)
+
+- **U15** — Approve/reject buttons on Notifications are now visually
+  distinct (not just color) instead of near-identical.
+- **U16** — Removed duplicated estimate copy and fake-precision cost
+  formatting (no more implying penny-level accuracy on estimates).
+- **U17** — Fixed the Projects-row orphan "·" separator and made the
+  pause/stop icon pairing consistent.
+- **U18** — An unknown URL hash now falls back visibly instead of the URL
+  and the UI silently disagreeing about which view is showing.
+
+## F36, F37 — Codex CLI support
+
+- **F36 — Codex as a first-class runner.** Author/validator tasks can run
+  through OpenAI's Codex CLI (`codex exec`), billed via a ChatGPT
+  subscription rather than per-token.
+- **F37 — Swappable planner runner.** The planning pipeline (deconstruct +
+  chat) can run through Claude Code or Codex, configurable per project.
+
+## F38 — AGENTS.md generation
+
+- The planning pipeline now generates an `AGENTS.md` for the target repo
+  (when missing), giving every author/validator run a consistent, durable
+  set of project instructions instead of relying on prompt-only context.
+
+## F13-P1 — gates-only Docker sandbox
+
+- Gate scripts (`typecheck`/`lint`/`build`/`test`) and dependency installs
+  now run inside a disposable `docker run --rm` container by default when a
+  Docker daemon is reachable (`Settings.sandboxGates`), isolated from the
+  host, other tasks' worktrees, and CLI credentials — falling back to host
+  execution transparently when no daemon is available.
+
+## F39 — EC2 deploy checklist
+
+- New root `start:prebuilt` script (serve only, no rebuild) so the systemd
+  unit doesn't re-run a full build on every restart. `USER_GUIDE.md` gained
+  a single ordered "Deploying to EC2 — checklist" section plus a "Two
+  boxes" section documenting the Mac/EC2 split (Apple/Xcode projects stay
+  on the Mac; one project lives on exactly one box).
+
+## B29 — stale dependency fingerprint
+
+- Fixed `ensureDeps` fingerprinting and installing against the primary
+  clone's own (frequently stale) `package.json`/lockfile instead of the
+  freshly-checked-out worktree's — previously, once any task changed
+  dependencies, every later task could silently symlink into a stale
+  `node_modules`, permanently failing gates for missing dependencies.
+
 ## [0.3.0] — 2026-07-08
 
 Part 6 of `docs/PRODUCTIZATION_PLAN.md` is complete as of this tag: three
