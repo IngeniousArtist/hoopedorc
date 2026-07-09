@@ -172,6 +172,10 @@ export class Orchestrator implements Scheduler {
    *  tasks but let whatever is already in activeTaskIds run to completion,
    *  instead of pause()'s usual immediate abort. Reset at the top of start(). */
   private draining = false;
+  /** F41: true once this pass's "holding for approval" state has been
+   *  logged, so a multi-second hold doesn't re-emit the same warn on every
+   *  ~250ms poll. Reset the moment the pending approval clears. */
+  private holdForApprovalWarned = false;
 
   constructor(private readonly deps: SchedulerDeps) {}
 
@@ -266,6 +270,7 @@ export class Orchestrator implements Scheduler {
     this.capacityBlockedWarned.clear();
     this.quotaBlockedWarned.clear();
     this.missingModelWarned.clear();
+    this.holdForApprovalWarned = false;
 
     // Orphan recovery: this Orchestrator instance starts with empty
     // activeTaskIds, so any task already "in_progress" or "in_review" was
@@ -315,14 +320,41 @@ export class Orchestrator implements Scheduler {
 
     while (!this.paused) {
       this.reconcileTasks();
+
+      // F41: same drain-not-abort semantics as `draining` above, but
+      // driven by an unresolved approval instead of a human pause — only
+      // consulted when the project opted in, and re-checked every pass so
+      // dispatch resumes the moment the approval clears (no restart needed).
+      const pendingApproval = this.deps.settings.holdWhileAwaitingApproval
+        ? this.deps.getPendingApproval?.(this.projectId)
+        : undefined;
+      if (pendingApproval) {
+        if (!this.holdForApprovalWarned) {
+          this.holdForApprovalWarned = true;
+          this.emit(
+            "warn",
+            "engine",
+            `Holding new dispatch — pending approval: "${pendingApproval.title}"`,
+            "",
+          );
+        }
+      } else {
+        this.holdForApprovalWarned = false;
+      }
+
       // Draining: never pick up new work, but leave activeTaskIds alone so
       // whatever's already running finishes normally. Forcing `ready` empty
       // means `dispatched` stays 0 every pass below, which the existing
       // "nothing dispatched" branches already turn into a 250ms poll while
       // active tasks remain, then a break once the last one finishes.
-      const ready = this.draining ? [] : this.readyTasks(tasks);
+      const ready = this.draining || pendingApproval ? [] : this.readyTasks(tasks);
 
-      if (ready.length === 0 && this.activeTaskIds.size === 0) {
+      // A pendingApproval hold must never look like "nothing left to do" —
+      // it can be genuinely true even with activeTaskIds empty (e.g. the
+      // task that raised it was dispatched manually, under a different
+      // Orchestrator instance sharing this same project id) — the loop
+      // should keep polling, not exit, until the approval clears.
+      if (ready.length === 0 && this.activeTaskIds.size === 0 && !pendingApproval) {
         break;
       }
 
@@ -475,7 +507,7 @@ export class Orchestrator implements Scheduler {
         });
       }
 
-      if (dispatched === 0 && (this.activeTaskIds.size > 0 || blockedByCapacity)) {
+      if (dispatched === 0 && (this.activeTaskIds.size > 0 || blockedByCapacity || pendingApproval)) {
         await new Promise((r) => setTimeout(r, 250));
         continue;
       }

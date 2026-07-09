@@ -140,6 +140,14 @@ export function Settings({
     setSaved(false);
   }
 
+  function updateHoldWhileAwaitingApproval(value: boolean) {
+    setSettings((prev) =>
+      prev ? { ...prev, holdWhileAwaitingApproval: value } : prev,
+    );
+    setDirty(true);
+    setSaved(false);
+  }
+
   function updateRiskyRule(
     key: keyof SettingsType["riskyChangeRules"],
     value: boolean,
@@ -360,6 +368,22 @@ export function Settings({
             </option>
           ))}
         </select>
+        <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={settings.holdWhileAwaitingApproval ?? false}
+            onChange={(e) =>
+              updateHoldWhileAwaitingApproval(e.target.checked)
+            }
+            className="rounded border-neutral-700 bg-neutral-800"
+          />
+          Hold new dispatch while an approval is pending
+        </label>
+        <p className="text-xs text-neutral-500">
+          Trades slower overall runs for zero unsupervised spend while a
+          decision is waiting on you — active tasks still finish normally,
+          but nothing new starts until you respond.
+        </p>
       </section>
 
       <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">

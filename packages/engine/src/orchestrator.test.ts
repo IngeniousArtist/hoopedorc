@@ -1678,3 +1678,72 @@ test("B30: a task in_review with no PR requeues to backlog exactly as before (no
     "requeued to backlog then ran the normal happy path to completion, same as before B30",
   );
 });
+
+test("F41: holdWhileAwaitingApproval blocks new dispatch while a decision is pending, resumes once it clears", async () => {
+  const merged: number[] = [];
+  const logs: { level: string; message: string }[] = [];
+  let authorRuns = 0;
+  // Pending from the very first pass -- both t1 and t2 are ready with no
+  // dependency between them, so neither should dispatch until this clears.
+  let pending: { title: string } | undefined = { title: "Risky changes in some other task" };
+  const deps = fakeDeps(
+    {
+      settings: { ...settings(), holdWhileAwaitingApproval: true },
+      getPendingApproval: () => pending,
+      adapterFor: () => ({
+        runner: "opencode",
+        async run(): Promise<AgentRunResult> {
+          authorRuns++;
+          return { ok: true, exitReason: "completed", costUsd: 0.01, tokensIn: 1, tokensOut: 1, summary: "" };
+        },
+      }),
+      events: {
+        onLog(e) {
+          logs.push({ level: e.level, message: e.message });
+        },
+        onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1");
+  const t2 = task("t2");
+
+  // Let the 250ms poll loop run through several held passes before clearing.
+  setTimeout(() => {
+    pending = undefined;
+  }, 600);
+
+  await new Orchestrator(deps).start(PROJECT, [t1, t2]);
+
+  assert.equal(authorRuns, 2, "both tasks ran, but only after the pending approval cleared");
+  assert.equal(merged.length, 2);
+  assert.equal(t1.status, "done");
+  assert.equal(t2.status, "done");
+  const holdWarnings = logs.filter(
+    (l) => l.level === "warn" && /Holding new dispatch/.test(l.message),
+  );
+  assert.equal(holdWarnings.length, 1, "should warn exactly once across all the held polls, not once per poll");
+});
+
+test("F41: holdWhileAwaitingApproval off (default) leaves dispatch behavior unaffected by a pending approval", async () => {
+  const merged: number[] = [];
+  const deps = fakeDeps(
+    {
+      // holdWhileAwaitingApproval unset -- getPendingApproval must never
+      // even be consulted, let alone hold anything back.
+      getPendingApproval: () => ({ title: "should be ignored entirely" }),
+    },
+    merged,
+  );
+  const t1 = task("t1");
+  const t2 = task("t2");
+  await new Orchestrator(deps).start(PROJECT, [t1, t2]);
+
+  assert.equal(t1.status, "done");
+  assert.equal(t2.status, "done");
+  assert.equal(merged.length, 2);
+});
