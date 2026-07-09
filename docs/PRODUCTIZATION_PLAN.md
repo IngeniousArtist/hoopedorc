@@ -1590,7 +1590,7 @@ before the second call and correctly synced after it. Tagged `v0.4.0`.
 | B30 — restart during a pending approval re-runs the whole task | ✅ done | [#109](https://github.com/IngeniousArtist/hoopedorc/pull/109) |
 | F40 — Telegram command wave (`/autonomous`, `/pending`, `/stopall`, `/retry`, `/digest`, `/health`) | ✅ done | [#111](https://github.com/IngeniousArtist/hoopedorc/pull/111) |
 | F41 — optional hold-dispatch while an approval is pending | ✅ done | [#113](https://github.com/IngeniousArtist/hoopedorc/pull/113) |
-| F43 — `sandboxGates` toggle in the Settings UI | ⬜ | |
+| F43 — `sandboxGates` toggle in the Settings UI | ✅ done | [#115](https://github.com/IngeniousArtist/hoopedorc/pull/115) |
 | F42 — `deploy/ec2-bootstrap.sh` | ⬜ | |
 
 Work top-down: B30 first (it's the correctness/efficiency item; F40's
@@ -4687,6 +4687,14 @@ USER_GUIDE wording), remove the "no UI toggle yet" caveat from the guide.
 **Acceptance:** flipping the select and saving round-trips through
 `PUT /api/settings`; Setup & Health's "Gate sandbox" line reflects the
 change after the next gate run (or immediately, if it reads settings).
+
+**F43 — done (PR [#115](https://github.com/IngeniousArtist/hoopedorc/pull/115)).**
+No engine/server logic changed — the field, validation, and health-panel
+surfacing all already existed from F13-P1; this was purely the missing
+UI control. Live-verified in a real browser (`npm run mock`): the select
+renders with "Auto (default)" and its matching help text; selecting
+"Required" updates both together; Save + reload round-trips through
+`PUT /api/settings` with no unsaved-changes state left over.
 
 ### F42. `deploy/ec2-bootstrap.sh` — one-command box setup
 
