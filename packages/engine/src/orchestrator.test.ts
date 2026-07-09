@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { AgentAdapter, AgentRunResult } from "@orc/adapters";
-import type { GateResult, Project, Run, Settings, Task } from "@orc/types";
+import type { GateResult, MergeDecision, Project, Run, Settings, Task } from "@orc/types";
 import { Orchestrator, isAuthOrSecretFile, scopesOverlap } from "./orchestrator.js";
 import type { GitService, SchedulerDeps, WorktreeManager } from "./index.js";
 
@@ -1531,5 +1531,150 @@ test("B28: a manual dispatch (runTask) against a since-removed assignedModel req
     logs.some((m) => m.startsWith("Fatal:")),
     false,
     "must not surface as a Fatal crash",
+  );
+});
+
+test("B30: a task in_review with a persisted 'approve' decision + a risky flag re-requests the merge approval without re-authoring or re-validating", async () => {
+  const merged: number[] = [];
+  let authorCalled = false;
+  let validatorCalled = false;
+  let asked = false;
+  const decision: MergeDecision = {
+    id: "d1",
+    projectId: "p1",
+    taskId: "t1",
+    runId: "run-t1-1",
+    validatorModel: "deepseek-pro",
+    verdict: "approve",
+    reasons: ["lgtm"],
+    confidence: 0.95,
+    gate: { ...GOOD_GATE, inScope: false },
+    ts: "",
+  };
+  const adapter: AgentAdapter = {
+    runner: "opencode",
+    async run(): Promise<AgentRunResult> {
+      authorCalled = true;
+      return { ok: true, exitReason: "completed", costUsd: 0, tokensIn: 0, tokensOut: 0, summary: "" };
+    },
+  };
+  const deps = fakeDeps(
+    {
+      adapterFor: () => adapter,
+      validator: {
+        async review() {
+          validatorCalled = true;
+          return decision;
+        },
+      },
+      getMergeDecisions: () => [decision],
+      events: {
+        onLog() {}, onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() {
+          asked = true;
+          return "approve_merge";
+        },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1", [], {
+    status: "in_review",
+    attempts: 1,
+    prNumber: 7,
+    worktreePath: "/tmp/t1",
+    branch: "orc/t1",
+  });
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.equal(authorCalled, false, "must not re-run the author");
+  assert.equal(validatorCalled, false, "must not re-run the validator — the verdict is already persisted");
+  assert.equal(asked, true);
+  assert.deepEqual(merged, [7]);
+  assert.equal(t1.status, "done");
+});
+
+test("B30: a task in_review with a persisted 'escalate' decision re-requests that escalation, not a fresh author run", async () => {
+  const merged: number[] = [];
+  let authorCalled = false;
+  let approvalTitle = "";
+  const decision: MergeDecision = {
+    id: "d1",
+    projectId: "p1",
+    taskId: "t1",
+    runId: "run-t1-1",
+    validatorModel: "deepseek-pro",
+    verdict: "escalate",
+    reasons: ["needs a human look"],
+    confidence: 0.5,
+    gate: GOOD_GATE,
+    ts: "",
+  };
+  const adapter: AgentAdapter = {
+    runner: "opencode",
+    async run(): Promise<AgentRunResult> {
+      authorCalled = true;
+      return { ok: true, exitReason: "completed", costUsd: 0, tokensIn: 0, tokensOut: 0, summary: "" };
+    },
+  };
+  const deps = fakeDeps(
+    {
+      adapterFor: () => adapter,
+      getMergeDecisions: () => [decision],
+      events: {
+        onLog() {}, onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval(args) {
+          approvalTitle = args.title;
+          return "approve";
+        },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1", [], {
+    status: "in_review",
+    attempts: 1,
+    prNumber: 7,
+    worktreePath: "/tmp/t1",
+    branch: "orc/t1",
+  });
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.equal(authorCalled, false);
+  assert.match(approvalTitle, /escalated for human review/);
+  assert.deepEqual(merged, [7]);
+  assert.equal(t1.status, "done");
+});
+
+test("B30: a task in_review with no PR requeues to backlog exactly as before (nothing persisted to resume)", async () => {
+  const logs: string[] = [];
+  const deps = fakeDeps(
+    {
+      events: {
+        onLog: (e) => logs.push(e.message),
+        onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    [],
+  );
+  const t1 = task("t1", [], { status: "in_review" }); // no prNumber -> nothing to resume
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.equal(
+    logs.some((m) => m.startsWith("Recovering orphaned task")),
+    true,
+    "falls back to the pre-B30 orphan-requeue path",
+  );
+  assert.equal(
+    logs.some((m) => m.startsWith("Restart recovery:")),
+    false,
+  );
+  assert.equal(
+    t1.status,
+    "done",
+    "requeued to backlog then ran the normal happy path to completion, same as before B30",
   );
 });

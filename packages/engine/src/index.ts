@@ -188,6 +188,15 @@ export interface SchedulerDeps {
    */
   getTasks?: () => Task[];
   /**
+   * B30: newest-first persisted MergeDecisions for a task, used only at
+   * start()'s orphan recovery to tell "was mid-authoring when this process
+   * died" apart from "was only awaiting a human decision" — the latter
+   * re-arms the pending approval instead of requeueing to backlog for a
+   * full re-run. Optional; if omitted, every in_progress/in_review task on
+   * boot is treated as orphaned exactly as before B30.
+   */
+  getMergeDecisions?: (taskId: string) => MergeDecision[];
+  /**
    * Returns a reason string if running `modelId` would exceed a budget cap, or
    * `null` if within budget. Consulted before dispatching each task and before
    * each retry attempt so an unattended run stops once a cap is hit. Optional;

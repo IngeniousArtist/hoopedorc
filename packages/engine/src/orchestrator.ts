@@ -273,9 +273,33 @@ export class Orchestrator implements Scheduler {
     // is actually working on it. Requeue it as backlog so the scheduler
     // retries it instead of silently stalling forever (it would never appear
     // in readyTasks() and would permanently block every task that depends on
-    // it).
+    // it) — UNLESS (B30) it was only sitting at a requestApproval() await:
+    // findResumableDecision recognizes that case (in_review, an open PR, and
+    // a MergeDecision already persisted for this attempt) and re-arms the
+    // pending decision instead, so a restart during an approval doesn't
+    // throw away a task that already passed gates + validation. Kicked off
+    // fire-and-forget (not awaited here) exactly like a normal dispatch —
+    // it can wait indefinitely on a human, and siblings must not block on
+    // it — with the task id tracked in activeTaskIds purely so this loop's
+    // own "nothing left to do" check below doesn't fire while it's pending.
     for (const task of tasks) {
       if (task.status === "in_progress" || task.status === "in_review") {
+        if (task.status === "in_review") {
+          const decision = this.findResumableDecision(task);
+          if (decision) {
+            this.emit(
+              "info",
+              "engine",
+              `Restart recovery: re-requesting the pending decision instead of re-running (${task.title})`,
+              task.id,
+            );
+            this.activeTaskIds.add(task.id);
+            this.recoverPendingApproval(project, task, decision).finally(() => {
+              this.activeTaskIds.delete(task.id);
+            });
+            continue;
+          }
+        }
         this.emit(
           "warn",
           "engine",
@@ -1078,146 +1102,150 @@ export class Orchestrator implements Scheduler {
       if (this.paused) return;
       if (this.bailIfStopRequested(task)) return;
 
-      if (task.prNumber == null) {
-        this.emit(
-          "error",
-          "engine",
-          "Reached the merge step with no PR number — the author never " +
-            "produced a pushable change on any attempt. Failing instead of " +
-            'calling gh with an undefined PR ("gh pr merge undefined").',
-          task.id,
-        );
-        task.status = "failed";
-        this.deps.events.onTaskUpdated(task);
-        return;
+      // B30: the rest of this (docs stage -> sync -> GitHub checks -> merge
+      // decision) is factored out into resolveMergeOutcome so restart
+      // recovery can re-enter the exact same tail for a task whose validator
+      // verdict already persisted (see recoverPendingApproval below) without
+      // duplicating this logic.
+      await this.resolveMergeOutcome(project, task, path, branch, finalGate!);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.emit("error", "engine", `Fatal: ${message}`, task.id);
+      task.status = "failed";
+      this.deps.events.onTaskUpdated(task);
+    } finally {
+      this.stopRequested.delete(task.id);
+      this.rateLimitWaits.delete(task.id);
+      try {
+        await this.deps.worktrees.remove(project, task);
+      } catch {
+        /* best effort */
       }
+    }
+  }
 
-      // F30: document the change in the same worktree/PR right after
-      // validator approval — branch → PR → merge stays sacred, and the docs
-      // land atomically with the code they describe. Strictly best-effort:
-      // never blocks a validated merge, so no bailout on failure here — only
-      // a Stop press (checked right after) can still cut it off.
-      await this.runDocsStage(project, task, path, branch);
-      if (this.bailIfStopRequested(task)) return;
+  /**
+   * Everything after the validator has already produced a MergeDecision for
+   * this attempt: per-task docs, sync-with-main, the optional GitHub-checks
+   * wait, and the final auto-merge-or-ask decision. Split out of
+   * executeTask so B30's restart recovery (recoverPendingApproval below) can
+   * re-enter this exact tail — using the PERSISTED decision's gate — instead
+   * of re-running the author or the validator.
+   */
+  private async resolveMergeOutcome(
+    project: Project,
+    task: Task,
+    path: string,
+    branch: string,
+    finalGate: GateResult,
+  ): Promise<void> {
+    if (task.prNumber == null) {
+      this.emit(
+        "error",
+        "engine",
+        "Reached the merge step with no PR number — the author never " +
+          "produced a pushable change on any attempt. Failing instead of " +
+          'calling gh with an undefined PR ("gh pr merge undefined").',
+        task.id,
+      );
+      task.status = "failed";
+      this.deps.events.onTaskUpdated(task);
+      return;
+    }
 
-      // Bring the branch up to date with main before merging. A sibling task
-      // may have merged overlapping files (commonly shared entry-point wiring
-      // like index.html) since this branch's no-conflict gate passed, which
-      // would make `gh pr merge` fail as CONFLICTING. Git auto-resolves
-      // non-overlapping changes; a genuine conflict is recoverable by retrying
-      // against the now-current main, so requeue rather than fail outright.
-      const sync = await this.deps.git.syncBranchWithMain(project, task);
-      if (sync === "conflict") {
-        const n = (this.mergeConflicts.get(task.id) ?? 0) + 1;
-        this.mergeConflicts.set(task.id, n);
-        const MAX_MERGE_RETRIES = 2;
-        if (n <= MAX_MERGE_RETRIES) {
-          this.emit(
-            "warn",
-            "engine",
-            `PR conflicts with ${project.defaultBranch} (a sibling task changed overlapping ` +
-              `files) — requeuing for a fresh attempt against current ${project.defaultBranch} (${n}/${MAX_MERGE_RETRIES}).`,
-            task.id,
-          );
-          // Fresh PR next time; the new worktree branches off current main, so
-          // the work is redone on top of the sibling's changes and merges clean.
-          task.status = "backlog";
-          task.prNumber = undefined;
-          this.deps.events.onTaskUpdated(task);
-          return;
-        }
-        // Exhausted retries — hand to a human instead of looping or silently
-        // failing. (Rare: requires repeated overlapping merges across attempts.)
-        this.emit(
-          "error",
-          "engine",
-          `PR still conflicts with ${project.defaultBranch} after ${MAX_MERGE_RETRIES} retries — needs manual resolution.`,
-          task.id,
-        );
-        const choice = await this.deps.events.requestApproval({
-          taskId: task.id,
-          title: `Merge conflict in ${task.title}`,
-          message:
-            `This task repeatedly conflicts with ${project.defaultBranch} because other tasks ` +
-            `changed the same files. Resolve the PR manually, then reject this to clear it.`,
-          options: ["reject"],
-        });
-        void choice;
-        task.status = "failed";
-        this.deps.events.onTaskUpdated(task);
-        return;
-      }
+    // F30: document the change in the same worktree/PR right after
+    // validator approval — branch → PR → merge stays sacred, and the docs
+    // land atomically with the code they describe. Strictly best-effort:
+    // never blocks a validated merge, so no bailout on failure here — only
+    // a Stop press (checked right after) can still cut it off.
+    await this.runDocsStage(project, task, path, branch);
+    if (this.bailIfStopRequested(task)) return;
 
-      // F15: opt-in per-project gate — hold the merge until the target
-      // repo's own CI (its GitHub-side checks) passes, not just this app's
-      // local gates. "passed"/"none" fall through to the normal canAutoMerge
-      // risk check below; "failed"/"timeout" skip straight to a human
-      // decision instead, since there's nothing more for canAutoMerge to add.
-      if (project.config?.requireGithubChecks) {
-        const timeoutMin = project.config.githubChecksTimeoutMin ?? 15;
-        this.emit("info", "engine", "Waiting for GitHub checks before merging…", task.id);
-        const checksResult = await this.deps.git.waitForChecks(
-          project,
-          task.prNumber!,
-          timeoutMin * 60_000,
-          (elapsedMs) => {
-            this.emit(
-              "info",
-              "engine",
-              `Waiting for GitHub checks (${Math.round(elapsedMs / 60_000)}m)…`,
-              task.id,
-            );
-          },
-        );
-        if (this.bailIfStopRequested(task)) return;
-        if (checksResult === "failed" || checksResult === "timeout") {
-          const reason =
-            checksResult === "failed"
-              ? "GitHub checks failed"
-              : `GitHub checks timed out after ${timeoutMin}m`;
-          this.emit(
-            "warn",
-            "engine",
-            `${reason} — requesting approval instead of auto-merging`,
-            task.id,
-          );
-          const choice = await this.deps.events.requestApproval({
-            taskId: task.id,
-            title: `GitHub checks ${checksResult} for ${task.title}`,
-            message: `${reason}. Approve merge anyway?`,
-            options: ["approve_merge", "reject"],
-          });
-          if (choice === "approve_merge") {
-            await this.deps.git.mergePr(project, task.prNumber!);
-            await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
-            task.status = "done";
-            this.emit("info", "engine", `Merged: ${task.title}`, task.id);
-          } else {
-            task.status = "failed";
-            this.emit("warn", "engine", `Rejected: ${task.title}`, task.id);
-          }
-          this.deps.events.onTaskUpdated(task);
-          return;
-        }
-      }
-
-      const canMerge = await this.canAutoMerge(project, task, finalGate!);
-      if (canMerge) {
-        await this.deps.git.mergePr(project, task.prNumber!);
-        await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
-        task.status = "done";
-        this.emit("info", "engine", `Merged: ${task.title}`, task.id);
-      } else {
+    // Bring the branch up to date with main before merging. A sibling task
+    // may have merged overlapping files (commonly shared entry-point wiring
+    // like index.html) since this branch's no-conflict gate passed, which
+    // would make `gh pr merge` fail as CONFLICTING. Git auto-resolves
+    // non-overlapping changes; a genuine conflict is recoverable by retrying
+    // against the now-current main, so requeue rather than fail outright.
+    const sync = await this.deps.git.syncBranchWithMain(project, task);
+    if (sync === "conflict") {
+      const n = (this.mergeConflicts.get(task.id) ?? 0) + 1;
+      this.mergeConflicts.set(task.id, n);
+      const MAX_MERGE_RETRIES = 2;
+      if (n <= MAX_MERGE_RETRIES) {
         this.emit(
           "warn",
           "engine",
-          `Risky change detected, requesting approval`,
+          `PR conflicts with ${project.defaultBranch} (a sibling task changed overlapping ` +
+            `files) — requeuing for a fresh attempt against current ${project.defaultBranch} (${n}/${MAX_MERGE_RETRIES}).`,
+          task.id,
+        );
+        // Fresh PR next time; the new worktree branches off current main, so
+        // the work is redone on top of the sibling's changes and merges clean.
+        task.status = "backlog";
+        task.prNumber = undefined;
+        this.deps.events.onTaskUpdated(task);
+        return;
+      }
+      // Exhausted retries — hand to a human instead of looping or silently
+      // failing. (Rare: requires repeated overlapping merges across attempts.)
+      this.emit(
+        "error",
+        "engine",
+        `PR still conflicts with ${project.defaultBranch} after ${MAX_MERGE_RETRIES} retries — needs manual resolution.`,
+        task.id,
+      );
+      const choice = await this.deps.events.requestApproval({
+        taskId: task.id,
+        title: `Merge conflict in ${task.title}`,
+        message:
+          `This task repeatedly conflicts with ${project.defaultBranch} because other tasks ` +
+          `changed the same files. Resolve the PR manually, then reject this to clear it.`,
+        options: ["reject"],
+      });
+      void choice;
+      task.status = "failed";
+      this.deps.events.onTaskUpdated(task);
+      return;
+    }
+
+    // F15: opt-in per-project gate — hold the merge until the target
+    // repo's own CI (its GitHub-side checks) passes, not just this app's
+    // local gates. "passed"/"none" fall through to the normal canAutoMerge
+    // risk check below; "failed"/"timeout" skip straight to a human
+    // decision instead, since there's nothing more for canAutoMerge to add.
+    if (project.config?.requireGithubChecks) {
+      const timeoutMin = project.config.githubChecksTimeoutMin ?? 15;
+      this.emit("info", "engine", "Waiting for GitHub checks before merging…", task.id);
+      const checksResult = await this.deps.git.waitForChecks(
+        project,
+        task.prNumber!,
+        timeoutMin * 60_000,
+        (elapsedMs) => {
+          this.emit(
+            "info",
+            "engine",
+            `Waiting for GitHub checks (${Math.round(elapsedMs / 60_000)}m)…`,
+            task.id,
+          );
+        },
+      );
+      if (this.bailIfStopRequested(task)) return;
+      if (checksResult === "failed" || checksResult === "timeout") {
+        const reason =
+          checksResult === "failed"
+            ? "GitHub checks failed"
+            : `GitHub checks timed out after ${timeoutMin}m`;
+        this.emit(
+          "warn",
+          "engine",
+          `${reason} — requesting approval instead of auto-merging`,
           task.id,
         );
         const choice = await this.deps.events.requestApproval({
           taskId: task.id,
-          title: `Risky changes in ${task.title}`,
-          message: `Out-of-scope edits or risky changes detected. Approve merge?`,
+          title: `GitHub checks ${checksResult} for ${task.title}`,
+          message: `${reason}. Approve merge anyway?`,
           options: ["approve_merge", "reject"],
         });
         if (choice === "approve_merge") {
@@ -1229,9 +1257,117 @@ export class Orchestrator implements Scheduler {
           task.status = "failed";
           this.emit("warn", "engine", `Rejected: ${task.title}`, task.id);
         }
+        this.deps.events.onTaskUpdated(task);
+        return;
+      }
+    }
+
+    const canMerge = await this.canAutoMerge(project, task, finalGate);
+    if (canMerge) {
+      await this.deps.git.mergePr(project, task.prNumber!);
+      await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
+      task.status = "done";
+      this.emit("info", "engine", `Merged: ${task.title}`, task.id);
+    } else {
+      this.emit(
+        "warn",
+        "engine",
+        `Risky change detected, requesting approval`,
+        task.id,
+      );
+      const choice = await this.deps.events.requestApproval({
+        taskId: task.id,
+        title: `Risky changes in ${task.title}`,
+        message: `Out-of-scope edits or risky changes detected. Approve merge?`,
+        options: ["approve_merge", "reject"],
+      });
+      if (choice === "approve_merge") {
+        await this.deps.git.mergePr(project, task.prNumber!);
+        await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
+        task.status = "done";
+        this.emit("info", "engine", `Merged: ${task.title}`, task.id);
+      } else {
+        task.status = "failed";
+        this.emit("warn", "engine", `Rejected: ${task.title}`, task.id);
+      }
+    }
+
+    this.deps.events.onTaskUpdated(task);
+  }
+
+  /**
+   * B30: a task `in_review` with an open PR and a MergeDecision already
+   * persisted for its CURRENT attempt (runId matches `run-<taskId>-<attempts>`)
+   * was — before whatever restarted this process — sitting at one of
+   * executeTask's `requestApproval` calls, not mid-authoring. Returns that
+   * decision so start()'s orphan recovery can re-arm it instead of
+   * requeueing the whole task back to backlog for a full re-run. Returns
+   * undefined for anything else (no PR yet, no worktree, or the decision on
+   * file predates the current attempt), which keeps today's requeue-and-
+   * rerun behavior for genuinely orphaned mid-authoring tasks.
+   */
+  private findResumableDecision(task: Task): MergeDecision | undefined {
+    if (task.prNumber == null || !task.worktreePath || !task.branch) {
+      return undefined;
+    }
+    const decision = this.deps.getMergeDecisions?.(task.id)?.[0];
+    if (!decision || decision.runId !== `run-${task.id}-${task.attempts}`) {
+      return undefined;
+    }
+    return decision;
+  }
+
+  /**
+   * B30: re-arm a task recovered by findResumableDecision — re-ask whichever
+   * human decision it was last waiting on (using the persisted verdict/
+   * reasons, never re-running the validator) and, once answered, resolve
+   * the merge exactly like executeTask's own tail. Mirrors executeTask's
+   * own try/catch/finally shape since this covers the same span of work.
+   *
+   * Note on repeated restarts: if the process restarts again while THIS
+   * re-ask (or the merge tail it leads to) is itself pending, the next
+   * boot's orphan recovery finds the same still-current decision and re-
+   * arms again — safe (nothing here ever re-authors or re-validates), but a
+   * human who already answered once mid-flight may see one extra prompt.
+   */
+  private async recoverPendingApproval(
+    project: Project,
+    task: Task,
+    decision: MergeDecision,
+  ): Promise<void> {
+    const path = task.worktreePath!;
+    const branch = task.branch!;
+    try {
+      if (decision.verdict === "request_changes") {
+        const choice = await this.deps.events.requestApproval({
+          taskId: task.id,
+          title: `Task exhausted ${task.maxAttempts} attempts`,
+          message: `Validator still requests changes:\n${decision.reasons.join("\n")}`,
+          options: ["approve_anyway", "reject"],
+        });
+        if (this.bailIfStopRequested(task)) return;
+        if (choice !== "approve_anyway") {
+          task.status = "failed";
+          this.deps.events.onTaskUpdated(task);
+          return;
+        }
+      } else if (decision.verdict === "escalate") {
+        const choice = await this.deps.events.requestApproval({
+          taskId: task.id,
+          title: `Task ${task.id} escalated for human review`,
+          message: decision.reasons.join("\n"),
+          options: ["approve", "reject"],
+        });
+        if (this.bailIfStopRequested(task)) return;
+        if (choice !== "approve") {
+          task.status = "failed";
+          this.deps.events.onTaskUpdated(task);
+          return;
+        }
       }
 
-      this.deps.events.onTaskUpdated(task);
+      if (this.bailIfStopRequested(task)) return;
+      await this.resolveMergeOutcome(project, task, path, branch, decision.gate);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       this.emit("error", "engine", `Fatal: ${message}`, task.id);
@@ -1239,7 +1375,6 @@ export class Orchestrator implements Scheduler {
       this.deps.events.onTaskUpdated(task);
     } finally {
       this.stopRequested.delete(task.id);
-      this.rateLimitWaits.delete(task.id);
       try {
         await this.deps.worktrees.remove(project, task);
       } catch {
