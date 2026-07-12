@@ -59,7 +59,12 @@ import {
   sanitizeAttachmentName,
   saveAttachment,
 } from "./attachments";
-import { recordPlanChatTurn, recordPlanCommit, recordPlanDeconstruct } from "./plan-sessions";
+import {
+  listArchivedSessions,
+  recordPlanChatTurn,
+  recordPlanCommit,
+  recordPlanDeconstruct,
+} from "./plan-sessions";
 import { TelegramBot, sendTelegramMessage } from "./telegram";
 import { getModelRoster, runSetupChecks, testModels } from "./setup";
 import type {
@@ -157,9 +162,12 @@ function materializeTasks(
 }
 
 /**
- * A standing documentation task: no dependencies, so it dispatches immediately
- * alongside the first coding tasks instead of waiting for everything else to
- * land first ("docs while others code"). Scoped to README.md/CHANGELOG.md/
+ * A standing documentation task. It runs LAST — `ensureDocsTask` makes it
+ * depend on every other task in the batch — so it documents the finished
+ * project rather than a work in progress. (It originally had no dependencies
+ * — "docs while others code" — but in practice that meant it ran against a
+ * half-built repo, failed its own acceptance criteria, and burned its
+ * fallback attempts on the same wall.) Scoped to README.md/CHANGELOG.md/
  * docs/** so it can never collide with any coding task's scope.
  *
  * F29: description + acceptance criteria also demand a CHANGELOG.md and
@@ -178,10 +186,9 @@ function buildDocsTaskDraft(settings: SettingsType): DraftTask {
       "and the key dependencies and why they're used) and CHANGELOG.md (Keep a Changelog " +
       "shape, one entry for this initial version). Verify every command you document " +
       "against the repo's actual package.json scripts — never invent a script name. " +
-      "Base this on the PRD and whatever code already exists in the repo when you run — " +
-      "other tasks may still be in progress in parallel, so describe what's planned vs. " +
-      "what's already implemented rather than claiming everything is done. Prefer " +
-      "accuracy over completeness.",
+      "This task runs after every other task has finished, so the repo you see is the " +
+      "completed project — document what is actually there, based on the PRD and the " +
+      "real code. Prefer accuracy over completeness.",
     difficulty: "easy",
     role: "docs",
     acceptanceCriteria: [
@@ -198,12 +205,18 @@ function buildDocsTaskDraft(settings: SettingsType): DraftTask {
   };
 }
 
-/** Add a standing docs task unless one already exists (avoid duplicates). */
-function ensureDocsTask<T extends { role?: Task["role"] }>(
+/**
+ * Add a standing docs task unless one already exists (avoid duplicates).
+ * The appended task depends on EVERY other task in the batch, so it always
+ * dispatches last and documents the finished project. (A planner-authored
+ * or user-added docs task keeps whatever deps it came with.)
+ */
+function ensureDocsTask<T extends { role?: Task["role"]; dependsOn: number[] }>(
   tasks: T[],
   docsTask: T,
 ): T[] {
-  return tasks.some((t) => t.role === "docs") ? tasks : [...tasks, docsTask];
+  if (tasks.some((t) => t.role === "docs")) return tasks;
+  return [...tasks, { ...docsTask, dependsOn: tasks.map((_, i) => i) }];
 }
 
 /** Resolve each draft task's suggested author model for display before commit. */
@@ -248,24 +261,35 @@ async function resolvePlannerCwd(project: Project): Promise<string> {
 }
 
 /**
- * F37: resolve `routing.planner`'s `ModelConfig` to a `PlannerModel` — which
- * CLI + model id `planner.ts` should actually shell out to, instead of
- * hardcoding `claude`. ONE model does both planning tiers (chat turns and
- * the final deconstruct): whatever Settings → Routing → Planner points at,
- * using that config's `claudeModel`/`codexModel` field — so the dashboard's
- * model settings are the single source of truth for which model plans, with
- * `ENV.plannerModel` only as a fallback when `claudeModel` is unset.
- * opencode-runner planners throw — conversational planning quality is the
- * point of the two subscription CLIs, not something to silently degrade;
- * callers turn this into an explicit 400.
+ * F37: resolve a planning tier to a `PlannerModel` — which CLI + model id
+ * `planner.ts` should actually shell out to, instead of hardcoding `claude`.
+ * Everything comes from the dashboard's routing: `chat` turns use
+ * Settings → Routing → Planner; the one high-leverage `deconstruct` call
+ * uses Settings → Routing → Deconstructor, which falls back to the planner
+ * when unset (the default — one model does both). The resolved config's
+ * `claudeModel`/`codexModel` field is the model id, with `ENV.plannerModel`
+ * only as a fallback when `claudeModel` is unset. opencode-runner planners
+ * throw — conversational planning quality is the point of the two
+ * subscription CLIs, not something to silently degrade; callers turn this
+ * into an explicit 400.
  */
-function resolvePlannerModel(settings: SettingsType): PlannerModel {
-  const cfg = settings.models.find((m) => m.id === settings.routing.planner);
+function resolvePlannerModel(
+  settings: SettingsType,
+  tier: "chat" | "deconstruct",
+): PlannerModel {
+  const routedId =
+    tier === "deconstruct"
+      ? (settings.routing.deconstructor ?? settings.routing.planner)
+      : settings.routing.planner;
+  const cfg = settings.models.find((m) => m.id === routedId);
   if (cfg?.runner === "codex") return { runner: "codex", model: cfg.codexModel };
   if (cfg?.runner === "opencode") {
+    const field = tier === "deconstruct" && settings.routing.deconstructor
+      ? "Deconstructor"
+      : "Planner";
     throw new Error(
       `planner model "${cfg.displayName}" uses the opencode runner, which isn't supported for ` +
-        `planning — route Settings → Routing → Planner to a claude-code or codex model instead`,
+        `planning — route Settings → Routing → ${field} to a claude-code or codex model instead`,
     );
   }
   return { runner: "claude-code", model: cfg?.claudeModel ?? ENV.plannerModel };
@@ -1307,6 +1331,9 @@ async function main() {
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    // Same lock as the chat/deconstruct/commit routes below (defined there).
+    const lockErr = planningLockError(project);
+    if (lockErr) return reply.code(409).send({ error: lockErr });
 
     const body = req.body as { goal?: string; requireApproval?: boolean } | undefined;
 
@@ -1323,7 +1350,7 @@ async function main() {
       // opencode planner falls into this same try/catch's stub fallback below
       // rather than a special-cased error — this legacy single-shot endpoint
       // never hard-fails, by design.
-      const plannerModel = resolvePlannerModel(settings);
+      const plannerModel = resolvePlannerModel(settings, "deconstruct");
       const cwd = await resolvePlannerCwd(project);
       const plan = await runPlanner(goal, project.name, cwd, plannerModel);
       prdMarkdown = plan.prdMarkdown;
@@ -1381,13 +1408,26 @@ async function main() {
     };
   });
 
-  // ── Planning: chat → deconstruct → commit (one planner model for both) ──
+  // ── Planning: chat → deconstruct → commit ──
+
+  // Planning writes are locked while the autonomous loop is running: a
+  // mid-run /plan/commit would clobber project.status (planning → planned)
+  // underneath the running loop and desync Start/Pause, and a mid-run task
+  // batch would race the DAG the loop is already executing. Reads (session,
+  // sessions archive, attachments list) stay open so the Plan tab can show
+  // history during a run; chat re-opens when the run finishes.
+  const planningLockError = (project: Project): string | null =>
+    project.status === "running"
+      ? "tasks are running — planning re-opens when the run finishes (chat history stays visible below)"
+      : null;
 
   // One conversational turn. The web chat panel sends the full transcript.
   app.post("/api/projects/:id/plan/chat", async (req, reply) => {
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    const lockErr = planningLockError(project);
+    if (lockErr) return reply.code(409).send({ error: lockErr });
 
     const body = req.body as { messages?: PlanChatMessage[] } | undefined;
     const messages = body?.messages ?? [];
@@ -1400,7 +1440,7 @@ async function main() {
     // surface as an opaque 502 from deep inside the try block below.
     let plannerModel: PlannerModel;
     try {
-      plannerModel = resolvePlannerModel(repo.getSettings(db) ?? defaultSettings());
+      plannerModel = resolvePlannerModel(repo.getSettings(db) ?? defaultSettings(), "chat");
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -1447,6 +1487,8 @@ async function main() {
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    const lockErr = planningLockError(project);
+    if (lockErr) return reply.code(409).send({ error: lockErr });
 
     const body = req.body as { messages?: PlanChatMessage[] } | undefined;
     const messages = body?.messages ?? [];
@@ -1458,7 +1500,7 @@ async function main() {
     // F37: same up-front rejection as /plan/chat above.
     let plannerModel: PlannerModel;
     try {
-      plannerModel = resolvePlannerModel(settings);
+      plannerModel = resolvePlannerModel(settings, "deconstruct");
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -1530,6 +1572,16 @@ async function main() {
     return { ...session, planCostUsd };
   });
 
+  // F28 read side: the archived plan-session markdown files, newest first —
+  // the Plan tab's read-only chat history once a plan is committed (the live
+  // session row is cleared then) and while tasks run.
+  app.get("/api/projects/:id/plan/sessions", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    return { sessions: listArchivedSessions(project, ENV.mock) };
+  });
+
   // F27: planning-context attachments — images/PDFs/reference files the
   // planner reads with its own file tools from the project's clone (see
   // attachments.ts for the storage-safety reasoning).
@@ -1591,6 +1643,8 @@ async function main() {
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    const lockErr = planningLockError(project);
+    if (lockErr) return reply.code(409).send({ error: lockErr });
 
     const body = req.body as { prdMarkdown?: string; tasks?: DraftTask[]; agentsMd?: string };
     if (!Array.isArray(body.tasks) || body.tasks.length === 0) {
@@ -1619,7 +1673,7 @@ async function main() {
     // commit over it.
     let committedPlannerLabel = "planner";
     try {
-      committedPlannerLabel = plannerModelLabel(resolvePlannerModel(settings));
+      committedPlannerLabel = plannerModelLabel(resolvePlannerModel(settings, "chat"));
     } catch {
       /* leave the generic fallback */
     }
@@ -2226,6 +2280,9 @@ async function main() {
       const missing: string[] = [];
       if (!ids.has(merged.routing.planner)) {
         missing.push(`routing.planner references "${merged.routing.planner}"`);
+      }
+      if (merged.routing.deconstructor && !ids.has(merged.routing.deconstructor)) {
+        missing.push(`routing.deconstructor references "${merged.routing.deconstructor}"`);
       }
       for (const d of ["easy", "medium", "hard"] as const) {
         const authorId = merged.routing.byDifficulty[d];

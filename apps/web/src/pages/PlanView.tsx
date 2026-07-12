@@ -4,6 +4,7 @@ import type {
   GetProjectResponse,
   GetSettingsResponse,
   ListPlanAttachmentsResponse,
+  ListPlanSessionArchivesResponse,
   ModelConfig,
   ModelId,
   PlanAttachment,
@@ -12,12 +13,14 @@ import type {
   PlanCommitResponse,
   PlanDeconstructResponse,
   PlanningSessionResponse,
+  PlanSessionArchive,
   Project,
 } from "@orc/types";
 import { useEffect, useRef, useState } from "react";
 import { api, apiUpload } from "../api/client";
 import { ModelSelect } from "../components/ModelSelect";
 import { useToast } from "../hooks/useToast";
+import { useWS } from "../hooks/useWS";
 import { formatUsd } from "../lib/format";
 
 const DIFFICULTIES: Difficulty[] = ["easy", "medium", "hard"];
@@ -92,9 +95,27 @@ export function PlanView({
   // or (rejected server-side) opencode — name it instead of hardcoding
   // "Claude" throughout the chat UI below.
   const [plannerModelId, setPlannerModelId] = useState<ModelId | null>(null);
+  // Deconstruct can be routed to its own model (routing.deconstructor);
+  // unset means "same as planner".
+  const [deconstructorModelId, setDeconstructorModelId] = useState<ModelId | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const toast = useToast();
+
+  // Read-only archive of every past planning session (F28's markdown files)
+  // — this is what keeps the chat history visible after a commit clears the
+  // live session, including for the whole time the tasks are running.
+  const [archives, setArchives] = useState<PlanSessionArchive[]>([]);
+
+  // Planning writes are locked server-side (409) while the project runs;
+  // mirror that here: banner instead of the input row, buttons disabled.
+  // project.updated events flip this live when the run finishes.
+  const running = project?.status === "running";
+  useWS(projectId, (e) => {
+    if (e.type === "project.updated" && e.payload.id === projectId) {
+      setProject(e.payload);
+    }
+  });
 
   // Chat
   const [messages, setMessages] = useState<PlanChatMessage[]>([]);
@@ -139,11 +160,19 @@ export function PlanView({
       api<ListPlanAttachmentsResponse>("listPlanAttachments", {
         params: { id: projectId },
       }),
+      api<ListPlanSessionArchivesResponse>("planSessionArchives", {
+        params: { id: projectId },
+      }),
     ])
-      .then(([projRes, sessionRes, settingsRes, attachmentsRes]) => {
+      .then(([projRes, sessionRes, settingsRes, attachmentsRes, archivesRes]) => {
         setProject(projRes.project ?? null);
         setModels(settingsRes.settings.models);
         setPlannerModelId(settingsRes.settings.routing.planner);
+        setDeconstructorModelId(
+          settingsRes.settings.routing.deconstructor ??
+            settingsRes.settings.routing.planner,
+        );
+        setArchives(archivesRes.sessions);
         // Strip [PLAN_COMPLETE] tokens from restored messages and detect readiness.
         const cleaned = sessionRes.messages.map((m) => {
           if (m.role !== "assistant") return m;
@@ -227,7 +256,7 @@ export function PlanView({
   }, [tasks, prd, agentsMd, committed, projectId]);
 
   async function sendChat() {
-    if (!projectId || !input.trim() || chatting) return;
+    if (!projectId || !input.trim() || chatting || running) return;
     const next: PlanChatMessage[] = [
       ...messages,
       { role: "user", content: input.trim() },
@@ -255,7 +284,7 @@ export function PlanView({
   }
 
   async function generateTable() {
-    if (!projectId || deconstructing) return;
+    if (!projectId || deconstructing || running) return;
     setDeconstructing(true);
     setError(null);
     try {
@@ -338,6 +367,13 @@ export function PlanView({
       setCommitted(res);
       setTasks(null);
       setAgentsMd(null);
+      // The commit just finalized this session's archive file — refresh the
+      // history list so the conversation stays visible right away.
+      api<ListPlanSessionArchivesResponse>("planSessionArchives", {
+        params: { id: projectId },
+      })
+        .then((r) => setArchives(r.sessions))
+        .catch(() => {});
     } catch (e) {
       setError(String(e));
     } finally {
@@ -350,6 +386,9 @@ export function PlanView({
 
   const plannerDisplayName =
     models.find((m) => m.id === plannerModelId)?.displayName ?? "the planner";
+  const deconstructorDisplayName =
+    models.find((m) => m.id === deconstructorModelId)?.displayName ??
+    plannerDisplayName;
 
   if (loading) {
     return <div className="text-sm text-neutral-400">Loading planning session…</div>;
@@ -489,46 +528,53 @@ export function PlanView({
             </div>
           )}
 
-          <div className="flex gap-2">
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.md,.txt,.csv,.json"
-              className="hidden"
-              onChange={(e) => handleAttachFiles(e.target.files)}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              title="Attach images, PDFs, or reference files for the planner to read"
-              className="shrink-0 self-start rounded border border-neutral-700 px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
-            >
-              {uploading ? "…" : "📎"}
-            </button>
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  sendChat();
-                }
-              }}
-              placeholder="Describe what to build… (Cmd+Enter to send)"
-              rows={2}
-              className={inputCls + " resize-none"}
-            />
-            <button
-              onClick={sendChat}
-              disabled={!input.trim() || chatting}
-              className="shrink-0 rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
-            >
-              Send
-            </button>
-          </div>
+          {running ? (
+            <div className="rounded border border-amber-800/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
+              Tasks are running — planning re-opens when the run finishes. Your
+              chat history stays available in "Past planning sessions" below.
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.md,.txt,.csv,.json"
+                className="hidden"
+                onChange={(e) => handleAttachFiles(e.target.files)}
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                title="Attach images, PDFs, or reference files for the planner to read"
+                className="shrink-0 self-start rounded border border-neutral-700 px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+              >
+                {uploading ? "…" : "📎"}
+              </button>
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    sendChat();
+                  }
+                }}
+                placeholder="Describe what to build… (Cmd+Enter to send)"
+                rows={2}
+                className={inputCls + " resize-none"}
+              />
+              <button
+                onClick={sendChat}
+                disabled={!input.trim() || chatting}
+                className="shrink-0 rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+              >
+                Send
+              </button>
+            </div>
+          )}
 
-          {messages.some((m) => m.role === "assistant") && (
+          {!running && messages.some((m) => m.role === "assistant") && (
             <div className="space-y-2">
               {plannerReady && !deconstructing && (
                 <div className="rounded border border-green-700/50 bg-green-900/20 px-3 py-2 text-xs text-green-300">
@@ -546,7 +592,7 @@ export function PlanView({
                 }
               >
                 {deconstructing
-                  ? `Deconstructing with ${plannerDisplayName}…`
+                  ? `Deconstructing with ${deconstructorDisplayName}…`
                   : tasks
                     ? "Re-generate task table"
                     : "Generate task table →"}
@@ -763,7 +809,7 @@ export function PlanView({
             <div className="mt-4 flex items-center gap-3">
               <button
                 onClick={commit}
-                disabled={committing || tasks.length === 0}
+                disabled={committing || tasks.length === 0 || running}
                 className="rounded bg-green-700 px-4 py-2 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
               >
                 {committing ? "Creating tasks…" : "Approve & Create Tasks"}
@@ -772,6 +818,37 @@ export function PlanView({
                 Edits are auto-saved. Tasks appear on the Board after approval.
               </span>
             </div>
+          </div>
+        </section>
+      )}
+
+      {/* ── Past planning sessions (read-only archive) ── */}
+      {archives.length > 0 && (
+        <section className="rounded-lg border border-neutral-800 bg-neutral-900">
+          <div className="px-4 pt-3">
+            <h3 className="text-sm font-medium text-neutral-300">
+              Past planning sessions
+            </h3>
+            <p className="pt-1 text-[11px] text-neutral-500">
+              Every planning chat for this project, kept after commit — the
+              full transcript, the deconstructed task list, and when it was
+              committed.
+            </p>
+          </div>
+          <div className="space-y-1 p-3">
+            {archives.map((s) => (
+              <details
+                key={s.name}
+                className="rounded border border-neutral-800 bg-neutral-950"
+              >
+                <summary className="cursor-pointer px-3 py-2 text-xs text-neutral-300 hover:text-neutral-100">
+                  {s.startedLabel}
+                </summary>
+                <pre className="max-h-96 overflow-y-auto border-t border-neutral-800 px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap text-neutral-300">
+                  {s.markdown}
+                </pre>
+              </details>
+            ))}
           </div>
         </section>
       )}
