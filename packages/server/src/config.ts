@@ -11,8 +11,8 @@ export const DEFAULT_MODELS: ModelConfig[] = [
     id: "claude",
     displayName: "Claude (planner / reviewer)",
     runner: "claude-code",
-    // Default the Claude runner to Sonnet; the one-shot plan deconstruction
-    // upgrades to Opus separately (ENV.plannerDeconstructModel).
+    // Default the Claude runner to Sonnet — the same alias both planner
+    // tiers use (ENV.plannerChatModel / plannerDeconstructModel).
     claudeModel: "sonnet",
     roles: ["planner", "validator"],
     enabled: true,
@@ -186,11 +186,16 @@ export const ENV = {
   // (and run `opencode serve`) only to centralize sessions on one server.
   opencodeBaseUrl: process.env.OPENCODE_BASE_URL ?? "",
   mock: process.env.MOCK === "1",
-  // Two-tier planning models (claude --model aliases). Sonnet drives the cheap
-  // conversational turns; Opus does the single high-leverage deconstruction of
-  // the agreed plan into the task DAG. Override if Opus is ever throttled.
+  // Planning models (claude --model aliases). Both the conversational chat
+  // turns and the one-shot deconstruction of the agreed plan into the task
+  // DAG run on the SAME planner model (default Sonnet). Deconstruct used to
+  // default to Opus, but a Claude Pro subscription doesn't include Opus, so
+  // chat would work while every deconstruct call failed — planning died at
+  // the approve step on any box logged in with Pro. Deconstruct now follows
+  // the chat model unless PLANNER_DECONSTRUCT_MODEL explicitly overrides it.
   plannerChatModel: process.env.PLANNER_CHAT_MODEL ?? "sonnet",
-  plannerDeconstructModel: process.env.PLANNER_DECONSTRUCT_MODEL ?? "opus",
+  plannerDeconstructModel:
+    process.env.PLANNER_DECONSTRUCT_MODEL ?? process.env.PLANNER_CHAT_MODEL ?? "sonnet",
   // Where per-project repo clones + their task worktrees live. MUST be outside
   // the orchestrator's own working tree: each worktree is `${localPath}-wt-<id>`,
   // and coding agents (opencode/claude) resolve their project root by walking up
