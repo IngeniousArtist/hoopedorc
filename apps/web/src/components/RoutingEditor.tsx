@@ -132,6 +132,45 @@ export function RoutingEditor({
 
       <div>
         <label className="mb-2 block text-xs text-neutral-400">
+          Fallback models
+        </label>
+        <p className="mb-2 text-[10px] text-neutral-600">
+          Tried in order when a task's assigned model keeps failing (errors,
+          failing gates, rate limits). Leave both empty to fall back through
+          the difficulty tiers above instead.
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {[0, 1].map((slot) => (
+            <div key={slot}>
+              <label className="mb-1 block text-[10px] text-neutral-400">
+                Fallback {slot + 1}
+              </label>
+              <ModelSelect
+                value={routing.fallbacks?.[slot]}
+                models={models}
+                onChange={(m) => {
+                  onChange((r) => {
+                    const next = [...(r.fallbacks ?? [])];
+                    if (m) next[slot] = m;
+                    else delete next[slot];
+                    // delete leaves holes — compact so the engine sees a
+                    // clean ordered list.
+                    const compact = next.filter(Boolean);
+                    return compact.length > 0
+                      ? { ...r, fallbacks: compact }
+                      : (({ fallbacks: _drop, ...rest }) => rest)(r);
+                  });
+                }}
+                allowEmpty
+                emptyLabel="(none)"
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <label className="mb-2 block text-xs text-neutral-400">
           Validator by difficulty
         </label>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

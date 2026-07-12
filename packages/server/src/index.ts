@@ -25,6 +25,7 @@ import { SECRET_SENTINEL, TASK_STATUSES, WS_PATH, pickAssignedModel } from "@orc
 import type { TaskStatus } from "@orc/types";
 import { GitServiceImpl, isPlausibleImageRef } from "@orc/engine";
 import { ENV, defaultSettings } from "./config";
+import { ensureDocsTask } from "./docs-task";
 import { seed } from "./mock";
 import type { Db } from "./db/index";
 import { initDb } from "./db/index";
@@ -205,19 +206,8 @@ function buildDocsTaskDraft(settings: SettingsType): DraftTask {
   };
 }
 
-/**
- * Add a standing docs task unless one already exists (avoid duplicates).
- * The appended task depends on EVERY other task in the batch, so it always
- * dispatches last and documents the finished project. (A planner-authored
- * or user-added docs task keeps whatever deps it came with.)
- */
-function ensureDocsTask<T extends { role?: Task["role"]; dependsOn: number[] }>(
-  tasks: T[],
-  docsTask: T,
-): T[] {
-  if (tasks.some((t) => t.role === "docs")) return tasks;
-  return [...tasks, { ...docsTask, dependsOn: tasks.map((_, i) => i) }];
-}
+// ensureDocsTask lives in docs-task.ts so its runs-last guarantee is unit-
+// testable without booting this server module.
 
 /** Resolve each draft task's suggested author model for display before commit. */
 function withAssignedModels(
@@ -2299,10 +2289,31 @@ async function main() {
           missing.push(`routing.byRole.${role} references "${modelId}"`);
         }
       }
+      for (const fb of merged.routing.fallbacks ?? []) {
+        if (!ids.has(fb)) {
+          missing.push(`routing.fallbacks references "${fb}"`);
+        }
+      }
       if (missing.length > 0) {
         return reply.code(400).send({
           error: `${missing.join("; ")} which ${missing.length === 1 ? "is" : "are"} not in models`,
         });
+      }
+    }
+
+    // Manual pricing fields must be sane numbers — a negative or NaN price
+    // would silently corrupt every recorded cost for that model.
+    for (const m of merged.models) {
+      for (const [field, v] of [
+        ["costPerMInputUsd", m.costPerMInputUsd],
+        ["costPerMCachedInputUsd", m.costPerMCachedInputUsd],
+        ["costPerMOutputUsd", m.costPerMOutputUsd],
+      ] as const) {
+        if (v != null && (typeof v !== "number" || !isFinite(v) || v < 0)) {
+          return reply.code(400).send({
+            error: `Model ${m.id}: ${field} must be a non-negative number (USD per 1M tokens)`,
+          });
+        }
       }
     }
 

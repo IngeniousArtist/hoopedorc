@@ -229,6 +229,7 @@ function mapTask(row: Record<string, unknown>): Task {
     prNumber: row.pr_number != null ? Number(row.pr_number) : undefined,
     attempts: Number(row.attempts),
     maxAttempts: Number(row.max_attempts),
+    statusReason: row.status_reason ? asStr(row.status_reason) : undefined,
     createdAt: asStr(row.created_at),
     updatedAt: asStr(row.updated_at),
   };
@@ -297,6 +298,7 @@ export function updateTask(
     prNumber: "pr_number",
     attempts: "attempts",
     maxAttempts: "max_attempts",
+    statusReason: "status_reason",
   };
   const jsonCols = new Set(["dependsOn", "acceptanceCriteria", "scopePaths"]);
 
@@ -336,6 +338,7 @@ function mapRun(row: Record<string, unknown>): Run {
     costUsd: Number(row.cost_usd),
     tokensIn: Number(row.tokens_in),
     tokensOut: Number(row.tokens_out),
+    tokensCached: row.tokens_cached != null ? Number(row.tokens_cached) : 0,
   };
 }
 
@@ -359,9 +362,9 @@ export function createRun(
 ): Run {
   const id = r.id ?? crypto.randomUUID();
   db.prepare(
-    `INSERT INTO runs (id, project_id, task_id, model, attempt, status, started_at, cost_usd, tokens_in, tokens_out)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, r.projectId, r.taskId, r.model, r.attempt, r.status, r.startedAt, r.costUsd, r.tokensIn, r.tokensOut);
+    `INSERT INTO runs (id, project_id, task_id, model, attempt, status, started_at, cost_usd, tokens_in, tokens_out, tokens_cached)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, r.projectId, r.taskId, r.model, r.attempt, r.status, r.startedAt, r.costUsd, r.tokensIn, r.tokensOut, r.tokensCached ?? 0);
   return getRun(db, id)!;
 }
 
@@ -380,6 +383,7 @@ export function updateRun(
     costUsd: "cost_usd",
     tokensIn: "tokens_in",
     tokensOut: "tokens_out",
+    tokensCached: "tokens_cached",
   };
 
   for (const [key, col] of Object.entries(colMap)) {
@@ -580,6 +584,7 @@ function mapCost(row: Record<string, unknown>): CostRecord {
     costUsd: Number(row.cost_usd),
     tokensIn: Number(row.tokens_in),
     tokensOut: Number(row.tokens_out),
+    tokensCached: row.tokens_cached != null ? Number(row.tokens_cached) : 0,
     ts: asStr(row.ts),
   };
 }
@@ -597,9 +602,9 @@ export function createCost(
 ): CostRecord {
   const id = c.id ?? crypto.randomUUID();
   db.prepare(
-    `INSERT INTO costs (id, project_id, model, task_id, run_id, cost_usd, tokens_in, tokens_out, ts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, c.projectId, c.model, c.taskId ?? null, c.runId ?? null, c.costUsd, c.tokensIn, c.tokensOut, c.ts);
+    `INSERT INTO costs (id, project_id, model, task_id, run_id, cost_usd, tokens_in, tokens_out, tokens_cached, ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, c.projectId, c.model, c.taskId ?? null, c.runId ?? null, c.costUsd, c.tokensIn, c.tokensOut, c.tokensCached ?? 0, c.ts);
   return { ...c, id } as CostRecord;
 }
 

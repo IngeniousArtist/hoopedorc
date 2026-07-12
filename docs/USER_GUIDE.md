@@ -171,6 +171,33 @@ going on a always-on box.
   agent itself is tracked as future work (F13 phases 2/3 in
   `docs/specs/sandbox.md`), not built yet.
 
+## Fallbacks, pricing, and cleanup
+
+- **Fallback models (Settings → Routing → Fallback 1/2).** When a task's
+  assigned model keeps failing (author errors, failing gates, rate limits),
+  the engine retries with Fallback 1, then Fallback 2 — swap the two
+  dropdowns any time to change the order. Leave both empty to use the old
+  behavior (escalating through the by-difficulty tiers).
+- **Manual model pricing (Settings → Models).** Each model has three
+  optional price fields — input, cached input, and output, in **USD per 1M
+  tokens** (the unit provider pricing pages use). When any is set, every
+  recorded run/validator cost for that model is recomputed from its real
+  token counts using your prices, instead of trusting the CLI's own pricing
+  table (OpenCode's goes stale; Codex reports no cost at all). Budgets,
+  quotas, and the Costs tab all use the corrected numbers going forward.
+- **The docs task runs last.** Every plan gets one documentation task that
+  depends on all the others — even if the planner writes its own docs task,
+  its dependencies are extended so it can't run against a half-built repo.
+  If some earlier task failed, the docs task still runs at the end and
+  documents whatever was actually built (it only stays blocked when
+  *nothing* landed).
+- **Branch cleanup.** A merged task's PR branch is deleted on merge. A task
+  that terminally fails (exhausted attempts, or you rejected it) now also
+  gets its PR closed — with a comment carrying the failure reason — and its
+  `orc/*` branch deleted, so dead branches don't pile up in your repo. The
+  failure reason is preserved on the Audit page and the task's drawer
+  ("Outcome").
+
 ## Telegram commands
 
 Beyond approve/reject buttons and the status digest, the bot understands a

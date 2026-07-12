@@ -95,6 +95,15 @@ export interface GitService {
   mergePr(project: Project, prNumber: number): Promise<void>;
   revertMerge(project: Project, prNumber: number): Promise<void>;
   /**
+   * Close a terminally-failed task's open PR (with a comment explaining why)
+   * and delete its remote branch, so failed attempts don't pile dead orc/*
+   * branches and open PRs on the target repo forever. Merged PRs already
+   * clean up via `gh pr merge --delete-branch`; this covers the failure
+   * path. Strictly best-effort — cleanup must never turn a handled failure
+   * into a crash.
+   */
+  cleanupTaskBranch(project: Project, task: Task): Promise<void>;
+  /**
    * Append a structured entry to CHANGELOG.md and push it straight to the
    * default branch. Called right after a successful merge. Deliberately
    * plain code, not an AI agent call — a changelog line from a task's own

@@ -27,6 +27,7 @@ export type ValidatorCostSink = (
   costUsd: number,
   tokensIn: number,
   tokensOut: number,
+  tokensCached?: number,
 ) => void;
 
 export class ValidatorImpl implements Validator {
@@ -71,13 +72,17 @@ export class ValidatorImpl implements Validator {
       onLog,
     });
 
-    if (result.costUsd > 0) {
+    // Reported when there's anything to bill: a positive CLI-reported cost
+    // OR token counts that manual per-model pricing could turn into one (an
+    // opencode CLI with a stale/zero price still reports real tokens).
+    if (result.costUsd > 0 || result.tokensIn + result.tokensOut > 0) {
       this.onCost?.(
         validatorModel,
         task.id,
         result.costUsd,
         result.tokensIn,
         result.tokensOut,
+        result.tokensCached ?? 0,
       );
     }
 

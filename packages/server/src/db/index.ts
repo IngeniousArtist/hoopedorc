@@ -51,6 +51,13 @@ export function initDb(path: string = ENV.dbPath): Db {
     // planning_* scratch fields — persisted so a reload mid-planning keeps
     // the operator's edits, cleared at /plan/commit like planning_prd.
     "ALTER TABLE projects ADD COLUMN planning_agents_md TEXT",
+    // One-line human-readable terminal outcome ("Merged PR #4" / "Gates
+    // kept failing: tests") — set by the orchestrator, shown on Audit cards.
+    "ALTER TABLE tasks ADD COLUMN status_reason TEXT",
+    // Cached-input token counts, for manual per-model pricing (fresh vs
+    // cached input bill at different rates).
+    "ALTER TABLE runs ADD COLUMN tokens_cached INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE costs ADD COLUMN tokens_cached INTEGER NOT NULL DEFAULT 0",
   ]) {
     try { db.exec(col); } catch { /* column already exists */ }
   }

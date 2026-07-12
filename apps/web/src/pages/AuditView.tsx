@@ -18,7 +18,34 @@ const KIND_ICON: Record<string, string> = {
   task_added: "➕",
   stopped: "⏹️",
   run_summary: "🏁",
+  model_trouble: "🚧",
 };
+
+/** One human-readable line under an entry's summary: the engine's terminal
+ *  statusReason for task_done/task_failed, or a message/detail string on
+ *  other kinds — "what worked and why it failed" without opening logs. */
+function entryDescription(e: AuditEntry): string | null {
+  const d = e.detail;
+  if (!d) return null;
+  if (typeof d.reason === "string" && d.reason) return d.reason;
+  if (typeof d.message === "string" && d.message) return d.message;
+  return null;
+}
+
+/** Compact "grok · 2 attempts · $0.0134" facts line for task entries. */
+function entryFacts(e: AuditEntry): string | null {
+  const d = e.detail;
+  if (!d || (e.kind !== "task_done" && e.kind !== "task_failed")) return null;
+  const parts: string[] = [];
+  if (typeof d.model === "string" && d.model) parts.push(d.model);
+  if (typeof d.attempts === "number") {
+    parts.push(`${d.attempts} attempt${d.attempts === 1 ? "" : "s"}`);
+  }
+  if (typeof d.costUsd === "number" && d.costUsd > 0) {
+    parts.push(`$${d.costUsd.toFixed(4)}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
 
 function fmtDuration(ms: number): string {
   const totalSeconds = Math.round(ms / 1000);
@@ -161,11 +188,19 @@ export function AuditView({ projectId }: { projectId: string }) {
                   {new Date(e.ts).toLocaleString()}
                 </span>
               </div>
+              {entryDescription(e) && (
+                <p className="mt-1 text-[11px] leading-snug text-neutral-400">
+                  {entryDescription(e)}
+                </p>
+              )}
               <div className="mt-1 flex items-center gap-2 text-[11px] text-neutral-400">
                 <span className="rounded bg-neutral-800 px-1.5 py-0.5">
                   {e.kind}
                 </span>
                 <span>{e.actor}</span>
+                {entryFacts(e) && (
+                  <span className="text-neutral-500">{entryFacts(e)}</span>
+                )}
               </div>
               {e.detail?.reasons != null &&
                 Array.isArray(e.detail.reasons) &&

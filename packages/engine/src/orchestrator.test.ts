@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { AgentAdapter, AgentRunResult } from "@orc/adapters";
 import type { GateResult, MergeDecision, Project, Run, Settings, Task } from "@orc/types";
-import { Orchestrator, isAuthOrSecretFile, scopesOverlap } from "./orchestrator.js";
+import { Orchestrator, buildFallbackChain, isAuthOrSecretFile, scopesOverlap } from "./orchestrator.js";
 import type { GitService, SchedulerDeps, WorktreeManager } from "./index.js";
 
 function settings(): Settings {
@@ -81,6 +81,7 @@ function fakeDeps(
       async appendChangelogEntry() {},
       async syncBranchWithMain() { return "clean" as const; },
       async waitForChecks() { return "none" as const; },
+      async cleanupTaskBranch() {},
       ...gitOver,
     },
     gates: { async run() { return GOOD_GATE; } },
@@ -1746,4 +1747,85 @@ test("F41: holdWhileAwaitingApproval off (default) leaves dispatch behavior unaf
   assert.equal(t1.status, "done");
   assert.equal(t2.status, "done");
   assert.equal(merged.length, 2);
+});
+
+// ── Docs-runs-last + explicit fallbacks + failed-branch cleanup ──
+
+test("readyTasks: a docs task waits for terminal deps and runs once at least one is done", () => {
+  const orch = new Orchestrator(fakeDeps({}, []));
+  const scaffold = task("t1", [], { status: "done" });
+  const feature = task("t2", [], { status: "failed" });
+  const docs = task("docs", ["t1", "t2"], { status: "backlog", role: "docs" });
+
+  // One dep failed, one done — a docs task still runs (documents what got
+  // built); a normal task with the same deps stays blocked.
+  const normal = task("t3", ["t1", "t2"], { status: "backlog" });
+  const ready = orch.readyTasks([scaffold, feature, docs, normal]);
+  assert.deepEqual(ready.map((t) => t.id), ["docs"]);
+});
+
+test("readyTasks: a docs task stays blocked while a dep is still running, or when every dep failed", () => {
+  const orch = new Orchestrator(fakeDeps({}, []));
+  const running = task("t1", [], { status: "in_progress" });
+  const docs = task("docs", ["t1"], { status: "backlog", role: "docs" });
+  assert.equal(orch.readyTasks([running, docs]).length, 0);
+
+  const failed = task("t1", [], { status: "failed" });
+  assert.equal(
+    orch.readyTasks([failed, docs]).length,
+    0,
+    "nothing landed — there is nothing for a docs task to document",
+  );
+});
+
+test("buildFallbackChain: explicit routing.fallbacks wins over difficulty tiers, in order, deduped", () => {
+  const routing = {
+    ...settings().routing,
+    fallbacks: ["deepseek-pro", "deepseek-flash"],
+  };
+  assert.deepEqual(
+    buildFallbackChain("glm", "medium", routing),
+    ["glm", "deepseek-pro", "deepseek-flash"],
+  );
+  // The assigned model never repeats in its own chain.
+  assert.deepEqual(
+    buildFallbackChain("deepseek-pro", "medium", routing),
+    ["deepseek-pro", "deepseek-flash"],
+  );
+  // Unset/empty falls back to the legacy tier escalation.
+  assert.deepEqual(
+    buildFallbackChain("deepseek-flash", "medium", settings().routing),
+    ["deepseek-flash", "deepseek-pro"],
+  );
+});
+
+test("a terminally-failed task gets its remote branch/PR cleaned up; a merged one does not (gh already did it)", async () => {
+  const cleaned: string[] = [];
+  const merged: number[] = [];
+  const rejectGate: GateResult = {
+    ...GOOD_GATE, tests: false, details: { tests: "1 failing" },
+  };
+  const deps = fakeDeps(
+    {
+      gates: { async run() { return rejectGate; } },
+      git: { async cleanupTaskBranch(_p, t) { cleaned.push(t.id); } },
+    },
+    merged,
+  );
+  const bad = task("t1", [], { maxAttempts: 1 });
+  await new Orchestrator(deps).start(PROJECT, [bad]);
+  assert.equal(bad.status, "failed");
+  assert.ok(bad.statusReason && /Gates kept failing/.test(bad.statusReason), `got: ${bad.statusReason}`);
+  assert.deepEqual(cleaned, ["t1"], "failed task's branch/PR cleaned up");
+
+  const cleaned2: string[] = [];
+  const deps2 = fakeDeps(
+    { git: { async cleanupTaskBranch(_p, t) { cleaned2.push(t.id); } } },
+    merged,
+  );
+  const good = task("t2");
+  await new Orchestrator(deps2).start(PROJECT, [good]);
+  assert.equal(good.status, "done");
+  assert.ok(good.statusReason && /Merged PR #/.test(good.statusReason), `got: ${good.statusReason}`);
+  assert.deepEqual(cleaned2, [], "merged task's branch is gh pr merge --delete-branch's job");
 });

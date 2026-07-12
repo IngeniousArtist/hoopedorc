@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   pr_number           INTEGER,
   attempts            INTEGER NOT NULL DEFAULT 0,
   max_attempts        INTEGER NOT NULL DEFAULT 3,
+  status_reason       TEXT,    -- one-line human-readable terminal outcome
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL
 );
@@ -54,9 +55,10 @@ CREATE TABLE IF NOT EXISTS runs (
   started_at  TEXT NOT NULL,
   ended_at    TEXT,
   exit_reason TEXT,
-  cost_usd    REAL NOT NULL DEFAULT 0,
-  tokens_in   INTEGER NOT NULL DEFAULT 0,
-  tokens_out  INTEGER NOT NULL DEFAULT 0
+  cost_usd      REAL NOT NULL DEFAULT 0,
+  tokens_in     INTEGER NOT NULL DEFAULT 0,
+  tokens_out    INTEGER NOT NULL DEFAULT 0,
+  tokens_cached INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id);
 
@@ -92,10 +94,11 @@ CREATE TABLE IF NOT EXISTS costs (
   model      TEXT NOT NULL,
   task_id    TEXT,
   run_id     TEXT,
-  cost_usd   REAL NOT NULL,
-  tokens_in  INTEGER NOT NULL,
-  tokens_out INTEGER NOT NULL,
-  ts         TEXT NOT NULL
+  cost_usd      REAL NOT NULL,
+  tokens_in     INTEGER NOT NULL,
+  tokens_out    INTEGER NOT NULL,
+  tokens_cached INTEGER NOT NULL DEFAULT 0,
+  ts            TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_costs_project ON costs(project_id);
 

@@ -55,9 +55,18 @@ export interface ModelConfig {
   codexModel?: string;
   roles: Role[];
   enabled: boolean;
-  /** Cost accounting + budget caps (USD). */
-  costPer1kInputUsd?: number;
-  costPer1kOutputUsd?: number;
+  /**
+   * Manual pricing overrides (USD per 1M tokens), editable in Settings.
+   * When ANY of the three is set, every recorded run/validator cost for this
+   * model is recomputed from its token counts using these prices (unset
+   * fields count as $0) instead of trusting the CLI's own reported cost —
+   * the CLIs' built-in pricing tables (especially OpenCode's) go stale and
+   * then every budget/analytics number downstream is wrong. Leave all three
+   * unset to keep the CLI-reported cost.
+   */
+  costPerMInputUsd?: number;
+  costPerMCachedInputUsd?: number;
+  costPerMOutputUsd?: number;
   monthlyBudgetUsd?: number;
   /** How many tasks this model may run at once. */
   maxConcurrent: number;
@@ -128,6 +137,14 @@ export interface Task {
   prNumber?: number;
   attempts: number;
   maxAttempts: number;
+  /**
+   * One human-readable line explaining the task's latest terminal outcome —
+   * "Merged PR #4" / "Gates kept failing after 3 attempts: tests" / "Stopped
+   * by user". Set by the orchestrator at every done/failed/blocked
+   * transition; surfaced on the Audit page and task drawer so "why did this
+   * fail" doesn't require digging through logs.
+   */
+  statusReason?: string;
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
 }
@@ -285,6 +302,9 @@ export interface Run {
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
+  /** Cached/read-from-cache input tokens (billed cheaper than fresh input).
+   *  Optional — older rows and runners that don't report it read as 0. */
+  tokensCached?: number;
 }
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -384,6 +404,8 @@ export interface CostRecord {
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
+  /** Cached input tokens — see Run.tokensCached. Optional on older rows. */
+  tokensCached?: number;
   ts: string;
 }
 
@@ -448,6 +470,14 @@ export interface RoutingPolicy {
   byRole: Partial<Record<Role, ModelId>>;
   /** Reviewer/merger by difficulty. Must differ from the author at run time. */
   validatorByDifficulty: Record<Difficulty, ModelId>;
+  /**
+   * Explicit fallback escalation chain, tried in order when a task's
+   * assigned model keeps failing (author errors, gates, rate limits). The
+   * Settings UI exposes two ordered slots ("Fallback 1" / "Fallback 2").
+   * Unset/empty => the legacy behavior: escalate through the byDifficulty
+   * tiers (easy → medium → hard, wrapping down as a last resort).
+   */
+  fallbacks?: ModelId[];
 }
 
 /**
