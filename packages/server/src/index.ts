@@ -250,19 +250,16 @@ async function resolvePlannerCwd(project: Project): Promise<string> {
 /**
  * F37: resolve `routing.planner`'s `ModelConfig` to a `PlannerModel` — which
  * CLI + model id `planner.ts` should actually shell out to, instead of
- * hardcoding `claude`. `tier` only matters for the claude-code path: it picks
- * between the two env aliases (PLANNER_CHAT_MODEL / PLANNER_DECONSTRUCT_MODEL),
- * which both default to the same model (Sonnet) — deconstruct no longer
- * upgrades to Opus by default, since a Pro subscription can't run it (see
- * config.ts). Codex likewise uses the same `cfg.codexModel` for both
- * tiers. opencode-runner planners throw — conversational planning
- * quality is the point of the two subscription CLIs, not something to
- * silently degrade; callers turn this into an explicit 400.
+ * hardcoding `claude`. ONE model does both planning tiers (chat turns and
+ * the final deconstruct): whatever Settings → Routing → Planner points at,
+ * using that config's `claudeModel`/`codexModel` field — so the dashboard's
+ * model settings are the single source of truth for which model plans, with
+ * `ENV.plannerModel` only as a fallback when `claudeModel` is unset.
+ * opencode-runner planners throw — conversational planning quality is the
+ * point of the two subscription CLIs, not something to silently degrade;
+ * callers turn this into an explicit 400.
  */
-function resolvePlannerModel(
-  settings: SettingsType,
-  tier: "chat" | "deconstruct",
-): PlannerModel {
+function resolvePlannerModel(settings: SettingsType): PlannerModel {
   const cfg = settings.models.find((m) => m.id === settings.routing.planner);
   if (cfg?.runner === "codex") return { runner: "codex", model: cfg.codexModel };
   if (cfg?.runner === "opencode") {
@@ -271,10 +268,7 @@ function resolvePlannerModel(
         `planning — route Settings → Routing → Planner to a claude-code or codex model instead`,
     );
   }
-  return {
-    runner: "claude-code",
-    model: tier === "chat" ? ENV.plannerChatModel : ENV.plannerDeconstructModel,
-  };
+  return { runner: "claude-code", model: cfg?.claudeModel ?? ENV.plannerModel };
 }
 
 /** Display label for the plan-session markdown's "Planner model:" line —
@@ -1329,7 +1323,7 @@ async function main() {
       // opencode planner falls into this same try/catch's stub fallback below
       // rather than a special-cased error — this legacy single-shot endpoint
       // never hard-fails, by design.
-      const plannerModel = resolvePlannerModel(settings, "deconstruct");
+      const plannerModel = resolvePlannerModel(settings);
       const cwd = await resolvePlannerCwd(project);
       const plan = await runPlanner(goal, project.name, cwd, plannerModel);
       prdMarkdown = plan.prdMarkdown;
@@ -1406,7 +1400,7 @@ async function main() {
     // surface as an opaque 502 from deep inside the try block below.
     let plannerModel: PlannerModel;
     try {
-      plannerModel = resolvePlannerModel(repo.getSettings(db) ?? defaultSettings(), "chat");
+      plannerModel = resolvePlannerModel(repo.getSettings(db) ?? defaultSettings());
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -1464,7 +1458,7 @@ async function main() {
     // F37: same up-front rejection as /plan/chat above.
     let plannerModel: PlannerModel;
     try {
-      plannerModel = resolvePlannerModel(settings, "deconstruct");
+      plannerModel = resolvePlannerModel(settings);
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -1625,7 +1619,7 @@ async function main() {
     // commit over it.
     let committedPlannerLabel = "planner";
     try {
-      committedPlannerLabel = plannerModelLabel(resolvePlannerModel(settings, "chat"));
+      committedPlannerLabel = plannerModelLabel(resolvePlannerModel(settings));
     } catch {
       /* leave the generic fallback */
     }

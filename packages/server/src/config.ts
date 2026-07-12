@@ -11,8 +11,9 @@ export const DEFAULT_MODELS: ModelConfig[] = [
     id: "claude",
     displayName: "Claude (planner / reviewer)",
     runner: "claude-code",
-    // Default the Claude runner to Sonnet — the same alias both planner
-    // tiers use (ENV.plannerChatModel / plannerDeconstructModel).
+    // The planner's model: when this config is routed as planner, this alias
+    // drives BOTH planning chat and deconstruction. Edit it (or the Planner
+    // routing) in the dashboard to switch planning to a different model.
     claudeModel: "sonnet",
     roles: ["planner", "validator"],
     enabled: true,
@@ -186,16 +187,12 @@ export const ENV = {
   // (and run `opencode serve`) only to centralize sessions on one server.
   opencodeBaseUrl: process.env.OPENCODE_BASE_URL ?? "",
   mock: process.env.MOCK === "1",
-  // Planning models (claude --model aliases). Both the conversational chat
-  // turns and the one-shot deconstruction of the agreed plan into the task
-  // DAG run on the SAME planner model (default Sonnet). Deconstruct used to
-  // default to Opus, but a Claude Pro subscription doesn't include Opus, so
-  // chat would work while every deconstruct call failed — planning died at
-  // the approve step on any box logged in with Pro. Deconstruct now follows
-  // the chat model unless PLANNER_DECONSTRUCT_MODEL explicitly overrides it.
-  plannerChatModel: process.env.PLANNER_CHAT_MODEL ?? "sonnet",
-  plannerDeconstructModel:
-    process.env.PLANNER_DECONSTRUCT_MODEL ?? process.env.PLANNER_CHAT_MODEL ?? "sonnet",
+  // Fallback planner model (claude --model alias). The planner — both the
+  // conversational chat turns AND the one-shot deconstruction of the agreed
+  // plan into the task DAG — runs on whatever model Settings → Routing →
+  // Planner points at (that ModelConfig's claudeModel field, editable in the
+  // dashboard). This env fallback only applies when that field is unset.
+  plannerModel: process.env.PLANNER_MODEL ?? "sonnet",
   // Where per-project repo clones + their task worktrees live. MUST be outside
   // the orchestrator's own working tree: each worktree is `${localPath}-wt-<id>`,
   // and coding agents (opencode/claude) resolve their project root by walking up

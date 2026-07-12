@@ -9,11 +9,10 @@ import type { Difficulty, PlanChatMessage, Role } from "@orc/types";
 // Planning runs headless, through whichever CLI `routing.planner`'s model
 // resolves to (F37):
 //   - claude-code -> `claude -p`. Chat turns and the final deconstruction
-//     (plan -> task DAG) both run on the same planner model (default
-//     Sonnet); the tiers can still be split via the PLANNER_CHAT_MODEL /
-//     PLANNER_DECONSTRUCT_MODEL envs. (Deconstruct used to default to Opus,
-//     which a Pro subscription can't run — see config.ts.)
-//   - codex -> `codex exec`, one model for both tiers; deconstruct
+//     (plan -> task DAG) both run on the routed planner ModelConfig's
+//     claudeModel (default "sonnet") — the dashboard's model settings are
+//     the single source of truth for which model plans.
+//   - codex -> `codex exec`, same single-model rule; deconstruct
 //     uses `--output-schema` so the CLI enforces the task-DAG JSON shape
 //     natively instead of relying on the lenient markdown-fence extraction
 //     the claude path still needs.
