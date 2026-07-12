@@ -384,6 +384,36 @@ export class GitServiceImpl implements GitService {
     }
   }
 
+  async cleanupTaskBranch(project: Project, task: Task): Promise<void> {
+    // Closing the PR first gets the explanatory comment onto it; deleting
+    // the head branch alone would auto-close the PR but silently.
+    if (task.prNumber != null) {
+      try {
+        await gh([
+          "pr",
+          "close",
+          String(task.prNumber),
+          "--repo",
+          project.repoUrl,
+          "--comment",
+          `Closed by Hoopedorc: task failed. ${task.statusReason ?? ""}`.trim(),
+          "--delete-branch",
+        ]);
+      } catch {
+        /* already closed/merged, or transient API error — best effort */
+      }
+    }
+    // Belt and suspenders: a branch can exist with no PR (push succeeded but
+    // PR creation failed), and `--delete-branch` above can itself fail.
+    if (task.branch) {
+      try {
+        await git(["push", "origin", "--delete", task.branch], project.localPath);
+      } catch {
+        /* branch already gone — the common case */
+      }
+    }
+  }
+
   async revertMerge(project: Project, prNumber: number): Promise<void> {
     const mergeCommit = (
       await gh(

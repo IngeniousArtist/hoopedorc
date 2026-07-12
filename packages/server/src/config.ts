@@ -131,6 +131,10 @@ export function defaultSettings(): Settings {
         medium: "claude",
         hard: "claude",
       },
+      // Explicit fallback escalation (Settings → Routing → Fallback 1/2);
+      // matches what the old implicit tier-escalation produced for a
+      // medium-difficulty task, so upgrading changes nothing by default.
+      fallbacks: ["deepseek-pro", "glm"],
     },
     mergePolicy: "hard_gate_flag_risky",
     riskyChangeRules: {

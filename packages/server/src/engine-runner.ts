@@ -13,6 +13,7 @@ import type { Db } from "./db/index";
 import * as repo from "./db/repo";
 import type { WsHub } from "./ws-hub";
 import { checkBudget, checkBudgetThresholds, checkModelQuota } from "./budget";
+import { manualCostUsd } from "./pricing";
 import type { ServerNotifier } from "./telegram";
 
 function fmtDurationMs(ms: number): string {
@@ -252,14 +253,21 @@ export class EngineRunner {
     const validator = new ValidatorImpl(
       adapterFor,
       settings,
-      (model, taskId, costUsd, tokensIn, tokensOut) => {
+      (model, taskId, costUsd, tokensIn, tokensOut, tokensCached = 0) => {
+        // Manual per-model pricing (Settings) overrides the CLI-reported
+        // cost — the CLIs' own pricing tables go stale (see pricing.ts).
+        const cfg = settings.models.find((m) => m.id === model);
+        const manual = manualCostUsd(cfg, tokensIn, tokensOut, tokensCached);
+        const finalCost = manual ?? costUsd;
+        if (finalCost <= 0) return; // nothing billable to record
         const cost = repo.createCost(this.db, {
           projectId: project.id,
           model,
           taskId,
-          costUsd,
+          costUsd: finalCost,
           tokensIn,
           tokensOut,
+          tokensCached,
           ts: new Date().toISOString(),
         });
         this.hub.broadcast({ type: "cost.updated", payload: cost });
@@ -308,6 +316,7 @@ export class EngineRunner {
             branch: t.branch,
             worktreePath: t.worktreePath,
             prNumber: t.prNumber,
+            statusReason: t.statusReason,
           });
           this.hub.broadcast({
             type: "task.updated",
@@ -351,12 +360,27 @@ export class EngineRunner {
                 kind: t.status === "done" ? "task_done" : "task_failed",
                 actor: "engine",
                 summary: `${t.title} → ${t.status}${t.prNumber ? ` (PR #${t.prNumber})` : ""}`,
-                detail: { attempts: t.attempts, prNumber: t.prNumber, costUsd },
+                // `reason` is the one-line "what worked / why it failed"
+                // AuditView renders under the card.
+                detail: {
+                  attempts: t.attempts,
+                  prNumber: t.prNumber,
+                  costUsd,
+                  model: t.assignedModel,
+                  reason: t.statusReason,
+                },
               });
             }
           }
         },
         onRunUpdated: (r) => {
+          // Manual per-model pricing (Settings) overrides the CLI-reported
+          // cost — recompute from tokens before anything persists or alerts
+          // on it (see pricing.ts).
+          const cfg = settings.models.find((m) => m.id === r.model);
+          const manual = manualCostUsd(cfg, r.tokensIn, r.tokensOut, r.tokensCached ?? 0);
+          if (manual != null) r = { ...r, costUsd: manual };
+
           if (repo.getRun(this.db, r.id)) repo.updateRun(this.db, r.id, r);
           else repo.createRun(this.db, r);
           if (r.exitReason === "rate_limited") {
@@ -375,6 +399,7 @@ export class EngineRunner {
               costUsd: r.costUsd,
               tokensIn: r.tokensIn,
               tokensOut: r.tokensOut,
+              tokensCached: r.tokensCached ?? 0,
               ts: new Date().toISOString(),
             });
             this.hub.broadcast({ type: "cost.updated", payload: cost });

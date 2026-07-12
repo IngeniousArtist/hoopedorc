@@ -243,6 +243,41 @@ export function ModelsEditor({
 
             <div>
               <label className="mb-1 block text-[10px] uppercase text-neutral-400">
+                Pricing (optional, USD per 1M tokens) — when any is set,
+                recorded costs are recomputed from real token counts using
+                these prices instead of trusting the CLI's own (possibly
+                stale) pricing table
+              </label>
+              <div className="grid grid-cols-3 gap-3">
+                {(
+                  [
+                    ["costPerMInputUsd", "input $/1M"],
+                    ["costPerMCachedInputUsd", "cached input $/1M"],
+                    ["costPerMOutputUsd", "output $/1M"],
+                  ] as const
+                ).map(([field, placeholder]) => (
+                  <input
+                    key={field}
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={m[field] ?? ""}
+                    onChange={(e) =>
+                      patch(idx, {
+                        [field]: e.target.value
+                          ? parseFloat(e.target.value)
+                          : undefined,
+                      })
+                    }
+                    placeholder={placeholder}
+                    className={inputCls}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                 Subscription quota (optional) — route around a subscription's
                 usage window before burning attempts, instead of reacting
                 after a rate-limit failure

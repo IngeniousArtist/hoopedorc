@@ -91,18 +91,39 @@ export function isAuthOrSecretFile(path: string): boolean {
  *  keep the generated project-context file current. */
 const DOCS_ALLOWED_SCOPE = ["CHANGELOG.md", "README.md", "AGENTS.md", "docs/**"];
 
+/** Names of the objective gates that failed, for one-line status reasons. */
+function failedGateNames(gate: GateResult): string[] {
+  const names: string[] = [];
+  if (!gate.typecheck) names.push("typecheck");
+  if (!gate.lint) names.push("lint");
+  if (!gate.build) names.push("build");
+  if (!gate.tests) names.push("tests");
+  if (!gate.noConflicts) names.push("conflicts with main");
+  return names;
+}
+
 /**
- * Build the auto-escalation fallback chain for a task. Starts with the
- * task's assigned model, then escalates through difficulty tiers (easy →
- * medium → hard) using the routing byDifficulty table. Duplicates are
- * skipped so the chain never retries the same model twice.
+ * Build the auto-escalation fallback chain for a task, starting with the
+ * task's assigned model. When `routing.fallbacks` is set (the Settings UI's
+ * explicit "Fallback 1"/"Fallback 2" slots) those are used in order;
+ * otherwise it escalates through the difficulty tiers (easy → medium →
+ * hard) using the routing byDifficulty table. Duplicates are skipped so the
+ * chain never retries the same model twice. Exported for unit tests.
  */
-function buildFallbackChain(
+export function buildFallbackChain(
   assignedModel: ModelId,
   difficulty: Difficulty,
   routing: RoutingPolicy,
 ): ModelId[] {
   const chain: ModelId[] = [assignedModel];
+
+  if (routing.fallbacks && routing.fallbacks.length > 0) {
+    for (const m of routing.fallbacks) {
+      if (m && !chain.includes(m)) chain.push(m);
+    }
+    return chain;
+  }
+
   const tiers: Difficulty[] = ["easy", "medium", "hard"];
   const start = tiers.indexOf(difficulty);
   // Escalate upward first (cheaper -> stronger), same as before. A task
@@ -253,11 +274,26 @@ export class Orchestrator implements Scheduler {
     const done = new Set(
       tasks.filter((t) => t.status === "done").map((t) => t.id),
     );
-    return tasks.filter(
-      (t) =>
-        (t.status === "backlog" || t.status === "ready") &&
-        t.dependsOn.every((dep) => done.has(dep)),
+    const terminal = new Set(
+      tasks
+        .filter((t) => t.status === "done" || t.status === "failed")
+        .map((t) => t.id),
     );
+    return tasks.filter((t) => {
+      if (t.status !== "backlog" && t.status !== "ready") return false;
+      // A docs task documents whatever actually got built: it waits for
+      // every dependency to reach a terminal state (done OR failed) and
+      // then runs as long as at least one dependency landed. Requiring
+      // all-done here would mean one flaky failed task = no documentation
+      // at all, with the docs task stuck in backlog forever.
+      if (t.role === "docs" && t.dependsOn.length > 0) {
+        return (
+          t.dependsOn.every((dep) => terminal.has(dep)) &&
+          t.dependsOn.some((dep) => done.has(dep))
+        );
+      }
+      return t.dependsOn.every((dep) => done.has(dep));
+    });
   }
 
   async start(project: Project, tasks: Task[]): Promise<void> {
@@ -589,6 +625,7 @@ export class Orchestrator implements Scheduler {
   private bailIfStopRequested(task: Task): boolean {
     if (!this.stopRequested.has(task.id)) return false;
     task.status = "blocked";
+    task.statusReason = "Stopped by user";
     this.emit("warn", "engine", "Stopped by user", task.id);
     this.deps.events.onTaskUpdated(task);
     return true;
@@ -669,6 +706,9 @@ export class Orchestrator implements Scheduler {
     this.emit("info", "engine", `Starting: ${task.title}`, task.id);
 
     task.status = "in_progress";
+    // A requeued/retried task carries its previous terminal outcome here —
+    // clear it so intermediate updates don't keep re-persisting a stale one.
+    task.statusReason = undefined;
     this.deps.events.onTaskUpdated(task);
 
     // Build the fallback escalation chain once per task execution.
@@ -855,6 +895,7 @@ export class Orchestrator implements Scheduler {
             `No fallback model left after ${authorResult.exitReason}`,
           );
           task.status = "failed";
+          task.statusReason = `Author run kept failing (${authorResult.exitReason}) and no fallback model was left (last tried: ${currentModel})`;
           this.deps.events.onTaskUpdated(task);
           return;
         }
@@ -918,6 +959,7 @@ export class Orchestrator implements Scheduler {
             "No fallback model left after no changes were produced",
           );
           task.status = "failed";
+          task.statusReason = `Every attempt produced no file changes (models ran out of steps or wrote outside the worktree; last tried: ${currentModel})`;
           this.deps.events.onTaskUpdated(task);
           return;
         }
@@ -1010,6 +1052,7 @@ export class Orchestrator implements Scheduler {
             "No fallback model left after gates kept failing",
           );
           task.status = "failed";
+          task.statusReason = `Gates kept failing after ${task.attempts} attempts (${failedGateNames(gateResult).join(", ")}) — no fallback model left`;
           this.deps.events.onTaskUpdated(task);
           return;
         }
@@ -1083,6 +1126,8 @@ export class Orchestrator implements Scheduler {
             "No fallback model left avoiding a validator/author routing collision",
           );
           task.status = "failed";
+          task.statusReason =
+            "Author and validator resolve to the same model for this task — fix routing in Settings (byDifficulty/byRole vs validatorByDifficulty)";
           this.deps.events.onTaskUpdated(task);
           return;
         }
@@ -1109,6 +1154,7 @@ export class Orchestrator implements Scheduler {
             break;
           }
           task.status = "failed";
+          task.statusReason = `Validator still requested changes after ${task.attempts} attempts and you rejected it${decision.reasons[0] ? `: ${decision.reasons[0]}` : ""}`;
           this.deps.events.onTaskUpdated(task);
           return;
         }
@@ -1124,6 +1170,7 @@ export class Orchestrator implements Scheduler {
             break;
           }
           task.status = "failed";
+          task.statusReason = `Escalated for review and rejected${decision.reasons[0] ? `: ${decision.reasons[0]}` : ""}`;
           this.deps.events.onTaskUpdated(task);
           return;
         }
@@ -1144,6 +1191,7 @@ export class Orchestrator implements Scheduler {
       const message = err instanceof Error ? err.message : String(err);
       this.emit("error", "engine", `Fatal: ${message}`, task.id);
       task.status = "failed";
+      task.statusReason = `Fatal error: ${message}`;
       this.deps.events.onTaskUpdated(task);
     } finally {
       this.stopRequested.delete(task.id);
@@ -1152,6 +1200,16 @@ export class Orchestrator implements Scheduler {
         await this.deps.worktrees.remove(project, task);
       } catch {
         /* best effort */
+      }
+      // A terminally-failed task's remote branch + open PR would otherwise
+      // sit on the target repo forever (merged tasks already clean up via
+      // `gh pr merge --delete-branch`).
+      if (task.status === "failed") {
+        try {
+          await this.deps.git.cleanupTaskBranch(project, task);
+        } catch {
+          /* best effort */
+        }
       }
     }
   }
@@ -1181,6 +1239,7 @@ export class Orchestrator implements Scheduler {
         task.id,
       );
       task.status = "failed";
+      task.statusReason = "No PR was ever opened — the author never produced a pushable change";
       this.deps.events.onTaskUpdated(task);
       return;
     }
@@ -1237,6 +1296,7 @@ export class Orchestrator implements Scheduler {
       });
       void choice;
       task.status = "failed";
+      task.statusReason = `Repeatedly conflicted with ${project.defaultBranch} (sibling tasks changed the same files) — needs manual resolution`;
       this.deps.events.onTaskUpdated(task);
       return;
     }
@@ -1284,9 +1344,11 @@ export class Orchestrator implements Scheduler {
           await this.deps.git.mergePr(project, task.prNumber!);
           await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
           task.status = "done";
+          task.statusReason = `Merged PR #${task.prNumber} after you approved it despite ${reason.toLowerCase()}`;
           this.emit("info", "engine", `Merged: ${task.title}`, task.id);
         } else {
           task.status = "failed";
+          task.statusReason = `${reason} and you rejected the merge`;
           this.emit("warn", "engine", `Rejected: ${task.title}`, task.id);
         }
         this.deps.events.onTaskUpdated(task);
@@ -1299,6 +1361,7 @@ export class Orchestrator implements Scheduler {
       await this.deps.git.mergePr(project, task.prNumber!);
       await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
       task.status = "done";
+      task.statusReason = `Merged PR #${task.prNumber} after ${task.attempts} attempt${task.attempts === 1 ? "" : "s"} — gates and validator passed`;
       this.emit("info", "engine", `Merged: ${task.title}`, task.id);
     } else {
       this.emit(
@@ -1317,9 +1380,11 @@ export class Orchestrator implements Scheduler {
         await this.deps.git.mergePr(project, task.prNumber!);
         await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
         task.status = "done";
+        task.statusReason = `Merged PR #${task.prNumber} after you approved a risky/out-of-scope change`;
         this.emit("info", "engine", `Merged: ${task.title}`, task.id);
       } else {
         task.status = "failed";
+        task.statusReason = "Flagged as risky (out-of-scope edits or a risky change class) and you rejected the merge";
         this.emit("warn", "engine", `Rejected: ${task.title}`, task.id);
       }
     }
@@ -1380,6 +1445,7 @@ export class Orchestrator implements Scheduler {
         if (this.bailIfStopRequested(task)) return;
         if (choice !== "approve_anyway") {
           task.status = "failed";
+          task.statusReason = `Validator still requested changes and you rejected it${decision.reasons[0] ? `: ${decision.reasons[0]}` : ""}`;
           this.deps.events.onTaskUpdated(task);
           return;
         }
@@ -1393,6 +1459,7 @@ export class Orchestrator implements Scheduler {
         if (this.bailIfStopRequested(task)) return;
         if (choice !== "approve") {
           task.status = "failed";
+          task.statusReason = `Escalated for review and rejected${decision.reasons[0] ? `: ${decision.reasons[0]}` : ""}`;
           this.deps.events.onTaskUpdated(task);
           return;
         }
@@ -1404,6 +1471,7 @@ export class Orchestrator implements Scheduler {
       const message = err instanceof Error ? err.message : String(err);
       this.emit("error", "engine", `Fatal: ${message}`, task.id);
       task.status = "failed";
+      task.statusReason = `Fatal error: ${message}`;
       this.deps.events.onTaskUpdated(task);
     } finally {
       this.stopRequested.delete(task.id);
@@ -1411,6 +1479,14 @@ export class Orchestrator implements Scheduler {
         await this.deps.worktrees.remove(project, task);
       } catch {
         /* best effort */
+      }
+      // Same failed-branch cleanup as executeTask's finally.
+      if (task.status === "failed") {
+        try {
+          await this.deps.git.cleanupTaskBranch(project, task);
+        } catch {
+          /* best effort */
+        }
       }
     }
   }
@@ -1686,6 +1762,7 @@ export class Orchestrator implements Scheduler {
       costUsd: result?.costUsd ?? 0,
       tokensIn: result?.tokensIn ?? 0,
       tokensOut: result?.tokensOut ?? 0,
+      tokensCached: result?.tokensCached ?? 0,
     };
     this.deps.events.onRunUpdated(run);
   }

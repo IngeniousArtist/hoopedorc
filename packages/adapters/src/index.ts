@@ -37,8 +37,14 @@ export interface AgentRunResult {
   ok: boolean;
   exitReason: "completed" | "error" | "killed" | "stuck" | "rate_limited";
   costUsd: number;
+  /** NON-cached input tokens. Each adapter normalizes to this convention
+   *  (Codex reports input inclusive of cached; Claude/OpenCode report cache
+   *  reads separately) so manual per-model pricing can bill fresh vs cached
+   *  input at their different rates. */
   tokensIn: number;
   tokensOut: number;
+  /** Cached (read-from-cache) input tokens; 0 when the CLI doesn't report them. */
+  tokensCached?: number;
   /** The model's final text output (used by the Validator). */
   summary?: string;
 }
@@ -131,6 +137,7 @@ export class ClaudeAdapter implements AgentAdapter {
       let costUsd = 0;
       let tokensIn = 0;
       let tokensOut = 0;
+      let tokensCached = 0;
       let assistantText = "";
       let resultText = "";
       let lineBuf = "";
@@ -150,11 +157,22 @@ export class ClaudeAdapter implements AgentAdapter {
           costUsd =
             (obj.total_cost_usd as number) ?? (obj.cost_usd as number) ?? costUsd;
           const usage = obj.usage as
-            | { input_tokens?: number; output_tokens?: number }
+            | {
+                input_tokens?: number;
+                output_tokens?: number;
+                cache_read_input_tokens?: number;
+                cache_creation_input_tokens?: number;
+              }
             | undefined;
           if (usage) {
-            tokensIn = usage.input_tokens ?? tokensIn;
+            // claude's input_tokens already EXCLUDES cache reads (they're
+            // reported separately). Cache-creation tokens are billed as
+            // (pricier) input, so fold them into tokensIn rather than
+            // dropping them.
+            tokensIn =
+              (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) || tokensIn;
             tokensOut = usage.output_tokens ?? tokensOut;
+            tokensCached = usage.cache_read_input_tokens ?? tokensCached;
           }
         }
       };
@@ -215,6 +233,7 @@ export class ClaudeAdapter implements AgentAdapter {
             costUsd,
             tokensIn,
             tokensOut,
+            tokensCached,
             summary: resultText || assistantText,
           });
           return;
@@ -227,6 +246,7 @@ export class ClaudeAdapter implements AgentAdapter {
           costUsd,
           tokensIn,
           tokensOut,
+          tokensCached,
           summary: finalSummary,
         });
       });
@@ -299,6 +319,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       let costUsd = 0;
       let tokensIn = 0;
       let tokensOut = 0;
+      let tokensCached = 0;
       let text = "";
       let lineBuf = "";
       let stderrTail = ""; // kept so run() can detect transient startup races
@@ -312,14 +333,21 @@ export class OpenCodeAdapter implements AgentAdapter {
           | {
               text?: string;
               cost?: number;
-              tokens?: { input?: number; output?: number };
+              tokens?: {
+                input?: number;
+                output?: number;
+                cache?: { read?: number; write?: number };
+              };
             }
           | undefined;
         if (typeof part?.text === "string") text += part.text;
         if (typeof part?.cost === "number") costUsd += part.cost;
         if (part?.tokens) {
-          tokensIn += part.tokens.input ?? 0;
+          // tokens.input excludes cache activity (reported under cache.read/
+          // write). Cache writes are billed as input; reads go to tokensCached.
+          tokensIn += (part.tokens.input ?? 0) + (part.tokens.cache?.write ?? 0);
           tokensOut += part.tokens.output ?? 0;
+          tokensCached += part.tokens.cache?.read ?? 0;
         }
       };
 
@@ -383,6 +411,7 @@ export class OpenCodeAdapter implements AgentAdapter {
             costUsd,
             tokensIn,
             tokensOut,
+            tokensCached,
             summary: text,
           });
           return;
@@ -397,6 +426,7 @@ export class OpenCodeAdapter implements AgentAdapter {
           costUsd,
           tokensIn,
           tokensOut,
+          tokensCached,
           summary: finalSummary,
         });
       });
@@ -482,6 +512,7 @@ export class CodexAdapter implements AgentAdapter {
 
       let tokensIn = 0;
       let tokensOut = 0;
+      let tokensCached = 0;
       let assistantText = "";
       let lastError = "";
       let lineBuf = "";
@@ -500,11 +531,20 @@ export class CodexAdapter implements AgentAdapter {
           }
         } else if (type === "turn.completed") {
           const usage = obj.usage as
-            | { input_tokens?: number; output_tokens?: number }
+            | {
+                input_tokens?: number;
+                output_tokens?: number;
+                cached_input_tokens?: number;
+              }
             | undefined;
           if (usage) {
-            tokensIn = usage.input_tokens ?? tokensIn;
+            // Codex's input_tokens INCLUDES cached_input_tokens (OpenAI
+            // convention) — subtract so tokensIn is fresh input only,
+            // matching the other adapters' normalization.
+            const cached = usage.cached_input_tokens ?? 0;
+            tokensIn = Math.max(0, (usage.input_tokens ?? 0) - cached) || tokensIn;
             tokensOut = usage.output_tokens ?? tokensOut;
+            tokensCached = cached || tokensCached;
           }
         } else if (type === "turn.failed") {
           const err = obj.error as { message?: string } | undefined;
@@ -554,6 +594,7 @@ export class CodexAdapter implements AgentAdapter {
             costUsd: 0,
             tokensIn,
             tokensOut,
+            tokensCached,
             summary: assistantText || lastError,
           });
           return;
@@ -570,6 +611,7 @@ export class CodexAdapter implements AgentAdapter {
           costUsd: 0,
           tokensIn,
           tokensOut,
+          tokensCached,
           summary: finalSummary,
         });
       };

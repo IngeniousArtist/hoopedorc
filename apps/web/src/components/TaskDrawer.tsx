@@ -147,6 +147,22 @@ export function TaskDrawer({
       <div className="flex-1 overflow-y-auto">
         {tab === "overview" && (
           <div className="space-y-4 p-4 text-xs">
+            {task.statusReason && (
+              <div>
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">
+                  Outcome
+                </div>
+                <p
+                  className={
+                    "whitespace-pre-wrap " +
+                    (task.status === "done" ? "text-green-400" : "text-amber-400")
+                  }
+                >
+                  {task.statusReason}
+                </p>
+              </div>
+            )}
+
             <div>
               <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">
                 Description
@@ -214,8 +230,8 @@ export function TaskDrawer({
                 disabledReason="Running — wait for this attempt to finish to reassign"
               />
               <p className="mt-1 text-neutral-500">
-                May escalate through a fallback chain by difficulty if an
-                attempt fails (Settings → Routing)
+                May escalate through the fallback models if an attempt fails
+                (Settings → Routing → Fallback 1/2)
               </p>
             </div>
 
