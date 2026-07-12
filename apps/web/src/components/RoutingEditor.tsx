@@ -34,15 +34,42 @@ export function RoutingEditor({
     <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
       <h3 className="text-sm font-medium text-neutral-300">Model Routing</h3>
 
-      <div>
-        <label className="mb-1 block text-xs text-neutral-400">Planner</label>
-        <ModelSelect
-          value={routing.planner}
-          models={models}
-          onChange={(m) => {
-            if (m) onChange((r) => ({ ...r, planner: m }));
-          }}
-        />
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs text-neutral-400">Planner</label>
+          <ModelSelect
+            value={routing.planner}
+            models={models}
+            onChange={(m) => {
+              if (m) onChange((r) => ({ ...r, planner: m }));
+            }}
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-neutral-400">
+            Deconstructor
+            <span className="ml-1 text-neutral-500" title="Turns the agreed plan into the task table (the final planning call). Leave as '(same as planner)' unless you want a different model for it.">
+              ⓘ
+            </span>
+          </label>
+          <ModelSelect
+            value={routing.deconstructor}
+            models={models}
+            onChange={(m) => {
+              onChange((r) => {
+                const next = { ...r };
+                if (m) {
+                  next.deconstructor = m;
+                } else {
+                  delete next.deconstructor;
+                }
+                return next;
+              });
+            }}
+            allowEmpty
+            emptyLabel="(same as planner)"
+          />
+        </div>
       </div>
 
       <div>

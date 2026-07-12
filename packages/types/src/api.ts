@@ -160,6 +160,23 @@ export interface PlanningSessionResponse {
   agentsMd?: string;
 }
 
+/**
+ * One archived plan-session markdown file (F28's `context/plan-sessions/`
+ * archive) — the read-only history the Plan tab shows after a plan is
+ * committed (the live session row is cleared then).
+ */
+export interface PlanSessionArchive {
+  /** On-disk filename, e.g. "2026-07-12-0930.md". */
+  name: string;
+  /** Human-readable session start, e.g. "2026-07-12 09:30". */
+  startedLabel: string;
+  /** Full rendered markdown: transcript + deconstructed plan + commit marker. */
+  markdown: string;
+}
+export interface ListPlanSessionArchivesResponse {
+  sessions: PlanSessionArchive[];
+}
+
 export interface SaveDraftRequest {
   prdMarkdown: string;
   tasks: DraftTask[];
@@ -462,6 +479,7 @@ export const ROUTES = {
   planDeconstruct: "POST /api/projects/:id/plan/deconstruct",
   planCommit: "POST /api/projects/:id/plan/commit",
   planSession: "GET /api/projects/:id/plan/session",
+  planSessionArchives: "GET /api/projects/:id/plan/sessions",
   planSaveDraft: "POST /api/projects/:id/plan/save-draft",
   listPlanAttachments: "GET /api/projects/:id/plan/attachments",
   uploadPlanAttachment: "POST /api/projects/:id/plan/attachments",

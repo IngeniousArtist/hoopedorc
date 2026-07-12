@@ -80,9 +80,10 @@ Rules for each task:
   difficulty-based model choice. Use "frontend" for UI-heavy work (component layout,
   styling, client-side interaction) regardless of difficulty — it's routed to the model
   that scores best on web-dev coding benchmarks. Don't create a "docs" task yourself: one
-  is added automatically for every project to write the README/setup docs in parallel with
-  coding — only add your own docs-flavored task if the user asked for something beyond
-  standard project documentation (e.g. a specific API reference doc).
+  is added automatically for every project to write the README/setup docs, and it runs
+  LAST (after every other task) so it documents the finished project — only add your own
+  docs-flavored task if the user asked for something beyond standard project
+  documentation (e.g. a specific API reference doc).
 - acceptanceCriteria: concrete, checkable statements
 - dependsOn: indices of earlier tasks that must finish first
 - scopePaths: glob(s) the task is allowed to modify

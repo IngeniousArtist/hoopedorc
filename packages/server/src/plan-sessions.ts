@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { DraftTask, PlanChatMessage, Project } from "@orc/types";
+import type { DraftTask, PlanChatMessage, PlanSessionArchive, Project } from "@orc/types";
 import type { Db } from "./db/index";
 import * as repo from "./db/repo";
 import { contextDir } from "./context-dir";
@@ -19,6 +19,40 @@ import { contextDir } from "./context-dir";
 
 function sessionsDir(project: Project, mock: boolean): string {
   return join(contextDir(project, mock), "plan-sessions");
+}
+
+/**
+ * All archived plan-session files for a project, newest first — the Plan
+ * tab's read-only history of every past planning conversation (the live
+ * session row is cleared on commit, so without this the chat visually
+ * vanishes the moment a plan is committed). Filenames sort chronologically
+ * by construction (mintSessionFilename), so a plain reverse-lexicographic
+ * sort is newest-first. Best-effort like every other archive path in this
+ * file: an unreadable dir/file just yields an empty/shorter list, never an
+ * error to the caller.
+ */
+export function listArchivedSessions(project: Project, mock: boolean): PlanSessionArchive[] {
+  const dir = sessionsDir(project, mock);
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith(".md"));
+  } catch {
+    return []; // dir doesn't exist yet — no sessions archived
+  }
+  names.sort().reverse();
+  const sessions: PlanSessionArchive[] = [];
+  for (const name of names) {
+    try {
+      sessions.push({
+        name,
+        startedLabel: describeSessionStart(name),
+        markdown: readFileSync(join(dir, name), "utf8"),
+      });
+    } catch {
+      /* skip unreadable file */
+    }
+  }
+  return sessions;
 }
 
 /**

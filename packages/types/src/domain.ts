@@ -434,6 +434,11 @@ export type MergePolicy =
 export interface RoutingPolicy {
   /** Plans the project and writes the PRD + task DAG. */
   planner: ModelId;
+  /**
+   * Deconstructs the agreed plan into the task DAG (the one high-leverage
+   * call at the end of planning chat). Unset => same model as `planner`.
+   */
+  deconstructor?: ModelId;
   /** Default author model by task difficulty (the fallback when no role fits). */
   byDifficulty: Record<Difficulty, ModelId>;
   /**
