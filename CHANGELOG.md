@@ -3,6 +3,23 @@
 All notable changes to Hoopedorc are recorded here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### F42 follow-up — the bootstrap now installs the CLIs it asks you to authenticate
+
+- `deploy/ec2-bootstrap.sh` installs `gh` (GitHub's official package repo)
+  and `claude`/`opencode` (`npm install -g` — deliberately, so the binaries
+  land in `/usr/bin` on systemd's default `PATH`; the vendors' curl
+  installers use `~/.local/bin`/`~/.opencode/bin`, which the service unit
+  never sees). Previously no step installed them at all — `claude
+  setup-token` on a fresh box was a command-not-found.
+- New `docs/EC2_DEPLOY_RUNBOOK.md`: the ordered deploy-day path from the
+  AWS console to phone supervision, including the git-before-clone
+  chicken-and-egg fix for Amazon Linux 2023.
+- `deploy/hoopedorc.service`, `deploy/README.md`, `docs/USER_GUIDE.md`:
+  documented the systemd-PATH pitfall alongside the existing
+  same-user-auth note.
+
 ## [0.5.0] — 2026-07-10
 
 Part 8 of `docs/PRODUCTIZATION_PLAN.md` is complete as of this tag: a

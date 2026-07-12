@@ -26,6 +26,11 @@ RestartSec=5
 # gh/claude/opencode auth lives under this user's $HOME (~/.config/gh,
 # ~/.claude, opencode's own config dir) — the service's User= must be the
 # account those CLIs were authenticated as, or every run will fail auth.
+# The binaries themselves must also be on systemd's default PATH
+# (/usr/local/bin:/usr/bin:...): install claude/opencode via `npm install
+# -g` (lands in /usr/bin with NodeSource node) rather than their curl
+# installers (~/.local/bin, ~/.opencode/bin — visible in your SSH shell,
+# invisible to this unit). Or add an Environment=PATH=... line here.
 # On a <=2GB instance, add swap before the *build* step (npm run build /
 # npm run update) — vite+tsup can OOM on RAM alone even though the built
 # app itself, served via start:prebuilt, needs far less: e.g.

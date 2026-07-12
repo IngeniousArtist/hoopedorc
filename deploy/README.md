@@ -12,8 +12,9 @@ recipe.
 ## Native + systemd (recommended)
 
 On Amazon Linux 2023 or Ubuntu LTS, `deploy/ec2-bootstrap.sh` automates
-steps 1–2 and 6 below (OS packages, swap, clone, install/setup/build, and
-the systemd unit) — see USER_GUIDE's
+steps 1–2 and 6 below (OS packages including the `gh`/`claude`/`opencode`
+CLIs, swap, clone, install/setup/build, and the systemd unit) — see
+USER_GUIDE's
 [Deploying to EC2 — checklist](../docs/USER_GUIDE.md#deploying-to-ec2--checklist)
 for the one-command version. The manual steps:
 
@@ -23,7 +24,10 @@ for the one-command version. The manual steps:
    checks `gh`/`claude`/`opencode` auth. Fix anything it flags (`gh auth
    login`, `claude` interactive login once, `opencode auth login`) — do this
    as the **same OS user** the systemd service will run as, since all three
-   CLIs store their login under that user's home directory.
+   CLIs store their login under that user's home directory. If a CLI is
+   missing entirely, install `claude`/`opencode` via `npm install -g` (not
+   their curl installers) so the binaries land on the systemd unit's
+   default `PATH` — `deploy/ec2-bootstrap.sh` does this for you.
 4. Edit `.env` — at minimum decide `HOST`/`PORT`; set `API_TOKEN` if `HOST`
    will be anything other than `127.0.0.1` (the server refuses to boot
    otherwise — see the main README's Security section).

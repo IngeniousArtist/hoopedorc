@@ -427,7 +427,12 @@ your own setup, per the note on each step.
 
 - **Prereqs**: Node >= 20 (22 recommended), `git`, and the three CLIs
   installed (`gh`, `claude`, `opencode`) — same as local install
-  (`npm run setup` checks all three either way).
+  (`npm run setup` checks all three either way). On a systemd-managed box,
+  install `claude`/`opencode` with `npm install -g` rather than their curl
+  installers — npm-global puts the binaries in `/usr/bin`, on systemd's
+  default `PATH`; the curl installers use `~/.local/bin`/`~/.opencode/bin`,
+  which the service unit never sees (works over SSH, fails under systemd).
+  `deploy/ec2-bootstrap.sh` installs all three this way for you.
 - **Docker (optional, for the gate sandbox)**: install it via your distro's
   package manager or
   [Docker's own install docs](https://docs.docker.com/engine/install/), then
@@ -507,8 +512,9 @@ links back to the section with the full detail if something doesn't go as
 expected.
 
 **`deploy/ec2-bootstrap.sh` automates steps 1–2 and 6** (the non-interactive
-ones — OS packages, swap, clone, `npm install`/`setup`/`build`, and the
-systemd unit) on Amazon Linux 2023 or Ubuntu LTS. Clone straight to its
+ones — OS packages including the `gh`/`claude`/`opencode` CLIs, swap, clone,
+`npm install`/`setup`/`build`, and the systemd unit) on Amazon Linux 2023 or
+Ubuntu LTS. Clone straight to its
 default install path so its own clone step is a no-op, then run it from
 there:
 ```bash
@@ -533,7 +539,15 @@ below by hand on any other distro.
    **Node 22** (`engines.node` requires ≥20; 22 is what this project is
    developed against), **git**, and, if you want the [gate
    sandbox](#gate-sandbox) instead of host-run gates, **Docker** (confirm
-   `docker version` works as the OS user that will run Hoopedorc).
+   `docker version` works as the OS user that will run Hoopedorc). Then
+   the CLIs themselves: **`gh`** via
+   [GitHub's official package repo](https://github.com/cli/cli/blob/trunk/docs/install_linux.md),
+   and **`claude`**/**`opencode`** via
+   `sudo npm install -g @anthropic-ai/claude-code opencode-ai` — npm-global
+   on purpose, so the binaries land in `/usr/bin` where the systemd unit's
+   default `PATH` finds them (see [EC2 / headless
+   Linux](#ec2--headless-linux) above for why the curl installers don't
+   work under systemd).
 2. **Clone + install.**
    ```bash
    git clone <your fork/repo url> /opt/hoopedorc
