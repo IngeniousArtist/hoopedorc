@@ -8,12 +8,12 @@ import type { Difficulty, PlanChatMessage, Role } from "@orc/types";
 
 // Planning runs headless, through whichever CLI `routing.planner`'s model
 // resolves to (F37):
-//   - claude-code -> `claude -p`, two tiers (see docs/NEXT_STEPS.md): chat
-//     turns on Sonnet (many cheap conversational turns), final
-//     deconstruction on Opus (one high-leverage call: plan -> task DAG).
-//     Unchanged from before F37 — this is the default, well-tuned path.
-//   - codex -> `codex exec`, one model for both tiers (no established
-//     cheap/expensive split for Codex the way Sonnet/Opus have); deconstruct
+//   - claude-code -> `claude -p`. Chat turns and the final deconstruction
+//     (plan -> task DAG) both run on the same planner model (default
+//     Sonnet); the tiers can still be split via the PLANNER_CHAT_MODEL /
+//     PLANNER_DECONSTRUCT_MODEL envs. (Deconstruct used to default to Opus,
+//     which a Pro subscription can't run — see config.ts.)
+//   - codex -> `codex exec`, one model for both tiers; deconstruct
 //     uses `--output-schema` so the CLI enforces the task-DAG JSON shape
 //     natively instead of relying on the lenient markdown-fence extraction
 //     the claude path still needs.
@@ -551,7 +551,7 @@ export async function runPlanner(
   return parsePlanOutput(text, projectName, goal);
 }
 
-/** One conversational planning turn (Sonnet, or the routed codex model). Returns reply text + cost. */
+/** One conversational planning turn (the planner model, claude or codex). Returns reply text + cost. */
 export async function runPlannerChat(
   messages: PlanChatMessage[],
   projectName: string,
@@ -568,7 +568,7 @@ export async function runPlannerChat(
   return { reply: text.trim(), costUsd };
 }
 
-/** Deconstruct an agreed conversation into a strict task DAG (Opus, or the routed codex model). */
+/** Deconstruct an agreed conversation into a strict task DAG (same planner model as chat). */
 export async function runPlannerDeconstruct(
   messages: PlanChatMessage[],
   projectName: string,

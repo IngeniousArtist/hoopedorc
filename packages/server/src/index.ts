@@ -251,12 +251,11 @@ async function resolvePlannerCwd(project: Project): Promise<string> {
  * F37: resolve `routing.planner`'s `ModelConfig` to a `PlannerModel` — which
  * CLI + model id `planner.ts` should actually shell out to, instead of
  * hardcoding `claude`. `tier` only matters for the claude-code path: it picks
- * between the two well-tuned env aliases (cheap Sonnet for many chat turns,
- * pricier Opus for the one high-leverage deconstruct call) exactly as
- * before F37 — "aliases still apply" per the spec, so routing a claude-code
- * model as planner is a byte-identical no-op. Codex has no equivalent
- * cheap/expensive split established, so both tiers use the same
- * `cfg.codexModel`. opencode-runner planners throw — conversational planning
+ * between the two env aliases (PLANNER_CHAT_MODEL / PLANNER_DECONSTRUCT_MODEL),
+ * which both default to the same model (Sonnet) — deconstruct no longer
+ * upgrades to Opus by default, since a Pro subscription can't run it (see
+ * config.ts). Codex likewise uses the same `cfg.codexModel` for both
+ * tiers. opencode-runner planners throw — conversational planning
  * quality is the point of the two subscription CLIs, not something to
  * silently degrade; callers turn this into an explicit 400.
  */
@@ -1388,7 +1387,7 @@ async function main() {
     };
   });
 
-  // ── Planning: chat (Sonnet) → deconstruct (Opus) → commit ──
+  // ── Planning: chat → deconstruct → commit (one planner model for both) ──
 
   // One conversational turn. The web chat panel sends the full transcript.
   app.post("/api/projects/:id/plan/chat", async (req, reply) => {

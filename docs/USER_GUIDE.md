@@ -80,12 +80,12 @@ going on a always-on box.
    optional budget/Telegram) — finish that once, then **New Project**.
 2. Either point it at an existing repo URL, or let it create a fresh
    private GitHub repo for you.
-3. **Plan**: describe what you want in the chat panel. Claude (Sonnet, for
-   cheap back-and-forth) will ask clarifying questions and propose a plan —
+3. **Plan**: describe what you want in the chat panel. The planner model
+   (Sonnet by default) will ask clarifying questions and propose a plan —
    refine it conversationally ("split that into two tasks", "don't touch
    the database", "add tests"). When you're happy, approving it runs one
-   more Claude call (Opus, the plan's single most important call) that
-   deconstructs the agreed plan into a real task list: each task's
+   more call on the same planner model that deconstructs the agreed plan
+   into a real task list: each task's
    description, difficulty, which model will author it, its acceptance
    criteria, its allowed file scope, and its dependencies on other tasks.
 4. **Review the table.** Every field is editable before you commit —
