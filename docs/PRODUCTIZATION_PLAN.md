@@ -1678,7 +1678,7 @@ target rules.
 
 | Item | Status | PR |
 |---|---|---|
-| B34 — execution ownership + unified manual queue | pending | — |
+| B34 — execution ownership + unified manual queue | done | [#139](https://github.com/IngeniousArtist/hoopedorc/pull/139) |
 | B35 — managed subprocess lifecycle and cancellation | pending | — |
 | S9 — fail-closed gates, destructive rail, and worktree hygiene | pending | — |
 | B36 — rollback through a gated, human-approved PR | pending | — |
@@ -5564,6 +5564,30 @@ new-run registration, Delete during manual work, two queued manual tasks with
 overlapping and non-overlapping scopes, empty scopes, process settlement, restart
 of a queued manual request, and Stop against done/failed/backlog tasks. No test
 may rely on arbitrary sleeps to make the race pass.
+
+**B34 — done (PR [#139](https://github.com/IngeniousArtist/hoopedorc/pull/139)).**
+`EngineRunner` now registers one generation-tagged `ProjectRuntime` before any
+async setup begins; manual Dispatch/Retry persists `Task.dispatchRequestedAt`
+and feeds that request through the same scheduler, while Start promotes the
+existing runtime instead of creating a competitor. Requests survive restart,
+are prioritized oldest-first, and clear only at real dispatch. Hard Stop keeps
+the runtime registered until its settled Promise resolves (the HTTP wait is
+bounded without dropping ownership); identity checks prevent an old generation
+from deleting or finalizing over a newer one; Delete and Telegram Stop All use
+the stronger any-activity predicate. Task Stop is active-only, terminal task and
+stopped-run outcomes win late races, and Stop checks now guard the post-review
+merge tail. Empty scope arrays are treated as unrestricted and overlap every
+writer. The Board and task drawer expose queued priority state.
+
+Verification is deterministic: controlled-Promise server tests cover Stop then
+immediate Start, settlement ownership, Start promotion, restart recovery, stale
+generation cleanup, and late run updates; repository tests cover durable queue
+round-trips plus done/failed/backlog Stop guards; engine tests prove requested-
+only scheduling, overlapping/manual serialization, disjoint concurrency, and
+empty-scope serialization. `npm run typecheck`, `npm run build`, 115 engine
+tests, 102 server tests, and 4 adapter tests pass. No authenticated model run was
+started for this lifecycle-only change; Fable review remains the independent
+post-merge check required for the wave.
 
 ### B35. Managed subprocess lifecycle and cancellation — HIGH
 

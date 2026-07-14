@@ -54,6 +54,8 @@ export function initDb(path: string = ENV.dbPath): Db {
     // One-line human-readable terminal outcome ("Merged PR #4" / "Gates
     // kept failing: tests") — set by the orchestrator, shown on Audit cards.
     "ALTER TABLE tasks ADD COLUMN status_reason TEXT",
+    // B34: durable manual-priority queue intent. Cleared when dispatch starts.
+    "ALTER TABLE tasks ADD COLUMN dispatch_requested_at TEXT",
     // Cached-input token counts, for manual per-model pricing (fresh vs
     // cached input bill at different rates).
     "ALTER TABLE runs ADD COLUMN tokens_cached INTEGER NOT NULL DEFAULT 0",

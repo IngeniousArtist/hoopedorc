@@ -277,7 +277,7 @@ export function Board({
         params: { id: taskId },
       });
       setTasks((prev) => prev.map((t) => (t.id === taskId ? res.task : t)));
-      toast("Retrying — dispatched a fresh run.", "success");
+      toast("Retry queued with priority.", "success");
     } catch (e) {
       toast(String(e), "error");
     } finally {

@@ -147,6 +147,11 @@ export function TaskDrawer({
       <div className="flex-1 overflow-y-auto">
         {tab === "overview" && (
           <div className="space-y-4 p-4 text-xs">
+            {task.dispatchRequestedAt && (
+              <div className="rounded border border-blue-900 bg-blue-950/30 px-3 py-2 text-blue-300">
+                Priority dispatch queued. It will start when dependencies and scheduler capacity allow.
+              </div>
+            )}
             {task.statusReason && (
               <div>
                 <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">

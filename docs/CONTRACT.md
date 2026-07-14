@@ -12,6 +12,14 @@ it — all three modules depend on it.**
 source of truth. `Settings.routing` is what the Settings UI exposes as per-job
 model selectors (planner, by-difficulty, by-role, validator).
 
+`Task.dispatchRequestedAt` (B34, optional ISO timestamp) is durable manual-
+dispatch intent. Manual Dispatch/Retry sets it while leaving the task in its
+real `ready`/`backlog` state; the project's single scheduler prioritizes these
+tasks and clears the field only when execution actually begins. This replaces
+the old one-off manual Orchestrator path, lets multiple requests obey the same
+scope/model-cap rules as autonomous work, and preserves a queued request across
+a process restart.
+
 `Project.config` (`ProjectConfig`, F9) holds per-project overrides — gate
 script names (or `false` to skip a gate), a free-form `testCommand` for
 non-npm stacks (run via `execFile`, no shell), a `maxAttempts` default applied
