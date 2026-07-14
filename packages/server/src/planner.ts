@@ -1,9 +1,8 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sanitizedEnv } from "@orc/adapters";
+import { execManagedProcess, sanitizedEnv } from "@orc/adapters";
 import type { Difficulty, PlanChatMessage, Role, Settings } from "@orc/types";
 import { ENV } from "./config.js";
 
@@ -379,56 +378,39 @@ interface ClaudeJsonResult {
 }
 
 /** Run `claude -p --output-format json` and return its text + reported cost. */
-function runClaudeJson(
+async function runClaudeJson(
   prompt: string,
   cwd: string,
   model?: string,
+  signal?: AbortSignal,
 ): Promise<ClaudeJsonResult> {
-  return new Promise((resolve, reject) => {
-    // Prompt goes on stdin, not argv: a long planning chat (full transcript +
-    // prior-context inlined) can exceed macOS's ~1MB total argv cap and fail
-    // with a cryptic spawn error. `claude -p` with no positional prompt reads
-    // from stdin (verified against the real CLI).
-    const args = ["-p", "--output-format", "json"];
-    if (model) args.push("--model", model);
-    const proc = spawn("claude", args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
-    proc.stdin?.end(prompt);
-    let out = "";
-    let err = "";
-    const timer = setTimeout(() => {
-      proc.kill("SIGKILL");
-      reject(new Error("planner timed out"));
-    }, PLAN_TIMEOUT_MS);
-
-    proc.stdout?.on("data", (c: Buffer) => (out += c.toString("utf8")));
-    proc.stderr?.on("data", (c: Buffer) => (err += c.toString("utf8")));
-    proc.on("error", (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    proc.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        reject(new Error(`claude exited ${code}: ${err.slice(0, 500)}`));
-        return;
-      }
-      // claude --output-format json wraps the answer:
-      // { ..., "result": "<text>", "total_cost_usd": <n> }
-      try {
-        const wrapper = JSON.parse(out) as {
-          result?: unknown;
-          total_cost_usd?: number;
-          cost_usd?: number;
-        };
-        resolve({
-          text: typeof wrapper.result === "string" ? wrapper.result : out,
-          costUsd: wrapper.total_cost_usd ?? wrapper.cost_usd ?? 0,
-        });
-      } catch {
-        resolve({ text: out, costUsd: 0 });
-      }
-    });
+  // Prompt goes on stdin, not argv: a long planning chat (full transcript +
+  // prior-context inlined) can exceed macOS's ~1MB total argv cap and fail
+  // with a cryptic spawn error. `claude -p` with no positional prompt reads
+  // from stdin (verified against the real CLI).
+  const args = ["-p", "--output-format", "json"];
+  if (model) args.push("--model", model);
+  const { stdout: out } = await execManagedProcess("claude", args, {
+    cwd,
+    input: prompt,
+    signal,
+    timeoutMs: PLAN_TIMEOUT_MS,
   });
+  // claude --output-format json wraps the answer:
+  // { ..., "result": "<text>", "total_cost_usd": <n> }
+  try {
+    const wrapper = JSON.parse(out) as {
+      result?: unknown;
+      total_cost_usd?: number;
+      cost_usd?: number;
+    };
+    return {
+      text: typeof wrapper.result === "string" ? wrapper.result : out,
+      costUsd: wrapper.total_cost_usd ?? wrapper.cost_usd ?? 0,
+    };
+  } catch {
+    return { text: out, costUsd: 0 };
+  }
 }
 
 /**
@@ -439,13 +421,13 @@ function runClaudeJson(
  * `costUsd` is always 0 — subscription-billed, same honesty rule as F36's
  * `CodexAdapter`.
  */
-function runCodexJson(
+async function runCodexJson(
   prompt: string,
   cwd: string,
   model?: string,
   outputSchema?: object,
+  signal?: AbortSignal,
 ): Promise<ClaudeJsonResult> {
-  return new Promise((resolve, reject) => {
     const outputFile = join(tmpdir(), `codex-plan-${randomUUID()}.txt`);
     const schemaFile = outputSchema
       ? join(tmpdir(), `codex-plan-schema-${randomUUID()}.json`)
@@ -488,53 +470,14 @@ function runCodexJson(
     if (model) args.push("-m", model);
     if (schemaFile) args.push("--output-schema", schemaFile);
 
-    const proc = spawn("codex", args, {
-      cwd,
-      env: sanitizedEnv({ PWD: cwd }),
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    proc.stdin?.end(prompt);
-
-    let lastError = "";
-    let lineBuf = "";
-    const timer = setTimeout(() => {
-      proc.kill("SIGKILL");
-      cleanup();
-      reject(new Error("planner timed out"));
-    }, PLAN_TIMEOUT_MS);
-
-    const handleEvent = (obj: Record<string, unknown>) => {
-      if (obj.type === "turn.failed") {
-        const err = obj.error as { message?: string } | undefined;
-        if (err?.message) lastError = err.message;
-      } else if (obj.type === "error" && typeof obj.message === "string") {
-        lastError = obj.message;
-      }
-    };
-
-    proc.stdout?.on("data", (c: Buffer) => {
-      lineBuf += c.toString("utf8");
-      const lines = lineBuf.split("\n");
-      lineBuf = lines.pop() ?? "";
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t) continue;
-        try {
-          handleEvent(JSON.parse(t));
-        } catch {
-          /* non-JSON log line */
-        }
-      }
-    });
-    proc.stderr?.on("data", () => {});
-
-    proc.on("error", (e) => {
-      clearTimeout(timer);
-      cleanup();
-      reject(e);
-    });
-    proc.on("close", (code) => {
-      clearTimeout(timer);
+    try {
+      await execManagedProcess("codex", args, {
+        cwd,
+        env: sanitizedEnv({ PWD: cwd }),
+        input: prompt,
+        signal,
+        timeoutMs: PLAN_TIMEOUT_MS,
+      });
       // --output-last-message is only written on a successful turn (verified
       // live, F36) — an empty/missing file alongside a nonzero exit means the
       // turn failed before producing a message.
@@ -544,14 +487,13 @@ function runCodexJson(
       } catch {
         /* not written — turn failed before completing */
       }
-      cleanup();
-      if (code !== 0 || !text.trim()) {
-        reject(new Error(`codex exited ${code}: ${(lastError || "no output").slice(0, 500)}`));
-        return;
+      if (!text.trim()) {
+        throw new Error("codex planner completed without a final message");
       }
-      resolve({ text: text.trim(), costUsd: 0 });
-    });
-  });
+      return { text: text.trim(), costUsd: 0 };
+    } finally {
+      cleanup();
+    }
 }
 
 /**
@@ -568,34 +510,27 @@ function runCodexJson(
  * planner reads/writes the wrong repo whenever a shared opencode server is
  * configured — the same class of bug B33 fixed for authoring.
  */
-function runOpencodeJson(
+async function runOpencodeJson(
   prompt: string,
   cwd: string,
   model: string,
   opencodeBaseUrl: string,
+  signal?: AbortSignal,
 ): Promise<ClaudeJsonResult> {
-  return new Promise((resolve, reject) => {
     // Prompt on stdin, not argv — same argv-cap reasoning as every other
     // planner/adapter spawn in this codebase.
     const args = ["run", "-m", model, "--format", "json", "--dir", cwd];
     if (opencodeBaseUrl) args.push("--attach", opencodeBaseUrl);
 
-    const proc = spawn("opencode", args, {
+    const { stdout } = await execManagedProcess("opencode", args, {
       cwd,
       env: sanitizedEnv({ PWD: cwd }),
-      stdio: ["pipe", "pipe", "pipe"],
+      input: prompt,
+      signal,
+      timeoutMs: PLAN_TIMEOUT_MS,
     });
-    proc.stdin?.end(prompt);
-
     let costUsd = 0;
     let text = "";
-    let lineBuf = "";
-    let stderrTail = "";
-
-    const timer = setTimeout(() => {
-      proc.kill("SIGKILL");
-      reject(new Error("planner timed out"));
-    }, PLAN_TIMEOUT_MS);
 
     const handleEvent = (obj: Record<string, unknown>) => {
       const part = obj.part as { text?: string; cost?: number } | undefined;
@@ -603,45 +538,16 @@ function runOpencodeJson(
       if (typeof part?.cost === "number") costUsd += part.cost;
     };
 
-    proc.stdout?.on("data", (c: Buffer) => {
-      lineBuf += c.toString("utf8");
-      const lines = lineBuf.split("\n");
-      lineBuf = lines.pop() ?? "";
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t) continue;
-        try {
-          handleEvent(JSON.parse(t));
-        } catch {
-          /* non-JSON log line */
-        }
+    for (const line of stdout.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        handleEvent(JSON.parse(trimmed));
+      } catch {
+        /* non-JSON log line */
       }
-    });
-    proc.stderr?.on("data", (c: Buffer) => {
-      stderrTail = (stderrTail + c.toString("utf8")).slice(-2000);
-    });
-
-    proc.on("error", (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    proc.on("close", (code) => {
-      clearTimeout(timer);
-      const tail = lineBuf.trim();
-      if (tail) {
-        try {
-          handleEvent(JSON.parse(tail));
-        } catch {
-          /* not JSON */
-        }
-      }
-      if (code !== 0) {
-        reject(new Error(`opencode exited ${code}: ${stderrTail.slice(0, 500)}`));
-        return;
-      }
-      resolve({ text, costUsd });
-    });
-  });
+    }
+    return { text, costUsd };
 }
 
 /** Dispatch to the right CLI for whichever model `routing.planner` resolves to. */
@@ -650,17 +556,24 @@ function runPlannerJson(
   cwd: string,
   plannerModel: PlannerModel,
   outputSchema?: object,
+  signal?: AbortSignal,
 ): Promise<ClaudeJsonResult> {
   if (plannerModel.runner === "codex") {
-    return runCodexJson(prompt, cwd, plannerModel.model, outputSchema);
+    return runCodexJson(prompt, cwd, plannerModel.model, outputSchema, signal);
   }
   if (plannerModel.runner === "opencode") {
     if (!plannerModel.model) {
       return Promise.reject(new Error("opencode planner model has no model id configured"));
     }
-    return runOpencodeJson(prompt, cwd, plannerModel.model, plannerModel.opencodeBaseUrl ?? "");
+    return runOpencodeJson(
+      prompt,
+      cwd,
+      plannerModel.model,
+      plannerModel.opencodeBaseUrl ?? "",
+      signal,
+    );
   }
-  return runClaudeJson(prompt, cwd, plannerModel.model);
+  return runClaudeJson(prompt, cwd, plannerModel.model, signal);
 }
 
 /**
@@ -967,10 +880,11 @@ export async function runPlanner(
   cwd: string,
   plannerModel: PlannerModel,
   onWarn: (msg: string) => void = () => {},
+  signal?: AbortSignal,
 ): Promise<PlanOutput> {
   const schema = plannerModel.runner === "codex" ? DECONSTRUCT_JSON_SCHEMA : undefined;
   const prompt = buildPrompt(goal, projectName);
-  const { text } = await runPlannerJson(prompt, cwd, plannerModel, schema);
+  const { text } = await runPlannerJson(prompt, cwd, plannerModel, schema, signal);
   try {
     return parsePlanOutput(text, projectName, goal, onWarn);
   } catch (err) {
@@ -983,6 +897,7 @@ export async function runPlanner(
       cwd,
       plannerModel,
       schema,
+      signal,
     );
     return parsePlanOutput(retry.text, projectName, goal, onWarn);
   }
@@ -996,11 +911,14 @@ export async function runPlannerChat(
   plannerModel: PlannerModel,
   priorContext?: string,
   attachments?: string[],
+  signal?: AbortSignal,
 ): Promise<{ reply: string; costUsd: number }> {
   const { text, costUsd } = await runPlannerJson(
     buildChatPrompt(messages, projectName, priorContext, attachments),
     cwd,
     plannerModel,
+    undefined,
+    signal,
   );
   return { reply: text.trim(), costUsd };
 }
@@ -1016,10 +934,11 @@ export async function runPlannerDeconstruct(
   priorContext?: string,
   attachments?: string[],
   onWarn: (msg: string) => void = () => {},
+  signal?: AbortSignal,
 ): Promise<{ output: PlanOutput; costUsd: number }> {
   const schema = plannerModel.runner === "codex" ? DECONSTRUCT_JSON_SCHEMA : undefined;
   const prompt = buildDeconstructPrompt(messages, projectName, priorContext, attachments);
-  const { text, costUsd } = await runPlannerJson(prompt, cwd, plannerModel, schema);
+  const { text, costUsd } = await runPlannerJson(prompt, cwd, plannerModel, schema, signal);
   try {
     return { output: parsePlanOutput(text, projectName, "", onWarn), costUsd };
   } catch (err) {
@@ -1033,6 +952,7 @@ export async function runPlannerDeconstruct(
       cwd,
       plannerModel,
       schema,
+      signal,
     );
     return {
       output: parsePlanOutput(retry.text, projectName, "", onWarn),

@@ -11,15 +11,26 @@
 //
 // Depend ONLY on @orc/types.
 
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelConfig, ModelId } from "@orc/types";
 import { sanitizedEnv } from "./env.js";
+import { abortableDelay, spawnManagedProcess } from "./managed-process.js";
 
 export { sanitizedEnv } from "./env.js";
+export {
+  abortableDelay,
+  execManagedProcess,
+  ManagedProcessError,
+  spawnManagedProcess,
+} from "./managed-process.js";
+export type {
+  ManagedProcess,
+  ManagedProcessOptions,
+  ManagedProcessResult,
+} from "./managed-process.js";
 
 export interface AgentRunOptions {
   model: ModelId;
@@ -76,27 +87,6 @@ export interface AgentAdapter {
  */
 const CLAUDE_PERMISSION_MODE = "bypassPermissions";
 
-function wireAbort(
-  proc: ReturnType<typeof spawn>,
-  signal: AbortSignal | undefined,
-  onKilled: () => void,
-): boolean {
-  if (!signal) return false;
-  const kill = () => {
-    proc.kill("SIGTERM");
-    setTimeout(() => {
-      if (!proc.killed) proc.kill("SIGKILL");
-    }, 2000);
-    onKilled();
-  };
-  if (signal.aborted) {
-    kill();
-    return true;
-  }
-  signal.addEventListener("abort", kill, { once: true });
-  return false;
-}
-
 export class ClaudeAdapter implements AgentAdapter {
   readonly runner = "claude-code" as const;
 
@@ -119,7 +109,7 @@ export class ClaudeAdapter implements AgentAdapter {
         CLAUDE_PERMISSION_MODE,
       ];
       if (this.claudeModel) args.push("--model", this.claudeModel);
-      const proc = spawn(
+      const managed = spawnManagedProcess(
         "claude",
         args,
         // PWD must be set explicitly: spawn's `cwd` changes the child's actual
@@ -129,10 +119,12 @@ export class ClaudeAdapter implements AgentAdapter {
         {
           cwd: opts.cwd,
           env: sanitizedEnv({ PWD: opts.cwd }),
-          stdio: ["pipe", "pipe", "pipe"],
+          signal: opts.signal,
+          input: opts.prompt,
         },
       );
-      proc.stdin?.end(opts.prompt);
+      void managed.settled.catch(() => {});
+      const proc = managed.child;
 
       let costUsd = 0;
       let tokensIn = 0;
@@ -141,7 +133,6 @@ export class ClaudeAdapter implements AgentAdapter {
       let assistantText = "";
       let resultText = "";
       let lineBuf = "";
-      let killed = false;
 
       const handleEvent = (obj: Record<string, unknown>) => {
         const type = obj.type;
@@ -197,12 +188,9 @@ export class ClaudeAdapter implements AgentAdapter {
       proc.stdout?.on("data", onData);
       proc.stderr?.on("data", (c: Buffer) => opts.onLog(c.toString("utf8")));
 
-      wireAbort(proc, opts.signal, () => {
-        killed = true;
-      });
-
       proc.on("error", (err) => {
         opts.onLog(`[claude] spawn error: ${err.message}\n`);
+        if (proc.pid != null) return;
         resolve({
           ok: false,
           exitReason: "error",
@@ -226,7 +214,7 @@ export class ClaudeAdapter implements AgentAdapter {
             /* not JSON */
           }
         }
-        if (killed || opts.signal?.aborted) {
+        if (opts.signal?.aborted) {
           resolve({
             ok: false,
             exitReason: "killed",
@@ -264,14 +252,13 @@ export class ClaudeAdapter implements AgentAdapter {
 const OPENCODE_TRANSIENT =
   /database is locked|SQLITE_BUSY|EADDRINUSE|ECONNREFUSED|connection refused/i;
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 export class OpenCodeAdapter implements AgentAdapter {
   readonly runner = "opencode" as const;
 
   constructor(
     private readonly baseUrl: string,
     private readonly opencodeModel: string,
+    private readonly runAttempt?: (opts: AgentRunOptions) => Promise<AgentRunResult>,
   ) {}
 
   async run(opts: AgentRunOptions): Promise<AgentRunResult> {
@@ -281,7 +268,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     // as-is for the orchestrator's normal fallback handling.
     let result: AgentRunResult = { ok: false, exitReason: "error", costUsd: 0, tokensIn: 0, tokensOut: 0 };
     for (let attempt = 0; attempt < 3; attempt++) {
-      result = await this.runOnce(opts);
+      result = await (this.runAttempt ? this.runAttempt(opts) : this.runOnce(opts));
       if (result.ok || opts.signal?.aborted) return result;
       const transient =
         result.costUsd === 0 && OPENCODE_TRANSIENT.test(result.summary ?? "");
@@ -289,7 +276,11 @@ export class OpenCodeAdapter implements AgentAdapter {
       opts.onLog(
         `[opencode] transient startup error (attempt ${attempt + 1}), retrying…\n`,
       );
-      await sleep(1500 * (attempt + 1));
+      try {
+        await abortableDelay(1500 * (attempt + 1), opts.signal);
+      } catch {
+        return { ...result, exitReason: "killed" };
+      }
     }
     return result;
   }
@@ -323,15 +314,17 @@ export class OpenCodeAdapter implements AgentAdapter {
     if (this.baseUrl) args.push("--attach", this.baseUrl);
 
     return new Promise((resolve) => {
-      const proc = spawn("opencode", args, {
+      const managed = spawnManagedProcess("opencode", args, {
         cwd: opts.cwd,
         // PWD kept as belt-and-suspenders for the local (non-attached) case
         // — `--dir` above is what actually matters now, including (unlike
         // PWD) when attaching to a remote server.
         env: sanitizedEnv({ PWD: opts.cwd }),
-        stdio: ["pipe", "pipe", "pipe"],
+        signal: opts.signal,
+        input: opts.prompt,
       });
-      proc.stdin?.end(opts.prompt);
+      void managed.settled.catch(() => {});
+      const proc = managed.child;
 
       let costUsd = 0;
       let tokensIn = 0;
@@ -340,7 +333,6 @@ export class OpenCodeAdapter implements AgentAdapter {
       let text = "";
       let lineBuf = "";
       let stderrTail = ""; // kept so run() can detect transient startup races
-      let killed = false;
 
       const handleEvent = (obj: Record<string, unknown>) => {
         // `opencode run --format json` nests everything under `part`. Text
@@ -394,12 +386,9 @@ export class OpenCodeAdapter implements AgentAdapter {
         opts.onLog(s);
       });
 
-      wireAbort(proc, opts.signal, () => {
-        killed = true;
-      });
-
       proc.on("error", (err) => {
         opts.onLog(`[opencode] spawn error: ${err.message}\n`);
+        if (proc.pid != null) return;
         resolve({
           ok: false,
           exitReason: "error",
@@ -421,7 +410,7 @@ export class OpenCodeAdapter implements AgentAdapter {
             /* not JSON */
           }
         }
-        if (killed || opts.signal?.aborted) {
+        if (opts.signal?.aborted) {
           resolve({
             ok: false,
             exitReason: "killed",
@@ -518,14 +507,16 @@ export class CodexAdapter implements AgentAdapter {
     if (this.codexModel) args.push("-m", this.codexModel);
 
     return new Promise((resolve) => {
-      const proc = spawn("codex", args, {
+      const managed = spawnManagedProcess("codex", args, {
         cwd: opts.cwd,
         // Same $PWD lesson as the other two adapters — belt and suspenders
         // alongside the explicit -C flag above.
         env: sanitizedEnv({ PWD: opts.cwd }),
-        stdio: ["pipe", "pipe", "pipe"],
+        signal: opts.signal,
+        input: opts.prompt,
       });
-      proc.stdin?.end(opts.prompt);
+      void managed.settled.catch(() => {});
+      const proc = managed.child;
 
       let tokensIn = 0;
       let tokensOut = 0;
@@ -533,7 +524,6 @@ export class CodexAdapter implements AgentAdapter {
       let assistantText = "";
       let lastError = "";
       let lineBuf = "";
-      let killed = false;
 
       const handleEvent = (obj: Record<string, unknown>) => {
         const type = obj.type;
@@ -591,10 +581,6 @@ export class CodexAdapter implements AgentAdapter {
       proc.stdout?.on("data", onData);
       proc.stderr?.on("data", (c: Buffer) => opts.onLog(c.toString("utf8")));
 
-      wireAbort(proc, opts.signal, () => {
-        killed = true;
-      });
-
       const finish = async (code: number | null) => {
         const tail = lineBuf.trim();
         if (tail) {
@@ -604,7 +590,7 @@ export class CodexAdapter implements AgentAdapter {
             /* not JSON */
           }
         }
-        if (killed || opts.signal?.aborted) {
+        if (opts.signal?.aborted) {
           resolve({
             ok: false,
             exitReason: "killed",
@@ -635,6 +621,7 @@ export class CodexAdapter implements AgentAdapter {
 
       proc.on("error", (err) => {
         opts.onLog(`[codex] spawn error: ${err.message}\n`);
+        if (proc.pid != null) return;
         resolve({
           ok: false,
           exitReason: "error",

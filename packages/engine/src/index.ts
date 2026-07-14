@@ -72,7 +72,11 @@ export interface EngineEvents {
 
 /** Creates/removes an isolated working directory per task. */
 export interface WorktreeManager {
-  create(project: Project, task: Task): Promise<{ branch: string; path: string }>;
+  create(
+    project: Project,
+    task: Task,
+    signal?: AbortSignal,
+  ): Promise<{ branch: string; path: string }>;
   remove(project: Project, task: Task): Promise<void>;
   /** Paths changed in the task's worktree vs the project default branch. */
   changedFiles(project: Project, task: Task): Promise<string[]>;
@@ -125,11 +129,15 @@ export interface WorktreeManager {
 
 /** Thin wrapper over git + the `gh` CLI. */
 export interface GitService {
-  ensureClone(project: Project): Promise<void>;
-  commitAll(worktreePath: string, message: string): Promise<void>;
-  push(worktreePath: string, branch: string): Promise<void>;
-  openPr(project: Project, task: Task): Promise<number>;
-  mergePr(project: Project, prNumber: number): Promise<void>;
+  ensureClone(project: Project, signal?: AbortSignal): Promise<void>;
+  commitAll(
+    worktreePath: string,
+    message: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
+  push(worktreePath: string, branch: string, signal?: AbortSignal): Promise<void>;
+  openPr(project: Project, task: Task, signal?: AbortSignal): Promise<number>;
+  mergePr(project: Project, prNumber: number, signal?: AbortSignal): Promise<void>;
   revertMerge(project: Project, prNumber: number): Promise<void>;
   /**
    * Close a terminally-failed task's open PR (with a comment explaining why)
@@ -151,6 +159,7 @@ export interface GitService {
     project: Project,
     task: Task,
     prNumber: number,
+    signal?: AbortSignal,
   ): Promise<void>;
   /**
    * Merge the latest default branch into the task's branch (in its worktree)
@@ -164,6 +173,7 @@ export interface GitService {
   syncBranchWithMain(
     project: Project,
     task: Task,
+    signal?: AbortSignal,
   ): Promise<"clean" | "conflict">;
   /**
    * F15: poll the target repo's own CI/checks for `prNumber` (opt-in via
@@ -184,12 +194,13 @@ export interface GitService {
     prNumber: number,
     timeoutMs: number,
     onPoll?: (elapsedMs: number) => void,
+    signal?: AbortSignal,
   ): Promise<"passed" | "failed" | "none" | "timeout">;
 }
 
 /** Runs the objective, non-AI gates inside a worktree. */
 export interface GateRunner {
-  run(project: Project, task: Task): Promise<GateResult>;
+  run(project: Project, task: Task, signal?: AbortSignal): Promise<GateResult>;
 }
 
 /** The AI reviewer (deepseek-pro by default): grades against acceptance criteria. */
@@ -208,6 +219,7 @@ export interface Validator {
     /** Stream the reviewer's output so a multi-minute review isn't silent
      *  (a silent validator phase makes a task look frozen). */
     onLog?: (line: string) => void,
+    signal?: AbortSignal,
   ): Promise<MergeDecision>;
 }
 

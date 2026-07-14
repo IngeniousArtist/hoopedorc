@@ -6,6 +6,7 @@ import {
   detectDocker,
   isPlausibleImageRef,
   resolveSandboxMode,
+  sandboxedExecFile,
 } from "./sandbox.js";
 
 test("isPlausibleImageRef accepts real-world image refs", () => {
@@ -71,4 +72,29 @@ test('resolveSandboxMode("required") sandboxes when the daemon responds', async 
 
 test('resolveSandboxMode("required") throws instead of silently falling back when no daemon responds', async () => {
   await assert.rejects(() => resolveSandboxMode("required", async () => false), /Docker daemon/);
+});
+
+test("sandbox force-removes its uniquely named container when docker run is aborted", async () => {
+  const calls: { command: string; args: readonly string[] }[] = [];
+  const runner = (async (command: string, args: readonly string[]) => {
+    calls.push({ command, args });
+    if (args[0] === "run") {
+      throw new DOMException("The operation was aborted", "AbortError");
+    }
+    return { stdout: "", stderr: "" };
+  }) as Parameters<typeof sandboxedExecFile>[5];
+
+  await assert.rejects(
+    sandboxedExecFile("node:22", "/tmp", "npm", ["test"], {}, runner),
+    { name: "AbortError" },
+  );
+  assert.equal(calls.length, 2);
+  const nameIndex = calls[0]!.args.indexOf("--name");
+  assert.ok(nameIndex >= 0);
+  const containerName = calls[0]!.args[nameIndex + 1]!;
+  assert.match(containerName, /^hoopedorc-/);
+  assert.deepEqual(calls[1], {
+    command: "docker",
+    args: ["rm", "-f", containerName],
+  });
 });

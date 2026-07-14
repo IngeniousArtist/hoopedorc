@@ -92,6 +92,17 @@ test("a gate set to false (F9) is skipped and doesn't count as vacuous by itself
   assert.equal(result.vacuous, true);
 });
 
+test("an aborted gate kills its command and rejects promptly", async () => {
+  const dir = tmpRepo({ typecheck: 'node -e "setInterval(() => {}, 1000)"' });
+  const runner = new GateRunnerImpl(worktrees, { sandboxGates: "off" });
+  const controller = new AbortController();
+  const started = Date.now();
+  const run = runner.run(project(), task(dir), controller.signal);
+  setTimeout(() => controller.abort(), 100);
+  await assert.rejects(run, { name: "AbortError" });
+  assert.ok(Date.now() - started < 1_000);
+});
+
 test("testCommand (F9) runs via execFile directly and its failure fails the test gate", async () => {
   const dir = tmpRepo({});
   const runner = new GateRunnerImpl(worktrees, { sandboxGates: "off" });

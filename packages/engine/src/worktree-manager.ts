@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import {
   copyFileSync,
@@ -12,7 +10,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { minimatch } from "minimatch";
-import { sanitizedEnv } from "@orc/adapters";
+import { execManagedProcess, sanitizedEnv } from "@orc/adapters";
 import type { Project, Settings, Task } from "@orc/types";
 import type { WorktreeManager } from "./index.js";
 import {
@@ -22,7 +20,6 @@ import {
   SANDBOX_TIMEOUT_GRACE_MS,
 } from "./sandbox.js";
 
-const pexecFile = promisify(execFile);
 const DEPS_TIMEOUT_MS = 10 * 60 * 1000;
 const DEPS_MAX_BUFFER = 32 * 1024 * 1024;
 // S8: same cap validator.ts's own (separate) diff fetch uses — bounds the
@@ -33,11 +30,15 @@ const MAX_DIFF_CHARS = 40_000;
 // Argument arrays only, never a shell — otherwise project.defaultBranch and
 // task.branch (both derived from HTTP-supplied fields) could smuggle shell
 // metacharacters into a command. See git-service.ts for the same pattern.
-async function git(args: string[], cwd: string): Promise<string> {
-  const { stdout } = await pexecFile("git", args, {
+async function git(
+  args: string[],
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const { stdout } = await execManagedProcess("git", args, {
     cwd,
-    encoding: "utf-8",
-    maxBuffer: 64 * 1024 * 1024,
+    signal,
+    maxOutputBytes: 64 * 1024 * 1024,
   });
   return stdout;
 }
@@ -59,6 +60,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
   async create(
     project: Project,
     task: Task,
+    signal?: AbortSignal,
   ): Promise<{ branch: string; path: string }> {
     const branch = `orc/${task.id}`;
     const path = `${project.localPath}-wt-${task.id}`;
@@ -69,7 +71,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
     // stale local HEAD makes a new task invisible to work that already
     // landed, which is how independent tasks end up colliding on the same
     // files (see e.g. two tasks both creating index.html from scratch).
-    await git(["fetch", "origin", project.defaultBranch], project.localPath);
+    await git(["fetch", "origin", project.defaultBranch], project.localPath, signal);
 
     // Defense in depth: the branch name is deterministic (orc/<taskId>), so a
     // retried task reuses it. If a prior attempt already pushed to and opened
@@ -80,8 +82,9 @@ export class WorktreeManagerImpl implements WorktreeManager {
     // branch here (best-effort — fine if it doesn't exist) lets that PR's old
     // branch go away cleanly instead of blocking the new push.
     try {
-      await git(["push", "origin", "--delete", branch], project.localPath);
+      await git(["push", "origin", "--delete", branch], project.localPath, signal);
     } catch {
+      signal?.throwIfAborted();
       /* no remote branch by this name — the common case */
     }
 
@@ -92,8 +95,9 @@ export class WorktreeManagerImpl implements WorktreeManager {
     // ever clean it up, and `git worktree add` fails outright with "already
     // exists" on every subsequent dispatch of this same task, forever.
     try {
-      await git(["worktree", "remove", path, "--force"], project.localPath);
+      await git(["worktree", "remove", path, "--force"], project.localPath, signal);
     } catch {
+      signal?.throwIfAborted();
       /* not a registered worktree — fall through to the raw rmSync below */
     }
     try {
@@ -102,27 +106,48 @@ export class WorktreeManagerImpl implements WorktreeManager {
       /* path didn't exist — the common case */
     }
     try {
-      await git(["worktree", "prune"], project.localPath);
+      await git(["worktree", "prune"], project.localPath, signal);
     } catch {
+      signal?.throwIfAborted();
       /* best effort */
     }
     try {
-      await git(["branch", "-D", branch], project.localPath);
+      await git(["branch", "-D", branch], project.localPath, signal);
     } catch {
+      signal?.throwIfAborted();
       /* branch may not exist locally — the common case */
     }
 
-    await git(
-      ["worktree", "add", path, "-b", branch, `origin/${project.defaultBranch}`],
-      project.localPath,
-    );
+    try {
+      await git(
+        ["worktree", "add", path, "-b", branch, `origin/${project.defaultBranch}`],
+        project.localPath,
+        signal,
+      );
 
-    // MUST run before ensureDeps drops the node_modules symlink, and before the
-    // agent's `git add -A`: otherwise node_modules gets committed into the
-    // task's PR and the inScope gate fails it as an out-of-scope change. This
-    // is the local safety net; new repos also get a committed .gitignore.
-    await this.ensureGitExclude(path);
-    await this.ensureDeps(project, path);
+      // MUST run before ensureDeps drops the node_modules symlink, and before the
+      // agent's `git add -A`: otherwise node_modules gets committed into the
+      // task's PR and the inScope gate fails it as an out-of-scope change. This
+      // is the local safety net; new repos also get a committed .gitignore.
+      await this.ensureGitExclude(path, signal);
+      await this.ensureDeps(project, path, signal);
+    } catch (err) {
+      if (signal?.aborted) {
+        // create() has not returned yet, so the task does not carry the path
+        // that executeTask's finally normally removes. Clean the partial
+        // worktree here and do not reuse the aborted signal for cleanup.
+        await git(["worktree", "remove", path, "--force"], project.localPath).catch(
+          () => {},
+        );
+        try {
+          rmSync(path, { recursive: true, force: true });
+        } catch {
+          /* best effort */
+        }
+        await git(["branch", "-D", branch], project.localPath).catch(() => {});
+      }
+      throw err;
+    }
 
     return { branch, path };
   }
@@ -133,10 +158,10 @@ export class WorktreeManagerImpl implements WorktreeManager {
    * across all worktrees via the common git dir, never committed) so it works
    * even for older projects whose repo has no .gitignore.
    */
-  private async ensureGitExclude(cwd: string): Promise<void> {
+  private async ensureGitExclude(cwd: string, signal?: AbortSignal): Promise<void> {
     try {
       const rel = (
-        await git(["rev-parse", "--git-path", "info/exclude"], cwd)
+        await git(["rev-parse", "--git-path", "info/exclude"], cwd, signal)
       ).trim();
       const abs = isAbsolute(rel) ? rel : join(cwd, rel);
 
@@ -153,7 +178,8 @@ export class WorktreeManagerImpl implements WorktreeManager {
       mkdirSync(dirname(abs), { recursive: true });
       const prefix = content && !content.endsWith("\n") ? content + "\n" : content;
       writeFileSync(abs, prefix + missing.join("\n") + "\n");
-    } catch {
+    } catch (err) {
+      if (signal?.aborted) throw err;
       /* best effort */
     }
   }
@@ -187,7 +213,11 @@ export class WorktreeManagerImpl implements WorktreeManager {
    * expensive part to avoid repeating) while guaranteeing what actually gets
    * fingerprinted and installed is always current.
    */
-  private async ensureDeps(project: Project, worktreePath: string): Promise<void> {
+  private async ensureDeps(
+    project: Project,
+    worktreePath: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const primary = project.localPath;
     if (!existsSync(join(worktreePath, "package.json"))) return; // not a node project
 
@@ -227,12 +257,14 @@ export class WorktreeManagerImpl implements WorktreeManager {
           await sandboxedExecFile(project.config?.gateImage || DEFAULT_GATE_IMAGE, primary, "npm", args, {
             timeout: DEPS_TIMEOUT_MS + SANDBOX_TIMEOUT_GRACE_MS,
             maxBuffer: DEPS_MAX_BUFFER,
+            signal,
           });
         } else {
-          await pexecFile("npm", args, {
+          await execManagedProcess("npm", args, {
             cwd: primary,
-            timeout: DEPS_TIMEOUT_MS,
-            maxBuffer: DEPS_MAX_BUFFER,
+            signal,
+            timeoutMs: DEPS_TIMEOUT_MS,
+            maxOutputBytes: DEPS_MAX_BUFFER,
             env: sanitizedEnv({ PWD: primary }),
           });
         }
@@ -249,7 +281,8 @@ export class WorktreeManagerImpl implements WorktreeManager {
       if (existsSync(nm) && !existsSync(link)) {
         symlinkSync(nm, link, "dir");
       }
-    } catch {
+    } catch (err) {
+      if (signal?.aborted) throw err;
       // Best effort — if install/symlink fails, the gate will surface the
       // missing-deps error on this task rather than silently wedging the run.
     }

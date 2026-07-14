@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
@@ -78,6 +79,26 @@ import type {
 } from "@orc/types";
 
 type RouteParams = { id: string };
+
+function plannerRequestCancellation(
+  request: IncomingMessage,
+  response: ServerResponse,
+): { signal: AbortSignal; cleanup: () => void } {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const abortIfDisconnected = () => {
+    if (!response.writableEnded) abort();
+  };
+  request.once("aborted", abort);
+  response.once("close", abortIfDisconnected);
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      request.removeListener("aborted", abort);
+      response.removeListener("close", abortIfDisconnected);
+    },
+  };
+}
 
 function setupDb(): Db {
   if (ENV.mock) {
@@ -1292,6 +1313,7 @@ async function main() {
 
     let prdMarkdown: string;
     const createdTasks: Task[] = [];
+    const cancellation = plannerRequestCancellation(req.raw, reply.raw);
 
     try {
       // Real planner: whichever model routing.planner resolves to turns the
@@ -1301,8 +1323,13 @@ async function main() {
       // never hard-fails, by design.
       const plannerModel = resolvePlannerModel(settings, "deconstruct");
       const cwd = await resolvePlannerCwd(project);
-      const plan = await runPlanner(goal, project.name, cwd, plannerModel, (msg) =>
-        app.log.warn(msg),
+      const plan = await runPlanner(
+        goal,
+        project.name,
+        cwd,
+        plannerModel,
+        (msg) => app.log.warn(msg),
+        cancellation.signal,
       );
       prdMarkdown = plan.prdMarkdown;
       // No review step on this single-shot path, so inject the standing docs
@@ -1310,6 +1337,10 @@ async function main() {
       const tasksWithDocs = ensureDocsTask(plan.tasks, buildDocsTaskDraft(settings));
       createdTasks.push(...materializeTasks(db, project, tasksWithDocs, settings));
     } catch (err) {
+      if (cancellation.signal.aborted) {
+        repo.updateProject(db, id, { status: "planned" });
+        return reply.code(499).send({ error: "planner request cancelled" });
+      }
       // Fallback so planning never hard-fails (e.g. claude unavailable).
       app.log.warn(
         `planner failed, using stub: ${err instanceof Error ? err.message : String(err)}`,
@@ -1344,6 +1375,8 @@ async function main() {
         maxAttempts: defaultMaxAttempts(project),
       });
       createdTasks.push(t1, t2);
+    } finally {
+      cancellation.cleanup();
     }
 
     repo.updateProject(db, id, { status: "planned" });
@@ -1396,6 +1429,7 @@ async function main() {
       return reply.code(400).send({ error: (err as Error).message });
     }
 
+    const cancellation = plannerRequestCancellation(req.raw, reply.raw);
     try {
       const cwd = await resolvePlannerCwd(project);
       // F27: name-only list of whatever's currently in context/attachments/
@@ -1411,6 +1445,7 @@ async function main() {
         plannerModel,
         buildPriorContext(db, project),
         attachmentNames,
+        cancellation.signal,
       );
       recordPlanningCost(id, costUsd);
       // Persist the full conversation (including assistant reply) so the Plan
@@ -1430,6 +1465,8 @@ async function main() {
       return reply.code(502).send({
         error: `planner chat failed: ${err instanceof Error ? err.message : String(err)}`,
       });
+    } finally {
+      cancellation.cleanup();
     }
   });
 
@@ -1456,6 +1493,7 @@ async function main() {
       return reply.code(400).send({ error: (err as Error).message });
     }
 
+    const cancellation = plannerRequestCancellation(req.raw, reply.raw);
     try {
       const cwd = await resolvePlannerCwd(project);
       const attachmentNames = listAttachments(attachmentsDir(project, ENV.mock)).map(
@@ -1469,6 +1507,7 @@ async function main() {
         buildPriorContext(db, project),
         attachmentNames,
         (msg) => app.log.warn(msg),
+        cancellation.signal,
       );
       recordPlanningCost(id, costUsd);
       const tasks = withAssignedModels(output, settings);
@@ -1495,6 +1534,8 @@ async function main() {
       return reply.code(502).send({
         error: `deconstruction failed: ${err instanceof Error ? err.message : String(err)}`,
       });
+    } finally {
+      cancellation.cleanup();
     }
   });
 

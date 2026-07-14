@@ -168,3 +168,38 @@ test("S8: the review prompt always includes the fixed destructive-changes block,
     "should instruct the reviewer to escalate, never approve, an unrequired destructive change",
   );
 });
+
+test("validator forwards AbortSignal to the reviewer and settles on abort", async () => {
+  let started!: () => void;
+  const reviewerStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const adapter: AgentAdapter = {
+    runner: "opencode",
+    async run(opts): Promise<AgentRunResult> {
+      assert.ok(opts.signal);
+      started();
+      await new Promise<void>((_resolve, reject) => {
+        opts.signal!.addEventListener(
+          "abort",
+          () => reject(new DOMException("The operation was aborted", "AbortError")),
+          { once: true },
+        );
+      });
+      throw new Error("unreachable");
+    },
+  };
+  const validator = new ValidatorImpl(() => adapter, baseSettings());
+  const controller = new AbortController();
+  const review = validator.review(
+    PROJECT,
+    task(),
+    GATE,
+    "deepseek-flash",
+    undefined,
+    controller.signal,
+  );
+  await reviewerStarted;
+  controller.abort();
+  await assert.rejects(review, { name: "AbortError" });
+});

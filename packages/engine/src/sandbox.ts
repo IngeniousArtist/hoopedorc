@@ -1,5 +1,5 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { randomUUID } from "node:crypto";
+import { execManagedProcess } from "@orc/adapters";
 
 // F13-P1 (phase 1 of docs/specs/sandbox.md): runs gate scripts and
 // `ensureDeps`'s `npm ci|install` inside Docker instead of directly on the
@@ -7,8 +7,6 @@ import { promisify } from "node:util";
 // boundary makes an allowlist assembled from scratch cheap to maintain, per
 // the spec doc's two-layer env note, so the container's env is built up from
 // nothing rather than filtered down from the host's.
-
-const pexecFile = promisify(execFile);
 
 export type SandboxMode = "off" | "auto" | "required";
 
@@ -44,7 +42,7 @@ let dockerProbeResult: Promise<boolean> | null = null;
 
 async function runDockerVersionProbe(): Promise<boolean> {
   try {
-    await pexecFile("docker", ["version"], { timeout: 5_000 });
+    await execManagedProcess("docker", ["version"], { timeoutMs: 5_000 });
     return true;
   } catch {
     return false;
@@ -124,6 +122,7 @@ export async function resolveSandboxMode(
 export interface SandboxExecOptions {
   timeout?: number;
   maxBuffer?: number;
+  signal?: AbortSignal;
   /**
    * Additional read-only bind mounts, each mounted at the SAME absolute path
    * inside the container as on the host. Needed when the primary mount
@@ -169,6 +168,7 @@ export async function sandboxedExecFile(
   cmd: string,
   args: string[],
   opts: SandboxExecOptions = {},
+  runner: typeof execManagedProcess = execManagedProcess,
 ): Promise<{ stdout: string; stderr: string }> {
   const envArgs = Object.entries(sandboxEnv()).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
   const mountArgs = (opts.readOnlyMounts ?? []).flatMap((p) => ["-v", `${p}:${p}:ro`]);
@@ -182,9 +182,12 @@ export async function sandboxedExecFile(
     typeof process.getuid === "function" && typeof process.getgid === "function"
       ? ["-u", `${process.getuid()}:${process.getgid()}`]
       : [];
+  const containerName = `hoopedorc-${randomUUID()}`;
   const dockerArgs = [
     "run",
     "--rm",
+    "--name",
+    containerName,
     "-v",
     `${cwd}:${CONTAINER_WORKDIR}`,
     "-w",
@@ -197,9 +200,19 @@ export async function sandboxedExecFile(
     image,
     ...args,
   ];
-  return pexecFile("docker", dockerArgs, {
-    encoding: "utf-8",
-    timeout: opts.timeout,
-    maxBuffer: opts.maxBuffer,
-  });
+  try {
+    return await runner("docker", dockerArgs, {
+      signal: opts.signal,
+      timeoutMs: opts.timeout,
+      maxOutputBytes: opts.maxBuffer,
+    });
+  } catch (err) {
+    // Killing the docker CLI does not guarantee the daemon stopped the
+    // container. The unique name gives us an unambiguous cleanup target.
+    await runner("docker", ["rm", "-f", containerName], {
+      timeoutMs: 10_000,
+      maxOutputBytes: 1024 * 1024,
+    }).catch(() => {});
+    throw err;
+  }
 }

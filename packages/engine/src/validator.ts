@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import type {
   GateResult,
@@ -9,11 +7,9 @@ import type {
   Settings,
   Task,
 } from "@orc/types";
-import type { AgentAdapter } from "@orc/adapters";
+import { execManagedProcess, type AgentAdapter } from "@orc/adapters";
 import { buildEngineeringStandardsBlock } from "./guidelines.js";
 import type { Validator } from "./index.js";
-
-const pexecFile = promisify(execFile);
 
 const MAX_DIFF_CHARS = 40_000;
 
@@ -66,6 +62,7 @@ export class ValidatorImpl implements Validator {
     gate: GateResult,
     authorModel: ModelId,
     onLog: (line: string) => void = () => {},
+    signal?: AbortSignal,
   ): Promise<MergeDecision> {
     const validatorModel =
       this.settings.routing.validatorByDifficulty[task.difficulty];
@@ -82,7 +79,7 @@ export class ValidatorImpl implements Validator {
     }
 
     const cwd = task.worktreePath ?? project.localPath;
-    const diff = await this.getDiff(project, cwd);
+    const diff = await this.getDiff(project, cwd, signal);
     const adapter = this.adapterFactory(validatorModel);
     const prompt = this.buildReviewPrompt(task, gate, diff);
 
@@ -91,6 +88,7 @@ export class ValidatorImpl implements Validator {
       prompt,
       cwd,
       onLog,
+      signal,
     });
 
     // Reported when there's anything to bill: a positive CLI-reported cost
@@ -131,20 +129,25 @@ export class ValidatorImpl implements Validator {
     return decision;
   }
 
-  private async getDiff(project: Project, cwd: string): Promise<string> {
+  private async getDiff(
+    project: Project,
+    cwd: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
     try {
       // Three-dot (merge-base) diff so the reviewer sees only this task's own
       // changes, not files that advanced on main since the branch was created.
       // Argument array, no shell — project.defaultBranch is HTTP-supplied.
-      const { stdout: out } = await pexecFile(
+      const { stdout: out } = await execManagedProcess(
         "git",
         ["diff", `origin/${project.defaultBranch}...HEAD`],
-        { cwd, encoding: "utf-8", maxBuffer: 64 * 1024 * 1024 },
+        { cwd, signal, maxOutputBytes: 64 * 1024 * 1024 },
       );
       return out.length > MAX_DIFF_CHARS
         ? out.slice(0, MAX_DIFF_CHARS) + "\n... (diff truncated)"
         : out;
-    } catch {
+    } catch (err) {
+      if (signal?.aborted) throw err;
       return "(could not compute diff)";
     }
   }

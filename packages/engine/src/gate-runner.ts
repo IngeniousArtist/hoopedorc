@@ -1,8 +1,6 @@
-import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { promisify } from "node:util";
-import { sanitizedEnv } from "@orc/adapters";
+import { execManagedProcess, sanitizedEnv } from "@orc/adapters";
 import type { GateResult, Project, ProjectConfig, Settings, Task } from "@orc/types";
 import type { GateRunner, WorktreeManager } from "./index.js";
 import {
@@ -11,12 +9,6 @@ import {
   sandboxedExecFile,
   SANDBOX_TIMEOUT_GRACE_MS,
 } from "./sandbox.js";
-
-// Async exec everywhere: gates run npm scripts (up to 2 min each) and git
-// commands. The old execSync versions blocked Node's single event loop for the
-// whole duration, so while ANY task was running its gates the server couldn't
-// answer HTTP/WS — it looked frozen. promisify(execFile) keeps the loop free.
-const pexecFile = promisify(execFile);
 
 const GATE_TIMEOUT_MS = 120_000;
 
@@ -73,7 +65,7 @@ export class GateRunnerImpl implements GateRunner {
     private readonly sandbox: SandboxDeps = REAL_SANDBOX_DEPS,
   ) {}
 
-  async run(project: Project, task: Task): Promise<GateResult> {
+  async run(project: Project, task: Task, signal?: AbortSignal): Promise<GateResult> {
     const worktreePath = task.worktreePath;
     if (!worktreePath) {
       return this.allFail("no worktree path set");
@@ -81,6 +73,7 @@ export class GateRunnerImpl implements GateRunner {
 
     let ctx: GateExecContext;
     try {
+      signal?.throwIfAborted();
       const resolved = await this.sandbox.resolveMode(this.settings?.sandboxGates);
       if (resolved.useSandbox) {
         // The worktree's node_modules (if any) is a symlink to an absolute
@@ -98,17 +91,18 @@ export class GateRunnerImpl implements GateRunner {
         ctx = { sandboxed: false };
       }
     } catch (err) {
+      if (signal?.aborted) throw err;
       // "required" with no daemon — fail loudly rather than silently running
       // on the host, per Settings.sandboxGates's contract.
       return this.allFail((err as Error).message);
     }
 
     const gates = project.config?.gates;
-    const typecheck = await this.runGate(worktreePath, "typecheck", gates?.typecheckScript, ctx);
-    const lint = await this.runGate(worktreePath, "lint", gates?.lintScript, ctx);
-    const build = await this.runGate(worktreePath, "build", gates?.buildScript, ctx);
-    const tests = await this.runTestsGate(worktreePath, gates, ctx);
-    const noConflicts = await this.checkNoConflicts(project, worktreePath);
+    const typecheck = await this.runGate(worktreePath, "typecheck", gates?.typecheckScript, ctx, signal);
+    const lint = await this.runGate(worktreePath, "lint", gates?.lintScript, ctx, signal);
+    const build = await this.runGate(worktreePath, "build", gates?.buildScript, ctx, signal);
+    const tests = await this.runTestsGate(worktreePath, gates, ctx, signal);
+    const noConflicts = await this.checkNoConflicts(project, worktreePath, signal);
     const inScope = await this.worktrees.changedFilesInScope(project, task);
     // Every objective gate was a no-op (script-less repo, e.g. a brand-new
     // scaffold) — nothing actually verified this change; canAutoMerge treats
@@ -141,6 +135,7 @@ export class GateRunnerImpl implements GateRunner {
     slot: string,
     scriptOverride: string | false | undefined,
     ctx: GateExecContext,
+    signal?: AbortSignal,
   ): Promise<{ passed: boolean; ran: boolean; output: string }> {
     if (scriptOverride === false) {
       return { passed: true, ran: false, output: `gate "${slot}" disabled by project config` };
@@ -156,19 +151,20 @@ export class GateRunnerImpl implements GateRunner {
         output: `configured gate script "${scriptOverride}" not found in package.json`,
       };
     }
-    return this.runScript(cwd, scriptOverride || slot, ctx);
+    return this.runScript(cwd, scriptOverride || slot, ctx, signal);
   }
 
   private async runTestsGate(
     cwd: string,
     gates: ProjectConfig["gates"] | undefined,
     ctx: GateExecContext,
+    signal?: AbortSignal,
   ): Promise<{ passed: boolean; ran: boolean; output: string }> {
     if (gates?.testScript === false) {
       return { passed: true, ran: false, output: 'gate "test" disabled by project config' };
     }
     if (gates?.testCommand) {
-      return this.runCommand(cwd, gates.testCommand, ctx);
+      return this.runCommand(cwd, gates.testCommand, ctx, signal);
     }
     if (gates?.testScript) {
       if (!hasNpmScript(cwd, gates.testScript)) {
@@ -178,11 +174,11 @@ export class GateRunnerImpl implements GateRunner {
           output: `configured gate script "${gates.testScript}" not found in package.json`,
         };
       }
-      return this.runScript(cwd, gates.testScript, ctx);
+      return this.runScript(cwd, gates.testScript, ctx, signal);
     }
     // Default: support either a "test" or "tests" npm script; both must pass if present.
-    const testRun = await this.runScript(cwd, "test", ctx);
-    const testsRun = await this.runScript(cwd, "tests", ctx);
+    const testRun = await this.runScript(cwd, "test", ctx, signal);
+    const testsRun = await this.runScript(cwd, "tests", ctx, signal);
     return {
       passed: testRun.passed && testsRun.passed,
       ran: testRun.ran || testsRun.ran,
@@ -201,13 +197,15 @@ export class GateRunnerImpl implements GateRunner {
     cwd: string,
     command: string,
     ctx: GateExecContext,
+    signal?: AbortSignal,
   ): Promise<{ passed: boolean; ran: boolean; output: string }> {
     const [cmd, ...args] = command.trim().split(/\s+/).filter(Boolean);
     if (!cmd) return { passed: true, ran: false, output: "empty testCommand" };
     try {
-      const { stdout } = await this.exec(ctx, cwd, cmd, args);
+      const { stdout } = await this.exec(ctx, cwd, cmd, args, signal);
       return { passed: true, ran: true, output: stdout };
     } catch (err: unknown) {
+      if (signal?.aborted) throw err;
       const e = err as { stderr?: string; stdout?: string; message?: string; killed?: boolean };
       const out = e.stderr || e.stdout || e.message || "";
       if (e.killed) {
@@ -221,14 +219,16 @@ export class GateRunnerImpl implements GateRunner {
     cwd: string,
     script: string,
     ctx: GateExecContext,
+    signal?: AbortSignal,
   ): Promise<{ passed: boolean; ran: boolean; output: string }> {
     if (!hasNpmScript(cwd, script)) {
       return { passed: true, ran: false, output: `script "${script}" not defined in package.json` };
     }
     try {
-      const { stdout } = await this.exec(ctx, cwd, "npm", ["run", script, "--if-present"]);
+      const { stdout } = await this.exec(ctx, cwd, "npm", ["run", script, "--if-present"], signal);
       return { passed: true, ran: true, output: stdout };
     } catch (err: unknown) {
+      if (signal?.aborted) throw err;
       const e = err as {
         stderr?: string;
         stdout?: string;
@@ -266,13 +266,14 @@ export class GateRunnerImpl implements GateRunner {
     cwd: string,
     cmd: string,
     args: string[],
+    signal?: AbortSignal,
   ): Promise<{ stdout: string; stderr?: string }> {
     if (!ctx.sandboxed) {
-      return pexecFile(cmd, args, {
+      return execManagedProcess(cmd, args, {
         cwd,
-        encoding: "utf-8",
-        timeout: GATE_TIMEOUT_MS,
-        maxBuffer: 16 * 1024 * 1024,
+        signal,
+        timeoutMs: GATE_TIMEOUT_MS,
+        maxOutputBytes: 16 * 1024 * 1024,
         env: sanitizedEnv({ PWD: cwd }),
       });
     }
@@ -280,19 +281,23 @@ export class GateRunnerImpl implements GateRunner {
       timeout: GATE_TIMEOUT_MS + SANDBOX_TIMEOUT_GRACE_MS,
       maxBuffer: 16 * 1024 * 1024,
       readOnlyMounts: ctx.readOnlyMounts,
+      signal,
     });
   }
 
   private async checkNoConflicts(
     project: Project,
     cwd: string,
+    signal?: AbortSignal,
   ): Promise<boolean> {
     try {
-      await pexecFile("git", ["fetch", "origin", project.defaultBranch], {
+      await execManagedProcess("git", ["fetch", "origin", project.defaultBranch], {
         cwd,
-        timeout: 30_000,
+        signal,
+        timeoutMs: 30_000,
       });
     } catch {
+      signal?.throwIfAborted();
       return false;
     }
 
@@ -301,21 +306,23 @@ export class GateRunnerImpl implements GateRunner {
     // no conflict. A non-zero exit means a real conflict.
     let clean: boolean;
     try {
-      await pexecFile(
+      await execManagedProcess(
         "git",
         ["merge", "--no-commit", "--no-ff", `origin/${project.defaultBranch}`],
-        { cwd, timeout: 30_000 },
+        { cwd, signal, timeoutMs: 30_000 },
       );
       clean = true;
     } catch {
+      signal?.throwIfAborted();
       clean = false;
     }
 
     // Roll back any merge state. When the branch was already up to date there is
     // no merge in progress, so this fails harmlessly — ignore it.
     try {
-      await pexecFile("git", ["merge", "--abort"], { cwd });
+      await execManagedProcess("git", ["merge", "--abort"], { cwd, signal });
     } catch {
+      signal?.throwIfAborted();
       /* no merge in progress — nothing to abort */
     }
 
