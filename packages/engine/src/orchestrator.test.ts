@@ -1082,17 +1082,31 @@ test("manual-only queued tasks share normal scope serialization and disjoint con
   let maxConcurrent = 0;
   let concurrentA = 0;
   let maxConcurrentA = 0;
+  let firstWaveStarted = 0;
+  let resolveFirstWaveStarted!: () => void;
+  const firstWaveStartedPromise = new Promise<void>((resolve) => {
+    resolveFirstWaveStarted = resolve;
+  });
+  let releaseFirstWave!: () => void;
+  const firstWaveRelease = new Promise<void>((resolve) => {
+    releaseFirstWave = resolve;
+  });
   const deps = fakeDeps(
     {
       adapterFor: () => ({
         runner: "opencode",
         async run(opts): Promise<AgentRunResult> {
+          const id = opts.cwd.split("/").at(-1);
           const isA = opts.cwd.endsWith("a1") || opts.cwd.endsWith("a2");
           concurrent++;
           if (isA) concurrentA++;
           maxConcurrent = Math.max(maxConcurrent, concurrent);
           maxConcurrentA = Math.max(maxConcurrentA, concurrentA);
-          await new Promise((resolve) => setTimeout(resolve, 20));
+          if (id === "a1" || id === "b") {
+            firstWaveStarted++;
+            if (firstWaveStarted === 2) resolveFirstWaveStarted();
+            await firstWaveRelease;
+          }
           concurrent--;
           if (isA) concurrentA--;
           return {
@@ -1113,9 +1127,14 @@ test("manual-only queued tasks share normal scope serialization and disjoint con
   const a2 = task("a2", [], { scopePaths: ["src/a/**"], dispatchRequestedAt: requestedAt });
   const b = task("b", [], { scopePaths: ["src/b/**"], dispatchRequestedAt: requestedAt });
 
-  await new Orchestrator(deps).start(PROJECT, [a1, a2, b], {
+  const run = new Orchestrator(deps).start(PROJECT, [a1, a2, b], {
     shouldDispatch: (candidate) => candidate.dispatchRequestedAt !== undefined,
   });
+  await firstWaveStartedPromise;
+  assert.equal(concurrent, 2, "the disjoint first wave starts together");
+  assert.equal(concurrentA, 1, "the overlapping request is still held");
+  releaseFirstWave();
+  await run;
 
   assert.equal(maxConcurrent, 2, "disjoint manual requests may run together");
   assert.equal(maxConcurrentA, 1, "overlapping manual requests must serialize");

@@ -54,6 +54,10 @@ function controlledOrchestrator() {
   const startGate = new Promise<void>((resolve) => {
     resolveStart = resolve;
   });
+  let resolveStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    resolveStarted = resolve;
+  });
   const state: {
     startCalls: number;
     pauseCalls: { drain?: boolean }[];
@@ -67,6 +71,7 @@ function controlledOrchestrator() {
     ): Promise<void> {
       state.startCalls++;
       state.startOptions = options;
+      resolveStarted();
       return startGate;
     },
     async pause(_project: Project, options: { drain?: boolean } = {}): Promise<void> {
@@ -76,15 +81,13 @@ function controlledOrchestrator() {
       return false;
     },
   } as unknown as Orchestrator;
-  return { orchestrator, state, resolveStart };
+  return { orchestrator, state, started, resolveStart };
 }
 
-async function waitFor(check: () => boolean): Promise<void> {
-  for (let i = 0; i < 100; i++) {
-    if (check()) return;
-    await new Promise((resolve) => setTimeout(resolve, 2));
-  }
-  assert.fail("timed out waiting for condition");
+function activeRuntime(engine: EngineRunner, projectId: string): { settled: Promise<void> } {
+  return (
+    engine as unknown as { runtimes: Map<string, { settled: Promise<void> }> }
+  ).runtimes.get(projectId)!;
 }
 
 /** F44: reaches the same private buildOrchestrator() method + its
@@ -240,7 +243,8 @@ test("B34: repeated manual dispatches share one project runtime and one schedule
   });
 
   const first = await engine.dispatchOne(proj, "t1");
-  await waitFor(() => controlled.state.startCalls === 1);
+  await controlled.started;
+  const runtime = activeRuntime(engine, proj.id);
   const second = await engine.dispatchOne(proj, "t2");
 
   assert.ok(first.dispatchRequestedAt);
@@ -252,7 +256,8 @@ test("B34: repeated manual dispatches share one project runtime and one schedule
 
   repo.clearDispatchRequests(db, proj.id);
   controlled.resolveStart();
-  await waitFor(() => !engine.hasActivity(proj.id));
+  await runtime.settled;
+  assert.equal(engine.hasActivity(proj.id), false);
 });
 
 test("B34: Start promotes a manual runtime instead of constructing a competing Orchestrator", async () => {
@@ -272,7 +277,8 @@ test("B34: Start promotes a manual runtime instead of constructing a competing O
   });
 
   await engine.dispatchOne(proj, "manual");
-  await waitFor(() => controlled.state.startCalls === 1);
+  await controlled.started;
+  const runtime = activeRuntime(engine, proj.id);
   await engine.start(proj);
 
   assert.equal(factoryCalls, 1);
@@ -281,7 +287,8 @@ test("B34: Start promotes a manual runtime instead of constructing a competing O
 
   repo.clearDispatchRequests(db, proj.id);
   controlled.resolveStart();
-  await waitFor(() => !engine.hasActivity(proj.id));
+  await runtime.settled;
+  assert.equal(engine.hasActivity(proj.id), false);
 });
 
 test("B34: hard Stop keeps ownership registered until the exact runtime settles", async () => {
@@ -297,7 +304,8 @@ test("B34: hard Stop keeps ownership registered until the exact runtime settles"
   });
 
   await engine.start(proj);
-  await waitFor(() => controlled.state.startCalls === 1);
+  await controlled.started;
+  const runtime = activeRuntime(engine, proj.id);
   await engine.pause(proj, { drain: false });
 
   assert.equal(controlled.state.pauseCalls.length, 1);
@@ -305,7 +313,8 @@ test("B34: hard Stop keeps ownership registered until the exact runtime settles"
   await assert.rejects(engine.start(proj), /stopping/);
 
   controlled.resolveStart();
-  await waitFor(() => !engine.hasActivity(proj.id));
+  await runtime.settled;
+  assert.equal(engine.hasActivity(proj.id), false);
 });
 
 test("B34: persisted manual requests resume after process restart", async () => {
@@ -323,11 +332,13 @@ test("B34: persisted manual requests resume after process restart", async () => 
 
   assert.equal(engine.resumeQueued(proj), true);
   assert.equal(engine.resumeQueued(proj), false, "the registered runtime keeps sole ownership");
-  await waitFor(() => controlled.state.startCalls === 1);
+  await controlled.started;
+  const runtime = activeRuntime(engine, proj.id);
 
   repo.clearDispatchRequests(db, proj.id);
   controlled.resolveStart();
-  await waitFor(() => !engine.hasActivity(proj.id));
+  await runtime.settled;
+  assert.equal(engine.hasActivity(proj.id), false);
 });
 
 test("B34: an old runtime finally cannot unregister a newer generation", async () => {
@@ -345,7 +356,7 @@ test("B34: an old runtime finally cannot unregister a newer generation", async (
   });
 
   await engine.start(proj);
-  await waitFor(() => oldControl.state.startCalls === 1);
+  await oldControl.started;
   const runtimes = (
     engine as unknown as { runtimes: Map<string, { settled: Promise<void> }> }
   ).runtimes;
@@ -355,7 +366,7 @@ test("B34: an old runtime finally cannot unregister a newer generation", async (
   // generation owns the key by the time the old Promise reaches finally.
   runtimes.delete(proj.id);
   await engine.start(proj);
-  await waitFor(() => newControl.state.startCalls === 1);
+  await newControl.started;
   const newRuntime = runtimes.get(proj.id)!;
 
   oldControl.resolveStart();
