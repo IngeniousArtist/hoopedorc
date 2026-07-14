@@ -1683,8 +1683,8 @@ target rules.
 | S9 — fail-closed gates, destructive rail, and worktree hygiene | done | [#141](https://github.com/IngeniousArtist/hoopedorc/pull/141) |
 | B36 — rollback through a gated, human-approved PR | done | [#142](https://github.com/IngeniousArtist/hoopedorc/pull/142) |
 | S10 — CLI credential/environment boundary | done | [#143](https://github.com/IngeniousArtist/hoopedorc/pull/143) |
-| B37 — enabled models, live settings, and complete validation | pending | — |
-| F48 — per-model effort setting across all model stages | pending | — |
+| B37 — enabled models, live settings, and complete validation | done | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
+| F48 — per-model effort setting across all model stages | done | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
 | B38 — portable dependency setup and atomic caching | pending | — |
 | B39 — planning and git durability | pending | — |
 | B40 — complete model-invocation accounting | pending | — |
@@ -5820,6 +5820,41 @@ run metadata record the resolved effort so cost/quality comparisons are possible
 three runners; planner paths receive the same setting; Settings round-trips it;
 mobile and desktop controls remain usable; an unsupported value produces an
 actionable save/test error rather than silently falling back.
+
+**B37 + F48 — done together (PR [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144)).**
+One `normalizeSettings` contract now deep-migrates historical JSON and validates
+defaults, boot migration, repository reads/writes, web-style partial updates,
+Telegram settings commands, and every runtime read. It rejects malformed
+runners, effort, enabled/concurrency fields, routing targets, budgets, quotas,
+confidence, policies, sandbox mode, and booleans with a precise field path;
+routing cannot name a missing or disabled model. Active orchestrators receive a
+validated live accessor: dispatch capacity/enabled state, rebuilt fallback
+chains, budgets, quotas, approval holds, merge/risky/vacuous policy,
+notification gates, guidelines, and manual pricing now change at the next
+decision boundary, while an already-started author/reviewer call keeps its
+snapshotted adapter and survives disable. Planner/deconstructor and docs/health
+entry points independently refuse disabled models before a process starts.
+
+`ModelConfig.effort` now maps through one shared argument builder to Claude
+`--effort`, OpenCode `--variant` (safe custom values allowed), and Codex
+`-c model_reasoning_effort=…`. Planning, deconstruction, authors, validators,
+per-task documentation, and model health all resolve the same model field.
+Settings exposes a visible CLI-default choice plus runner-specific controls;
+changing runner clears effort. Engine logs, persisted `Run.effort`, task run
+history, immediate model-test results, and model health expose the resolved
+value. SQLite adds the backward-compatible nullable run column.
+
+Verified: `npm run typecheck`, `npm run build`, `git diff --check`, 12/12
+adapter tests, 136/136 engine tests, and 120/120 server tests. The tests change
+fallback policy/disable, budgets, quotas, approval hold, merge policy,
+confidence threshold, notification digest, and pricing after runtime creation;
+preserve in-flight calls; reject corrupt persisted/API-style settings; prove
+Telegram goes through the shared validator; cover exact default/explicit CLI
+args for all runners and planner tiers; and round-trip Settings/run effort.
+Browser smoke at 1280px and 390px confirmed effort selection enables Save,
+runner changes reset to CLI default with the new runner options, and the effort
+control stays fully inside the mobile viewport. Fable review remains the
+independent post-merge check required for this wave.
 
 ### B38. Portable dependency setup and atomic caching — MEDIUM
 
