@@ -2,7 +2,7 @@
 
 **Audience: the implementing model (Sonnet).** This doc was produced by a full read of
 the codebase (all of `packages/*` and `apps/web`) plus the existing docs (PRD,
-ARCHITECTURE, NEXT_STEPS, CONTRACT). It has seven parts:
+ARCHITECTURE, NEXT_STEPS, CONTRACT). It has nine parts:
 
 - **Part 1 — Fix first**: real bugs and security issues found in the current code,
   ordered by severity, each with a concrete fix. Do these before any Part 2 feature.
@@ -60,6 +60,17 @@ ARCHITECTURE, NEXT_STEPS, CONTRACT). It has seven parts:
   approvals, stop-all, retry, digest control, health summary — plus an
   optional hold-dispatch-while-awaiting-approval mode, an EC2 bootstrap
   script, and the missing sandbox-mode UI toggle. Completed 2026-07-10.
+- **Part 9 — Autonomy-hardening wave** (added 2026-07-14 from the owner's
+  first real dogfooding runs on the EC2 box): every item traces back to a
+  failure or safety gap the owner hit live — a confirmed parser bug that
+  breaks deconstruction whenever the plan text contains code fences, the
+  autonomous run silently ending when a model hits its cooldown/quota
+  window, no rail at all against destructive changes under
+  `fully_autonomous`, "author produced no changes" failures with no
+  diagnosis of where the agent actually wrote, missing web notifications
+  for fallback/requeue events, the opencode-runner rejection in the
+  planner now that model routing exists, and planner-output hardening
+  (flat task DAG, scope paths that cover shared wiring files).
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
@@ -4756,6 +4767,422 @@ actual EC2 deploy and confirm.
 
 ---
 
+## Part 9 — Autonomy-hardening wave (Fable, 2026-07-14)
+
+**Context for the implementing model.** Produced from the owner's first
+real dogfooding runs on the EC2 box (2026-07-14). Every item here is a
+failure or safety gap the owner hit live, diagnosed by Fable against the
+current `main` (post-#123). Two root causes are **confirmed by code
+tracing**, not hypotheses: B31 (the fence regex in `extractJsonObject`)
+and B32 (the dispatch loop's wind-down on cooldown/quota blocks). The
+owner's goal is unchanged: Hoopedorc runs autonomously without
+babysitting, but never does anything destructive. Suggested PR grouping:
+B31+F46+F47 (all three live in `planner.ts` — one PR), then B32, then
+S8, then B33, F44, F45 in any order.
+
+### B31. Deconstruction fails on code fences inside the plan text — HIGH (breaks planning)
+
+**Where:** `packages/server/src/planner.ts` (`extractJsonObject`, ~line
+492; `parsePlanOutput`; `runPlannerDeconstruct`), plus a new unit test
+file (or extend the existing planner tests).
+
+**Problem (confirmed by tracing):** the owner hit
+`deconstruction failed: Unexpected token '\', "\nprisma/"... is not valid JSON`.
+Root cause: `extractJsonObject`'s fence regex
+`/\`\`\`(?:json)?\s*([\s\S]*?)\`\`\`/` is **unanchored and non-greedy**.
+When the claude-path planner correctly returns pure JSON (no outer
+fences) but the `prd`/`agentsMd`/task-description *strings inside that
+JSON* contain markdown code fences (any real plan mentioning
+`prisma/schema.prisma`, install commands, or file trees does), the regex
+matches the first *inner* pair of ``` markers and "extracts" the garbage
+between them — e.g. a fenced directory listing starting `\nprisma/…` —
+which then fails `JSON.parse` with exactly the observed error. The codex
+path is immune (`--output-schema` enforces the shape natively); the
+claude path and any future non-schema path are broken for any
+non-trivial plan.
+
+**Fix (three layers, in order):**
+1. **Extraction:** if the trimmed response starts with `{`, skip fence
+   handling entirely and slice first-`{` to last-`}`. Only treat fences
+   as wrappers when they wrap the WHOLE response: anchor the regex to
+   `/^\s*\`\`\`(?:json)?\s*([\s\S]*)\`\`\`\s*$/` (greedy, both ends
+   anchored) so inner fences can never match.
+2. **Repair fallback:** on `JSON.parse` failure, run a minimal repair
+   pass and re-parse — at minimum, escape literal control characters
+   (raw newlines/tabs) that appear inside JSON string literals, since
+   models emit those routinely. Either hand-roll a small scanner
+   (walk the text tracking in-string state; escape `\n`/`\t`/`\r` found
+   inside strings) or add the zero-dependency `jsonrepair` npm package
+   to `@orc/server` — implementer's choice; say which in the PR.
+3. **One re-ask retry:** if parsing still fails, re-invoke the same
+   planner model ONCE with a short prompt containing the parse error and
+   the first ~500 chars of the invalid output, instructing it to re-emit
+   the complete response as valid JSON only. Record its cost through the
+   same `recordPlanningCost` path. If the retry also fails, surface the
+   existing 502 — but now with the parse error AND a note that a retry
+   was attempted.
+
+**Acceptance:** unit tests covering: (a) pure JSON whose `prd` string
+contains a ```` ```bash ```` fence — parses correctly (this is the
+owner's exact failure shape); (b) whole-response fence-wrapped JSON —
+still parses; (c) JSON with a literal newline inside a string — repaired
+and parsed; (d) hopeless garbage — triggers exactly one retry, then a
+clear error. Live: re-run the deconstruct that failed for the owner
+(a plan whose text includes fenced file paths) and confirm tasks appear.
+
+### B32. Autonomous run silently ends when models hit cooldown/quota — HIGH (the "full autonomous doesn't work" fix)
+
+**Where:** `packages/engine/src/orchestrator.ts` (`start()`'s dispatch
+loop and `executeTask`'s budget/quota requeue guards),
+`packages/server/src/engine-runner.ts` (`onModelTrouble` union),
+`packages/types` if the event union lives there.
+
+**Problem (confirmed by tracing):** in `start()`'s loop, a ready task
+whose model is cooldown-blocked (`checkModelCooldown`) or quota-blocked
+(`checkModelQuota`) is skipped with `continue` — but unlike
+`blockedByCapacity`, neither sets any "still waiting" flag. So when the
+only remaining ready tasks are cooldown/quota-blocked and nothing is
+active, the loop hits `dispatched === 0 && activeTaskIds.size === 0` and
+**breaks: the run ends, project status flips to "paused", and nothing
+ever resumes it** — even though a cooldown expires in ≤5 minutes and a
+quota window rolls over on its own. The same happens via `executeTask`'s
+mid-task quota requeue (task → backlog → next pass blocks → run ends).
+Additionally, the fallback chain (`buildFallbackChain`) is only consulted
+*after in-run failures* — a task whose assigned model is quota-blocked at
+dispatch time never even tries its configured fallbacks. Net effect: the
+owner presses Start, one model hits its subscription window, and the
+"autonomous" system quietly stops for the night. This — not any single
+task failure — is the core of the owner's "full autonomous system doesn't
+seem to work" report.
+
+**Fix (two parts):**
+1. **Fallback at dispatch time.** When a ready task's `assignedModel` is
+   cooldown- or quota-blocked, walk `buildFallbackChain(task.assignedModel,
+   task.difficulty, routing)` and dispatch on the first chain model that
+   is configured, not cooldown/quota-blocked, not budget-blocked, and
+   under its `maxConcurrent`. `executeTask` needs an optional starting
+   model parameter (default `task.assignedModel`) so the in-run
+   escalation chain continues from the right index; all the
+   concurrency/budget/capacity bookkeeping in the dispatch loop must
+   check the CHOSEN model, not `assignedModel`. Log
+   `"assigned model blocked (<reason>) — dispatching on fallback <m>"`
+   and fire `onModelTrouble` with the existing `"fallback"` event.
+   Budget blocks do NOT trigger dispatch-time fallback (a spend cap is a
+   human decision; project/global budgets block every model anyway).
+2. **Wait, don't die.** Track `blockedByTimeBounded` alongside
+   `blockedByCapacity`: set it when a ready task (and its whole fallback
+   chain) is held back ONLY by cooldown/quota. Add it to the existing
+   poll condition (`dispatched === 0 && (… || blockedByCapacity ||
+   blockedByTimeBounded || pendingApproval)`) so the loop keeps polling
+   instead of breaking — cooldowns expire and `checkModelQuota` re-opens
+   as old runs age out of the window, so dispatch resumes by itself.
+   The existing warned-sets already prevent log spam. When the loop
+   FIRST enters this all-blocked-waiting state, fire `onModelTrouble`
+   with a new event value `"quota_wait"` (extend the union) so the owner
+   gets one Telegram push ("run is waiting for <model>'s
+   cooldown/quota window") instead of discovering a stalled board hours
+   later. Budget-only blocks keep today's wind-down behavior exactly.
+   Pause/Stop must still exit promptly (the loop re-checks `paused`
+   every pass — keep it that way).
+
+**Acceptance:** engine tests: (a) assigned model quota-blocked, fallback
+model free → task dispatches on the fallback with correct concurrency
+accounting, no run end; (b) every chain model cooldown-blocked, cooldown
+expiring mid-test → loop stays alive (no "Orchestrator finished") and
+dispatches after expiry, with exactly one `quota_wait` trouble event;
+(c) budget-blocked only → run winds down exactly as today; (d) pause
+during the waiting state exits promptly. Live: set a tiny quota
+(`maxRuns: 1`, `windowHours: 0.05` ≈ 3 min) on a model, start a
+two-task project, confirm the run survives the window and finishes.
+
+### B33. "Author produced no changes" — diagnose where the agent wrote + prompt hardening — MEDIUM
+
+**Where:** `packages/engine/src/orchestrator.ts` (`buildAuthorPrompt`,
+the `changed.length === 0` branch in `executeTask`),
+`packages/engine/src/worktree-manager.ts` (new small helper),
+`packages/adapters/src/index.ts` (opencode attach verification note).
+
+**Problem:** the owner hit `Author produced no changes in the worktree
+(/home/ubuntu/.hoopedorc/repos/style-tinder-wt-…)` on EC2. The retry +
+fallback handling exists and is correct, but the error is undiagnosable:
+it can mean (a) a weak model ran out of steps and exited having written
+nothing, or (b) the agent wrote OUTSIDE the worktree (typically into the
+project's primary clone, or the server's launch dir), and nothing today
+distinguishes them. Nothing in the author prompt tells the agent it's in
+a dedicated worktree either.
+
+**Fix:**
+1. **Prompt:** add a short `## Working directory` block to
+   `buildAuthorPrompt`: "Implement all changes in the current working
+   directory — it is a dedicated git worktree for this task. Never `cd`
+   elsewhere or write files outside it. Before finishing, run
+   `git status` and confirm the files you created/modified appear."
+2. **Diagnosis:** when `changedFiles` comes back empty, run
+   `git status --porcelain` in `project.localPath` (add a
+   `WorktreeManager` helper). If the primary clone is dirty — EXCLUDING
+   `package.json`/lockfiles, which B29's manifest copy legitimately
+   dirties — the error message should say so explicitly ("the agent
+   appears to have written into the primary clone at <path>: <files>")
+   and the fix-instructions for the retry should tell the model it wrote
+   to the wrong directory. If the primary clone is clean, keep today's
+   "likely ran out of steps" framing. Report only — do NOT auto-reset
+   the primary clone (syncPrimary self-heals; a reset here could race
+   it).
+3. **opencode attach:** verify against the installed opencode CLI
+   whether `opencode run --attach <url>` executes tools in the CLIENT's
+   cwd or the attached server's. If the server's, stop passing
+   `--attach` for task runs (or pass the CLI's directory flag if one
+   exists) — a shared server session writing into ITS cwd would produce
+   exactly this failure. `OPENCODE_BASE_URL` defaults to empty so most
+   setups don't attach, but the EC2 box's `.env` should be checked and
+   the finding recorded in the PR either way.
+
+**Acceptance:** engine test: seeded dirty primary clone (a file that
+isn't package.json/lockfile) + empty worktree diff → the emitted error
+names the primary clone and the offending file; clean primary → today's
+message. Prompt test: author prompt contains the working-directory
+block. Live: reproduce on the EC2 box if the failing task is still
+around; otherwise confirm the new diagnosis line appears in a forced
+no-op run.
+
+### S8. Non-bypassable destructive-change rail + validator/author safety prompts — HIGH (safety)
+
+**Where:** `packages/engine/src/orchestrator.ts` (`canAutoMerge`),
+`packages/engine/src/worktree-manager.ts` (name-status diff helper),
+`packages/engine/src/validator.ts` (`buildReviewPrompt`),
+`packages/engine/src/guidelines.ts` (fixed author guardrail block),
+`packages/types/src/domain.ts` (`riskyChangeRules`), settings validation
+in `packages/server/src/index.ts`, Settings UI, `docs/USER_GUIDE.md`.
+
+**Problem:** the owner asked that models never be allowed to do
+"extremely risky things — deleting whole directories, removing the
+production DB, deleting all active subscriptions" even in auto mode.
+Today there is NO such rail: `canAutoMerge` returns `true` immediately
+under `fully_autonomous`, skipping every risky-change check, and the
+validator's prompt says nothing about destructive operations — a diff
+that deletes half the repo or adds `DROP TABLE users` merges untouched
+if gates pass and the validator (grading only against acceptance
+criteria) approves.
+
+**Fix (three layers — detection, validator prompt, author prompt):**
+1. **Detection (the hard rail).** New exported pure function in the
+   engine, e.g. `detectDestructiveChanges(files: {path: string; status:
+   string}[], diffText: string): string[]` (returns human-readable
+   reasons, empty = clean). Get name-status via a new
+   `WorktreeManager.changedFilesWithStatus` (`git diff --name-status
+   origin/<default>...HEAD`) and the diff text the validator already
+   fetches (reuse/share, capped). Flag at minimum:
+   - mass deletion: more than 10 files deleted, OR deletions exceeding
+     half of all changed paths (with >3 changed), OR every file under a
+     top-level directory deleted;
+   - deletion of migration/schema files (`migrations?/`, `*.sql`,
+     `prisma/schema.prisma`, `db/schema*`);
+   - deletion of `.env*`, CI workflow files, or lockfiles;
+   - added lines matching destructive SQL/data ops: `DROP TABLE|DROP
+     DATABASE|TRUNCATE`, `DELETE FROM <table>` with no `WHERE` on the
+     same line, `deleteMany()` with an empty/no filter;
+   - added shell lines with `rm -rf` targeting a non-tmp, non-repo-local
+     path.
+   Keep every pattern in one place with a unit test per pattern — this
+   list WILL grow.
+2. **Enforcement.** In `canAutoMerge`, run the destructive check BEFORE
+   the `fully_autonomous` early-return — a destructive flag forces the
+   approval path in EVERY merge policy (that is the point:
+   non-bypassable). Gate it behind a new
+   `riskyChangeRules.destructiveChanges: boolean` defaulting to **true**
+   (migrate `defaultSettings()` and tolerate old persisted settings
+   missing the key — absent counts as true). The approval message must
+   name the tripped reasons verbatim. Settings UI: checkbox with the
+   other risky-change rules, copy stating it applies even under Fully
+   Autonomous.
+3. **Validator prompt.** Add a fixed "Destructive & dangerous changes"
+   block to `buildReviewPrompt` (always included, not operator-editable):
+   instruct the reviewer to check the diff for the same classes —
+   deleting directories/many files unrelated to the task, destructive DB
+   migrations or data-wipe operations, bulk deletion of user/production
+   data (accounts, subscriptions, records), disabling auth/safety
+   checks, secrets in code — and, on finding one not explicitly required
+   by the task, use verdict `escalate` (never `approve`) and name it in
+   `reasons`.
+4. **Author prompt.** Fixed guardrail block in `guidelines.ts` (like
+   `DOCS_GUIDELINES`, appended unconditionally in `buildAuthorPrompt`):
+   never delete files/directories unrelated to the task; never write
+   destructive migrations, data-wipe scripts, or bulk deletions of
+   records unless the task explicitly requires it; prefer additive
+   changes; never touch credentials/secrets.
+
+**Acceptance:** engine unit tests: one per detection pattern (positive +
+a near-miss negative, e.g. `DELETE FROM x WHERE id = ?` does NOT trip);
+`canAutoMerge` under `fully_autonomous` with a destructive diff → false
+(approval requested), with a clean diff → true (unchanged); rule
+disabled → today's behavior. Prompt tests: validator + author prompts
+contain the new blocks. Live: a deliberately destructive task ("delete
+the src directory") on a scratch repo gets held for approval under
+`fully_autonomous` with the reason named, on both web and Telegram.
+
+### F44. Automode notification parity — model trouble & requeues visible in the web UI — MEDIUM
+
+**Where:** `packages/server/src/engine-runner.ts` (`onModelTrouble`
+handler, run-end `finally`), `docs/USER_GUIDE.md`.
+
+**Problem:** the owner asked to "get notified if a task is failing to
+fallback, or is being validated, etc in automode." F32 already pushes
+rate-limit waits, fallback switches, and exhausted-chain events — but
+ONLY to Telegram (plus an audit entry); the web UI's notification bell
+never shows them. A run that ends non-completed only writes a log line
+plus the Telegram digest. And "task is being validated" already exists
+as `digest: "all"` but isn't documented as the answer.
+
+**Fix:**
+1. In `onModelTrouble`, ALSO create a `Notification` row (severity
+   `"warn"`, `requiresApproval: false`, message = the same text Telegram
+   gets) and broadcast it over WS — one per task per event type per run
+   (keep a small in-memory dedupe set in EngineRunner, cleared per
+   run/start, so a chatty task doesn't spam the bell). This picks up
+   B32's new `quota_wait` event for free.
+2. When a run ends with `finalStatus !== "completed"`, create a
+   `Notification` row (severity `"warn"`) alongside the existing log +
+   run summary, naming the blocked tasks and why (the same text
+   `logError` already builds).
+3. USER_GUIDE: document the notification matrix in one table — what the
+   bell shows vs what Telegram pushes, and that
+   `Settings → Telegram → digest: "all"` is how to see per-status
+   transitions ("in review/being validated") on the phone.
+
+**Acceptance:** server tests: a `fallback` trouble event creates exactly
+one notification row + WS broadcast, a second identical event for the
+same task creates none; run ending `paused` creates a notification.
+Live (mock ok): the bell shows a fallback switch and a run-ended-paused
+entry.
+
+### F45. Allow opencode-runner models as planner/deconstructor — MEDIUM
+
+**Where:** `packages/server/src/planner.ts` (new `runOpencodeJson`,
+`PlannerModel` union, dispatch), `packages/server/src/index.ts`
+(`resolvePlannerModel` — remove the throw), `apps/web/src/components/
+RoutingEditor.tsx` (if it filters runners for the planner/deconstructor
+selects), `docs/USER_GUIDE.md`.
+
+**Problem:** `resolvePlannerModel` hard-rejects opencode-runner models
+for planning/deconstruction (F37's decision, made before per-tier model
+routing existed). The owner now wants any configured model usable for
+planning and deconstruction — "we have model selection now."
+
+**Fix:** add `runOpencodeJson(prompt, cwd, model)` to `planner.ts`
+mirroring the shape of `runClaudeJson`/`runCodexJson`: spawn
+`opencode run -m <model> --format json` with the prompt on stdin and
+`sanitizedEnv({ PWD: cwd })` (reuse the parsing conventions from
+`OpenCodeAdapter.runOnce` — accumulate `part.text`, sum `part.cost` into
+`costUsd`), same `PLAN_TIMEOUT_MS`. Extend `PlannerModel.runner` with
+`"opencode"` and dispatch in `runPlannerJson`. In `resolvePlannerModel`,
+return `{ runner: "opencode", model: cfg.opencodeModel }` instead of
+throwing (a missing `opencodeModel` on the config is still a 400 —
+keep that error). Deconstruction on opencode has no native schema
+enforcement (no `--output-schema` equivalent), so it depends on B31's
+hardened extraction/repair/retry — **B31 must land first**; note the
+ordering in the PR. Update `plannerModelLabel` for the new runner and
+the USER_GUIDE's planner-routing section (including an honest one-line
+quality note: the subscription CLIs have the strongest agentic planning
+behavior; API-billed opencode models also bill per token for every chat
+turn).
+
+**Acceptance:** server tests: `resolvePlannerModel` returns the opencode
+config for both tiers; missing `opencodeModel` still 400s. Live: route
+Settings → Routing → Deconstructor to an opencode model, run a real
+planning chat + deconstruct, confirm tasks materialize and the planning
+cost is recorded.
+
+### F46. Planner output-shape hardening — flat DAG, validated, one retry — MEDIUM
+
+**Where:** `packages/server/src/planner.ts` (`DECONSTRUCT_SHAPE`,
+`parsePlanOutput`), unit tests.
+
+**Problem:** the owner asked to "make sure the planner is constructing
+tasks properly into smaller parts, and not doing subtasks and stuff that
+might break our task generator." The codex path is schema-enforced, but
+the claude path (and F45's new opencode path) trusts prose: a model that
+emits nested `subtasks` arrays, extra fields, empty
+titles/descriptions, or a 40-task epic parses into whatever
+`parsePlanOutput`'s lenient coercions produce.
+
+**Fix:**
+1. **Prompt:** extend `DECONSTRUCT_SHAPE`'s rules: the task list is
+   FLAT — no `subtasks`/`children`/nested task arrays anywhere; aim for
+   3–12 tasks, each one independently mergeable, PR-sized unit of work
+   (split anything bigger into sequential tasks via `dependsOn`); emit
+   ONLY the listed fields.
+2. **Parser validation in `parsePlanOutput`:** drop non-object entries;
+   if a task carries a nested `subtasks`/`children` array, flatten one
+   level — append the children after the parent with `dependsOn`
+   pointing at the parent's index (preserves the model's intent instead
+   of silently discarding work); require a non-empty `title` and
+   `description` (a task failing both is dropped, with a warn);
+   default empty `acceptanceCriteria` to one criterion derived from the
+   description's first line; cap the final list at 30 tasks; dedupe
+   identical titles by suffixing " (2)", " (3)", …. If validation leaves
+   ZERO tasks, route through B31's single re-ask retry rather than
+   throwing immediately.
+3. Keep the codex JSON schema as-is (it already forbids extra fields) —
+   this item is for the non-schema paths.
+
+**Acceptance:** unit tests feeding malformed outputs: nested subtasks →
+flattened with correct dependsOn; empty-title tasks dropped; 40 tasks →
+capped at 30; all-invalid → one retry then a clear error; a
+well-formed output → byte-identical result to today.
+
+### F47. Scope-aware planning + author scope nudge — reduce false out-of-scope flags — LOW
+
+**Where:** `packages/server/src/planner.ts` (`DECONSTRUCT_SHAPE`'s
+`scopePaths` rule), `packages/engine/src/orchestrator.ts`
+(`buildAuthorPrompt`'s Allowed Files block).
+
+**Problem:** the owner keeps seeing "Task modified files outside its
+declared scope — allowed by merge policy, flagged for review." This is
+the system working as designed (out-of-scope is a soft flag, not a hard
+gate — see the inScope comment in `executeTask`), but it fires
+constantly because the planner writes narrow `scopePaths` (e.g.
+`src/components/**`) while real work legitimately touches shared wiring
+— `package.json` for a new dependency or script, the entry-point
+html/router file to mount a component, config files. Every such flag
+becomes an approval interruption under `hard_gate_flag_risky` (the
+default policy) — noise that erodes trust in the real flags.
+
+**Fix:**
+1. **Planner prompt:** expand the `scopePaths` rule: scope must cover
+   EVERY file the task may plausibly touch, including shared wiring —
+   `package.json` (+ lockfile) whenever the task adds a dependency or
+   script, the entry-point file (`index.html`, `src/main.tsx`, app
+   router) whenever the task wires in a new module/page, and tool config
+   files when the task configures tooling. Prefer directory-level globs
+   (`src/components/**`) over lists of individual files. When in doubt,
+   widen — an over-narrow scope produces false review flags.
+2. **Author prompt:** in the `## Allowed Files` block, append: "Stay
+   within these paths. If completing the task genuinely requires
+   touching another file (e.g. wiring an entry point), keep that edit
+   minimal — files outside this list are flagged for human review and
+   can hold up the merge."
+
+**Acceptance:** prompt-content unit tests for both changes. Live: a
+fresh deconstruct produces a scaffold task whose scope includes
+`package.json`, and a full project run produces materially fewer
+out-of-scope flags than the owner's current baseline.
+
+### What Part 9 deliberately does NOT include (for calibration)
+
+- **Auto-approving escalations in `fully_autonomous`** — the validator's
+  `escalate` verdict and the confidence threshold still stop the line
+  and wait for a human, by design. S8 makes auto mode SAFER, not more
+  permissive; an "auto-approve after N hours" remains rejected (Part 8's
+  calibration note stands).
+- **Reverting out-of-scope author edits** (docs-stage-style
+  `revertOutOfScope` for authors) — legitimate wiring edits outside
+  scope are common; auto-reverting them would break working code. F47's
+  prompt fixes attack the noise at the source instead.
+- **Agents in the sandbox (F13 phases 2–3)** — still the headline
+  candidate for a later wave.
+
+---
+
 ## Suggested execution order
 
 | Phase | Items | Rationale | Status |
@@ -4773,6 +5200,7 @@ actual EC2 deploy and confirm.
 | 11 | B25–B27, T1, F27–F35 | Phase 10 audit fixes (all small), then the server test package (T1 — later items lean on it), then the owner's QoL wave: planning context (F27+F28) → standards prompts (F31 → F29 → F30, in that order — F29/F30 build on F31's injection mechanism) → resilience + alerts (F32) → model test (F33) → skills (F34) → quota panel (F35). Tag `v0.3.0` at the end. | ✅ done |
 | 12 | B28, U15–U18, F36–F39, F13-P1, B29 | Referential-integrity fix first (B28 — an autonomy footgun), the four small UX items together (U15–U18), then the wave in dependency order: Codex runner (F36) → swappable planner (F37, needs F36's adapter) → AGENTS.md pipeline (F38, planner-produced so it benefits from F37 landing first) → gates sandbox (F13-P1) → EC2 deploy checklist (F39 — the ship gate) → B29 (found live-verifying F36, fixed last). Tagged `v0.4.0`; the owner deploys to EC2 right after. | ✅ done |
 | 13 | B30, F40–F43 | Remote-supervision wave, built while the owner's EC2 deploy happens: approval re-arm on restart first (B30 — F40's `/pending` leans on its mechanism), then the Telegram commands (F40), then the three small ones (F41 hold-dispatch option, F43 sandbox UI toggle, F42 bootstrap script) in any order. Tagged `v0.5.0`. F42's live-on-real-EC2 half is still owed (no EC2 box/Docker daemon available in this environment). | ✅ done |
+| 14 | B31–B33, S8, F44–F47 | Autonomy-hardening wave from the owner's first real dogfooding runs: B31+F46+F47 first (one PR — all in `planner.ts`; B31 unblocks planning outright and F45 depends on it), then B32 (the autonomous-stall fix), then S8 (destructive-change rail — before more autonomous runs happen), then B33, F44, F45 in any order. Tag `v0.6.0` at the end. | ⬜ next |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
@@ -4795,3 +5223,9 @@ during the actual EC2 deploy and confirm it against this doc's F42
 acceptance criteria. Fable independently re-verifies each wave after
 merge; verification evidence is in each item's PR description and in
 this doc's Progress section above.
+
+**Phase 14 (Part 9) is next** — added 2026-07-14 from the owner's first
+real dogfooding runs. Follow the same workflow as every prior wave:
+branch → PR per item group → reference the item IDs in commit messages →
+mark each item done in Part 9 with its PR link and verification evidence
+→ add a Phase 14 table to the Progress section as items land.
