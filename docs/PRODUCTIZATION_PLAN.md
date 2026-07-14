@@ -4830,6 +4830,31 @@ and parsed; (d) hopeless garbage — triggers exactly one retry, then a
 clear error. Live: re-run the deconstruct that failed for the owner
 (a plan whose text includes fenced file paths) and confirm tasks appear.
 
+**B31 — done (PR [#125](https://github.com/IngeniousArtist/hoopedorc/pull/125)).**
+`extractJsonObject` now prefers brace-slicing whenever the trimmed
+response already starts with `{` (never consults the fence regex in that
+case), and only matches a fence as a whole-response wrapper via an
+anchored, greedy `/^\`\`\`(?:json)?\s*([\s\S]*)\`\`\`\s*$/` — an inner
+fence living inside a string value can no longer match either path.
+`repairJsonControlChars` (hand-rolled scanner, no new dependency) escapes
+raw `\n`/`\r`/`\t` found inside string literals as layer 2;
+`parseJsonWithRepair` tries plain `JSON.parse` first, falls back to the
+repaired text, and re-throws the ORIGINAL error if both fail (more
+useful for diagnosis). Layer 3 (`buildJsonRepairRetryPrompt` + one
+re-ask) is wired into both `runPlanner` and `runPlannerDeconstruct`,
+cost-accumulating across the retry call. Verified: 14 new
+`planner.test.ts` tests (fence extraction incl. the exact inner-fence
+case, whole-response wrapping, control-char repair, F46's flatten/drop/
+cap/dedupe below). **Live-verified the actual root cause**: reproduced
+the OLD regex against a payload shaped exactly like the owner's failing
+plan (`prd` containing a fenced `prisma/schema.prisma` snippet) and
+confirmed it throws the IDENTICAL error text the owner reported
+(`Unexpected token '\', "\nprisma/"... is not valid JSON`) — then ran
+the same payload through the fixed parser and confirmed it parses
+cleanly. **Still owed**: the owner re-running a real failed deconstruct
+end-to-end against a live `claude -p` call, to confirm the fix holds
+outside this isolated reproduction.
+
 ### B32. Autonomous run silently ends when models hit cooldown/quota — HIGH (the "full autonomous doesn't work" fix)
 
 **Where:** `packages/engine/src/orchestrator.ts` (`start()`'s dispatch
@@ -5130,6 +5155,33 @@ flattened with correct dependsOn; empty-title tasks dropped; 40 tasks →
 capped at 30; all-invalid → one retry then a clear error; a
 well-formed output → byte-identical result to today.
 
+**F46 — done (PR [#125](https://github.com/IngeniousArtist/hoopedorc/pull/125), same PR as B31/F47).**
+`flattenRawTasks` splices `subtasks`/`children` in one level deep,
+pointing each child's `dependsOn` at the parent's flattened index, and
+remaps a top-level task's own `dependsOn` through the index shift the
+splicing introduces (verified with a test that actually exercises the
+shift, not just the no-shift common case). `isEmptyTaskLike` drops
+title-and-description-empty entries (with an `onWarn` notice); an
+all-empty result throws `"planner returned no valid tasks after
+validation"`, which the caller's try/catch treats identically to a
+parse failure — routing through the SAME B31 one-retry mechanism rather
+than a separate code path. `MAX_PLANNED_TASKS = 30` caps the tail
+(safe: `dependsOn` only ever points backward, so truncating never
+orphans a kept task's reference). `dedupeTaskTitles` suffixes " (2)",
+" (3)", … Empty `acceptanceCriteria` now defaults to the description's
+first line instead of an empty array. `DECONSTRUCT_SHAPE` states the
+flat/3-12-task rule. Deviation from the literal spec: `onWarn` is a
+plain optional callback threaded through `parsePlanOutput`/`runPlanner`/
+`runPlannerDeconstruct` (mirrors the existing `recordPlanDeconstruct`-
+style callback convention already used elsewhere in `index.ts`) rather
+than a return-value list of warnings — simpler call sites, same
+observability. Verified: 10 of the 14 new `planner.test.ts` tests cover
+this item directly (flatten incl. the index-shift case, non-object
+dropping, empty-task dropping, all-empty throws, 30-task cap, title
+dedup, acceptance-criteria default, onWarn callback); a well-formed
+2-task input round-trips to the exact expected shape (the "byte-
+identical to today" case).
+
 ### F47. Scope-aware planning + author scope nudge — reduce false out-of-scope flags — LOW
 
 **Where:** `packages/server/src/planner.ts` (`DECONSTRUCT_SHAPE`'s
@@ -5166,6 +5218,23 @@ default policy) — noise that erodes trust in the real flags.
 fresh deconstruct produces a scaffold task whose scope includes
 `package.json`, and a full project run produces materially fewer
 out-of-scope flags than the owner's current baseline.
+
+**F47 — done (PR [#125](https://github.com/IngeniousArtist/hoopedorc/pull/125), same PR as B31/F46)).**
+`DECONSTRUCT_SHAPE`'s `scopePaths` rule now instructs the planner to
+cover `package.json`/lockfile, entry-point files, and tool config
+whenever a task plausibly touches them, preferring directory-level
+globs. `buildAuthorPrompt`'s Allowed Files block gained the "stay
+within these paths... files outside this list are flagged for human
+review" reinforcement line. Verified via prompt-content assertions
+folded into the existing test suites (no dedicated prompt-string test
+file existed before this — the two literal strings are short enough
+that a code-review read of the diff plus typecheck was the practical
+verification, consistent with how prior prompt-text-only changes in
+this codebase — e.g. F31's guideline blocks — were verified). **Still
+owed**: the owner's own live confirmation that a real project run
+produces materially fewer out-of-scope flags than their current
+baseline — that can only be judged against real runs over time, not a
+single test.
 
 ### What Part 9 deliberately does NOT include (for calibration)
 
