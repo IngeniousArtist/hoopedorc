@@ -1611,6 +1611,46 @@ green as of each merge. F42's shellcheck-clean + `--dry-run` verification
 the one item whose *live* half is still owed — the owner should run it
 for real during the actual EC2 deploy and confirm. Tagged `v0.5.0`.
 
+### Phase 14 — Part 9: autonomy-hardening wave — ✅ DONE
+
+| Item | Status | PR |
+|---|---|---|
+| B31 — deconstruction JSON parser breaks on inner code fences | ✅ done | [#125](https://github.com/IngeniousArtist/hoopedorc/pull/125) |
+| F46 — planner output-shape hardening (flat DAG, validated, one retry) | ✅ done | [#125](https://github.com/IngeniousArtist/hoopedorc/pull/125) |
+| F47 — scope-aware planning + author scope nudge | ✅ done | [#125](https://github.com/IngeniousArtist/hoopedorc/pull/125) |
+| B32 — autonomous run silently ends on cooldown/quota block | ✅ done | [#127](https://github.com/IngeniousArtist/hoopedorc/pull/127) |
+| S8 — non-bypassable destructive-change rail + safety prompts | ✅ done | [#129](https://github.com/IngeniousArtist/hoopedorc/pull/129) |
+| B33 — no-changes diagnosis + a real opencode `--attach` cwd bug found & fixed | ✅ done | [#131](https://github.com/IngeniousArtist/hoopedorc/pull/131) |
+| F44 — automode notification parity (model trouble + run-end in the web UI) | ✅ done | [#133](https://github.com/IngeniousArtist/hoopedorc/pull/133) |
+| F45 — opencode-runner models as planner/deconstructor | ✅ done | [#135](https://github.com/IngeniousArtist/hoopedorc/pull/135) |
+
+All seven items merged to `main` (B31+F46+F47 landed together in one PR,
+per the plan's own suggested grouping — all three touch `planner.ts`);
+`npm run typecheck`, `npm test -w @orc/engine`, `npm test -w @orc/server`,
+`npm test -w @orc/adapters`, and `npm run build` green as of each merge
+(112 engine / 92 server / 4 adapters tests by the end of the wave, up
+from 90/83/4 at the start). Two items turned up confirmed, previously-
+unknown bugs beyond what the plan anticipated, both live-verified
+against real tooling rather than just reasoned about: B31's root cause
+was reproduced byte-for-byte against the owner's exact reported error
+text before being fixed; B33's investigation of the opencode `--attach`
+hypothesis found a real cwd bug (traced to `PWD` having no effect on an
+attached server's own process) via a live `opencode serve` +
+`opencode run --attach` reproduction, fixed with the CLI's own `--dir`
+flag, and the same fix was carried into F45's new planner path from the
+start so it couldn't reintroduce the same class of bug. F45's live
+verification ran the complete real pipeline — a real Claude Code
+planning chat, a real opencode deconstruct call against real DeepSeek
+credentials, and a real committed task DAG. B32's live acceptance line
+(a tiny real quota surviving a real two-task run) and S8's live
+acceptance line (a deliberately destructive task held for approval
+under `fully_autonomous` via a full autonomous run) are the two items
+whose fullest live form is still owed — both need the owner's real EC2
+box/model credentials to exercise the complete pipeline end-to-end,
+where this session's verification proved the same logic via real git
+plumbing, real CLIs, and real (non-mocked) unit/integration tests
+instead. Tagged `v0.6.0`.
+
 ---
 
 ## Part 1 — Bugs & security (fix first, in this order)
@@ -5254,6 +5294,35 @@ Settings → Routing → Deconstructor to an opencode model, run a real
 planning chat + deconstruct, confirm tasks materialize and the planning
 cost is recorded.
 
+**F45 — done (PR [#135](https://github.com/IngeniousArtist/hoopedorc/pull/135)) — closes Part 9.**
+`runOpencodeJson` (planner.ts) mirrors `OpenCodeAdapter.runOnce`'s
+event-parsing conventions and, critically, carries forward B33's fix
+from the start: `--dir <cwd>` passed explicitly rather than relying on
+`PWD` alone (which doesn't control the working directory when
+attaching to a shared opencode server) — the planner would otherwise
+have been vulnerable to the exact same class of bug B33 found and
+fixed for authoring. `resolvePlannerModel` no longer throws for
+opencode; a missing `opencodeModel` still 400s. Both `resolvePlannerModel`
+and `plannerModelLabel` moved from `index.ts` into `planner.ts` (and
+exported) so they're unit-testable, mirroring F40's `commands.ts`
+extraction for the same "index.ts boots a real server on import"
+reason. Confirmed by reading the component first: `RoutingEditor.tsx`
+needed no changes — its Planner/Deconstructor selects already list
+every enabled model with no runner filter. Verified: 92/92 server
+tests (5 new — both tiers resolve opencode, independent
+planner/deconstructor routing, missing-opencodeModel still 400s,
+codex/claude-code unaffected, label formatting), 112/112 engine, 4/4
+adapters, typecheck + build green. **Live-verified the full pipeline
+exactly per the plan's own acceptance line**: routed the Deconstructor
+to a real opencode model, ran a real 2-turn planning chat (real Claude
+Code CLI) followed by a real deconstruct call (real `opencode` CLI
+against real DeepSeek credentials) — got back a well-formed 3-task DAG
+with a real PRD and AGENTS.md, confirmed the planning cost persisted
+correctly via `GET /api/projects/:id/plan/session` ($0.443 = the two
+claude chat turns + the opencode deconstruct, summed exactly), then
+committed the plan and confirmed 3 real `Task` rows materialized with
+correct dependency-driven statuses and assigned models.
+
 ### F46. Planner output-shape hardening — flat DAG, validated, one retry — MEDIUM
 
 **Where:** `packages/server/src/planner.ts` (`DECONSTRUCT_SHAPE`,
@@ -5406,7 +5475,7 @@ single test.
 | 11 | B25–B27, T1, F27–F35 | Phase 10 audit fixes (all small), then the server test package (T1 — later items lean on it), then the owner's QoL wave: planning context (F27+F28) → standards prompts (F31 → F29 → F30, in that order — F29/F30 build on F31's injection mechanism) → resilience + alerts (F32) → model test (F33) → skills (F34) → quota panel (F35). Tag `v0.3.0` at the end. | ✅ done |
 | 12 | B28, U15–U18, F36–F39, F13-P1, B29 | Referential-integrity fix first (B28 — an autonomy footgun), the four small UX items together (U15–U18), then the wave in dependency order: Codex runner (F36) → swappable planner (F37, needs F36's adapter) → AGENTS.md pipeline (F38, planner-produced so it benefits from F37 landing first) → gates sandbox (F13-P1) → EC2 deploy checklist (F39 — the ship gate) → B29 (found live-verifying F36, fixed last). Tagged `v0.4.0`; the owner deploys to EC2 right after. | ✅ done |
 | 13 | B30, F40–F43 | Remote-supervision wave, built while the owner's EC2 deploy happens: approval re-arm on restart first (B30 — F40's `/pending` leans on its mechanism), then the Telegram commands (F40), then the three small ones (F41 hold-dispatch option, F43 sandbox UI toggle, F42 bootstrap script) in any order. Tagged `v0.5.0`. F42's live-on-real-EC2 half is still owed (no EC2 box/Docker daemon available in this environment). | ✅ done |
-| 14 | B31–B33, S8, F44–F47 | Autonomy-hardening wave from the owner's first real dogfooding runs: B31+F46+F47 first (one PR — all in `planner.ts`; B31 unblocks planning outright and F45 depends on it), then B32 (the autonomous-stall fix), then S8 (destructive-change rail — before more autonomous runs happen), then B33, F44, F45 in any order. Tag `v0.6.0` at the end. | ⬜ next |
+| 14 | B31–B33, S8, F44–F47 | Autonomy-hardening wave from the owner's first real dogfooding runs: B31+F46+F47 first (one PR — all in `planner.ts`; B31 unblocks planning outright and F45 depends on it), then B32 (the autonomous-stall fix), then S8 (destructive-change rail — before more autonomous runs happen), then B33, F44, F45 in any order. Tag `v0.6.0` at the end. | ✅ done |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
@@ -5419,19 +5488,26 @@ part of F24), Phase 9 (A1–A5, U1–U10) closed out Parts 1–4, Phase 10
 F27–F35) closed out Part 6 tagged `v0.3.0`, Phase 12 (B28, U15–U18,
 F36–F39, F13-P1, B29) closed out Part 7 tagged `v0.4.0` — audited by
 Fable 2026-07-09, no defects found — and Phase 13 (B30, F40–F43) closed
-out Part 8, tagged `v0.5.0`. F13's phase 1 (gates-only sandbox) shipped
+out Part 8, tagged `v0.5.0`, and Phase 14 (B31–B33, S8, F44–F47) closed
+out Part 9, tagged `v0.6.0`. F13's phase 1 (gates-only sandbox) shipped
 in Part 7; phases 2–3 (agents in the sandbox) remain the headline
 candidate for the next wave, per docs/specs/sandbox.md. **F42's live
 half is still owed**: verified shellcheck-clean and via `--dry-run`
 locally, but no real EC2 instance or Docker daemon was available in this
 environment — the owner should run `deploy/ec2-bootstrap.sh` for real
 during the actual EC2 deploy and confirm it against this doc's F42
-acceptance criteria. Fable independently re-verifies each wave after
-merge; verification evidence is in each item's PR description and in
-this doc's Progress section above.
+acceptance criteria. **Two Part 9 live-acceptance lines are also still
+owed** for the same reason (no real EC2 box/model credentials to
+exercise the full autonomous pipeline in this environment): B32's tiny-
+real-quota-survives-a-real-run check, and S8's deliberately-destructive-
+task-held-for-approval-under-fully_autonomous check — both items'
+underlying logic is otherwise fully verified (real git plumbing, real
+CLIs, real unit/integration tests; see each item's own done-note above).
+Fable independently re-verifies each wave after merge; verification
+evidence is in each item's PR description and in this doc's Progress
+section above.
 
-**Phase 14 (Part 9) is next** — added 2026-07-14 from the owner's first
-real dogfooding runs. Follow the same workflow as every prior wave:
-branch → PR per item group → reference the item IDs in commit messages →
-mark each item done in Part 9 with its PR link and verification evidence
-→ add a Phase 14 table to the Progress section as items land.
+**No plan items remain open.** The next wave should be specced fresh
+once the owner has more autonomous-run experience against this hardened
+baseline, or once F13 phases 2–3 (agents in the sandbox) become the
+priority.

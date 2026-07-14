@@ -3,6 +3,76 @@
 All notable changes to Hoopedorc are recorded here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0] — 2026-07-14
+
+Part 9 of `docs/PRODUCTIZATION_PLAN.md` is complete as of this tag: an
+autonomy-hardening wave from the owner's first real dogfooding runs on
+the EC2 box, fixing a deconstruction-breaking JSON parser bug, the root
+cause of "full autonomous doesn't work" (a stalled run on a
+cooldown/quota block), a non-bypassable destructive-change safety rail,
+and a real cwd bug in the opencode integration.
+
+## B31 — deconstruction JSON parser breaks on inner code fences
+
+- Fixed the exact bug behind `deconstruction failed: Unexpected token
+  '\', "\nprisma/"...`: the fence-extraction regex matched a code fence
+  living INSIDE a JSON string value (e.g. a plan mentioning
+  `prisma/schema.prisma` in a fenced snippet) instead of treating the
+  response as bare JSON. Added a control-character repair pass and one
+  automatic re-ask retry before giving up.
+
+## F46 — planner output-shape hardening
+
+- The task list is now validated against nested subtasks (flattened one
+  level), empty entries (dropped), oversized lists (capped at 30), and
+  duplicate titles (deduped) — defensive parsing for planner paths with
+  no native output-schema enforcement.
+
+## F47 — scope-aware planning
+
+- Planner-authored scope paths now cover shared wiring files
+  (package.json, entry points, tool config) that real tasks legitimately
+  touch, cutting down on false "modified files outside declared scope"
+  flags.
+
+## B32 — autonomous runs no longer silently end on a cooldown/quota block
+
+- The dispatch loop now walks a task's fallback chain when its assigned
+  model is cooldown/quota-blocked instead of just holding it, and keeps
+  polling (rather than winding the run down) when every fallback is
+  also time-bounded blocked — both are self-clearing, so the run now
+  survives a subscription's usage window instead of quietly stopping.
+
+## S8 — non-bypassable destructive-change rail
+
+- Mass deletions, deleted migration/schema/`.env`/CI/lockfile files,
+  destructive SQL, and a risky `rm -rf` now force human approval before
+  merging in EVERY merge policy, including `fully_autonomous` — this
+  rail can't be bypassed by merge policy. Fixed safety instructions
+  also added to every author and validator prompt.
+
+## B33 — no-changes diagnosis + a real opencode bug fix
+
+- "Author produced no changes" failures now diagnose whether the agent
+  wrote into the primary clone instead of its own worktree. Found and
+  fixed a real bug along the way: the opencode adapter's `--attach`
+  path relied on `PWD` alone, which has no effect on an attached
+  server's own process — any deployment with a shared opencode server
+  configured was silently writing every task's changes into the
+  server's own directory.
+
+## F44 — automode notification parity
+
+- Model-trouble events (rate-limit waits, fallback switches, exhausted
+  chains, cooldown/quota stalls) and non-completed run endings now show
+  up in the web notification bell, not just Telegram.
+
+## F45 — opencode-runner models as planner/deconstructor
+
+- Any enabled model can now plan and deconstruct, not just Claude Code
+  and Codex — the earlier hard rejection predated per-tier model
+  routing.
+
 ## [0.5.0] — 2026-07-10
 
 Part 8 of `docs/PRODUCTIZATION_PLAN.md` is complete as of this tag: a
