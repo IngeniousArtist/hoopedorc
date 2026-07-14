@@ -20,6 +20,21 @@ the old one-off manual Orchestrator path, lets multiple requests obey the same
 scope/model-cap rules as autonomous work, and preserves a queued request across
 a process restart.
 
+B39 makes plan approval a durability boundary. The server first saves the
+exact submitted PRD/task/AGENTS draft and sets the project to `planning`; it
+then awaits one repository commit/push containing PRD, AGENTS.md, and the
+conditional CLAUDE.md pointer, followed by the readable session archive. Only
+after those succeed does one SQLite transaction create tasks, publish
+`Project.prd`, clear planning scratch, and set `planned`. Every Start path
+rejects a `planning` project. Repository, archive, or finalization failure
+leaves the scratch intact for an idempotent retry.
+
+`GitOperationError.stage` identifies `inspect`, `fetch`, `checkout`, `merge`,
+`write`, `stage`, `commit`, `push`, or `cleanup`. `commitAll()` treats only a
+confirmed empty porcelain status as a no-op; other failures propagate.
+Cosmetic changelog publication and disposable worktree/branch cleanup remain
+best-effort, but their callers emit warnings instead of hiding failures.
+
 `Project.config` (`ProjectConfig`, F9) holds per-project overrides — gate
 script names (or `false` to skip a gate), a free-form `testCommand` for
 non-npm stacks (run via `execFile`, no shell), a `maxAttempts` default applied

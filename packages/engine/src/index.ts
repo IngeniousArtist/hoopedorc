@@ -37,7 +37,15 @@ export type {
   SetupProcessRequest,
   WorktreeSetupDeps,
 } from "./worktree-manager.js";
-export { GitServiceImpl, RollbackConflictError } from "./git-service.js";
+export {
+  GitOperationError,
+  GitServiceImpl,
+  RollbackConflictError,
+} from "./git-service.js";
+export type {
+  GitOperationStage,
+  RepositoryFileWrite,
+} from "./git-service.js";
 export { GateRunnerImpl } from "./gate-runner.js";
 export { ValidatorImpl, SelfReviewError } from "./validator.js";
 export type { ValidatorCostSink } from "./validator.js";

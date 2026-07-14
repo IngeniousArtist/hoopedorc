@@ -91,6 +91,10 @@ interface RenderInput {
   committed?: { atIso: string; taskCount: number };
 }
 
+export type PlanSessionWriteResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
 function renderSessionMarkdown(input: RenderInput): string {
   const lines: string[] = [
     `# Planning session — ${input.projectName}`,
@@ -126,24 +130,25 @@ function renderSessionMarkdown(input: RenderInput): string {
   return lines.join("\n");
 }
 
-/** A failed session-file write must never fail the chat/commit request it
- *  rides along with — same posture as F17's backup failures. `warn` is an
- *  injected logger (mirrors telegram.ts's constructor-injected `log`)
- *  rather than importing a global one, so this stays independently
- *  testable. */
+/** Return a typed outcome and log it through the injected warning sink.
+ * Chat/deconstruct remain best-effort; B39's commit boundary treats a failed
+ * final archive write as retryable and refuses to clear the DB session. */
 function writeSessionFile(
   dir: string,
   filename: string,
   markdown: string,
   warn: (msg: string) => void,
-): void {
+): PlanSessionWriteResult {
   try {
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, filename), markdown, "utf8");
+    return { ok: true };
   } catch (err) {
-    warn(
-      `plan session file write failed (${filename}): ${err instanceof Error ? err.message : String(err)}`,
-    );
+    const error =
+      `plan session file write failed (${filename}): ` +
+      `${err instanceof Error ? err.message : String(err)}`;
+    warn(error);
+    return { ok: false, error };
   }
 }
 
@@ -219,9 +224,9 @@ export function recordPlanCommit(
   taskCount: number,
   plannerModel: string | undefined,
   warn: (msg: string) => void,
-): void {
+): PlanSessionWriteResult {
   const session = repo.getPlanningSession(db, project.id);
-  if (!session.sessionFile) return;
+  if (!session.sessionFile) return { ok: true };
   const markdown = renderSessionMarkdown({
     projectName: project.name,
     plannerModel,
@@ -233,5 +238,5 @@ export function recordPlanCommit(
         : undefined,
     committed: { atIso: new Date().toISOString(), taskCount },
   });
-  writeSessionFile(sessionsDir(project, mock), session.sessionFile, markdown, warn);
+  return writeSessionFile(sessionsDir(project, mock), session.sessionFile, markdown, warn);
 }

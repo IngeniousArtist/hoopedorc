@@ -1621,8 +1621,13 @@ export class Orchestrator implements Scheduler {
       this.rateLimitWaits.delete(task.id);
       try {
         await this.deps.worktrees.remove(project, task);
-      } catch {
-        /* best effort */
+      } catch (err) {
+        this.emit(
+          "warn",
+          "engine",
+          `Optional worktree cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+          task.id,
+        );
       }
       // A terminally-failed task's remote branch + open PR would otherwise
       // sit on the target repo forever (merged tasks already clean up via
@@ -1630,8 +1635,13 @@ export class Orchestrator implements Scheduler {
       if (task.status === "failed") {
         try {
           await this.deps.git.cleanupTaskBranch(project, task);
-        } catch {
-          /* best effort */
+        } catch (err) {
+          this.emit(
+            "warn",
+            "engine",
+            `Optional failed-branch cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+            task.id,
+          );
         }
       }
     }
@@ -1769,7 +1779,7 @@ export class Orchestrator implements Scheduler {
         if (this.bailIfStopRequested(task)) return;
         if (choice === "approve_merge") {
           await this.deps.git.mergePr(project, task.prNumber!, signal);
-          await this.deps.git.appendChangelogEntry(project, task, task.prNumber!, signal);
+          await this.appendChangelogBestEffort(project, task, signal);
           task.status = "done";
           task.statusReason = `Merged PR #${task.prNumber} after you approved it despite ${reason.toLowerCase()}`;
           this.emit("info", "engine", `Merged: ${task.title}`, task.id);
@@ -1788,7 +1798,7 @@ export class Orchestrator implements Scheduler {
     if (this.bailIfStopRequested(task)) return;
     if (canMerge) {
       await this.deps.git.mergePr(project, task.prNumber!, signal);
-      await this.deps.git.appendChangelogEntry(project, task, task.prNumber!, signal);
+      await this.appendChangelogBestEffort(project, task, signal);
       task.status = "done";
       task.statusReason = `Merged PR #${task.prNumber} after ${task.attempts} attempt${task.attempts === 1 ? "" : "s"} — gates and validator passed`;
       this.emit("info", "engine", `Merged: ${task.title}`, task.id);
@@ -1817,7 +1827,7 @@ export class Orchestrator implements Scheduler {
       if (this.bailIfStopRequested(task)) return;
       if (choice === "approve_merge") {
         await this.deps.git.mergePr(project, task.prNumber!, signal);
-        await this.deps.git.appendChangelogEntry(project, task, task.prNumber!, signal);
+        await this.appendChangelogBestEffort(project, task, signal);
         task.status = "done";
         task.statusReason = hasSafetyReasons
           ? safetyInspectionFailed
@@ -1837,6 +1847,32 @@ export class Orchestrator implements Scheduler {
     }
 
     this.deps.events.onTaskUpdated(task);
+  }
+
+  /** Changelog publication is cosmetic after the PR itself is durable. Keep
+   * it non-blocking, but never invisible: B39 requires every optional failure
+   * to leave an operator-facing log entry. */
+  private async appendChangelogBestEffort(
+    project: Project,
+    task: Task,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    try {
+      await this.deps.git.appendChangelogEntry(
+        project,
+        task,
+        task.prNumber!,
+        signal,
+      );
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      this.emit(
+        "warn",
+        "engine",
+        `Optional changelog publication failed: ${err instanceof Error ? err.message : String(err)}`,
+        task.id,
+      );
+    }
   }
 
   /**
@@ -1934,15 +1970,25 @@ export class Orchestrator implements Scheduler {
       this.stopRequested.delete(task.id);
       try {
         await this.deps.worktrees.remove(project, task);
-      } catch {
-        /* best effort */
+      } catch (err) {
+        this.emit(
+          "warn",
+          "engine",
+          `Optional worktree cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+          task.id,
+        );
       }
       // Same failed-branch cleanup as executeTask's finally.
       if (task.status === "failed") {
         try {
           await this.deps.git.cleanupTaskBranch(project, task);
-        } catch {
-          /* best effort */
+        } catch (err) {
+          this.emit(
+            "warn",
+            "engine",
+            `Optional failed-branch cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
+            task.id,
+          );
         }
       }
     }

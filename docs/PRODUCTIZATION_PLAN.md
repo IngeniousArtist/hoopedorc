@@ -1686,7 +1686,7 @@ target rules.
 | B37 — enabled models, live settings, and complete validation | done | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
 | F48 — per-model effort setting across all model stages | done | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
 | B38 — portable dependency setup and atomic caching | done | [#145](https://github.com/IngeniousArtist/hoopedorc/pull/145) |
-| B39 — planning and git durability | pending | — |
+| B39 — planning and git durability | done | [#146](https://github.com/IngeniousArtist/hoopedorc/pull/146) |
 | B40 — complete model-invocation accounting | pending | — |
 | B41 — graceful shutdown and runtime recovery | pending | — |
 | F49 — Telegram reliability and phone-control hardening | pending | — |
@@ -5918,6 +5918,16 @@ truly optional cleanup/telemetry and surface it in logs/audit.
 **Acceptance:** tests use delayed/failing commits followed by immediate Start,
 git identity/hook/index errors, fetch failure, optional cleanup failure, and retry
 after partial planning persistence. No context loss or false success is allowed.
+
+Implemented in [PR #146](https://github.com/IngeniousArtist/hoopedorc/pull/146).
+Acceptance evidence: a delayed repository promise proved `planning` and the
+exact scratch are visible before the first await while Start is refused; real
+temporary Git repositories exercised missing identity, a rejecting hook,
+`index.lock`, read-only writes, a missing remote, a rejected push followed by a
+no-diff retry, and preservation of tracked and untracked owner `CLAUDE.md`
+files. Optional cleanup/changelog failures warn without changing terminal task
+success. Full engine (157), server (127), and adapter (12) suites passed, along
+with workspace typecheck, production build, and `git diff --check`.
 
 ### B40. Complete model-invocation accounting — MEDIUM
 

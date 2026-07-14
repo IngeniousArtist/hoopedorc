@@ -71,9 +71,15 @@ import {
 import {
   listArchivedSessions,
   recordPlanChatTurn,
-  recordPlanCommit,
   recordPlanDeconstruct,
 } from "./plan-sessions";
+import {
+  commitPlanningDraft,
+  materializeTasks,
+  planningCommitInProgress,
+  PlanningCommitError,
+  planningPersistenceError,
+} from "./planning-commit";
 import { TelegramBot, sendTelegramMessage } from "./telegram";
 import { getModelRoster, runSetupChecks, testModels } from "./setup";
 import { parseSetupCommand } from "./project-config";
@@ -147,50 +153,6 @@ function setupDb(): Db {
   return initDb();
 }
 
-/** A planner/draft task: dependsOn are indices into the same array. */
-type MaterializableTask = {
-  title: string;
-  description: string;
-  difficulty: Task["difficulty"];
-  role?: Task["role"];
-  acceptanceCriteria: string[];
-  dependsOn: number[];
-  scopePaths: string[];
-  assignedModel?: Task["assignedModel"];
-};
-
-/**
- * Turn index-based draft tasks into real Task rows, resolving index deps to ids
- * and computing readiness from deps. Shared by /plan and /plan/commit.
- */
-function materializeTasks(
-  db: Db,
-  project: Project,
-  drafts: MaterializableTask[],
-  settings: SettingsType,
-): Task[] {
-  const ids = drafts.map(() => crypto.randomUUID());
-  return drafts.map((pt, i) =>
-    repo.createTask(db, {
-      id: ids[i]!,
-      projectId: project.id,
-      title: pt.title,
-      description: pt.description,
-      difficulty: pt.difficulty,
-      status: pt.dependsOn.length === 0 ? "ready" : "backlog",
-      dependsOn: pt.dependsOn.map((d) => ids[d]!).filter(Boolean),
-      acceptanceCriteria: pt.acceptanceCriteria,
-      assignedModel:
-        pt.assignedModel ??
-        pickAssignedModel(settings.routing, pt.difficulty, pt.role),
-      role: pt.role,
-      scopePaths: pt.scopePaths,
-      attempts: 0,
-      maxAttempts: defaultMaxAttempts(project),
-    }),
-  );
-}
-
 /**
  * A standing documentation task. It runs LAST — `ensureDocsTask` makes it
  * depend on every other task in the batch — so it documents the finished
@@ -261,6 +223,11 @@ function withAssignedModels(
 }
 
 const gitForPlanning = new GitServiceImpl();
+// The mock server has no backing GitHub repository by design; keep its Plan UI
+// usable while production always crosses the real B39 durability boundary.
+const planningGitPersistence = ENV.mock
+  ? { async commitFiles() {} }
+  : gitForPlanning;
 
 /**
  * Resolve the working directory for a planning call. Clones the project's
@@ -1413,7 +1380,9 @@ async function main() {
   const planningLockError = (project: Project): string | null =>
     project.status === "running"
       ? "tasks are running — planning re-opens when the run finishes (chat history stays visible below)"
-      : null;
+      : planningCommitInProgress(project.id)
+        ? "planning commit is in progress — wait for it to finish before editing or retrying"
+        : null;
 
   // One conversational turn. The web chat panel sends the full transcript.
   app.post("/api/projects/:id/plan/chat", async (req, reply) => {
@@ -1654,93 +1623,59 @@ async function main() {
       return reply.code(400).send({ error: "tasks required" });
     }
 
-    repo.updateProject(db, id, { status: "planning" });
     const settings = repo.getSettings(db) ?? defaultSettings();
-    const created = materializeTasks(db, project, body.tasks, settings);
-
-    // Persist the committed PRD so the next planning iteration (and the user)
-    // can see what this project set out to build. Stored in the DB (reliable
-    // source for v2 planning context) and written to the repo (durable +
-    // visible + readable by the in-repo planner). New tasks are appended to
-    // any already on the board — done tasks stay as history.
-    const prdMarkdown = body.prdMarkdown?.trim()
-      ? body.prdMarkdown
-      : (project.prd ?? `# ${project.name}\n`);
-    repo.updateProject(db, id, { status: "planned", prd: prdMarkdown });
-
-    // F28: write the final "## Committed" marker into the session's archive
-    // file BEFORE clearing the row below — it reads the about-to-be-cleared
-    // messages/draftTasks, so it must run first. The label is cosmetic only
-    // (this route doesn't itself call the planner) so a since-changed/invalid
-    // routing.planner falls back to a generic label rather than failing a
-    // commit over it.
+    // The label is cosmetic only (this route doesn't itself call the planner)
+    // so a since-changed/invalid routing.planner falls back to a generic label
+    // rather than failing persistence over it.
     let committedPlannerLabel = "planner";
     try {
       committedPlannerLabel = plannerModelLabel(resolvePlannerModel(settings, "chat"));
     } catch {
       /* leave the generic fallback */
     }
-    recordPlanCommit(db, project, ENV.mock, created.length, committedPlannerLabel, (msg) =>
-      app.log.warn(msg),
-    );
-
-    // Clear the whole planning session (draft + PRD scratch + conversation) so
-    // the next iteration starts from a fresh chat; the committed outcome lives
-    // in project.prd / tasks / audit log, which is what v2 planning reads.
-    // sessionFile is cleared too (F28) so the next chat turn mints a new
-    // archive file instead of continuing to write into this just-finalized one.
-    repo.savePlanningSession(db, id, {
-      messages: [],
-      prd: null,
-      draftTasks: null,
-      agentsMd: null,
-      sessionFile: null,
-    });
-
-    const prdPath = project.prdPath ?? "docs/PRD.md";
-    void gitForPlanning
-      .commitFile(project, prdPath, prdMarkdown, "docs: update PRD (hoopedorc)")
-      .catch(() => {});
-
-    // F38: commit the generated AGENTS.md alongside the PRD, plus a one-line
-    // CLAUDE.md pointer (`@AGENTS.md`) so Claude Code — which doesn't read
-    // AGENTS.md natively — sees the same content via its own import
-    // mechanism. Only written when genuinely produced (a v2 iteration where
-    // the operator cleared the field just skips this, same as an empty PRD
-    // falling back to the prior one above) and never clobbers a hand-
-    // maintained CLAUDE.md.
-    if (body.agentsMd?.trim()) {
-      void gitForPlanning
-        .commitFile(project, "AGENTS.md", body.agentsMd, "docs: update AGENTS.md (hoopedorc)")
-        .then(async () => {
-          const claudeMdPath = join(project.localPath, "CLAUDE.md");
-          if (!existsSync(claudeMdPath)) {
-            await gitForPlanning.commitFile(
-              project,
-              "CLAUDE.md",
-              "@AGENTS.md",
-              "docs: add CLAUDE.md pointer to AGENTS.md (hoopedorc)",
-            );
-          }
-        })
-        .catch(() => {});
+    let committed;
+    try {
+      committed = await commitPlanningDraft(
+        db,
+        project,
+        {
+          prdMarkdown: body.prdMarkdown,
+          tasks: body.tasks,
+          agentsMd: body.agentsMd,
+        },
+        settings,
+        committedPlannerLabel,
+        ENV.mock,
+        (message) => app.log.warn(message),
+        { git: planningGitPersistence },
+      );
+    } catch (err) {
+      const current = repo.getProject(db, id)!;
+      broadcast({ type: "project.updated", payload: current });
+      const message = err instanceof Error ? err.message : String(err);
+      app.log.error(`planning commit failed for ${id}: ${message}`);
+      const status = err instanceof PlanningCommitError && err.stage === "busy" ? 409 : 502;
+      return reply.code(status).send({
+        error: message,
+        stage: err instanceof PlanningCommitError ? err.stage : "unknown",
+      });
     }
 
-    broadcast({ type: "project.updated", payload: repo.getProject(db, id)! });
-    for (const t of created) broadcast({ type: "task.updated", payload: t });
+    broadcast({ type: "project.updated", payload: committed.project });
+    for (const task of committed.createdTasks) {
+      broadcast({ type: "task.updated", payload: task });
+    }
 
-    return {
-      project: repo.getProject(db, id)!,
-      tasks: repo.getTasks(db, id),
-      prdMarkdown,
-      agentsMd: body.agentsMd,
-    };
+    const { createdTasks: _createdTasks, ...response } = committed;
+    return response;
   });
 
   app.post("/api/projects/:id/start", async (req, reply) => {
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    const persistenceError = planningPersistenceError(project);
+    if (persistenceError) return reply.code(409).send({ error: persistenceError });
 
     try {
       // Promote an existing manual-priority runtime or start the DAG. Either

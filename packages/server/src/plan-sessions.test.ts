@@ -133,7 +133,7 @@ test("recordPlanCommit: writes the Committed marker; clearing sessionFile makes 
     recordPlanChatTurn(db, project, false, [{ role: "user", content: "goal" }], undefined, warn);
     const firstFile = sessionFiles(scratch)[0]!;
 
-    recordPlanCommit(db, project, false, 3, undefined, warn);
+    assert.deepEqual(recordPlanCommit(db, project, false, 3, undefined, warn), { ok: true });
     const content = readSession(scratch, firstFile);
     assert.match(content, /## Committed/);
     assert.match(content, /Committed 3 task\(s\)/);
@@ -156,7 +156,10 @@ test("recordPlanCommit: a session with no prior chat turn is a no-op", () => {
   const { db, project, scratch } = setup();
   try {
     const warnings: string[] = [];
-    recordPlanCommit(db, project, false, 1, undefined, (m) => warnings.push(m));
+    assert.deepEqual(
+      recordPlanCommit(db, project, false, 1, undefined, (m) => warnings.push(m)),
+      { ok: true },
+    );
     assert.deepEqual(sessionFiles(scratch), []);
     assert.equal(warnings.length, 0);
   } finally {

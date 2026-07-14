@@ -26,6 +26,7 @@ import * as repo from "./db/repo";
 import type { WsHub } from "./ws-hub";
 import { checkBudget, checkBudgetThresholds, checkModelQuota } from "./budget";
 import { manualCostUsd } from "./pricing";
+import { planningPersistenceError } from "./planning-commit";
 import type { ServerNotifier } from "./telegram";
 
 function fmtDurationMs(ms: number): string {
@@ -795,6 +796,8 @@ export class EngineRunner {
    * priority runtime already owns the project, promote that exact runtime;
    * never create a competing Orchestrator. */
   async start(project: Project): Promise<void> {
+    const persistenceError = planningPersistenceError(project);
+    if (persistenceError) throw new Error(persistenceError);
     if (this.rollbackByProject.has(project.id)) {
       throw new Error("a rollback is active for this project");
     }
