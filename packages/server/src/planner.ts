@@ -4,10 +4,11 @@ import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sanitizedEnv } from "@orc/adapters";
-import type { Difficulty, PlanChatMessage, Role } from "@orc/types";
+import type { Difficulty, PlanChatMessage, Role, Settings } from "@orc/types";
+import { ENV } from "./config.js";
 
 // Planning runs headless, through whichever CLI `routing.planner`'s model
-// resolves to (F37):
+// resolves to (F37, extended by F45):
 //   - claude-code -> `claude -p`. Chat turns and the final deconstruction
 //     (plan -> task DAG) both run on the routed planner ModelConfig's
 //     claudeModel (default "sonnet") — the dashboard's model settings are
@@ -15,16 +16,81 @@ import type { Difficulty, PlanChatMessage, Role } from "@orc/types";
 //   - codex -> `codex exec`, same single-model rule; deconstruct
 //     uses `--output-schema` so the CLI enforces the task-DAG JSON shape
 //     natively instead of relying on the lenient markdown-fence extraction
-//     the claude path still needs.
-// opencode-runner planners are rejected before either path is reached (see
-// `resolvePlannerModel` in index.ts) — conversational planning quality is
-// the point of the two subscription CLIs, not something to silently degrade.
+//     the claude/opencode paths still need.
+//   - opencode -> `opencode run`, same single-model rule (F45). No
+//     `--output-schema` equivalent exists for this CLI, so deconstruction
+//     leans entirely on B31's hardened extraction/repair/one-retry — B31
+//     landed first in this same wave specifically so this path is safe to
+//     open up. Originally rejected outright (see git history) back when
+//     conversational-planning quality was the deciding factor; now that
+//     per-tier model routing exists, routing planning to a specific model
+//     is the operator's call to make, same as any other role.
 
-/** Which CLI + model id to run the planner through (F37). */
+/** Which CLI + model id to run the planner through (F37/F45). */
 export interface PlannerModel {
-  runner: "claude-code" | "codex";
-  /** `claude --model` alias or `codex exec -m` id; omitted => CLI default. */
+  runner: "claude-code" | "codex" | "opencode";
+  /** `claude --model` alias, `codex exec -m` id, or opencode `provider/model`
+   *  id; omitted => CLI default (claude-code/codex only — opencode always
+   *  requires an explicit model, enforced where this is constructed). */
   model?: string;
+  /** F45: shared `opencode serve` URL (ENV.opencodeBaseUrl) — only
+   *  meaningful when runner === "opencode". Empty/unset runs opencode
+   *  locally instead of attaching to a shared server. */
+  opencodeBaseUrl?: string;
+}
+
+/**
+ * F37: resolve a planning tier to a `PlannerModel` — which CLI + model id
+ * the run* functions below should actually shell out to, instead of
+ * hardcoding `claude`. Everything comes from the dashboard's routing:
+ * `chat` turns use Settings → Routing → Planner; the one high-leverage
+ * `deconstruct` call uses Settings → Routing → Deconstructor, which falls
+ * back to the planner when unset (the default — one model does both). The
+ * resolved config's `claudeModel`/`codexModel`/`opencodeModel` field is the
+ * model id, with `ENV.plannerModel` only as a fallback when `claudeModel`
+ * is unset. F45: opencode-runner planners are fully supported now that
+ * per-tier model routing exists — only a missing `opencodeModel` on an
+ * opencode-runner config still throws (callers turn this into an explicit
+ * 400), mirroring `makeAdapter`'s own guard for author/validator runs.
+ * Exported for unit tests — moved here from index.ts (F45) since index.ts
+ * boots a real server as a side effect of being imported, same reasoning
+ * `commands.ts` was split out for (F40).
+ */
+export function resolvePlannerModel(
+  settings: Settings,
+  tier: "chat" | "deconstruct",
+): PlannerModel {
+  const routedId =
+    tier === "deconstruct"
+      ? (settings.routing.deconstructor ?? settings.routing.planner)
+      : settings.routing.planner;
+  const cfg = settings.models.find((m) => m.id === routedId);
+  if (cfg?.runner === "codex") return { runner: "codex", model: cfg.codexModel };
+  if (cfg?.runner === "opencode") {
+    if (!cfg.opencodeModel) {
+      const field = tier === "deconstruct" && settings.routing.deconstructor
+        ? "Deconstructor"
+        : "Planner";
+      throw new Error(
+        `planner model "${cfg.displayName}" is runner=opencode but has no opencodeModel ` +
+          `configured — set one in Settings → Models, or route Settings → Routing → ${field} ` +
+          `to a different model`,
+      );
+    }
+    return { runner: "opencode", model: cfg.opencodeModel, opencodeBaseUrl: ENV.opencodeBaseUrl };
+  }
+  return { runner: "claude-code", model: cfg?.claudeModel ?? ENV.plannerModel };
+}
+
+/** Display label for the plan-session markdown's "Planner model:" line —
+ *  unchanged from before F37 for the claude-code path (just `pm.model`, the
+ *  existing alias string), qualified with "codex:"/"opencode:" (F45) so a
+ *  non-claude-code-routed planner doesn't render as a bare, ambiguous
+ *  model id. */
+export function plannerModelLabel(pm: PlannerModel): string {
+  if (pm.runner === "codex") return `codex:${pm.model ?? "default"}`;
+  if (pm.runner === "opencode") return `opencode:${pm.model ?? "default"}`;
+  return pm.model ?? "claude";
 }
 
 export interface PlannedTask {
@@ -488,6 +554,96 @@ function runCodexJson(
   });
 }
 
+/**
+ * F45: run `opencode run -m <model> --format json` and return its
+ * accumulated text + reported cost — the opencode-runner twin of
+ * runClaudeJson/runCodexJson. Mirrors OpenCodeAdapter.runOnce's event-
+ * parsing conventions (text/cost live under each JSON line's `part`) and,
+ * critically, its B33 fix: `--dir <cwd>` is passed EXPLICITLY, not left to
+ * the `PWD` env var alone — `PWD` only controls the working directory for
+ * a LOCAL run; attaching to a shared server (`--attach`, when
+ * `opencodeBaseUrl` is set) runs tool calls on the SERVER's own process,
+ * which never inherits this client's env vars at all (live-verified
+ * against the real CLI in B33). Getting this wrong here would mean the
+ * planner reads/writes the wrong repo whenever a shared opencode server is
+ * configured — the same class of bug B33 fixed for authoring.
+ */
+function runOpencodeJson(
+  prompt: string,
+  cwd: string,
+  model: string,
+  opencodeBaseUrl: string,
+): Promise<ClaudeJsonResult> {
+  return new Promise((resolve, reject) => {
+    // Prompt on stdin, not argv — same argv-cap reasoning as every other
+    // planner/adapter spawn in this codebase.
+    const args = ["run", "-m", model, "--format", "json", "--dir", cwd];
+    if (opencodeBaseUrl) args.push("--attach", opencodeBaseUrl);
+
+    const proc = spawn("opencode", args, {
+      cwd,
+      env: sanitizedEnv({ PWD: cwd }),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    proc.stdin?.end(prompt);
+
+    let costUsd = 0;
+    let text = "";
+    let lineBuf = "";
+    let stderrTail = "";
+
+    const timer = setTimeout(() => {
+      proc.kill("SIGKILL");
+      reject(new Error("planner timed out"));
+    }, PLAN_TIMEOUT_MS);
+
+    const handleEvent = (obj: Record<string, unknown>) => {
+      const part = obj.part as { text?: string; cost?: number } | undefined;
+      if (typeof part?.text === "string") text += part.text;
+      if (typeof part?.cost === "number") costUsd += part.cost;
+    };
+
+    proc.stdout?.on("data", (c: Buffer) => {
+      lineBuf += c.toString("utf8");
+      const lines = lineBuf.split("\n");
+      lineBuf = lines.pop() ?? "";
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t) continue;
+        try {
+          handleEvent(JSON.parse(t));
+        } catch {
+          /* non-JSON log line */
+        }
+      }
+    });
+    proc.stderr?.on("data", (c: Buffer) => {
+      stderrTail = (stderrTail + c.toString("utf8")).slice(-2000);
+    });
+
+    proc.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      const tail = lineBuf.trim();
+      if (tail) {
+        try {
+          handleEvent(JSON.parse(tail));
+        } catch {
+          /* not JSON */
+        }
+      }
+      if (code !== 0) {
+        reject(new Error(`opencode exited ${code}: ${stderrTail.slice(0, 500)}`));
+        return;
+      }
+      resolve({ text, costUsd });
+    });
+  });
+}
+
 /** Dispatch to the right CLI for whichever model `routing.planner` resolves to. */
 function runPlannerJson(
   prompt: string,
@@ -495,9 +651,16 @@ function runPlannerJson(
   plannerModel: PlannerModel,
   outputSchema?: object,
 ): Promise<ClaudeJsonResult> {
-  return plannerModel.runner === "codex"
-    ? runCodexJson(prompt, cwd, plannerModel.model, outputSchema)
-    : runClaudeJson(prompt, cwd, plannerModel.model);
+  if (plannerModel.runner === "codex") {
+    return runCodexJson(prompt, cwd, plannerModel.model, outputSchema);
+  }
+  if (plannerModel.runner === "opencode") {
+    if (!plannerModel.model) {
+      return Promise.reject(new Error("opencode planner model has no model id configured"));
+    }
+    return runOpencodeJson(prompt, cwd, plannerModel.model, plannerModel.opencodeBaseUrl ?? "");
+  }
+  return runClaudeJson(prompt, cwd, plannerModel.model);
 }
 
 /**

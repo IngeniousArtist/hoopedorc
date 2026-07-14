@@ -209,6 +209,20 @@ Telegram is still the reliable channel for phones.
 
 ## Fallbacks, pricing, and cleanup
 
+- **Planner and deconstructor routing (Settings → Routing → Planner /
+  Deconstructor).** Any enabled model can plan — Claude Code, Codex, or an
+  OpenCode-runner model (deepseek, glm, grok, etc.) — set Planner to route
+  planning chat, and optionally Deconstructor to a different model for the
+  one high-leverage "turn the agreed plan into a task table" call (leave it
+  as "(same as planner)" to use one model for both). One honest quality
+  note: the two subscription CLIs (Claude Code, Codex) have historically
+  shown the strongest agentic planning behavior — reading your repo,
+  asking sharp clarifying questions, producing a well-scoped task DAG.
+  OpenCode-runner models work too (deconstruction leans on the same
+  JSON-repair/retry hardening the claude/opencode paths already need,
+  since neither has native output-schema enforcement the way Codex does),
+  but are API-billed per token for every chat turn, not flat-rate like a
+  subscription — worth factoring in if you plan a lot.
 - **Fallback models (Settings → Routing → Fallback 1/2).** When a task's
   assigned model keeps failing (author errors, failing gates, rate limits),
   the engine retries with Fallback 1, then Fallback 2 — swap the two
