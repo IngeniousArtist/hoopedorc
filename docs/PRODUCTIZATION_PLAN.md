@@ -1679,7 +1679,7 @@ target rules.
 | Item | Status | PR |
 |---|---|---|
 | B34 — execution ownership + unified manual queue | done | [#139](https://github.com/IngeniousArtist/hoopedorc/pull/139) |
-| B35 — managed subprocess lifecycle and cancellation | pending | — |
+| B35 — managed subprocess lifecycle and cancellation | done | [#140](https://github.com/IngeniousArtist/hoopedorc/pull/140) |
 | S9 — fail-closed gates, destructive rail, and worktree hygiene | pending | — |
 | B36 — rollback through a gated, human-approved PR | pending | — |
 | S10 — CLI credential/environment boundary | pending | — |
@@ -5616,6 +5616,27 @@ aborted validator, OpenCode retry sleep, GitHub-check poll, gate, and Docker
 cleanup adapter (Docker itself may be stubbed in CI). B34 hard Stop returns only
 after these managed children have settled or the explicit shutdown deadline is
 recorded.
+
+**B35 — done (PR [#140](https://github.com/IngeniousArtist/hoopedorc/pull/140)).**
+All CLI and command execution now shares a bounded managed-process primitive:
+it tracks real `close` settlement, caps captured output, removes abort listeners
+and timers, starts a POSIX process group where supported, sends one `SIGTERM`,
+and sends `SIGKILL` to the still-live group after grace with a direct-child
+fallback. A task-wide controller now spans worktree setup, every author and docs
+attempt, gates, validation, Git/GitHub commands and polling, merge work, and
+retry waits; planner HTTP disconnects cancel their Claude/Codex/OpenCode CLI as
+well. Repo-lock cancellation returns immediately only while queued and waits for
+an already-started managed child to close. Aborted setup removes partial
+worktrees before returning.
+
+Docker gate/install runs receive a unique container name and force-remove that
+container if the Docker client aborts, times out, or otherwise fails. Regression
+tests use a real SIGTERM-resistant parent plus child, a noisy output process, a
+real abortable gate, a fake pending `gh` CLI, an abort-aware validator and
+OpenCode retry, and a stubbed Docker runner that proves `docker rm -f` targets
+the generated name. `npm run typecheck`, `npm run build`, 8 adapter tests, 119
+engine tests, and 102 server tests pass. No authenticated model run was started;
+Fable review remains the independent post-merge check required for the wave.
 
 ### S9. Fail-closed gates, destructive rail, and worktree hygiene — HIGH
 
