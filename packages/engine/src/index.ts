@@ -54,12 +54,18 @@ export interface EngineEvents {
    * one ping, not spam), every fallback-model switch, and a terminal failure
    * with no fallback left. Optional; if omitted, the engine still does the
    * wait-and-retry/fallback logic itself, it just has no one to tell.
+   *
+   * B32: `"quota_wait"` fires once per stall when the WHOLE run is waiting
+   * on a cooldown/quota window to clear (every ready task's fallback chain
+   * currently blocked, nothing active) — distinct from `"fallback"`, which
+   * fires per-task when dispatch actually lands on a fallback model instead
+   * of waiting.
    */
   onModelTrouble?: (info: {
     taskId: string;
     taskTitle: string;
     model: ModelId;
-    event: "rate_limit_wait" | "fallback" | "exhausted";
+    event: "rate_limit_wait" | "fallback" | "exhausted" | "quota_wait";
     detail: string;
   }) => void;
 }

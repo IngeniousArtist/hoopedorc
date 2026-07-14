@@ -177,13 +177,22 @@ test("a budget cap stops the autonomous loop before dispatching or merging", asy
   );
 });
 
-test("a cooling-down model is skipped at dispatch instead of burning an attempt", async () => {
+test("a cooling-down model with NO dispatchable fallback is skipped instead of burning an attempt", async () => {
   const merged: number[] = [];
   const logs: { level: string; message: string }[] = [];
   let authorRuns = 0;
   const deps = fakeDeps(
     {
-      checkModelCooldown: (m) => (m === "deepseek-flash" ? "cooling down for 3m" : null),
+      // Block BOTH chain models (t1's fallback chain for medium/deepseek-flash
+      // is [deepseek-flash, deepseek-pro] — see settings()) so B32's
+      // dispatch-time fallback search has genuinely nowhere to go, exactly
+      // like the plan's "every chain model cooldown-blocked" case. This
+      // never clears on its own (unlike a real cooldown, which always
+      // expires) — B32 correctly keeps the loop polling for as long as
+      // that's true, so the test stops the run itself via pause() rather
+      // than awaiting start() to completion, which would otherwise hang
+      // forever waiting for a block that's never going to lift.
+      checkModelCooldown: () => "cooling down for 3m",
       adapterFor: () => ({
         runner: "opencode",
         async run() {
@@ -199,15 +208,145 @@ test("a cooling-down model is skipped at dispatch instead of burning an attempt"
     },
     merged,
   );
+  const orch = new Orchestrator(deps);
   const t1 = task("t1"); // default assignedModel: "deepseek-flash"
-  await new Orchestrator(deps).start(PROJECT, [t1]);
-  assert.equal(authorRuns, 0, "no model should run while its assigned model is cooling down");
+  const runPromise = orch.start(PROJECT, [t1]);
+
+  // Let the loop settle into a few polls, proving it's genuinely holding
+  // the task rather than having dispatched it, before stopping the run.
+  await new Promise((r) => setTimeout(r, 300));
+  await orch.pause(PROJECT);
+  await runPromise;
+
+  assert.equal(authorRuns, 0, "no model should run while its whole fallback chain is cooling down");
   assert.equal(merged.length, 0);
   assert.notEqual(t1.status, "done");
   assert.ok(
     logs.some((l) => l.level === "warn" && /Model cooling down/.test(l.message)),
     "should emit a cooldown warn log",
   );
+});
+
+test("B32: a cooldown-blocked assigned model dispatches on an available fallback instead of holding the task", async () => {
+  const merged: number[] = [];
+  const logs: { level: string; message: string }[] = [];
+  const modelsUsed: string[] = [];
+  const trouble: { model: string; event: string }[] = [];
+  const deps = fakeDeps(
+    {
+      // Only deepseek-flash (t1's assigned model) is cooling down —
+      // deepseek-pro (the next model in its fallback chain) is free.
+      checkModelCooldown: (m) => (m === "deepseek-flash" ? "cooling down for 3m" : null),
+      adapterFor: (m) => ({
+        runner: "opencode",
+        async run() {
+          modelsUsed.push(m);
+          return {
+            ok: true, exitReason: "completed", costUsd: 0.01, tokensIn: 1, tokensOut: 1,
+            summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+          };
+        },
+      }),
+      // deepseek-pro is BOTH the fallback candidate AND the medium-tier
+      // validator by default (see settings()) — route validation to a
+      // model the fallback won't collide with, so this test proves the
+      // dispatch-time fallback itself, not an unrelated self-review escalation.
+      settings: {
+        ...settings(),
+        routing: {
+          ...settings().routing,
+          validatorByDifficulty: { easy: "deepseek-flash", medium: "deepseek-flash", hard: "deepseek-flash" },
+        },
+      },
+      events: {
+        onLog(e) { logs.push({ level: e.level, message: e.message }); },
+        onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() { return "reject"; },
+        onModelTrouble(info) { trouble.push({ model: info.model, event: info.event }); },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1"); // default assignedModel: "deepseek-flash", difficulty medium
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+  assert.deepEqual(modelsUsed, ["deepseek-pro"], "should dispatch straight onto the fallback, never the blocked model");
+  assert.equal(t1.status, "done", "the task should complete normally on the fallback model");
+  assert.equal(merged.length, 1);
+  assert.ok(
+    logs.some((l) => l.level === "warn" && /blocked .*dispatching on fallback deepseek-pro/.test(l.message)),
+    "should log the dispatch-time fallback switch",
+  );
+  assert.ok(
+    trouble.some((t) => t.model === "deepseek-pro" && t.event === "fallback"),
+    "should fire onModelTrouble('fallback') for the dispatch-time switch",
+  );
+});
+
+test("B32: every fallback-chain model blocked keeps the run alive (polling) instead of ending it, then dispatches once one clears", async () => {
+  const merged: number[] = [];
+  let blocked = true;
+  const troubleEvents: { model: string; event: string }[] = [];
+  const deps = fakeDeps(
+    {
+      // Both chain models (deepseek-flash, deepseek-pro) are quota-blocked
+      // until `blocked` flips false mid-run, simulating a window rolling over.
+      checkModelQuota: () => (blocked ? "quota reached: 5/5 runs in the last 1h" : null),
+      events: {
+        onLog() {}, onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() { return "reject"; },
+        onModelTrouble(info) { troubleEvents.push({ model: info.model, event: info.event }); },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1");
+  const runPromise = new Orchestrator(deps).start(PROJECT, [t1]);
+
+  // Give the loop several 250ms polls to prove it's genuinely waiting, not
+  // having already exited.
+  await new Promise((r) => setTimeout(r, 600));
+  assert.notEqual(t1.status, "done", "must still be waiting, not finished or given up");
+
+  blocked = false; // the quota window "rolls over"
+  await runPromise;
+
+  assert.equal(t1.status, "done", "should dispatch and complete once the block clears");
+  assert.equal(merged.length, 1);
+  assert.equal(
+    troubleEvents.filter((t) => t.event === "quota_wait").length,
+    1,
+    "should fire exactly one quota_wait notification for the whole stall, not once per poll",
+  );
+});
+
+test("B32: pause() exits promptly even while every model is quota/cooldown-blocked (waiting, not winding down)", async () => {
+  const merged: number[] = [];
+  const deps = fakeDeps(
+    {
+      checkModelQuota: () => "quota reached: 5/5 runs in the last 1h",
+      events: {
+        onLog() {}, onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() { return "reject"; },
+      },
+    },
+    merged,
+  );
+  const orch = new Orchestrator(deps);
+  const t1 = task("t1");
+  const runPromise = orch.start(PROJECT, [t1]);
+
+  // Let the loop settle into a few 250ms waiting-polls before pausing.
+  await new Promise((r) => setTimeout(r, 300));
+  const pauseStarted = Date.now();
+  await orch.pause(PROJECT);
+  await runPromise;
+
+  assert.ok(
+    Date.now() - pauseStarted < 1000,
+    "pause should resolve quickly, not wait out the whole quota window",
+  );
+  assert.notEqual(t1.status, "done");
+  assert.equal(merged.length, 0);
 });
 
 test("stopTask aborts a running author and the task ends blocked without merging", async () => {
@@ -740,20 +879,33 @@ test("F15: a Stop requested during the GitHub-checks wait blocks the task withou
   assert.equal(merged.length, 0, "must not merge after a stop, even if checks ultimately passed");
 });
 
-test("F16: a model at its subscription quota is skipped at dispatch (warned once, not once per poll)", async () => {
+test("F16: a model whose ENTIRE fallback chain is at quota is skipped at dispatch (warned once, not once per poll)", async () => {
   const merged: number[] = [];
   const logs: { level: string; message: string }[] = [];
   const deps = fakeDeps(
     {
+      // B32: block quota for BOTH of quotaTask's fallback-chain models
+      // (deepseek-pro + deepseek-flash — see settings()'s 2-model chain) so
+      // the dispatch-time fallback search genuinely has nowhere to go. A
+      // third, unrelated model (glm) stays free so the run has other work
+      // to keep the loop alive across several polls while quotaTask's whole
+      // chain stays exhausted.
+      settings: {
+        ...settings(),
+        models: [
+          ...settings().models,
+          { id: "glm", displayName: "g", runner: "opencode", opencodeModel: "z", roles: ["medium"], enabled: true, maxConcurrent: 2 },
+        ],
+      },
       checkModelQuota: (m) =>
-        m === "deepseek-pro"
-          ? "Model deepseek-pro quota reached: 5/5 runs in the last 24h"
+        m === "deepseek-pro" || m === "deepseek-flash"
+          ? `Model ${m} quota reached: 5/5 runs in the last 24h`
           : null,
-      // A slow-but-unblocked task on a different model keeps the dispatch
-      // loop alive across several 250ms polls, so the quota-blocked task
-      // (on a non-overlapping scope, so it isn't held back for THAT reason
-      // instead) gets re-evaluated more than once — proving the warn is
-      // deduped, not just incidentally logged a single time.
+      // A slow-but-unblocked task on a different (never-quota-checked) model
+      // keeps the dispatch loop alive across several 250ms polls, so the
+      // quota-blocked task (on a non-overlapping scope, so it isn't held
+      // back for THAT reason instead) gets re-evaluated more than once —
+      // proving the warn is deduped, not just incidentally logged once.
       adapterFor: () => ({
         runner: "opencode",
         async run() {
@@ -777,16 +929,32 @@ test("F16: a model at its subscription quota is skipped at dispatch (warned once
     merged,
   );
   const slowTask = task("slow", [], {
-    assignedModel: "deepseek-flash",
+    assignedModel: "glm",
     scopePaths: ["src/a/**"],
   });
   const quotaTask = task("quota-blocked", [], {
     assignedModel: "deepseek-pro",
     scopePaths: ["src/b/**"],
   });
-  await new Orchestrator(deps).start(PROJECT, [slowTask, quotaTask]);
+  const orch = new Orchestrator(deps);
+  const runPromise = orch.start(PROJECT, [slowTask, quotaTask]);
+
+  // slowTask's author run takes 600ms; give it time to finish and merge.
+  // quotaTask's block never clears in this test (unlike a real quota
+  // window, which always rolls over) — B32 correctly keeps the loop
+  // polling for as long as that's true, so once slowTask is done the test
+  // stops the run itself via pause() rather than awaiting start() to
+  // completion, which would otherwise hang forever.
+  await new Promise((r) => setTimeout(r, 900));
+  await orch.pause(PROJECT);
+  await runPromise;
+
   assert.equal(slowTask.status, "done");
-  assert.notEqual(quotaTask.status, "done", "the quota-blocked task should never dispatch");
+  assert.notEqual(
+    quotaTask.status,
+    "done",
+    "the quota-blocked task's whole fallback chain is blocked, so it should never dispatch",
+  );
   const quotaWarnings = logs.filter(
     (l) => l.level === "warn" && /Model quota reached/.test(l.message),
   );
@@ -1297,7 +1465,7 @@ interface ModelTroubleCall {
   taskId: string;
   taskTitle: string;
   model: string;
-  event: "rate_limit_wait" | "fallback" | "exhausted";
+  event: "rate_limit_wait" | "fallback" | "exhausted" | "quota_wait";
   detail: string;
 }
 
