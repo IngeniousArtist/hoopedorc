@@ -5194,6 +5194,29 @@ same task creates none; run ending `paused` creates a notification.
 Live (mock ok): the bell shows a fallback switch and a run-ended-paused
 entry.
 
+**F44 — done (PR [#133](https://github.com/IngeniousArtist/hoopedorc/pull/133)).**
+`onModelTrouble` (engine-runner.ts) now creates a `Notification` row +
+WS broadcast, deduped via a `Set` scoped to `buildOrchestrator`'s own
+closure — no explicit per-run clear needed, since both `start()` and
+`dispatchOne()` build a fresh `Orchestrator`/closure per invocation;
+picks up B32's `quota_wait` for free (same code path, no
+special-casing). The run-end `finally` block's non-completed branch now
+also creates a notification carrying the identical message the log
+line already builds. USER_GUIDE gained a "Notifications" section with
+the bell-vs-Telegram table. Verified: 87/87 server tests (4 new in a
+new `engine-runner.test.ts`, reflecting into the real `buildOrchestrator`'s
+`SchedulerDeps` — exactly the acceptance criteria's dedup case plus a
+different-event-same-task case and a fresh-run-resets-dedup case; the
+run-end notification exercised through a real `EngineRunner.start()`
+against a real in-memory DB), 112/112 engine, 4/4 adapters, typecheck +
+build green. **Live-verified in a real browser**: booted the real
+(non-mock) server + a real SQLite DB, seeded both new notification
+shapes via direct inserts matching exactly what the code now writes,
+confirmed both round-trip through `GET /api/notifications`, then
+confirmed the actual web UI bell renders both — "Run ended: paused"
+and a fallback-switch entry — satisfying the plan's own acceptance
+line verbatim.
+
 ### F45. Allow opencode-runner models as planner/deconstructor — MEDIUM
 
 **Where:** `packages/server/src/planner.ts` (new `runOpencodeJson`,
