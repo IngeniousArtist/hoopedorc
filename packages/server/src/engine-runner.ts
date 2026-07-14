@@ -239,6 +239,12 @@ export class EngineRunner {
     const settings = repo.getSettings(this.db);
     if (!settings) throw new Error("settings not found");
 
+    // F44: dedupe model-trouble web notifications per (task, event type) for
+    // THIS run — a fresh, empty Set every call, since both start() and
+    // dispatchOne() build a brand-new Orchestrator (and this closure) each
+    // time, so it never needs an explicit per-run reset.
+    const modelTroubleNotified = new Set<string>();
+
     const adapterFor = (modelId: ModelId): AgentAdapter => {
       const cfg = settings.models.find((m) => m.id === modelId);
       if (!cfg) throw new Error(`no ModelConfig for ${modelId}`);
@@ -431,6 +437,27 @@ export class EngineRunner {
             summary: `${info.model} — ${info.event}: ${info.detail}`,
             detail: { event: info.event, model: info.model },
           });
+
+          // F44: web notification parity — the bell always gets these
+          // (unlike the Telegram push below, which respects modelAlerts),
+          // deduped to one row per (task, event type) per run so a chatty
+          // task's repeated fallback switches don't spam the bell. Picks
+          // up B32's "quota_wait" event for free — it's just another value
+          // in the same union.
+          const dedupeKey = `${info.taskId}:${info.event}`;
+          if (!modelTroubleNotified.has(dedupeKey)) {
+            modelTroubleNotified.add(dedupeKey);
+            const notif = repo.createNotification(this.db, {
+              projectId: project.id,
+              taskId: info.taskId,
+              severity: "warn",
+              title: `${info.taskTitle} — ${info.event}`,
+              message: `${info.model}: ${info.detail}`,
+              requiresApproval: false,
+            });
+            this.hub.broadcast({ type: "notification", payload: notif });
+          }
+
           // F32: default true (unset counts as enabled) — the owner
           // explicitly asked to be alerted on these, independent of the
           // task-status `digest` setting.
@@ -558,11 +585,21 @@ export class EngineRunner {
         repo.updateProject(this.db, project.id, { status: finalStatus });
         if (finalStatus !== "completed") {
           const blocked = finalTasks.filter((t) => t.status !== "done");
-          this.logError(
-            project.id,
+          const message =
             `Run ended (${finalStatus}) with ${blocked.length} task(s) not done: ` +
-              blocked.map((t) => `${t.title} [${t.status}]`).join(", "),
-          );
+            blocked.map((t) => `${t.title} [${t.status}]`).join(", ");
+          this.logError(project.id, message);
+          // F44: web notification parity — same message the log line
+          // already carries, now also visible in the bell (previously only
+          // a log line + the Telegram end-of-run digest).
+          const notif = repo.createNotification(this.db, {
+            projectId: project.id,
+            severity: "warn",
+            title: `Run ended: ${finalStatus}`,
+            message,
+            requiresApproval: false,
+          });
+          this.hub.broadcast({ type: "notification", payload: notif });
         }
 
         const fresh = repo.getProject(this.db, project.id);
