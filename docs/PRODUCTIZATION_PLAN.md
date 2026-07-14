@@ -5009,6 +5009,42 @@ block. Live: reproduce on the EC2 box if the failing task is still
 around; otherwise confirm the new diagnosis line appears in a forced
 no-op run.
 
+**B33 — done (PR [#131](https://github.com/IngeniousArtist/hoopedorc/pull/131)) — root cause found and fixed, not just diagnosed.**
+Item 3 (verify the opencode attach hypothesis) turned up a confirmed,
+previously-unknown bug rather than just a note for the PR: `--attach`
+routes tool execution to the ATTACHED SERVER's own process, which never
+inherits the client's env vars — so `PWD` (the old, only mechanism) had
+zero effect whenever `OPENCODE_BASE_URL` was set. **Live-verified against
+the installed CLI (opencode 1.17.8)**: spun up a real `opencode serve`,
+ran `opencode run --attach <url>` with only `PWD` set from a different
+directory — the agent's real `write` tool call landed in the SERVER's
+launch directory (captured directly in the JSON event stream's
+`filePath`), not the worktree; adding `--dir <cwd>` (the CLI's own flag,
+confirmed via `--help`: "path on remote server if attaching") fixed it
+immediately, and also verified correct for the local non-attached case
+— now passed unconditionally in `OpenCodeAdapter`. Any deployment with
+`OPENCODE_BASE_URL` set was silently writing every task's changes into
+the server's own directory instead of the task's worktree, which
+surfaces exactly as "Author produced no changes in the worktree" — a
+strong candidate for the direct cause of the owner's EC2 reports.
+Items 1-2 landed as specced: `WorktreeManager.primaryDirtyFiles` (`git
+status --porcelain`, excluding package.json/lockfiles per B29) feeds
+the `changed.length === 0` branch's diagnosis; `WORKING_DIRECTORY_BLOCK`
+(guidelines.ts) added to every author prompt. Verified: 112/112 engine
+tests (5 new — `primaryDirtyFiles` against a real git repo covering
+clean/lockfile-only-dirty/genuinely-dirty; the diagnosis branch's dirty
+vs. clean primary messaging; the working-directory prompt-content
+check), 83/83 server, 4/4 adapters, typecheck + build green.
+**Live-verified the opencode fix specifically** (not just the engine
+logic): reproduced the bug, then confirmed the fix, against the real
+CLI as described above — this is the strongest form of verification
+this item's acceptance criteria asked for, arguably stronger than the
+plan's own suggested "reproduce on the EC2 box" since it isolates the
+exact mechanism rather than just observing the symptom. No dedicated
+`OpenCodeAdapter` argv unit test was added (no existing spawn-mocking
+test infrastructure in `@orc/adapters` to build on for one assertion) —
+noted as a gap in the PR, covered instead by this live verification.
+
 ### S8. Non-bypassable destructive-change rail + validator/author safety prompts — HIGH (safety)
 
 **Where:** `packages/engine/src/orchestrator.ts` (`canAutoMerge`),
