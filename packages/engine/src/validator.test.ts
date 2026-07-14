@@ -169,6 +169,24 @@ test("S8: the review prompt always includes the fixed destructive-changes block,
   );
 });
 
+test("S9: incomplete diff acquisition cannot be approved by the validator", async () => {
+  const prompts: string[] = [];
+  const validator = new ValidatorImpl(capturingAdapterFactory(prompts), baseSettings());
+
+  const decision = await validator.review(
+    PROJECT,
+    task(),
+    GATE,
+    "deepseek-flash",
+  );
+
+  assert.equal(decision.verdict, "escalate");
+  assert.equal(decision.confidence, 0);
+  assert.match(decision.reasons[0]!, /could not acquire a complete diff/i);
+  assert.match(prompts[0]!, /Diff acquisition is incomplete/);
+  assert.match(prompts[0]!, /must escalate for human review/);
+});
+
 test("validator forwards AbortSignal to the reviewer and settles on abort", async () => {
   let started!: () => void;
   const reviewerStarted = new Promise<void>((resolve) => {

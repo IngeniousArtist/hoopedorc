@@ -9,9 +9,9 @@ import type {
 } from "@orc/types";
 import { execManagedProcess, type AgentAdapter } from "@orc/adapters";
 import { buildEngineeringStandardsBlock } from "./guidelines.js";
-import type { Validator } from "./index.js";
+import type { GitAcquisition, Validator } from "./index.js";
 
-const MAX_DIFF_CHARS = 40_000;
+const MAX_VALIDATOR_DIFF_BYTES = 512 * 1024;
 
 /**
  * S8: a fixed block always included in the review prompt (unlike
@@ -113,6 +113,15 @@ export class ValidatorImpl implements Validator {
       validatorModel,
     );
 
+    if (!diff.ok || diff.truncated) {
+      decision.verdict = "escalate";
+      decision.confidence = 0;
+      decision.reasons = [
+        `Validator could not acquire a complete diff; human review is required${diff.error ? `: ${diff.error.slice(0, 300)}` : "."}`,
+        ...decision.reasons,
+      ];
+    }
+
     // Enforce the confidence threshold: a low-confidence approval is escalated
     // to a human rather than auto-merged.
     if (
@@ -133,7 +142,7 @@ export class ValidatorImpl implements Validator {
     project: Project,
     cwd: string,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<GitAcquisition<string>> {
     try {
       // Three-dot (merge-base) diff so the reviewer sees only this task's own
       // changes, not files that advanced on main since the branch was created.
@@ -141,18 +150,36 @@ export class ValidatorImpl implements Validator {
       const { stdout: out } = await execManagedProcess(
         "git",
         ["diff", `origin/${project.defaultBranch}...HEAD`],
-        { cwd, signal, maxOutputBytes: 64 * 1024 * 1024 },
+        { cwd, signal, maxOutputBytes: MAX_VALIDATOR_DIFF_BYTES },
       );
-      return out.length > MAX_DIFF_CHARS
-        ? out.slice(0, MAX_DIFF_CHARS) + "\n... (diff truncated)"
-        : out;
+      return {
+        ok: true,
+        value: out,
+        byteCount: Buffer.byteLength(out),
+        truncated: false,
+      };
     } catch (err) {
       if (signal?.aborted) throw err;
-      return "(could not compute diff)";
+      const processError = err as {
+        stdout?: string;
+        outputLimitExceeded?: boolean;
+      };
+      const output = processError.stdout ?? "";
+      return {
+        ok: false,
+        value: output,
+        error: err instanceof Error ? err.message : String(err),
+        byteCount: Buffer.byteLength(output),
+        truncated: processError.outputLimitExceeded === true,
+      };
     }
   }
 
-  private buildReviewPrompt(task: Task, gate: GateResult, diff: string): string {
+  private buildReviewPrompt(
+    task: Task,
+    gate: GateResult,
+    diff: GitAcquisition<string>,
+  ): string {
     // F31: the same text buildAuthorPrompt gave the author, so "meets the
     // standards" is checkable on both sides rather than the validator
     // grading against criteria the author was never told about.
@@ -181,8 +208,13 @@ ${standards}
 | inScope | ${gate.inScope ? "PASS" : "FAIL"} | ${gate.details.inScope ?? ""} |
 
 ## Diff (vs default branch)
+${
+  !diff.ok || diff.truncated
+    ? `WARNING: Diff acquisition is incomplete (${diff.error ?? "output limit reached"}). You must escalate for human review.\n`
+    : ""
+}
 \`\`\`diff
-${diff}
+${diff.value || "(no diff content available)"}
 \`\`\`
 ${
   standards

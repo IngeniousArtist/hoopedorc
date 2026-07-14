@@ -14,6 +14,10 @@ import {
 } from "./orchestrator.js";
 import type { GitService, SchedulerDeps, WorktreeManager } from "./index.js";
 
+function acquired<T>(value: T) {
+  return { ok: true, value, byteCount: 0, truncated: false };
+}
+
 function settings(): Settings {
   return {
     models: [
@@ -81,8 +85,12 @@ function fakeDeps(
       // detectDestructiveChanges finds nothing and every pre-existing
       // merge-path test's behavior is unaffected by canAutoMerge now
       // always consulting these two.
-      async changedFilesWithStatus() { return changed.map((f) => ({ path: f, status: "M" })); },
-      async diffText() { return ""; },
+      async changedFilesWithStatus() {
+        return acquired(changed.map((f) => ({ path: f, status: "M" })));
+      },
+      async diffText() { return acquired(""); },
+      async worktreeChanges() { return acquired([]); },
+      async restoreToHead() { return acquired(undefined); },
       // B33: clean by default — most tests aren't exercising the
       // wrote-to-the-wrong-place diagnosis, so the primary clone reads as
       // undirtied unless a test overrides this.
@@ -541,15 +549,45 @@ test("sets in_review while gates run and back to in_progress on a gate-failure r
   const merged: number[] = [];
   const statuses: string[] = [];
   let gateCalls = 0;
+  let authorCalls = 0;
+  let gateDirtPresent = false;
   const deps = fakeDeps(
     {
+      adapterFor: () => ({
+        runner: "opencode",
+        async run() {
+          authorCalls++;
+          if (authorCalls === 2) {
+            assert.equal(
+              gateDirtPresent,
+              false,
+              "the failed gate's files must be gone before retry authoring",
+            );
+          }
+          return {
+            ok: true,
+            exitReason: "completed",
+            costUsd: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+            summary: JSON.stringify({ verdict: "approve", reasons: ["ok"], confidence: 1 }),
+          };
+        },
+      }),
       gates: {
         async run() {
           gateCalls++;
+          if (gateCalls === 1) gateDirtPresent = true;
           // Fail the first attempt's gate, pass the second's.
           return gateCalls === 1
             ? { ...GOOD_GATE, typecheck: false, details: { typecheck: "boom" } }
             : GOOD_GATE;
+        },
+      },
+      worktrees: {
+        async restoreToHead() {
+          gateDirtPresent = false;
+          return acquired(undefined);
         },
       },
       events: {
@@ -2235,10 +2273,10 @@ test("S8: canAutoMerge holds a destructive change for approval even under fully_
       settings: { ...settings(), mergePolicy: "fully_autonomous" },
       worktrees: {
         async changedFilesWithStatus() {
-          return [{ path: "migrations/001_init.sql", status: "D" }];
+          return acquired([{ path: "migrations/001_init.sql", status: "D" }]);
         },
         async diffText() {
-          return "+DROP TABLE users;\n";
+          return acquired("+DROP TABLE users;\n");
         },
       },
       events: {
@@ -2273,6 +2311,74 @@ test("S8: canAutoMerge auto-merges a clean change under fully_autonomous exactly
   assert.equal(merged.length, 1);
 });
 
+test("S9: incomplete diff inspection requires approval under fully_autonomous", async () => {
+  const merged: number[] = [];
+  let asked = false;
+  const deps = fakeDeps(
+    {
+      settings: { ...settings(), mergePolicy: "fully_autonomous" },
+      worktrees: {
+        async diffText() {
+          return {
+            ok: false,
+            value: "+clean prefix\n",
+            error: "diff output exceeded safety limit",
+            byteCount: 16 * 1024 * 1024,
+            truncated: true,
+          };
+        },
+      },
+      events: {
+        onLog() {}, onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval(args) {
+          asked = true;
+          assert.match(args.message, /Safety inspection could not complete/);
+          assert.match(args.message, /could not be fully scanned/);
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+  assert.equal(asked, true);
+  assert.equal(merged.length, 0);
+  assert.match(t1.statusReason ?? "", /Safety inspection was incomplete/);
+});
+
+test("S9: git acquisition errors require approval instead of reading as clean", async () => {
+  const merged: number[] = [];
+  let approvalMessage = "";
+  const deps = fakeDeps(
+    {
+      settings: { ...settings(), mergePolicy: "fully_autonomous" },
+      worktrees: {
+        async changedFilesWithStatus() {
+          return {
+            ok: false,
+            value: [],
+            error: "fatal: not a git repository",
+            byteCount: 0,
+            truncated: false,
+          };
+        },
+      },
+      events: {
+        onLog() {}, onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval(args) {
+          approvalMessage = args.message;
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+  await new Orchestrator(deps).start(PROJECT, [task("t1")]);
+  assert.match(approvalMessage, /Could not inspect changed-file statuses/);
+  assert.equal(merged.length, 0);
+});
+
 test("S8: riskyChangeRules.destructiveChanges: false restores today's fully_autonomous behavior for a destructive diff", async () => {
   const merged: number[] = [];
   const deps = fakeDeps(
@@ -2284,10 +2390,10 @@ test("S8: riskyChangeRules.destructiveChanges: false restores today's fully_auto
       },
       worktrees: {
         async changedFilesWithStatus() {
-          return [{ path: "migrations/001_init.sql", status: "D" }];
+          return acquired([{ path: "migrations/001_init.sql", status: "D" }]);
         },
         async diffText() {
-          return "+DROP TABLE users;\n";
+          return acquired("+DROP TABLE users;\n");
         },
       },
     },

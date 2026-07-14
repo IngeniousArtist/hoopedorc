@@ -35,6 +35,16 @@ export {
 } from "./sandbox.js";
 export type { SandboxMode } from "./sandbox.js";
 
+export interface GitAcquisition<T> {
+  ok: boolean;
+  value: T;
+  error?: string;
+  /** UTF-8 bytes observed before completion or the configured safety limit. */
+  byteCount: number;
+  /** True when output hit the safety limit and is therefore incomplete. */
+  truncated: boolean;
+}
+
 /** Callbacks the engine uses to report progress + ask humans for decisions. */
 export interface EngineEvents {
   onLog: (e: Omit<LogEvent, "id">) => void;
@@ -103,17 +113,18 @@ export interface WorktreeManager {
   changedFilesWithStatus(
     project: Project,
     task: Task,
-  ): Promise<{ path: string; status: string }[]>;
+  ): Promise<GitAcquisition<{ path: string; status: string }[]>>;
   /**
-   * S8: the task's diff vs the default branch, capped to a bounded length
-   * — used by canAutoMerge's destructive-change detection (a second,
-   * independent fetch from the validator's own diff — see validator.ts's
-   * getDiff — since canAutoMerge runs later, after the worktree the
-   * validator read from is still around but on a different code path).
-   * Empty string if there's no worktree or the diff couldn't be computed
-   * (best-effort, mirrors changedFiles' error handling).
+   * S8/S9: the task's bounded diff vs the default branch for mechanical
+   * destructive-change detection. Acquisition failure and truncation are
+   * explicit so callers can fail closed instead of treating missing output
+   * as a clean diff.
    */
-  diffText(project: Project, task: Task): Promise<string>;
+  diffText(project: Project, task: Task): Promise<GitAcquisition<string>>;
+  /** Non-ignored tracked/untracked changes currently present vs task HEAD. */
+  worktreeChanges(task: Task): Promise<GitAcquisition<string[]>>;
+  /** Restore only the disposable task worktree to its committed HEAD. */
+  restoreToHead(task: Task): Promise<GitAcquisition<void>>;
   /**
    * B33: diagnostic-only — names of files currently dirty in the PRIMARY
    * clone's working tree, EXCLUDING package.json/lockfiles (B29's
