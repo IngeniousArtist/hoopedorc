@@ -94,6 +94,66 @@ process.stdin.on("end", () => {
   }
 });
 
+test("F48: Claude, Codex, and OpenCode planner calls receive the routed effort", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-planner-effort-"));
+  const fakeCli = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const name = path.basename(process.argv[1]);
+  const snapshot = JSON.stringify(process.argv.slice(2));
+  if (name === "claude") {
+    process.stdout.write(JSON.stringify({ result: snapshot, total_cost_usd: 0 }));
+  } else if (name === "codex") {
+    const index = process.argv.indexOf("--output-last-message");
+    fs.writeFileSync(process.argv[index + 1], snapshot);
+  } else {
+    process.stdout.write(JSON.stringify({ part: { text: snapshot, cost: 0 } }) + "\\n");
+  }
+});
+`;
+  for (const name of ["claude", "codex", "opencode"]) {
+    const file = join(bin, name);
+    writeFileSync(file, fakeCli);
+    chmodSync(file, 0o755);
+  }
+
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  try {
+    const cases = [
+      {
+        planner: { runner: "claude-code" as const, model: "sonnet", effort: "high" },
+        expected: ["--effort", "high"],
+      },
+      {
+        planner: { runner: "codex" as const, model: "gpt-test", effort: "xhigh" },
+        expected: ["-c", "model_reasoning_effort=xhigh"],
+      },
+      {
+        planner: { runner: "opencode" as const, model: "provider/model", effort: "provider-max" },
+        expected: ["--variant", "provider-max"],
+      },
+    ];
+    for (const { planner, expected } of cases) {
+      const result = await runPlannerChat(
+        [{ role: "user", content: "show args" }],
+        "effort test",
+        bin,
+        planner,
+      );
+      const args = JSON.parse(result.reply) as string[];
+      const at = args.indexOf(expected[0]!);
+      assert.notEqual(at, -1, `${planner.runner} missing ${expected[0]}`);
+      assert.equal(args[at + 1], expected[1]);
+    }
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+});
+
 // B31: the owner's exact failure shape — pure JSON whose "prd" string
 // contains a fenced snippet mentioning a file path. The old unanchored,
 // non-greedy fence regex matched the INNER fence and extracted garbage
@@ -397,25 +457,49 @@ test("resolvePlannerModel: codex and claude-code routing are unaffected by the o
     displayName: "Codex",
     runner: "codex",
     codexModel: "gpt-5.2-codex",
+    effort: "xhigh",
     roles: [],
     enabled: true,
     maxConcurrent: 1,
   });
   settings.routing.planner = "codex-model";
   const codex = resolvePlannerModel(settings, "chat");
-  assert.deepEqual(codex, { runner: "codex", model: "gpt-5.2-codex" });
+  assert.deepEqual(codex, {
+    runner: "codex",
+    model: "gpt-5.2-codex",
+    effort: "xhigh",
+  });
 
   settings.routing.planner = "claude";
   const claude = resolvePlannerModel(settings, "chat");
   assert.equal(claude.runner, "claude-code");
 });
 
+test("B37/F48: planner rejects disabled routing and resolves effort for every tier", () => {
+  const settings = defaultSettings();
+  const claude = settings.models.find((model) => model.id === "claude")!;
+  claude.effort = "high";
+  assert.equal(resolvePlannerModel(settings, "chat").effort, "high");
+
+  claude.enabled = false;
+  assert.throws(() => resolvePlannerModel(settings, "chat"), /is disabled/);
+});
+
 test("plannerModelLabel: labels each runner distinctly", () => {
-  assert.equal(plannerModelLabel({ runner: "claude-code", model: "sonnet" }), "sonnet");
-  assert.equal(plannerModelLabel({ runner: "claude-code" }), "claude");
-  assert.equal(plannerModelLabel({ runner: "codex", model: "gpt-5.2-codex" }), "codex:gpt-5.2-codex");
+  assert.equal(
+    plannerModelLabel({ runner: "claude-code", model: "sonnet", effort: "high" }),
+    "sonnet [effort: high]",
+  );
+  assert.equal(
+    plannerModelLabel({ runner: "claude-code" }),
+    "claude [effort: CLI default]",
+  );
+  assert.equal(
+    plannerModelLabel({ runner: "codex", model: "gpt-5.2-codex" }),
+    "codex:gpt-5.2-codex [effort: CLI default]",
+  );
   assert.equal(
     plannerModelLabel({ runner: "opencode", model: "deepseek/deepseek-v4-pro" }),
-    "opencode:deepseek/deepseek-v4-pro",
+    "opencode:deepseek/deepseek-v4-pro [effort: CLI default]",
   );
 });

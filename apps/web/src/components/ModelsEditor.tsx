@@ -1,4 +1,12 @@
-import type { ModelConfig, Role, RoutingPolicy, RunnerKind } from "@orc/types";
+import {
+  CLAUDE_EFFORTS,
+  CODEX_EFFORTS,
+  OPENCODE_EFFORT_SUGGESTIONS,
+  type ModelConfig,
+  type Role,
+  type RoutingPolicy,
+  type RunnerKind,
+} from "@orc/types";
 
 const ALL_ROLES: Role[] = [
   "planner",
@@ -134,7 +142,7 @@ export function ModelsEditor({
               </button>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                   ID
@@ -152,7 +160,13 @@ export function ModelsEditor({
                 <select
                   value={m.runner}
                   onChange={(e) =>
-                    patch(idx, { runner: e.target.value as RunnerKind })
+                    patch(idx, {
+                      runner: e.target.value as RunnerKind,
+                      // Effort values are runner-specific. Make the user
+                      // choose again instead of carrying an incompatible
+                      // Claude/Codex value into OpenCode (or vice versa).
+                      effort: undefined,
+                    })
                   }
                   className={inputCls}
                 >
@@ -164,7 +178,41 @@ export function ModelsEditor({
                 </select>
               </div>
 
-              <div className="col-span-2">
+              <div className="sm:col-span-2">
+                <label className="mb-1 block text-[10px] uppercase text-neutral-400">
+                  Reasoning effort
+                </label>
+                {m.runner === "opencode" ? (
+                  <input
+                    value={m.effort ?? ""}
+                    onChange={(e) => patch(idx, { effort: e.target.value || undefined })}
+                    placeholder="CLI default (or provider variant)"
+                    list="opencode-effort-variants"
+                    className={inputCls + " font-mono"}
+                  />
+                ) : (
+                  <select
+                    value={m.effort ?? ""}
+                    onChange={(e) => patch(idx, { effort: e.target.value || undefined })}
+                    className={inputCls}
+                  >
+                    <option value="">CLI default</option>
+                    {(m.runner === "claude-code" ? CLAUDE_EFFORTS : CODEX_EFFORTS).map(
+                      (effort) => (
+                        <option key={effort} value={effort}>
+                          {effort}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                )}
+                <p className="mt-1 text-[10px] text-neutral-600">
+                  Applies to planning, authoring, validation, documentation,
+                  and model health calls for this model.
+                </p>
+              </div>
+
+              <div className="sm:col-span-2">
                 <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                   {m.runner === "claude-code"
                     ? "claude --model (e.g. sonnet / opus)"
@@ -248,7 +296,7 @@ export function ModelsEditor({
                 these prices instead of trusting the CLI's own (possibly
                 stale) pricing table
               </label>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {(
                   [
                     ["costPerMInputUsd", "input $/1M"],
@@ -282,7 +330,7 @@ export function ModelsEditor({
                 usage window before burning attempts, instead of reacting
                 after a rate-limit failure
               </label>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <input
                   type="number"
                   min={1}
@@ -382,6 +430,11 @@ export function ModelsEditor({
           ))}
         </datalist>
       ) : null}
+      <datalist id="opencode-effort-variants">
+        {OPENCODE_EFFORT_SUGGESTIONS.map((effort) => (
+          <option key={effort} value={effort} />
+        ))}
+      </datalist>
     </section>
   );
 }

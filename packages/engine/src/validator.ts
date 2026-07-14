@@ -50,11 +50,17 @@ export type ValidatorCostSink = (
 export class ValidatorImpl implements Validator {
   constructor(
     private readonly adapterFactory: (modelId: ModelId) => AgentAdapter,
-    private readonly settings: Settings,
+    private readonly settingsSource: Settings | (() => Settings),
     /** Optional: record validator spend (validation runs aren't author runs,
      *  so they have no run row — without this their cost is untracked). */
     private readonly onCost?: ValidatorCostSink,
   ) {}
+
+  private settings(): Settings {
+    return typeof this.settingsSource === "function"
+      ? this.settingsSource()
+      : this.settingsSource;
+  }
 
   async review(
     project: Project,
@@ -64,8 +70,19 @@ export class ValidatorImpl implements Validator {
     onLog: (line: string) => void = () => {},
     signal?: AbortSignal,
   ): Promise<MergeDecision> {
+    // Model/runner/effort are resolved once immediately before this call and
+    // remain stable while it is in flight. A later review sees new routing.
+    const attemptSettings = this.settings();
     const validatorModel =
-      this.settings.routing.validatorByDifficulty[task.difficulty];
+      attemptSettings.routing.validatorByDifficulty[task.difficulty];
+    const validatorConfig = attemptSettings.models.find(
+      (model) => model.id === validatorModel,
+    );
+    if (!validatorConfig?.enabled) {
+      throw new Error(
+        `Validator model "${validatorModel}" is ${validatorConfig ? "disabled" : "not configured"}.`,
+      );
+    }
 
     // Checked against authorModel (whoever actually produced this attempt —
     // may be a fallback model, not task.assignedModel) rather than re-deriving
@@ -81,7 +98,7 @@ export class ValidatorImpl implements Validator {
     const cwd = task.worktreePath ?? project.localPath;
     const diff = await this.getDiff(project, cwd, signal);
     const adapter = this.adapterFactory(validatorModel);
-    const prompt = this.buildReviewPrompt(task, gate, diff);
+    const prompt = this.buildReviewPrompt(task, gate, diff, attemptSettings);
 
     const result = await adapter.run({
       model: validatorModel,
@@ -124,13 +141,14 @@ export class ValidatorImpl implements Validator {
 
     // Enforce the confidence threshold: a low-confidence approval is escalated
     // to a human rather than auto-merged.
+    const liveSettings = this.settings();
     if (
       decision.verdict === "approve" &&
-      decision.confidence < this.settings.confidenceThreshold
+      decision.confidence < liveSettings.confidenceThreshold
     ) {
       decision.verdict = "escalate";
       decision.reasons = [
-        `Validator confidence ${decision.confidence} is below threshold ${this.settings.confidenceThreshold}.`,
+        `Validator confidence ${decision.confidence} is below threshold ${liveSettings.confidenceThreshold}.`,
         ...decision.reasons,
       ];
     }
@@ -179,12 +197,13 @@ export class ValidatorImpl implements Validator {
     task: Task,
     gate: GateResult,
     diff: GitAcquisition<string>,
+    settings: Settings,
   ): string {
     // F31: the same text buildAuthorPrompt gave the author, so "meets the
     // standards" is checkable on both sides rather than the validator
     // grading against criteria the author was never told about.
     const standards = buildEngineeringStandardsBlock(
-      this.settings.guidelines,
+      settings.guidelines,
       task.role === "frontend",
       task.role === "docs",
     );

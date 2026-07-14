@@ -32,6 +32,42 @@ export type Role =
 /** How the orchestrator actually executes a model. */
 export type RunnerKind = "claude-code" | "opencode" | "codex";
 
+/** Runner-specific reasoning-effort values accepted by the installed CLIs.
+ * OpenCode additionally accepts a provider-defined custom variant, validated
+ * by `modelEffortError` before it can reach an argument array. */
+export const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export const CODEX_EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
+export const OPENCODE_EFFORT_SUGGESTIONS = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+
+/** Returns an actionable error for an incompatible/unsafe effort value. */
+export function modelEffortError(
+  runner: RunnerKind,
+  effort: unknown,
+): string | null {
+  if (effort === undefined || effort === null || effort === "") return null;
+  if (typeof effort !== "string") return "must be a string";
+  if (runner === "claude-code" && !CLAUDE_EFFORTS.includes(effort as never)) {
+    return `must be one of: ${CLAUDE_EFFORTS.join(", ")}`;
+  }
+  if (runner === "codex" && !CODEX_EFFORTS.includes(effort as never)) {
+    return `must be one of: ${CODEX_EFFORTS.join(", ")}`;
+  }
+  if (
+    runner === "opencode" &&
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(effort)
+  ) {
+    return "must be a safe provider variant (1-64 letters, numbers, '.', '_' or '-')";
+  }
+  return null;
+}
+
 export interface ModelConfig {
   id: ModelId;
   displayName: string;
@@ -53,6 +89,10 @@ export interface ModelConfig {
    * "gpt-5.2-codex"). Omitted => CLI default, mirroring `claudeModel`.
    */
   codexModel?: string;
+  /** Optional reasoning effort/variant. Unset means the CLI's own default.
+   * Claude maps this to `--effort`, OpenCode to `--variant`, and Codex to
+   * `-c model_reasoning_effort=...`. */
+  effort?: string;
   roles: Role[];
   enabled: boolean;
   /**
@@ -300,6 +340,9 @@ export interface Run {
   projectId: string;
   taskId: string;
   model: ModelId;
+  /** Attempt-stable effort selected when this invocation started. `default`
+   * means the CLI chose its configured/default effort. */
+  effort?: string;
   attempt: number;
   status: RunStatus;
   startedAt: string;

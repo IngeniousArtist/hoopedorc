@@ -9,6 +9,7 @@ import {
   EngineRunner,
   type RollbackExecutionDeps,
 } from "./engine-runner.js";
+import type { ServerNotifier } from "./telegram.js";
 import { WsHub } from "./ws-hub.js";
 
 function setup() {
@@ -521,6 +522,101 @@ test("B34: a late adapter result cannot overwrite a run already marked stopped",
   assert.equal(saved.exitReason, "killed");
   assert.equal(saved.costUsd, 0.01);
   assert.equal(saved.tokensIn, 10);
+});
+
+test("B37/F48: an already-built runtime reads live budgets, quotas, pricing, notification policy, and persists effort", () => {
+  const db = setup();
+  const hub = new WsHub();
+  const engine = new EngineRunner(db, hub);
+  const proj = project(db, "live-policy");
+  const task = seedTask(db, proj.id, "task");
+  const taskPushes: string[] = [];
+  const notifier: ServerNotifier = {
+    approvalRequested() {},
+    taskStatus(digest) { taskPushes.push(digest.status); },
+    info() {},
+    modelTrouble() {},
+  };
+  engine.setNotifier(notifier);
+
+  // Build first: every assertion below changes Settings after the runtime
+  // captured its dependencies, which is the stale-settings regression B37 fixes.
+  const deps = buildDeps(engine, proj);
+  repo.createCost(db, {
+    projectId: proj.id,
+    model: "deepseek-flash",
+    costUsd: 1,
+    tokensIn: 1,
+    tokensOut: 1,
+    ts: new Date().toISOString(),
+  });
+  assert.equal(deps.checkBudget!("deepseek-flash"), null);
+  assert.equal(deps.checkModelQuota!("deepseek-flash"), null);
+
+  const startedAt = new Date().toISOString();
+  repo.createRun(db, {
+    id: "prior-run",
+    projectId: proj.id,
+    taskId: task.id,
+    model: "deepseek-flash",
+    effort: "low",
+    attempt: 1,
+    status: "passed",
+    startedAt,
+    endedAt: startedAt,
+    costUsd: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+  });
+
+  let settings = repo.getSettings(db)!;
+  settings = repo.upsertSettings(db, {
+    ...settings,
+    globalMonthlyBudgetUsd: 0.5,
+    telegram: { ...settings.telegram!, digest: "off" },
+    models: settings.models.map((model) =>
+      model.id === "deepseek-flash"
+        ? {
+            ...model,
+            effort: "high",
+            quota: { windowHours: 1, maxRuns: 1 },
+            costPerMInputUsd: 2,
+            costPerMOutputUsd: 0,
+          }
+        : model,
+    ),
+  });
+
+  assert.match(deps.checkBudget!("deepseek-flash")!, /Global monthly budget/);
+  assert.match(deps.checkModelQuota!("deepseek-flash")!, /1\/1 runs/);
+
+  deps.events.onRunUpdated({
+    id: "priced-run",
+    projectId: proj.id,
+    taskId: task.id,
+    model: "deepseek-flash",
+    effort: "high",
+    attempt: 2,
+    status: "passed",
+    startedAt,
+    endedAt: startedAt,
+    costUsd: 0.01,
+    tokensIn: 1_000_000,
+    tokensOut: 0,
+  });
+  assert.equal(repo.getRun(db, "priced-run")!.costUsd, 2);
+  assert.equal(repo.getRun(db, "priced-run")!.effort, "high");
+  assert.equal(repo.getCosts(db, proj.id)[0]!.costUsd, 2);
+
+  deps.events.onTaskUpdated({ ...task, status: "in_progress" });
+  assert.deepEqual(taskPushes, []);
+
+  repo.upsertSettings(db, {
+    ...settings,
+    telegram: { ...settings.telegram!, digest: "all" },
+  });
+  deps.events.onTaskUpdated({ ...task, status: "in_review" });
+  assert.deepEqual(taskPushes, ["in_review"]);
 });
 
 test("B36: duplicate rollback clicks share one job and approval merges exactly once", async () => {

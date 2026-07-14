@@ -377,6 +377,8 @@ export interface SetupHealthResponse {
 export interface ModelTestResult {
   id: ModelId;
   displayName: string;
+  /** Attempt-stable setting used by this health invocation. */
+  effort: string;
   ok: boolean;
   costUsd: number;
   ms: number;
@@ -393,6 +395,7 @@ export interface ModelHealthEntry {
   id: ModelId;
   displayName: string;
   enabled: boolean;
+  effort: string;
   /** Most recent "Test models" result for this model, if it's ever been run. */
   lastCheck?: {
     ok: boolean;

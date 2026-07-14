@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS runs (
   project_id  TEXT NOT NULL DEFAULT '',
   task_id     TEXT NOT NULL REFERENCES tasks(id),
   model       TEXT NOT NULL,
+  effort      TEXT,
   attempt     INTEGER NOT NULL,
   status      TEXT NOT NULL,
   started_at  TEXT NOT NULL,

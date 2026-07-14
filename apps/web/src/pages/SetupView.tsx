@@ -232,7 +232,7 @@ export function SetupView({
                       </div>
                     )}
                     <div className="mt-1 font-mono text-[10px] text-neutral-500">
-                      {(r.ms / 1000).toFixed(1)}s · ${r.costUsd.toFixed(4)}
+                      effort {r.effort} · {(r.ms / 1000).toFixed(1)}s · ${r.costUsd.toFixed(4)}
                     </div>
                   </div>
                 </div>
@@ -289,6 +289,7 @@ export function SetupView({
                     )}
                   </div>
                   <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-neutral-400">
+                    <span>effort: {m.effort}</span>
                     {m.lastCheck ? (
                       <span className={m.lastCheck.ok ? "text-green-400" : "text-red-400"}>
                         last check {m.lastCheck.ok ? "✓" : "✗"} · {timeAgo(m.lastCheck.ts)}

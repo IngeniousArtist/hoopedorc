@@ -200,6 +200,7 @@ export function computeModelHealth(db: Db, engine: EngineRunner) {
       id: m.id,
       displayName: m.displayName,
       enabled: m.enabled,
+      effort: m.effort ?? "default",
       lastCheck: check
         ? {
             ok: check.ok,

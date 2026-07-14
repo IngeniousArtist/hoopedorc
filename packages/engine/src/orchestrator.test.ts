@@ -666,6 +666,66 @@ test("project.config.mergePolicy overrides the global Settings.mergePolicy (F9)"
   assert.equal(merged.length, 1, "the project override should have allowed an auto-merge");
 });
 
+test("B37: an in-flight author survives disable and the merge tail uses the live policy", async () => {
+  const merged: number[] = [];
+  let liveSettings: Settings = { ...settings(), mergePolicy: "always_ask" };
+  let release!: () => void;
+  const authorGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let markStarted!: () => void;
+  const authorStarted = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let approvals = 0;
+  const deps = fakeDeps(
+    {
+      settings: liveSettings,
+      getSettings: () => liveSettings,
+      adapterFor: () => ({
+        runner: "opencode",
+        async run(): Promise<AgentRunResult> {
+          markStarted();
+          await authorGate;
+          return {
+            ok: true,
+            exitReason: "completed",
+            costUsd: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+            summary: "done",
+          };
+        },
+      }),
+      events: {
+        onLog() {}, onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() {
+          approvals++;
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1");
+  const run = new Orchestrator(deps).start(PROJECT, [t1]);
+  await authorStarted;
+
+  liveSettings = {
+    ...liveSettings,
+    mergePolicy: "fully_autonomous",
+    models: liveSettings.models.map((model) =>
+      model.id === "deepseek-flash" ? { ...model, enabled: false } : model,
+    ),
+  };
+  release();
+  await run;
+
+  assert.equal(t1.status, "done", "disabling does not abort a call already in flight");
+  assert.deepEqual(merged, [1]);
+  assert.equal(approvals, 0, "the merge tail saw the newly saved autonomous policy");
+});
+
 test("F12: a shared model-concurrency registry enforces maxConcurrent across two separate Orchestrator instances", async () => {
   // Simulates EngineRunner wiring the same counter into every project's
   // Orchestrator via deps.getModelActive/incModelActive/decModelActive.
@@ -1716,6 +1776,124 @@ test("F32: rate-limit retries exhausted falls back to the next model", async () 
   assert.equal(trouble[1]!.model, "deepseek-pro");
 });
 
+test("B37: disabling a fallback while the author is in flight prevents a new fallback attempt", async () => {
+  const merged: number[] = [];
+  let liveSettings: Settings = {
+    ...settings(),
+    models: [
+      ...settings().models,
+      {
+        id: "fallback-only",
+        displayName: "Fallback only",
+        runner: "opencode",
+        opencodeModel: "fallback/only",
+        roles: [],
+        enabled: true,
+        maxConcurrent: 1,
+      },
+    ],
+    routing: { ...settings().routing, fallbacks: ["fallback-only"] },
+  };
+  const modelsUsed: string[] = [];
+  const deps = fakeDeps(
+    {
+      settings: liveSettings,
+      getSettings: () => liveSettings,
+      adapterFor: (model) => ({
+        runner: "opencode",
+        async run(): Promise<AgentRunResult> {
+          modelsUsed.push(model);
+          liveSettings = {
+            ...liveSettings,
+            models: liveSettings.models.map((candidate) =>
+              candidate.id === "fallback-only"
+                ? { ...candidate, enabled: false }
+                : candidate,
+            ),
+          };
+          return {
+            ok: false,
+            exitReason: "error",
+            costUsd: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+            summary: "failed",
+          };
+        },
+      }),
+    },
+    merged,
+  );
+
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.deepEqual(modelsUsed, ["deepseek-flash"]);
+  assert.equal(t1.status, "failed");
+  assert.equal(merged.length, 0);
+});
+
+test("B37: replacing the fallback policy while an author is in flight changes the next attempt", async () => {
+  const merged: number[] = [];
+  let liveSettings: Settings = {
+    ...settings(),
+    models: [
+      ...settings().models,
+      {
+        id: "replacement",
+        displayName: "Replacement",
+        runner: "opencode",
+        opencodeModel: "replacement/model",
+        roles: [],
+        enabled: true,
+        maxConcurrent: 1,
+      },
+    ],
+    routing: { ...settings().routing, fallbacks: ["deepseek-pro"] },
+  };
+  const modelsUsed: string[] = [];
+  const deps = fakeDeps(
+    {
+      settings: liveSettings,
+      getSettings: () => liveSettings,
+      adapterFor: (model) => ({
+        runner: "opencode",
+        async run(): Promise<AgentRunResult> {
+          modelsUsed.push(model);
+          if (model === "deepseek-flash") {
+            liveSettings = {
+              ...liveSettings,
+              routing: { ...liveSettings.routing, fallbacks: ["replacement"] },
+            };
+            return {
+              ok: false,
+              exitReason: "error",
+              costUsd: 0,
+              tokensIn: 0,
+              tokensOut: 0,
+              summary: "failed",
+            };
+          }
+          return approveAdapter.run({
+            model,
+            prompt: "",
+            cwd: ".",
+            onLog() {},
+          });
+        },
+      }),
+    },
+    merged,
+  );
+
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.deepEqual(modelsUsed, ["deepseek-flash", "replacement"]);
+  assert.equal(t1.status, "done");
+  assert.deepEqual(merged, [1]);
+});
+
 test("F32: a Stop during a rate-limit wait ends the task promptly with nothing merged", async () => {
   const merged: number[] = [];
   let authorCalls = 0;
@@ -1998,16 +2176,18 @@ test("B30: a task in_review with no PR requeues to backlog exactly as before (no
   );
 });
 
-test("F41: holdWhileAwaitingApproval blocks new dispatch while a decision is pending, resumes once it clears", async () => {
+test("B37/F41: a live hold-policy change resumes dispatch without restarting the runtime", async () => {
   const merged: number[] = [];
   const logs: { level: string; message: string }[] = [];
   let authorRuns = 0;
   // Pending from the very first pass -- both t1 and t2 are ready with no
   // dependency between them, so neither should dispatch until this clears.
   let pending: { title: string } | undefined = { title: "Risky changes in some other task" };
+  let liveSettings = { ...settings(), holdWhileAwaitingApproval: true };
   const deps = fakeDeps(
     {
-      settings: { ...settings(), holdWhileAwaitingApproval: true },
+      settings: liveSettings,
+      getSettings: () => liveSettings,
       getPendingApproval: () => pending,
       adapterFor: () => ({
         runner: "opencode",
@@ -2031,14 +2211,15 @@ test("F41: holdWhileAwaitingApproval blocks new dispatch while a decision is pen
   const t1 = task("t1");
   const t2 = task("t2");
 
-  // Let the 250ms poll loop run through several held passes before clearing.
+  // Let the 250ms poll loop run through several held passes, then flip the
+  // saved policy while the approval itself remains pending.
   setTimeout(() => {
-    pending = undefined;
+    liveSettings = { ...liveSettings, holdWhileAwaitingApproval: false };
   }, 600);
 
   await new Orchestrator(deps).start(PROJECT, [t1, t2]);
 
-  assert.equal(authorRuns, 2, "both tasks ran, but only after the pending approval cleared");
+  assert.equal(authorRuns, 2, "both tasks ran only after the live hold policy was disabled");
   assert.equal(merged.length, 2);
   assert.equal(t1.status, "done");
   assert.equal(t2.status, "done");

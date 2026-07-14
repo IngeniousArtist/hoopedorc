@@ -257,7 +257,7 @@ export function TaskDrawer({
                       className="flex items-center justify-between gap-2 px-2 py-1.5 text-[11px]"
                     >
                       <span className="text-neutral-300">
-                        {modelName(r.model)}
+                        {modelName(r.model)} · effort {r.effort ?? "default"}
                       </span>
                       <span className="text-neutral-500">
                         {fmtDuration(r.startedAt, r.endedAt)} · $

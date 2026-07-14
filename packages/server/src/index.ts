@@ -25,7 +25,12 @@ import type {
 import { SECRET_SENTINEL, TASK_STATUSES, WS_PATH, pickAssignedModel } from "@orc/types";
 import type { TaskStatus } from "@orc/types";
 import { GitServiceImpl, isPlausibleImageRef } from "@orc/engine";
-import { ENV, defaultSettings } from "./config";
+import {
+  ENV,
+  SettingsValidationError,
+  defaultSettings,
+  mergeSettingsUpdate,
+} from "./config";
 import { ensureDocsTask } from "./docs-task";
 import { seed } from "./mock";
 import type { Db } from "./db/index";
@@ -348,8 +353,6 @@ const VALID_MERGE_POLICIES: MergePolicy[] = [
   "fully_autonomous",
   "always_ask",
 ];
-
-const VALID_SANDBOX_MODES = ["off", "auto", "required"] as const;
 
 /**
  * Validate + normalize a project's config override (F9). Gate script names
@@ -2181,166 +2184,51 @@ async function main() {
     if (!body.settings) return reply.code(400).send({ error: "settings body required" });
 
     const current = repo.getSettings(db) ?? defaultSettings();
-    const merged: import("@orc/types").Settings = {
-      ...current,
-      ...body.settings,
-      routing: body.settings.routing ?? current.routing,
-      models: body.settings.models ?? current.models,
-      riskyChangeRules: body.settings.riskyChangeRules ?? current.riskyChangeRules,
-    };
-    // A round-tripped sentinel (or a field the client never touched) must
-    // never overwrite the real stored secret.
-    merged.apiToken =
-      body.settings.apiToken === SECRET_SENTINEL || !body.settings.apiToken
-        ? current.apiToken
-        : body.settings.apiToken;
-    if (merged.telegram) {
-      const incomingToken = body.settings.telegram?.botToken;
-      merged.telegram.botToken =
-        incomingToken === SECRET_SENTINEL || !incomingToken
-          ? current.telegram?.botToken
-          : incomingToken;
+    let patch: unknown = body.settings;
+    if (typeof patch === "object" && patch !== null && !Array.isArray(patch)) {
+      const objectPatch = { ...(patch as Record<string, unknown>) };
+      // A round-tripped sentinel (or a field the client never touched) must
+      // never overwrite the real stored secret. Preserve invalid non-string
+      // values unchanged so the shared validator can reject them.
+      const incomingApiToken = objectPatch.apiToken;
+      if (
+        incomingApiToken === SECRET_SENTINEL ||
+        incomingApiToken === undefined ||
+        incomingApiToken === null ||
+        incomingApiToken === ""
+      ) {
+        objectPatch.apiToken = current.apiToken;
+      }
+      const incomingTelegram = objectPatch.telegram;
+      if (
+        typeof incomingTelegram === "object" &&
+        incomingTelegram !== null &&
+        !Array.isArray(incomingTelegram)
+      ) {
+        const telegramPatch = incomingTelegram as Record<string, unknown>;
+        const incomingToken = telegramPatch.botToken;
+        objectPatch.telegram = {
+          ...telegramPatch,
+          botToken:
+            incomingToken === SECRET_SENTINEL ||
+            incomingToken === undefined ||
+            incomingToken === null ||
+            incomingToken === ""
+              ? current.telegram?.botToken
+              : incomingToken,
+        };
+      }
+      patch = objectPatch;
     }
 
-    // The same model can't author AND validate a difficulty tier — the
-    // validator throws "self-review forbidden" the moment a task of that
-    // difficulty (with no role override) reaches review, permanently failing
-    // it. Catch this at save time instead of letting it crash tasks later.
-    const collisions = (["easy", "medium", "hard"] as const).filter(
-      (d) =>
-        merged.routing.byDifficulty[d] === merged.routing.validatorByDifficulty[d],
-    );
-    if (collisions.length > 0) {
-      return reply.code(400).send({
-        error:
-          `byDifficulty and validatorByDifficulty assign the same model for: ${collisions.join(", ")}. ` +
-          `Choose a different validator for ${collisions.length === 1 ? "that tier" : "those tiers"}.`,
-      });
-    }
-
-    // B28: nothing else stops two models sharing an id (or an empty one) —
-    // `settings.models.find(m => m.id === x)` would then silently resolve to
-    // whichever one comes first, and routing/dispatch can't tell them apart.
-    {
-      const seen = new Set<string>();
-      for (const m of merged.models) {
-        if (!m.id || !m.id.trim()) {
-          return reply.code(400).send({ error: "every model must have a non-empty id" });
-        }
-        if (seen.has(m.id)) {
-          return reply.code(400).send({ error: `duplicate model id: ${m.id}` });
-        }
-        seen.add(m.id);
+    let merged: SettingsType;
+    try {
+      merged = mergeSettingsUpdate(current, patch);
+    } catch (err) {
+      if (err instanceof SettingsValidationError) {
+        return reply.code(400).send({ error: err.message });
       }
-    }
-
-    // B28: a routing field pointing at a model id that isn't (or is no
-    // longer) in `merged.models` saves fine here and only surfaces at
-    // dispatch time as a cryptic `no ModelConfig for <id>` Fatal — catch it
-    // at save time instead, whichever side (models or routing) changed.
-    {
-      const ids = new Set(merged.models.map((m) => m.id));
-      const missing: string[] = [];
-      if (!ids.has(merged.routing.planner)) {
-        missing.push(`routing.planner references "${merged.routing.planner}"`);
-      }
-      if (merged.routing.deconstructor && !ids.has(merged.routing.deconstructor)) {
-        missing.push(`routing.deconstructor references "${merged.routing.deconstructor}"`);
-      }
-      for (const d of ["easy", "medium", "hard"] as const) {
-        const authorId = merged.routing.byDifficulty[d];
-        if (!ids.has(authorId)) {
-          missing.push(`routing.byDifficulty.${d} references "${authorId}"`);
-        }
-        const validatorId = merged.routing.validatorByDifficulty[d];
-        if (!ids.has(validatorId)) {
-          missing.push(`routing.validatorByDifficulty.${d} references "${validatorId}"`);
-        }
-      }
-      for (const [role, modelId] of Object.entries(merged.routing.byRole)) {
-        if (modelId && !ids.has(modelId)) {
-          missing.push(`routing.byRole.${role} references "${modelId}"`);
-        }
-      }
-      for (const fb of merged.routing.fallbacks ?? []) {
-        if (!ids.has(fb)) {
-          missing.push(`routing.fallbacks references "${fb}"`);
-        }
-      }
-      if (missing.length > 0) {
-        return reply.code(400).send({
-          error: `${missing.join("; ")} which ${missing.length === 1 ? "is" : "are"} not in models`,
-        });
-      }
-    }
-
-    // Manual pricing fields must be sane numbers — a negative or NaN price
-    // would silently corrupt every recorded cost for that model.
-    for (const m of merged.models) {
-      for (const [field, v] of [
-        ["costPerMInputUsd", m.costPerMInputUsd],
-        ["costPerMCachedInputUsd", m.costPerMCachedInputUsd],
-        ["costPerMOutputUsd", m.costPerMOutputUsd],
-      ] as const) {
-        if (v != null && (typeof v !== "number" || !isFinite(v) || v < 0)) {
-          return reply.code(400).send({
-            error: `Model ${m.id}: ${field} must be a non-negative number (USD per 1M tokens)`,
-          });
-        }
-      }
-    }
-
-    // F16: a quota with a window but no actual limit doesn't mean anything
-    // — catch it here rather than silently having checkModelQuota never fire.
-    for (const m of merged.models) {
-      if (!m.quota) continue;
-      if (typeof m.quota.windowHours !== "number" || !(m.quota.windowHours > 0)) {
-        return reply.code(400).send({
-          error: `Model ${m.id}: quota.windowHours must be a positive number`,
-        });
-      }
-      if (m.quota.maxRuns == null && m.quota.maxCostUsd == null) {
-        return reply.code(400).send({
-          error: `Model ${m.id}: quota needs at least one of maxRuns or maxCostUsd set`,
-        });
-      }
-      if (m.quota.maxRuns != null && !(m.quota.maxRuns > 0)) {
-        return reply.code(400).send({
-          error: `Model ${m.id}: quota.maxRuns must be a positive number`,
-        });
-      }
-      if (m.quota.maxCostUsd != null && !(m.quota.maxCostUsd > 0)) {
-        return reply.code(400).send({
-          error: `Model ${m.id}: quota.maxCostUsd must be a positive number`,
-        });
-      }
-    }
-
-    // F13-P1: an unvalidated string here would silently no-op (resolveSandboxMode
-    // treats anything that isn't "off"/"required" as "auto") rather than
-    // rejecting the operator's typo at save time.
-    if (
-      body.settings.sandboxGates !== undefined &&
-      !VALID_SANDBOX_MODES.includes(body.settings.sandboxGates as (typeof VALID_SANDBOX_MODES)[number])
-    ) {
-      return reply.code(400).send({
-        error: `settings.sandboxGates must be one of: ${VALID_SANDBOX_MODES.join(", ")}`,
-      });
-    }
-
-    // F31: cap each guidelines field — an unbounded Settings textarea must
-    // never be able to blow up every author/validator prompt in the system.
-    const GUIDELINES_MAX_CHARS = 4000;
-    if (body.settings.guidelines) {
-      for (const key of ["coding", "ux", "security"] as const) {
-        const v = body.settings.guidelines[key];
-        if (v === undefined) continue;
-        if (typeof v !== "string" || v.length > GUIDELINES_MAX_CHARS) {
-          return reply.code(400).send({
-            error: `guidelines.${key} must be a string of at most ${GUIDELINES_MAX_CHARS} characters`,
-          });
-        }
-      }
+      throw err;
     }
 
     const saved = repo.upsertSettings(db, merged);

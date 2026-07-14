@@ -50,7 +50,16 @@ function task(over: Partial<Task> = {}): Task {
 
 function baseSettings(): Settings {
   return {
-    models: [],
+    models: [
+      {
+        id: "claude",
+        displayName: "Claude",
+        runner: "claude-code",
+        roles: ["validator"],
+        enabled: true,
+        maxConcurrent: 1,
+      },
+    ],
     routing: {
       planner: "claude",
       byDifficulty: { easy: "deepseek-flash", medium: "deepseek-flash", hard: "deepseek-flash" },
@@ -220,4 +229,51 @@ test("validator forwards AbortSignal to the reviewer and settles on abort", asyn
   await reviewerStarted;
   controller.abort();
   await assert.rejects(review, { name: "AbortError" });
+});
+
+test("B37: an in-flight review survives a settings change but applies the live confidence threshold", async () => {
+  let live = baseSettings();
+  live.confidenceThreshold = 0.5;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started!: () => void;
+  const didStart = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const adapter: AgentAdapter = {
+    runner: "claude-code",
+    async run() {
+      started();
+      await gate;
+      return {
+        ok: true,
+        exitReason: "completed",
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        summary: JSON.stringify({
+          verdict: "approve",
+          reasons: ["looks good"],
+          confidence: 0.8,
+        }),
+      };
+    },
+  };
+  const validator = new ValidatorImpl(() => adapter, () => live);
+  const review = validator.review(
+    { ...PROJECT, localPath: process.cwd() },
+    task(),
+    GATE,
+    "deepseek-flash",
+  );
+  await didStart;
+
+  live = { ...live, confidenceThreshold: 0.9 };
+  release();
+  const decision = await review;
+
+  assert.equal(decision.verdict, "escalate");
+  assert.match(decision.reasons[0]!, /below threshold 0\.9/);
 });

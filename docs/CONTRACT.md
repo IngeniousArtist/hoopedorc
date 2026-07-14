@@ -41,6 +41,27 @@ run count or spend is reached — cross-project, since a subscription's cap
 belongs to the model's API key/plan, not any one project — the same
 skip-don't-fail treatment as budget/cooldown checks.
 
+`ModelConfig.enabled` is an execution boundary, not just a health-screen
+filter: every saved routing target must name an enabled model, and disabled
+models receive no new author, fallback, validator, planner, documenter, or
+health invocation. Disabling a model does not abort a call already in flight.
+`ModelConfig.effort` (F48, optional string) is resolved with the rest of that
+attempt-stable invocation: Claude Code accepts `low|medium|high|xhigh|max`
+through `--effort`; Codex accepts `low|medium|high|xhigh|max|ultra` through
+`-c model_reasoning_effort=…`; OpenCode accepts a safe provider variant through
+`--variant`. Unset means the CLI default. The same field applies in planning,
+deconstruction, authoring, validation, per-task documentation, and health
+tests. `Run.effort` records the resolved value (`"default"` when unset).
+
+Settings pass through one server-side normalizer on defaults, boot migration,
+repository reads/writes, HTTP updates, and Telegram command updates. It deep-
+fills historical fields and rejects invalid runners, efforts, routing targets,
+model concurrency, budgets, quotas, confidence, policies, and booleans with a
+field path. Runtimes read operational policy live: dispatch/fallback routing,
+budgets, quotas, approval holds, merge policy, notifications, and manual
+pricing can change without restarting a project. A model/runner/effort already
+selected for an active CLI call remains stable until that call settles.
+
 `ProjectConfig.schedule` (`ProjectSchedule`, F19) is a deliberately simple
 cron-style auto-start — not real cron syntax. `enabled: boolean` plus
 `mode: "interval" | "daily"`: `"interval"` needs `intervalHours` (1–720,

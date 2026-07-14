@@ -233,8 +233,19 @@ Telegram is still the reliable channel for phones.
 - **Fallback models (Settings → Routing → Fallback 1/2).** When a task's
   assigned model keeps failing (author errors, failing gates, rate limits),
   the engine retries with Fallback 1, then Fallback 2 — swap the two
-  dropdowns any time to change the order. Leave both empty to use the old
-  behavior (escalating through the by-difficulty tiers).
+  dropdowns any time to change the order, including while a project is
+  running. Disabled models are never selected for a new attempt or fallback;
+  reroute every reference in the same save when disabling one. A call already
+  in flight is allowed to finish. Leave both empty to use the old behavior
+  (escalating through the by-difficulty tiers).
+- **Reasoning effort (Settings → Models → Reasoning effort).** Leave this at
+  **CLI default**, or choose a Claude Code/Codex effort. OpenCode exposes
+  suggestions but also accepts a provider-specific variant made from letters,
+  numbers, `.`, `_`, or `-`. One model setting consistently covers planning,
+  deconstruction, authoring, validation, documentation, and **Test models**.
+  Changing a row's runner clears its effort because the supported values differ.
+  Task run history, engine logs, and Setup model results show the resolved
+  effort so cost/latency/quality comparisons are honest.
 - **Manual model pricing (Settings → Models).** Each model has three
   optional price fields — input, cached input, and output, in **USD per 1M
   tokens** (the unit provider pricing pages use). When any is set, every
@@ -242,6 +253,13 @@ Telegram is still the reliable channel for phones.
   token counts using your prices, instead of trusting the CLI's own pricing
   table (OpenCode's goes stale; Codex reports no cost at all). Budgets,
   quotas, and the Costs tab all use the corrected numbers going forward.
+
+Operational settings are live for an active project: routing/fallback changes,
+budget or quota caps, approval holds, merge policy, Telegram digest/model-alert
+preferences, and manual pricing take effect at their next decision boundary.
+Runner/model/effort stay fixed only for a CLI call that has already started.
+Invalid web or Telegram changes are rejected by the same server validator and
+name the field that needs correction.
 - **The docs task runs last.** Every plan gets one documentation task that
   depends on all the others — even if the planner writes its own docs task,
   its dependencies are extended so it can't run against a half-built repo.

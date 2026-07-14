@@ -15,7 +15,12 @@ import { randomUUID } from "node:crypto";
 import { readFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ModelConfig, ModelId } from "@orc/types";
+import {
+  modelEffortError,
+  type ModelConfig,
+  type ModelId,
+  type RunnerKind,
+} from "@orc/types";
 import { sanitizedEnv } from "./env.js";
 import { abortableDelay, spawnManagedProcess } from "./managed-process.js";
 
@@ -80,6 +85,20 @@ export interface AgentAdapter {
   run(opts: AgentRunOptions): Promise<AgentRunResult>;
 }
 
+/** Convert one validated ModelConfig effort into the exact CLI arguments.
+ * Exported so planner paths and adapter tests share the same mapping. */
+export function modelEffortArgs(
+  runner: RunnerKind,
+  effort?: string,
+): string[] {
+  const error = modelEffortError(runner, effort);
+  if (error) throw new Error(`${runner} effort ${error}`);
+  if (!effort) return [];
+  if (runner === "claude-code") return ["--effort", effort];
+  if (runner === "opencode") return ["--variant", effort];
+  return ["-c", `model_reasoning_effort=${effort}`];
+}
+
 /**
  * Coding agents run unattended inside a throwaway, branch-isolated git worktree,
  * so we let them act without interactive permission prompts. `main` is still
@@ -91,7 +110,10 @@ export class ClaudeAdapter implements AgentAdapter {
   readonly runner = "claude-code" as const;
 
   /** Optional `claude --model` alias/id (e.g. "sonnet" / "opus"). */
-  constructor(private readonly claudeModel?: string) {}
+  constructor(
+    private readonly claudeModel?: string,
+    private readonly effort?: string,
+  ) {}
 
   async run(opts: AgentRunOptions): Promise<AgentRunResult> {
     return new Promise((resolve) => {
@@ -109,6 +131,7 @@ export class ClaudeAdapter implements AgentAdapter {
         CLAUDE_PERMISSION_MODE,
       ];
       if (this.claudeModel) args.push("--model", this.claudeModel);
+      args.push(...modelEffortArgs(this.runner, this.effort));
       const managed = spawnManagedProcess(
         "claude",
         args,
@@ -258,6 +281,7 @@ export class OpenCodeAdapter implements AgentAdapter {
   constructor(
     private readonly baseUrl: string,
     private readonly opencodeModel: string,
+    private readonly effort?: string,
     private readonly runAttempt?: (opts: AgentRunOptions) => Promise<AgentRunResult>,
   ) {}
 
@@ -311,6 +335,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     // own directory instead of the task's worktree — which surfaces
     // exactly as an "Author produced no changes in the worktree" failure.
     const args = ["run", "-m", this.opencodeModel, "--format", "json", "--dir", opts.cwd];
+    args.push(...modelEffortArgs(this.runner, this.effort));
     if (this.baseUrl) args.push("--attach", this.baseUrl);
 
     return new Promise((resolve) => {
@@ -473,7 +498,10 @@ export class CodexAdapter implements AgentAdapter {
   readonly runner = "codex" as const;
 
   /** Optional `codex exec -m` id (e.g. "gpt-5.2-codex"). */
-  constructor(private readonly codexModel?: string) {}
+  constructor(
+    private readonly codexModel?: string,
+    private readonly effort?: string,
+  ) {}
 
   async run(opts: AgentRunOptions): Promise<AgentRunResult> {
     const outputFile = join(tmpdir(), `codex-summary-${randomUUID()}.txt`);
@@ -505,6 +533,7 @@ export class CodexAdapter implements AgentAdapter {
       CODEX_SANDBOX,
     ];
     if (this.codexModel) args.push("-m", this.codexModel);
+    args.push(...modelEffortArgs(this.runner, this.effort));
 
     return new Promise((resolve) => {
       const managed = spawnManagedProcess("codex", args, {
@@ -644,10 +673,11 @@ export function makeAdapter(
   cfg: ModelConfig,
   opencodeBaseUrl: string,
 ): AgentAdapter {
-  if (cfg.runner === "claude-code") return new ClaudeAdapter(cfg.claudeModel);
-  if (cfg.runner === "codex") return new CodexAdapter(cfg.codexModel);
+  if (!cfg.enabled) throw new Error(`model ${cfg.id} is disabled`);
+  if (cfg.runner === "claude-code") return new ClaudeAdapter(cfg.claudeModel, cfg.effort);
+  if (cfg.runner === "codex") return new CodexAdapter(cfg.codexModel, cfg.effort);
   if (!cfg.opencodeModel) {
     throw new Error(`model ${cfg.id} is runner=opencode but has no opencodeModel`);
   }
-  return new OpenCodeAdapter(opencodeBaseUrl, cfg.opencodeModel);
+  return new OpenCodeAdapter(opencodeBaseUrl, cfg.opencodeModel, cfg.effort);
 }

@@ -346,6 +346,34 @@ export class Orchestrator implements Scheduler {
 
   constructor(private readonly deps: SchedulerDeps) {}
 
+  /** Operational policy is live (B37). An adapter/model/effort is resolved
+   * immediately before each call and then remains stable for that in-flight
+   * invocation; later retries and merge decisions see the newest settings. */
+  private settings(): Settings {
+    return this.deps.getSettings?.() ?? this.deps.settings;
+  }
+
+  private nextEnabledFallback(
+    task: Task,
+    excluded: ReadonlySet<ModelId>,
+  ): ModelId | undefined {
+    const settings = this.settings();
+    const chain = buildFallbackChain(
+      task.assignedModel,
+      task.difficulty,
+      settings.routing,
+    );
+    for (const model of chain) {
+      if (
+        !excluded.has(model) &&
+        settings.models.some((candidate) => candidate.id === model && candidate.enabled)
+      ) {
+        return model;
+      }
+    }
+    return undefined;
+  }
+
   private getModelActive(model: ModelId): number {
     if (this.deps.getModelActive) return this.deps.getModelActive(model);
     return this.localModelActiveCount.get(model) ?? 0;
@@ -396,15 +424,16 @@ export class Orchestrator implements Scheduler {
    * budgets block every model equally, so there's nothing to fall back to.
    */
   private resolveDispatchModel(task: Task): ModelId | undefined {
+    const settings = this.settings();
     const chain = buildFallbackChain(
       task.assignedModel,
       task.difficulty,
-      this.deps.settings.routing,
+      settings.routing,
     );
     for (const model of chain) {
       if (model === task.assignedModel) continue; // already known blocked
-      const cfg = this.deps.settings.models.find((m) => m.id === model);
-      if (!cfg) continue;
+      const cfg = settings.models.find((m) => m.id === model);
+      if (!cfg?.enabled) continue;
       if (this.deps.checkBudget?.(model)) continue;
       if (this.deps.checkModelCooldown?.(model)) continue;
       if (this.deps.checkModelQuota?.(model)) continue;
@@ -550,7 +579,7 @@ export class Orchestrator implements Scheduler {
       // driven by an unresolved approval instead of a human pause — only
       // consulted when the project opted in, and re-checked every pass so
       // dispatch resumes the moment the approval clears (no restart needed).
-      const pendingApproval = this.deps.settings.holdWhileAwaitingApproval
+      const pendingApproval = this.settings().holdWhileAwaitingApproval
         ? this.deps.getPendingApproval?.(this.projectId)
         : undefined;
       if (pendingApproval) {
@@ -649,10 +678,10 @@ export class Orchestrator implements Scheduler {
           continue;
         }
 
-        const cfg = this.deps.settings.models.find(
+        const cfg = this.settings().models.find(
           (m) => m.id === task.assignedModel,
         );
-        if (!cfg) {
+        if (!cfg || !cfg.enabled) {
           // B28: don't just hold this forever in "ready" — requeue it to
           // backlog (same shape as the budget/cooldown/quota guards below)
           // once, so the Board reflects that it needs a human to reassign
@@ -665,7 +694,9 @@ export class Orchestrator implements Scheduler {
             this.emit(
               "error",
               "engine",
-              `Assigned model "${task.assignedModel}" no longer configured — reassign it`,
+              !cfg
+                ? `Assigned model "${task.assignedModel}" no longer configured — reassign it`
+                : `Assigned model "${task.assignedModel}" is disabled — reassign it or enable it`,
               task.id,
             );
             task.status = "backlog";
@@ -1018,14 +1049,16 @@ export class Orchestrator implements Scheduler {
     task.statusReason = undefined;
     this.deps.events.onTaskUpdated(task);
 
-    // Build the fallback escalation chain once per task execution.
-    const fallbackChain = buildFallbackChain(
+    // Seed which earlier models dispatch already skipped. Every later
+    // fallback choice rebuilds the chain from live settings (B37).
+    const initialFallbackChain = buildFallbackChain(
       task.assignedModel,
       task.difficulty,
-      this.deps.settings.routing,
+      this.settings().routing,
     );
-    let fallbackIdx = Math.max(0, fallbackChain.indexOf(startModel));
-    let currentModel = fallbackChain[fallbackIdx]!;
+    const startIndex = Math.max(0, initialFallbackChain.indexOf(startModel));
+    const exhaustedModels = new Set<ModelId>(initialFallbackChain.slice(0, startIndex));
+    let currentModel = startModel;
 
     try {
       const { branch, path } = await this.deps.worktrees.create(
@@ -1065,7 +1098,8 @@ export class Orchestrator implements Scheduler {
         // dispatch (runTask) has no earlier dispatch-time guard for this at
         // all, so this is the only check standing between a dangling
         // reference and that crash on that path.
-        if (!this.deps.settings.models.some((m) => m.id === currentModel)) {
+        const currentConfig = this.settings().models.find((m) => m.id === currentModel);
+        if (!currentConfig) {
           this.emit(
             "error",
             "engine",
@@ -1075,6 +1109,36 @@ export class Orchestrator implements Scheduler {
           task.status = "backlog";
           this.deps.events.onTaskUpdated(task);
           return;
+        }
+        if (!currentConfig.enabled) {
+          exhaustedModels.add(currentModel);
+          const fallback = this.nextEnabledFallback(task, exhaustedModels);
+          if (fallback) {
+            currentModel = fallback;
+            this.switchRunningModel(task.id, currentModel);
+            this.emit(
+              "warn",
+              "engine",
+              `Model disabled before the next attempt — switching to fallback ${currentModel}`,
+              task.id,
+            );
+            this.notifyModelTrouble(
+              task,
+              currentModel,
+              "fallback",
+              "Previous model was disabled before a new attempt",
+            );
+          } else {
+            this.emit(
+              "error",
+              "engine",
+              `Model "${currentModel}" is disabled and no enabled fallback remains — reassign it`,
+              task.id,
+            );
+            task.status = "backlog";
+            this.deps.events.onTaskUpdated(task);
+            return;
+          }
         }
 
         // Stop spending mid-task if a budget cap has since been hit. Checked
@@ -1109,10 +1173,13 @@ export class Orchestrator implements Scheduler {
           return;
         }
 
+        const attemptEffort =
+          this.settings().models.find((model) => model.id === currentModel)?.effort ??
+          "default";
         this.emit(
           "info",
           "engine",
-          `Attempt ${task.attempts}/${task.maxAttempts} [model: ${currentModel}]`,
+          `Attempt ${task.attempts}/${task.maxAttempts} [model: ${currentModel}] [effort: ${attemptEffort}]`,
           task.id,
         );
 
@@ -1176,11 +1243,11 @@ export class Orchestrator implements Scheduler {
           // Immediately escalate to the next fallback model on adapter/stuck
           // errors, or once rate-limit wait-and-retries on the same model
           // are exhausted.
-          const next = fallbackChain[fallbackIdx + 1];
-          if (next) {
-            fallbackIdx++;
-            currentModel = next;
-            this.switchRunningModel(task.id, next);
+          exhaustedModels.add(currentModel);
+          const fallback = this.nextEnabledFallback(task, exhaustedModels);
+          if (fallback) {
+            currentModel = fallback;
+            this.switchRunningModel(task.id, currentModel);
             this.rateLimitWaits.delete(task.id);
             if (task.attempts >= task.maxAttempts) task.maxAttempts++;
             this.emit(
@@ -1261,11 +1328,11 @@ export class Orchestrator implements Scheduler {
 
           if (task.attempts < task.maxAttempts) continue;
 
-          const next = fallbackChain[fallbackIdx + 1];
-          if (next) {
-            fallbackIdx++;
-            currentModel = next;
-            this.switchRunningModel(task.id, next);
+          exhaustedModels.add(currentModel);
+          const fallback = this.nextEnabledFallback(task, exhaustedModels);
+          if (fallback) {
+            currentModel = fallback;
+            this.switchRunningModel(task.id, currentModel);
             this.rateLimitWaits.delete(task.id);
             task.maxAttempts++;
             this.emit(
@@ -1366,11 +1433,11 @@ export class Orchestrator implements Scheduler {
 
           // All attempts on this model exhausted — try the next fallback model
           // before giving up entirely.
-          const next = fallbackChain[fallbackIdx + 1];
-          if (next) {
-            fallbackIdx++;
-            currentModel = next;
-            this.switchRunningModel(task.id, next);
+          exhaustedModels.add(currentModel);
+          const fallback = this.nextEnabledFallback(task, exhaustedModels);
+          if (fallback) {
+            currentModel = fallback;
+            this.switchRunningModel(task.id, currentModel);
             this.rateLimitWaits.delete(task.id);
             task.maxAttempts++;
             this.emit(
@@ -1404,10 +1471,15 @@ export class Orchestrator implements Scheduler {
 
         // Announce the review — it spawns a separate reviewer model and can run
         // for minutes; without this the board goes silent and looks frozen.
+        const validatorId =
+          this.settings().routing.validatorByDifficulty[task.difficulty];
+        const validatorEffort =
+          this.settings().models.find((model) => model.id === validatorId)?.effort ??
+          "default";
         this.emit(
           "info",
           "validator",
-          `Reviewing changes with the validator model (this can take a few minutes)…`,
+          `Reviewing changes with ${validatorId} [effort: ${validatorEffort}] (this can take a few minutes)…`,
           task.id,
         );
 
@@ -1436,11 +1508,11 @@ export class Orchestrator implements Scheduler {
           // difficulty, or escalation walked into the validator's model) —
           // recoverable by escalating same as a gate failure, not fatal.
           this.emit("warn", "validator", err.message, task.id);
-          const next = fallbackChain[fallbackIdx + 1];
-          if (next) {
-            fallbackIdx++;
-            currentModel = next;
-            this.switchRunningModel(task.id, next);
+          exhaustedModels.add(currentModel);
+          const fallback = this.nextEnabledFallback(task, exhaustedModels);
+          if (fallback) {
+            currentModel = fallback;
+            this.switchRunningModel(task.id, currentModel);
             this.rateLimitWaits.delete(task.id);
             task.maxAttempts++;
             this.emit(
@@ -1884,6 +1956,11 @@ export class Orchestrator implements Scheduler {
     taskSignal?: AbortSignal,
   ): Promise<AgentRunResult | null> {
     const model = effectiveModel ?? task.assignedModel;
+    const config = this.settings().models.find((candidate) => candidate.id === model);
+    if (!config?.enabled) {
+      throw new Error(`model ${model} is ${config ? "disabled" : "not configured"}`);
+    }
+    const effort = config.effort ?? "default";
     const adapter = this.deps.adapterFor(model);
     const prompt = this.buildAuthorPrompt(project, task, fixInstructions);
 
@@ -1913,7 +1990,7 @@ export class Orchestrator implements Scheduler {
     // after the fact). Held here so every terminal emit below reports the
     // true elapsed time instead of a fresh (and wrong) timestamp.
     const startedAt = new Date().toISOString();
-    this.emitRunEvent(task, null, "running", model, startedAt);
+    this.emitRunEvent(task, null, "running", model, startedAt, undefined, effort);
 
     try {
       const result = await adapter.run({
@@ -1947,7 +2024,7 @@ export class Orchestrator implements Scheduler {
 
       if (controller.signal.aborted) {
         if (this.paused || this.stopRequested.has(task.id) || taskSignal?.aborted) {
-          this.emitRunEvent(task, result, "stopped", model, startedAt);
+          this.emitRunEvent(task, result, "stopped", model, startedAt, undefined, effort);
           return null;
         }
         const stuckResult: AgentRunResult = {
@@ -1956,14 +2033,22 @@ export class Orchestrator implements Scheduler {
           exitReason: "stuck",
           summary: result.summary || "Run killed by stuck detection",
         };
-        this.emitRunEvent(task, stuckResult, "failed", model, startedAt);
+        this.emitRunEvent(task, stuckResult, "failed", model, startedAt, undefined, effort);
         return stuckResult;
       }
 
       // adapter.run() can resolve with ok:false (e.g. exitReason "killed" from
       // an internal timeout) without throwing — label the run row to match,
       // not unconditionally "passed".
-      this.emitRunEvent(task, result, result.ok ? "passed" : "failed", model, startedAt);
+      this.emitRunEvent(
+        task,
+        result,
+        result.ok ? "passed" : "failed",
+        model,
+        startedAt,
+        undefined,
+        effort,
+      );
       return result;
     } catch (err: unknown) {
       if (
@@ -1975,7 +2060,7 @@ export class Orchestrator implements Scheduler {
         // fed straight into fallback-model escalation instead of actually
         // stopping the task.
         if (this.paused || this.stopRequested.has(task.id)) {
-          this.emitRunEvent(task, null, "stopped", model, startedAt);
+          this.emitRunEvent(task, null, "stopped", model, startedAt, undefined, effort);
           return null;
         }
 
@@ -1987,7 +2072,7 @@ export class Orchestrator implements Scheduler {
           tokensOut: 0,
           summary: "Run killed by stuck detection",
         };
-        this.emitRunEvent(task, stuckResult, "failed", model, startedAt);
+        this.emitRunEvent(task, stuckResult, "failed", model, startedAt, undefined, effort);
         return stuckResult;
       }
       throw err;
@@ -2016,9 +2101,10 @@ export class Orchestrator implements Scheduler {
   ): Promise<void> {
     if (project.config?.perTaskDocs === false) return;
 
-    const docsModel =
-      this.deps.settings.routing.byRole.updates ?? this.deps.settings.routing.byRole.docs;
-    if (!docsModel || !this.deps.settings.models.some((m) => m.id === docsModel)) {
+    const settings = this.settings();
+    const docsModel = settings.routing.byRole.updates ?? settings.routing.byRole.docs;
+    const docsConfig = settings.models.find((model) => model.id === docsModel);
+    if (!docsModel || !docsConfig?.enabled) {
       this.emit(
         "warn",
         "engine",
@@ -2032,12 +2118,13 @@ export class Orchestrator implements Scheduler {
 
     const runId = `run-${task.id}-docs`;
     const startedAt = new Date().toISOString();
+    const effort = docsConfig.effort ?? "default";
     const controller = new AbortController();
     const onTaskAbort = () => controller.abort();
     if (taskSignal?.aborted) onTaskAbort();
     else taskSignal?.addEventListener("abort", onTaskAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), DOCS_STAGE_TIMEOUT_MS);
-    this.emitRunEvent(task, null, "running", docsModel, startedAt, runId);
+    this.emitRunEvent(task, null, "running", docsModel, startedAt, runId, effort);
 
     let result: AgentRunResult;
     try {
@@ -2059,7 +2146,7 @@ export class Orchestrator implements Scheduler {
       });
     } catch (err: unknown) {
       if (taskSignal?.aborted) {
-        this.emitRunEvent(task, null, "stopped", docsModel, startedAt, runId);
+        this.emitRunEvent(task, null, "stopped", docsModel, startedAt, runId, effort);
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
@@ -2069,7 +2156,7 @@ export class Orchestrator implements Scheduler {
         `Documentation stage errored (${message}) — merging without a docs update`,
         task.id,
       );
-      this.emitRunEvent(task, null, "failed", docsModel, startedAt, runId);
+      this.emitRunEvent(task, null, "failed", docsModel, startedAt, runId, effort);
       return;
     } finally {
       clearTimeout(timer);
@@ -2077,10 +2164,18 @@ export class Orchestrator implements Scheduler {
     }
 
     if (taskSignal?.aborted) {
-      this.emitRunEvent(task, result, "stopped", docsModel, startedAt, runId);
+      this.emitRunEvent(task, result, "stopped", docsModel, startedAt, runId, effort);
       return;
     }
-    this.emitRunEvent(task, result, result.ok ? "passed" : "failed", docsModel, startedAt, runId);
+    this.emitRunEvent(
+      task,
+      result,
+      result.ok ? "passed" : "failed",
+      docsModel,
+      startedAt,
+      runId,
+      effort,
+    );
     if (!result.ok) {
       this.emit(
         "warn",
@@ -2129,7 +2224,7 @@ export class Orchestrator implements Scheduler {
       `- Touch AGENTS.md ONLY if this change alters the project's structure, commands, or ` +
       `conventions (it may not exist — only touch it if it does).\n` +
       `- Modify nothing else.\n`;
-    prompt += buildEngineeringStandardsBlock(this.deps.settings.guidelines, false, true);
+    prompt += buildEngineeringStandardsBlock(this.settings().guidelines, false, true);
     return prompt;
   }
 
@@ -2159,12 +2254,14 @@ export class Orchestrator implements Scheduler {
     // F30: the docs stage passes its own `run-<taskId>-docs` id since it
     // isn't tied to an attempt number the way author runs are.
     runId: string = `run-${task.id}-${task.attempts}`,
+    effort = "default",
   ): void {
     const run: Run = {
       id: runId,
       projectId: this.projectId,
       taskId: task.id,
       model: model ?? task.assignedModel,
+      effort,
       attempt: task.attempts,
       status,
       startedAt,
@@ -2196,7 +2293,7 @@ export class Orchestrator implements Scheduler {
       `(e.g. wiring an entry point), keep that edit minimal — files outside this list are flagged ` +
       `for human review and can hold up the merge.\n`;
     prompt += buildEngineeringStandardsBlock(
-      this.deps.settings.guidelines,
+      this.settings().guidelines,
       task.role === "frontend",
       task.role === "docs",
     );
@@ -2254,7 +2351,8 @@ export class Orchestrator implements Scheduler {
     riskyReasons: string[];
     safetyInspectionFailed?: boolean;
   }> {
-    const { riskyChangeRules } = this.deps.settings;
+    const settings = this.settings();
+    const { riskyChangeRules } = settings;
 
     // S8: runs BEFORE any merge-policy branch below, including
     // fully_autonomous's "always merge" — a destructive change forces
@@ -2318,7 +2416,7 @@ export class Orchestrator implements Scheduler {
 
     // F9: a project can override the global merge policy (e.g. "always_ask"
     // for a sensitive repo, or "fully_autonomous" for a low-stakes one).
-    const mergePolicy = project.config?.mergePolicy ?? this.deps.settings.mergePolicy;
+    const mergePolicy = project.config?.mergePolicy ?? settings.mergePolicy;
 
     if (mergePolicy === "fully_autonomous") return { canMerge: true, riskyReasons: [] };
     if (mergePolicy === "always_ask") return { canMerge: false, riskyReasons: [] };
@@ -2328,7 +2426,7 @@ export class Orchestrator implements Scheduler {
       return { canMerge: false, riskyReasons: [] };
     }
 
-    if (gate.vacuous && !this.deps.settings.allowVacuousGates) {
+    if (gate.vacuous && !settings.allowVacuousGates) {
       this.emit(
         "warn",
         "engine",

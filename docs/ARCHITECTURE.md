@@ -60,6 +60,15 @@ This limits accidental environment leakage but does not sandbox host filesystem
 or network access; a host-run model can still reach files available to that OS
 user.
 
+Settings have two timing classes. Runner/model/effort are snapshotted directly
+before each CLI invocation so an in-flight process is never killed or mutated by
+a settings save. Operational policy is read from the validated SQLite settings
+row at each decision boundary: dispatch and fallback routing, enabled state,
+budgets/quotas, approval holds, merge policy, notification gates, and manual
+pricing. Defaults, migrations, HTTP/Telegram writes, repository reads, and
+runtime access all share the same normalizer, so an active scheduler never sees
+a shape that the API would reject.
+
 ## Why this split
 - **One language (TS)** so the parallel agents share `@orc/types` and can't drift.
 - **OpenCode as the single gateway** for all API-billed models — one CLI

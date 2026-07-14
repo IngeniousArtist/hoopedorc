@@ -282,6 +282,11 @@ export class EngineRunner {
     }
     const settings = repo.getSettings(this.db);
     if (!settings) throw new Error("settings not found");
+    const liveSettings = (): Settings => {
+      const current = repo.getSettings(this.db);
+      if (!current) throw new Error("settings not found");
+      return current;
+    };
 
     // F44: dedupe model-trouble web notifications per (task, event type) for
     // this runtime. Manual priority and autonomous work share the same
@@ -290,8 +295,9 @@ export class EngineRunner {
     const modelTroubleNotified = new Set<string>();
 
     const adapterFor = (modelId: ModelId): AgentAdapter => {
-      const cfg = settings.models.find((m) => m.id === modelId);
+      const cfg = liveSettings().models.find((m) => m.id === modelId);
       if (!cfg) throw new Error(`no ModelConfig for ${modelId}`);
+      if (!cfg.enabled) throw new Error(`model ${modelId} is disabled`);
       return makeAdapter(cfg, ENV.opencodeBaseUrl);
     };
 
@@ -302,11 +308,11 @@ export class EngineRunner {
     // no run row — without this their cost never reaches the costs table.
     const validator = new ValidatorImpl(
       adapterFor,
-      settings,
+      liveSettings,
       (model, taskId, costUsd, tokensIn, tokensOut, tokensCached = 0) => {
         // Manual per-model pricing (Settings) overrides the CLI-reported
         // cost — the CLIs' own pricing tables go stale (see pricing.ts).
-        const cfg = settings.models.find((m) => m.id === model);
+        const cfg = liveSettings().models.find((m) => m.id === model);
         const manual = manualCostUsd(cfg, tokensIn, tokensOut, tokensCached);
         const finalCost = manual ?? costUsd;
         if (finalCost <= 0) return; // nothing billable to record
@@ -331,6 +337,7 @@ export class EngineRunner {
       gates,
       validator,
       settings,
+      getSettings: liveSettings,
       adapterFor,
       opencodeBaseUrl: ENV.opencodeBaseUrl,
       getTasks: () => repo.getTasks(this.db, project.id),
@@ -341,9 +348,10 @@ export class EngineRunner {
           .find((n) => n.requiresApproval && !n.respondedWith);
         return pending ? { title: pending.title } : undefined;
       },
-      checkBudget: (modelId) => checkBudget(this.db, project.id, modelId, settings),
+      checkBudget: (modelId) =>
+        checkBudget(this.db, project.id, modelId, liveSettings()),
       checkModelCooldown: (modelId) => this.checkModelCooldown(modelId),
-      checkModelQuota: (modelId) => checkModelQuota(this.db, modelId, settings),
+      checkModelQuota: (modelId) => checkModelQuota(this.db, modelId, liveSettings()),
       getModelActive: (modelId) => this.modelActiveCount.get(modelId) ?? 0,
       incModelActive: (modelId) =>
         this.modelActiveCount.set(modelId, (this.modelActiveCount.get(modelId) ?? 0) + 1),
@@ -381,7 +389,7 @@ export class EngineRunner {
           // — it's a permanent record, not chatter.
           if (prev?.status !== t.status) {
             const isTerminal = t.status === "done" || t.status === "failed";
-            const digest = settings.telegram?.digest ?? "terminal";
+            const digest = liveSettings().telegram?.digest ?? "terminal";
             const shouldPush =
               digest !== "off" && (isTerminal || digest === "all");
             const costUsd =
@@ -428,7 +436,7 @@ export class EngineRunner {
           // Manual per-model pricing (Settings) overrides the CLI-reported
           // cost — recompute from tokens before anything persists or alerts
           // on it (see pricing.ts).
-          const cfg = settings.models.find((m) => m.id === r.model);
+          const cfg = liveSettings().models.find((m) => m.id === r.model);
           const manual = manualCostUsd(cfg, r.tokensIn, r.tokensOut, r.tokensCached ?? 0);
           if (manual != null) r = { ...r, costUsd: manual };
 
@@ -521,7 +529,7 @@ export class EngineRunner {
           // F32: default true (unset counts as enabled) — the owner
           // explicitly asked to be alerted on these, independent of the
           // task-status `digest` setting.
-          if (settings.telegram?.modelAlerts !== false) {
+          if (liveSettings().telegram?.modelAlerts !== false) {
             this.notifier?.modelTrouble({
               projectName: project.name,
               taskTitle: info.taskTitle,
@@ -584,9 +592,15 @@ export class EngineRunner {
     }
     const settings = repo.getSettings(this.db);
     if (!settings) throw new Error("settings not found");
+    const liveSettings = (): Settings => {
+      const current = repo.getSettings(this.db);
+      if (!current) throw new Error("settings not found");
+      return current;
+    };
     const adapterFor = (modelId: ModelId): AgentAdapter => {
-      const config = settings.models.find((model) => model.id === modelId);
+      const config = liveSettings().models.find((model) => model.id === modelId);
       if (!config) throw new Error(`no ModelConfig for ${modelId}`);
+      if (!config.enabled) throw new Error(`model ${modelId} is disabled`);
       return makeAdapter(config, ENV.opencodeBaseUrl);
     };
     const worktrees = new WorktreeManagerImpl(settings);
@@ -598,9 +612,9 @@ export class EngineRunner {
       gates: new GateRunnerImpl(worktrees, settings),
       validator: new ValidatorImpl(
         adapterFor,
-        settings,
+        liveSettings,
         (model, taskId, costUsd, tokensIn, tokensOut, tokensCached = 0) => {
-          const config = settings.models.find((candidate) => candidate.id === model);
+          const config = liveSettings().models.find((candidate) => candidate.id === model);
           const finalCost =
             manualCostUsd(config, tokensIn, tokensOut, tokensCached) ?? costUsd;
           if (finalCost <= 0) return;

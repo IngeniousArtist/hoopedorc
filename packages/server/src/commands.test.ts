@@ -73,6 +73,15 @@ test("setMergePolicy: flipping back to hard_gate_flag_risky persists that too", 
   assert.equal(repo.getSettings(db)!.mergePolicy, "hard_gate_flag_risky");
 });
 
+test("B37: Telegram policy changes pass through the shared settings validator", () => {
+  const db = setup();
+  assert.throws(
+    () => setMergePolicy(db, "invalid" as never, "telegram"),
+    /mergePolicy must be one of/,
+  );
+  assert.equal(repo.getSettings(db)!.mergePolicy, "hard_gate_flag_risky");
+});
+
 test("findTaskByIdPrefix: a unique prefix match resolves to that task", () => {
   const db = setup();
   project(db, "p1");
