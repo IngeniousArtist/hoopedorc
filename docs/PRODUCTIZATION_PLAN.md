@@ -1651,6 +1651,19 @@ where this session's verification proved the same logic via real git
 plumbing, real CLIs, and real (non-mocked) unit/integration tests
 instead. Tagged `v0.6.0`.
 
+**Post-wave validation follow-up (Fable review, 2026-07-14):** a full
+re-verification of all eight items against their specs confirmed the
+wave sound, and turned up two small gaps, both fixed in a follow-up PR:
+(1) F46's drop paths (empty tasks in `parsePlanOutput`, non-object
+entries in `flattenRawTasks`) shifted later tasks' `dependsOn` indices
+without remapping them — a dependency declared past a dropped slot
+could silently land on the wrong task (reproduced by probe); both drop
+paths now remap through the shift the same way the subtask-splice
+already did. (2) S8's `rm -rf` detection only matched combined flags —
+split (`-r -f`) and long-form (`--recursive --force`) spellings evaded
+it; replaced with a flag tokenizer covering all three spellings, same
+target rules.
+
 ---
 
 ## Part 1 — Bugs & security (fix first, in this order)

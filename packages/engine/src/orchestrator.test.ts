@@ -2114,6 +2114,29 @@ test("detectDestructiveChanges: rm -rf on a non-local/non-tmp path trips; a loca
   assert.deepEqual(tmp, []);
 });
 
+test("detectDestructiveChanges: split-flag and long-form rm variants trip; recursive-only does not", () => {
+  // `rm -r -f` and `rm --recursive --force` are the same command as `rm -rf`
+  // — the detector must not be evadable by how the flags are spelled.
+  const split = detectDestructiveChanges([], "+rm -r -f /home/user/data\n");
+  assert.ok(split.some((r) => /rm -rf/.test(r)));
+
+  const longForm = detectDestructiveChanges([], "+rm --recursive --force /home/user/data\n");
+  assert.ok(longForm.some((r) => /rm -rf/.test(r)));
+
+  const mixed = detectDestructiveChanges([], "+rm -r --force /home/user/data\n");
+  assert.ok(mixed.some((r) => /rm -rf/.test(r)));
+
+  // Recursive without force (or force without recursive) is not the
+  // rm -rf pattern — near-miss negatives.
+  const recursiveOnly = detectDestructiveChanges([], "+rm -r /home/user/data\n");
+  assert.deepEqual(recursiveOnly, []);
+  const forceOnly = detectDestructiveChanges([], "+rm -f /home/user/data\n");
+  assert.deepEqual(forceOnly, []);
+  // Long-form flags on a repo-local path stay clean, same as -rf on one.
+  const localLong = detectDestructiveChanges([], "+rm --recursive --force dist\n");
+  assert.deepEqual(localLong, []);
+});
+
 test("S8: canAutoMerge holds a destructive change for approval even under fully_autonomous; a clean diff still auto-merges", async () => {
   const merged: number[] = [];
   let asked = false;
