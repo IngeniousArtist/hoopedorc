@@ -1678,15 +1678,15 @@ target rules.
 
 | Item | Status | PR |
 |---|---|---|
-| B34 — execution ownership + unified manual queue | done | [#139](https://github.com/IngeniousArtist/hoopedorc/pull/139) |
-| B35 — managed subprocess lifecycle and cancellation | done | [#140](https://github.com/IngeniousArtist/hoopedorc/pull/140) |
-| S9 — fail-closed gates, destructive rail, and worktree hygiene | done | [#141](https://github.com/IngeniousArtist/hoopedorc/pull/141) |
-| B36 — rollback through a gated, human-approved PR | done | [#142](https://github.com/IngeniousArtist/hoopedorc/pull/142) |
-| S10 — CLI credential/environment boundary | done | [#143](https://github.com/IngeniousArtist/hoopedorc/pull/143) |
-| B37 — enabled models, live settings, and complete validation | done | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
-| F48 — per-model effort setting across all model stages | done | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
-| B38 — portable dependency setup and atomic caching | done | [#145](https://github.com/IngeniousArtist/hoopedorc/pull/145) |
-| B39 — planning and git durability | done | [#146](https://github.com/IngeniousArtist/hoopedorc/pull/146) |
+| B34 — execution ownership + unified manual queue | ✅ done, Fable-validated 2026-07-15 | [#139](https://github.com/IngeniousArtist/hoopedorc/pull/139) |
+| B35 — managed subprocess lifecycle and cancellation | ✅ done, Fable-validated 2026-07-15 | [#140](https://github.com/IngeniousArtist/hoopedorc/pull/140) |
+| S9 — fail-closed gates, destructive rail, and worktree hygiene | ✅ done, Fable-validated 2026-07-15 | [#141](https://github.com/IngeniousArtist/hoopedorc/pull/141) |
+| B36 — rollback through a gated, human-approved PR | ✅ done, Fable-validated 2026-07-15 | [#142](https://github.com/IngeniousArtist/hoopedorc/pull/142) |
+| S10 — CLI credential/environment boundary | ✅ done, Fable-validated 2026-07-15 | [#143](https://github.com/IngeniousArtist/hoopedorc/pull/143) |
+| B37 — enabled models, live settings, and complete validation | ✅ done, Fable-validated 2026-07-15 | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
+| F48 — per-model effort setting across all model stages | ✅ done, Fable-validated 2026-07-15 | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
+| B38 — portable dependency setup and atomic caching | ✅ done, Fable-validated 2026-07-15 | [#145](https://github.com/IngeniousArtist/hoopedorc/pull/145) |
+| B39 — planning and git durability | ✅ done, Fable-validated 2026-07-15 | [#146](https://github.com/IngeniousArtist/hoopedorc/pull/146) |
 | B40 — complete model-invocation accounting | pending | — |
 | B41 — graceful shutdown and runtime recovery | pending | — |
 | F49 — Telegram reliability and phone-control hardening | pending | — |
@@ -1697,6 +1697,32 @@ The owner approved this wave on 2026-07-14. Implementation proceeds in
 the dependency order specified in Part 10 below, with Fable independently
 reviewing the merged work. No item is complete until its acceptance evidence
 is recorded here or in its item note and linked PR.
+
+**Fable post-merge validation (2026-07-15), covering PRs #139–#146 (B34, B35,
+S9, B36, S10, B37+F48, B38, B39):** all merged work re-verified independently
+on `main` at c1d7eb2. `npm run typecheck` and `npm run build` pass; suites pass
+at the claimed counts — 12/12 adapter, 157/157 engine, 127/127 server. Code
+spot-checks confirmed each item's load-bearing claim in the merged source:
+generation-tagged `ProjectRuntime` with settled-promise ownership, persisted
+`dispatchRequestedAt`, and empty-scope-overlaps-everything (B34); managed
+process groups with real-close SIGTERM→SIGKILL escalation and uniquely named
+`docker rm -f` cleanup (B35); spawn/ENOENT failures fail gates, typed
+`GitAcquisition` diff results, verified `restoreToHead` incl. nested untracked
+repos, and forced approval on incomplete inspection (S9); parent-count-selected
+revert with a mandatory-approval rollback PR and no direct default-branch push
+(B36); allowlist-built child environments used by all three planner paths with
+secret-shaped npm keys excluded (S10); one `normalizeSettings` contract and a
+shared effort→`--effort`/`--variant`/`-c model_reasoning_effort` argument
+builder (B37/F48); packageManager-first manager selection, frozen installs,
+and mkdtemp+rename atomic cache publication (B38); planning scratch persisted
+before the first await with Start blocked while `planning`, and `commitAll`
+raising typed errors instead of swallowing them (B39).
+
+One flake noted, not a blocker: server test "F44: a run ending non-completed
+creates a web notification…" (`engine-runner.test.ts`) failed once under
+full-suite load and passed 3/3 in isolation and on full-suite re-run —
+timing-sensitive; worth tightening when T2 lands. Remaining Phase 15 work for
+the next session: B40, B41, F49, T2, U19.
 
 ---
 
