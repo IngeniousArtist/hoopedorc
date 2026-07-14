@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { AgentAdapter, AgentRunResult } from "@orc/adapters";
 import type { GateResult, Project, Settings, Task } from "@orc/types";
@@ -232,6 +236,13 @@ test("validator forwards AbortSignal to the reviewer and settles on abort", asyn
 });
 
 test("B37: an in-flight review survives a settings change but applies the live confidence threshold", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "orc-validator-live-settings-"));
+  execFileSync("git", ["init", "--quiet"], { cwd: repo });
+  execFileSync("git", ["config", "user.email", "tests@hoopedorc.local"], { cwd: repo });
+  execFileSync("git", ["config", "user.name", "HoopedOrc Tests"], { cwd: repo });
+  execFileSync("git", ["commit", "--allow-empty", "--message", "base", "--quiet"], { cwd: repo });
+  execFileSync("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: repo });
+
   let live = baseSettings();
   live.confidenceThreshold = 0.5;
   let release!: () => void;
@@ -261,19 +272,23 @@ test("B37: an in-flight review survives a settings change but applies the live c
       };
     },
   };
-  const validator = new ValidatorImpl(() => adapter, () => live);
-  const review = validator.review(
-    { ...PROJECT, localPath: process.cwd() },
-    task(),
-    GATE,
-    "deepseek-flash",
-  );
-  await didStart;
+  try {
+    const validator = new ValidatorImpl(() => adapter, () => live);
+    const review = validator.review(
+      { ...PROJECT, localPath: repo },
+      task(),
+      GATE,
+      "deepseek-flash",
+    );
+    await didStart;
 
-  live = { ...live, confidenceThreshold: 0.9 };
-  release();
-  const decision = await review;
+    live = { ...live, confidenceThreshold: 0.9 };
+    release();
+    const decision = await review;
 
-  assert.equal(decision.verdict, "escalate");
-  assert.match(decision.reasons[0]!, /below threshold 0\.9/);
+    assert.equal(decision.verdict, "escalate");
+    assert.match(decision.reasons[0]!, /below threshold 0\.9/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
