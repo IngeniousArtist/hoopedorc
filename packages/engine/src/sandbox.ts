@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { execManagedProcess } from "@orc/adapters";
+import { execManagedProcess, safeNpmConfigEnv } from "@orc/adapters";
 
 // F13-P1 (phase 1 of docs/specs/sandbox.md): runs gate scripts and
 // `ensureDeps`'s `npm ci|install` inside Docker instead of directly on the
@@ -145,9 +145,12 @@ function sandboxEnv(): Record<string, string> {
     HOME: CONTAINER_HOME,
     PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
   };
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined) continue;
-    if (key.startsWith("NODE_") || key.startsWith("npm_config_")) env[key] = value;
+  for (const [key, value] of Object.entries(safeNpmConfigEnv())) {
+    if (value !== undefined) env[key] = value;
+  }
+  for (const key of ["NODE_ENV", "NODE_EXTRA_CA_CERTS"] as const) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
   }
   return env;
 }

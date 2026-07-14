@@ -175,14 +175,18 @@ default, `required` to refuse host fallback; see the user guide's
 one task's worktree plus a read-only view of the shared dependency install —
 not your home directory, not the orchestrator's DB, not your CLI credentials.
 
-**Spawned agents** still run directly on the host with your CLI auth (`gh`,
-`claude`, `opencode`, `codex`) — don't run untrusted repos through it. Their
-environment is stripped of anything secret-shaped (`sanitizedEnv()` in
-`@orc/adapters`, keyed off `/TOKEN|SECRET|KEY|PASSWORD|CREDENTIAL|TELEGRAM/i`)
-before spawn, so a prompt-injected agent or a hostile repo script can't read
-your Telegram token or provider API keys — but agents keep real
-filesystem/network access on your machine. Moving agents into the sandbox is
-phases 2–3 of [`docs/specs/sandbox.md`](docs/specs/sandbox.md), deliberately
+**Spawned agents** still run directly on the host with the same user's stored
+CLI auth (`claude`, `opencode`, `codex`) — don't run untrusted repos through it.
+Their process environment is built from a small runtime/config allowlist
+(`sanitizedEnv()` in `@orc/adapters`), not inherited from the server. Provider
+keys, GitHub/Telegram/API tokens, SSH agent sockets, npm auth tokens/passwords,
+and arbitrary app variables are not forwarded; safe registry/proxy settings and
+the user's HOME/XDG/CLI config paths remain so existing CLI logins work.
+
+This is credential hygiene, not process isolation. Host-run agents retain the
+same user's real filesystem and network access, so they can still read CLI
+credential files or invoke host tools that can. Moving agents into the sandbox
+is phases 2–3 of [`docs/specs/sandbox.md`](docs/specs/sandbox.md), deliberately
 future work.
 
 ## Status

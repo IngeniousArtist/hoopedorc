@@ -74,6 +74,74 @@ test('resolveSandboxMode("required") throws instead of silently falling back whe
   await assert.rejects(() => resolveSandboxMode("required", async () => false), /Docker daemon/);
 });
 
+test("sandbox forwards safe npm/runtime settings but no CLI or registry credentials", async () => {
+  const keys = [
+    "npm_config_registry",
+    "npm_config_https_proxy",
+    "npm_config__authToken",
+    "NPM_CONFIG_PASSWORD",
+    "NODE_ENV",
+    "NODE_EXTRA_CA_CERTS",
+    "NODE_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "GH_TOKEN",
+    "TELEGRAM_BOT_TOKEN",
+  ] as const;
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  Object.assign(process.env, {
+    npm_config_registry: "https://registry.example",
+    npm_config_https_proxy: "http://proxy.example",
+    npm_config__authToken: "npm-secret",
+    NPM_CONFIG_PASSWORD: "npm-password",
+    NODE_ENV: "test",
+    NODE_EXTRA_CA_CERTS: "/etc/corporate.pem",
+    NODE_AUTH_TOKEN: "node-secret",
+    ANTHROPIC_API_KEY: "provider-secret",
+    GH_TOKEN: "github-secret",
+    TELEGRAM_BOT_TOKEN: "telegram-secret",
+  });
+  let dockerArgs: readonly string[] = [];
+  const runner = (async (_command: string, args: readonly string[]) => {
+    dockerArgs = args;
+    return { stdout: "", stderr: "" };
+  }) as Parameters<typeof sandboxedExecFile>[5];
+
+  try {
+    await sandboxedExecFile("node:22", "/tmp", "npm", ["test"], {}, runner);
+  } finally {
+    for (const key of keys) {
+      const value = saved[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+
+  const forwarded = dockerArgs
+    .flatMap((arg, index) => (arg === "-e" ? [dockerArgs[index + 1] ?? ""] : []))
+    .map((entry) => entry.slice(0, entry.indexOf("=")))
+    .filter(Boolean);
+  for (const expected of [
+    "HOME",
+    "PATH",
+    "npm_config_registry",
+    "npm_config_https_proxy",
+    "NODE_ENV",
+    "NODE_EXTRA_CA_CERTS",
+  ]) {
+    assert.ok(forwarded.includes(expected), expected);
+  }
+  for (const forbidden of [
+    "npm_config__authToken",
+    "NPM_CONFIG_PASSWORD",
+    "NODE_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "GH_TOKEN",
+    "TELEGRAM_BOT_TOKEN",
+  ]) {
+    assert.equal(forwarded.includes(forbidden), false, forbidden);
+  }
+});
+
 test("sandbox force-removes its uniquely named container when docker run is aborted", async () => {
   const calls: { command: string; args: readonly string[] }[] = [];
   const runner = (async (command: string, args: readonly string[]) => {

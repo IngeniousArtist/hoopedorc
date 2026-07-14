@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { makeAdapter } from "@orc/adapters";
+import { makeAdapter, sanitizedEnv } from "@orc/adapters";
 import { DEFAULT_GATE_IMAGE, resolveSandboxMode } from "@orc/engine";
 import type {
   ModelRosterResponse,
@@ -21,9 +21,13 @@ async function check(
   cmd: string,
   args: string[],
   parse: (out: string) => string = firstLine,
+  env?: NodeJS.ProcessEnv,
 ): Promise<SetupCheck> {
   try {
-    const { stdout, stderr } = await pexec(cmd, args, { timeout: 20_000 });
+    const { stdout, stderr } = await pexec(cmd, args, {
+      timeout: 20_000,
+      env,
+    });
     return { name, ok: true, detail: parse(`${stdout}\n${stderr}`).slice(0, 200) };
   } catch (err) {
     const e = err as { stderr?: string; message?: string };
@@ -42,29 +46,48 @@ async function check(
  * Probe the external CLIs the orchestrator depends on, so the user can confirm
  * everything is green before spending money. Each must exit 0:
  *  - `gh auth status`  → GitHub auth (push/PR/merge),
- *  - `claude --version`→ Claude Code present (planner/validator),
+ *  - `claude auth status` → Claude Code auth through the filtered child env,
  *  - `opencode auth list` → OpenCode model credentials,
- *  - `codex --version` → Codex CLI present, but only checked (and only able
- *    to fail `allOk`) when a model in the roster is actually configured to
- *    use it — a claude/opencode-only setup shouldn't show a red X for a CLI
- *    it never calls.
+ *  - `codex login status` → Codex auth through the filtered child env, but only
+ *    checked (and only able to fail `allOk`) when a model in the roster is
+ *    configured to use it — a claude/opencode-only setup shouldn't show a red
+ *    X for a CLI it never calls.
  */
 export async function runSetupChecks(settings: Settings): Promise<SetupHealthResponse> {
   const codexConfigured = settings.models.some((m) => m.runner === "codex");
+  const agentEnv = sanitizedEnv();
   const checks = await Promise.all([
     check("GitHub CLI (gh)", "gh", ["auth", "status"], (s) => {
       const acct = s.match(/Logged in to [^\s]+ account (\S+)/);
       return acct ? `logged in as ${acct[1]}` : firstLine(s);
     }),
-    check("Claude Code (claude)", "claude", ["--version"]),
-    check("OpenCode (opencode)", "opencode", ["auth", "list"], (s) => {
-      const creds = s
-        .split("\n")
-        .filter((l) => l.trim() && !/^opencode|credentials|^\s*$/i.test(l));
-      return creds.length ? `${creds.length} credential(s)` : firstLine(s);
-    }),
+    check(
+      "Claude Code (claude)",
+      "claude",
+      ["auth", "status", "--text"],
+      firstLine,
+      agentEnv,
+    ),
+    check(
+      "OpenCode (opencode)",
+      "opencode",
+      ["auth", "list"],
+      (s) => {
+        const creds = s
+          .split("\n")
+          .filter((l) => l.trim() && !/^opencode|credentials|^\s*$/i.test(l));
+        return creds.length ? `${creds.length} credential(s)` : firstLine(s);
+      },
+      agentEnv,
+    ),
     codexConfigured
-      ? check("Codex CLI (codex)", "codex", ["--version"])
+      ? check(
+          "Codex CLI (codex)",
+          "codex",
+          ["login", "status"],
+          firstLine,
+          agentEnv,
+        )
       : Promise.resolve({ name: "Codex CLI (codex)", ok: true, detail: "not configured" }),
     gateSandboxCheck(settings),
   ]);
@@ -101,7 +124,10 @@ async function gateSandboxCheck(settings: Settings): Promise<SetupCheck> {
  */
 export async function getModelRoster(): Promise<ModelRosterResponse> {
   try {
-    const { stdout } = await pexec("opencode", ["models"], { timeout: 20_000 });
+    const { stdout } = await pexec("opencode", ["models"], {
+      timeout: 20_000,
+      env: sanitizedEnv(),
+    });
     const models = stdout
       .split("\n")
       .map((l) => l.trim())

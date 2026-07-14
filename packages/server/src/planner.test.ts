@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { ENV, defaultSettings } from "./config.js";
 import {
@@ -7,7 +10,89 @@ import {
   parsePlanOutput,
   plannerModelLabel,
   resolvePlannerModel,
+  runPlannerChat,
 } from "./planner.js";
+
+test("S10: Claude, Codex, and OpenCode planners receive the same credential-free environment", async (t) => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-planner-env-"));
+  const fakeCli = `#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => { input += chunk; });
+process.stdin.on("end", () => {
+  const name = path.basename(process.argv[1]);
+  const snapshot = JSON.stringify(process.env);
+  if (name === "claude") {
+    process.stdout.write(JSON.stringify({ result: snapshot, total_cost_usd: 0 }));
+  } else if (name === "codex") {
+    const index = process.argv.indexOf("--output-last-message");
+    fs.writeFileSync(process.argv[index + 1], snapshot);
+  } else {
+    process.stdout.write(JSON.stringify({ part: { text: snapshot, cost: 0 } }) + "\\n");
+  }
+});
+`;
+  for (const name of ["claude", "codex", "opencode"]) {
+    const file = join(bin, name);
+    writeFileSync(file, fakeCli);
+    chmodSync(file, 0o755);
+  }
+
+  const saved = { ...process.env };
+  process.env.PATH = `${bin}:${saved.PATH ?? ""}`;
+  process.env.HOME = "/home/planner-test";
+  process.env.CODEX_HOME = "/home/planner-test/.codex";
+  process.env.npm_config_registry = "https://registry.example";
+  process.env.ANTHROPIC_API_KEY = "anthropic-sentinel";
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = "claude-oauth-sentinel";
+  process.env.CODEX_API_KEY = "codex-sentinel";
+  process.env.OPENAI_API_KEY = "openai-sentinel";
+  process.env.DEEPSEEK_API_KEY = "deepseek-sentinel";
+  process.env.GH_TOKEN = "github-sentinel";
+  process.env.TELEGRAM_BOT_TOKEN = "telegram-sentinel";
+  process.env.npm_config__authToken = "npm-sentinel";
+  process.env.NPM_CONFIG_PASSWORD = "npm-password-sentinel";
+
+  const planners = [
+    { runner: "claude-code", model: "sonnet" },
+    { runner: "codex", model: "gpt-test" },
+    { runner: "opencode", model: "provider/model" },
+  ] as const;
+  try {
+    for (const planner of planners) {
+      await t.test(planner.runner, async () => {
+        const result = await runPlannerChat(
+          [{ role: "user", content: "inspect your environment" }],
+          "env test",
+          bin,
+          planner,
+        );
+        const childEnv = JSON.parse(result.reply) as Record<string, string>;
+        assert.equal(childEnv.HOME, "/home/planner-test");
+        assert.equal(childEnv.CODEX_HOME, "/home/planner-test/.codex");
+        assert.equal(childEnv.PWD, bin);
+        assert.equal(childEnv.npm_config_registry, "https://registry.example");
+        for (const key of [
+          "ANTHROPIC_API_KEY",
+          "CLAUDE_CODE_OAUTH_TOKEN",
+          "CODEX_API_KEY",
+          "OPENAI_API_KEY",
+          "DEEPSEEK_API_KEY",
+          "GH_TOKEN",
+          "TELEGRAM_BOT_TOKEN",
+          "npm_config__authToken",
+          "NPM_CONFIG_PASSWORD",
+        ]) {
+          assert.equal(childEnv[key], undefined, `${planner.runner}: ${key}`);
+        }
+      });
+    }
+  } finally {
+    process.env = saved;
+  }
+});
 
 // B31: the owner's exact failure shape — pure JSON whose "prd" string
 // contains a fenced snippet mentioning a file path. The old unanchored,

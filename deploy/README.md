@@ -52,8 +52,12 @@ if the box itself is ephemeral.
 ## Docker (reference only — see caveats)
 
 `deploy/Dockerfile` builds the app and installs `gh`/`claude`/`opencode`
-inside the image, but **none of them are authenticated there** — auth must
-come from the host at runtime:
+inside the image, but **none of them are authenticated there**. This reference
+compose file is not a supported model-execution deployment: S10 intentionally
+does not forward provider-key environment variables, and a Linux container
+cannot consume a macOS Keychain login. Use the native same-user deployment for
+real runs. The remaining mounts only illustrate what a future container design
+would need for the more portable CLIs:
 
 - **`gh`**: mount your host's `~/.config/gh` read-only, *or* set `GH_TOKEN` in
   `.env` (`gh` reads it natively — no file needed).
@@ -64,17 +68,12 @@ come from the host at runtime:
 - **`claude`**: **on macOS, Claude Code's login lives in the system
   Keychain** (verified: `security find-generic-password -s "Claude
   Code-credentials"` finds it there), not a plain file — a Linux container
-  has no access to it at all, mountable or not. The container-friendly path
-  is instead to set **`ANTHROPIC_API_KEY`** in `.env`; `claude --help`
-  documents a `--bare` mode whose auth is "strictly `ANTHROPIC_API_KEY` or
-  `apiKeyHelper`... OAuth and keychain are never read" — confirming API-key
-  auth is the intended non-interactive path. **Caveat:** this bills
-  pay-per-token via the Anthropic Console, not your Pro/Max subscription's
-  flat rate — a real cost-model difference from running `claude` natively
-  logged into a subscription, worth knowing before you rely on it.
+  has no access to it at all, mountable or not. Hoopedorc does not accept an
+  `ANTHROPIC_API_KEY` fallback, so this remains the blocking reason full-app
+  Docker is reference-only.
 
 ```bash
-cp .env.example .env   # then edit it — HOST=0.0.0.0, GH_TOKEN/ANTHROPIC_API_KEY, etc.
+cp .env.example .env   # then edit it — HOST=0.0.0.0, API_TOKEN, GH_TOKEN, etc.
 docker compose -f deploy/docker-compose.yml up --build
 ```
 
