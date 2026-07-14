@@ -12,7 +12,7 @@ import type {
   Settings,
   Task,
 } from "@orc/types";
-import type { AgentRunResult } from "@orc/adapters";
+import { abortableDelay, type AgentRunResult } from "@orc/adapters";
 import {
   DOCS_STAGE_TIMEOUT_MS,
   RATE_LIMIT_RETRIES,
@@ -935,13 +935,21 @@ export class Orchestrator implements Scheduler {
    * moment either fires; the caller distinguishes Stop (bailIfStopRequested)
    * from Pause (falls through to the existing `return;` pattern).
    */
-  private async waitOutRateLimit(task: Task, waitMs: number): Promise<"done" | "aborted"> {
+  private async waitOutRateLimit(
+    task: Task,
+    waitMs: number,
+    signal?: AbortSignal,
+  ): Promise<"done" | "aborted"> {
     const SLICE_MS = 5000;
     let elapsed = 0;
     while (elapsed < waitMs) {
       if (this.paused || this.stopRequested.has(task.id)) return "aborted";
       const slice = Math.min(SLICE_MS, waitMs - elapsed);
-      await new Promise((r) => setTimeout(r, slice));
+      try {
+        await abortableDelay(slice, signal);
+      } catch {
+        return "aborted";
+      }
       elapsed += slice;
     }
     return this.paused || this.stopRequested.has(task.id) ? "aborted" : "done";
@@ -991,6 +999,9 @@ export class Orchestrator implements Scheduler {
     // caller (runTask's manual dispatch, and the normal no-block path).
     startModel: ModelId = task.assignedModel,
   ): Promise<void> {
+    const taskController = new AbortController();
+    this.taskAbortControllers.set(task.id, taskController);
+    const signal = taskController.signal;
     this.emit("info", "engine", `Starting: ${task.title}`, task.id);
 
     task.status = "in_progress";
@@ -1012,6 +1023,7 @@ export class Orchestrator implements Scheduler {
       const { branch, path } = await this.deps.worktrees.create(
         project,
         task,
+        signal,
       );
       task.branch = branch;
       task.worktreePath = path;
@@ -1101,6 +1113,7 @@ export class Orchestrator implements Scheduler {
           task,
           fixInstructions,
           currentModel,
+          signal,
         );
         if (this.bailIfStopRequested(task)) return;
         if (authorResult === null) return; // paused
@@ -1143,7 +1156,7 @@ export class Orchestrator implements Scheduler {
               // loop's own `attempts++` on `continue` below is compensated
               // by this bump.
               task.maxAttempts++;
-              const outcome = await this.waitOutRateLimit(task, waitMs);
+              const outcome = await this.waitOutRateLimit(task, waitMs, signal);
               if (outcome === "aborted") {
                 if (this.bailIfStopRequested(task)) return;
                 return; // paused
@@ -1191,6 +1204,7 @@ export class Orchestrator implements Scheduler {
         await this.deps.git.commitAll(
           path,
           `feat: ${task.title} (attempt ${task.attempts})`,
+          signal,
         );
 
         // Guard: if the author produced no committed changes, there's nothing to
@@ -1275,7 +1289,7 @@ export class Orchestrator implements Scheduler {
           return;
         }
 
-        await this.deps.git.push(path, branch);
+        await this.deps.git.push(path, branch, signal);
 
         // Open the PR the first time a push actually succeeds — not
         // hardcoded to attempt 1. An author-run failure (stuck detection,
@@ -1284,7 +1298,7 @@ export class Orchestrator implements Scheduler {
         // skips openPr() forever and task.prNumber stays undefined, which
         // later crashes the merge step with `gh pr merge undefined`.
         if (task.prNumber == null) {
-          task.prNumber = await this.deps.git.openPr(project, task);
+          task.prNumber = await this.deps.git.openPr(project, task, signal);
           this.deps.events.onTaskUpdated(task);
         }
 
@@ -1295,7 +1309,7 @@ export class Orchestrator implements Scheduler {
         task.status = "in_review";
         this.deps.events.onTaskUpdated(task);
 
-        const gateResult = await this.deps.gates.run(project, task);
+        const gateResult = await this.deps.gates.run(project, task, signal);
         finalGate = gateResult;
         if (this.bailIfStopRequested(task)) return;
 
@@ -1396,6 +1410,7 @@ export class Orchestrator implements Scheduler {
                 source: "validator",
                 message: line,
               }),
+            signal,
           );
         } catch (err) {
           if (!(err instanceof SelfReviewError)) throw err;
@@ -1497,14 +1512,21 @@ export class Orchestrator implements Scheduler {
       // recovery can re-enter the exact same tail for a task whose validator
       // verdict already persisted (see recoverPendingApproval below) without
       // duplicating this logic.
-      await this.resolveMergeOutcome(project, task, path, branch, finalGate!);
+      await this.resolveMergeOutcome(project, task, path, branch, finalGate!, signal);
     } catch (err: unknown) {
+      if (signal.aborted) {
+        if (this.stopRequested.has(task.id)) this.bailIfStopRequested(task);
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.emit("error", "engine", `Fatal: ${message}`, task.id);
       task.status = "failed";
       task.statusReason = `Fatal error: ${message}`;
       this.deps.events.onTaskUpdated(task);
     } finally {
+      if (this.taskAbortControllers.get(task.id) === taskController) {
+        this.taskAbortControllers.delete(task.id);
+      }
       this.stopRequested.delete(task.id);
       this.rateLimitWaits.delete(task.id);
       try {
@@ -1539,6 +1561,7 @@ export class Orchestrator implements Scheduler {
     path: string,
     branch: string,
     finalGate: GateResult,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (task.prNumber == null) {
       this.emit(
@@ -1560,7 +1583,7 @@ export class Orchestrator implements Scheduler {
     // land atomically with the code they describe. Strictly best-effort:
     // never blocks a validated merge, so no bailout on failure here — only
     // a Stop press (checked right after) can still cut it off.
-    await this.runDocsStage(project, task, path, branch);
+    await this.runDocsStage(project, task, path, branch, signal);
     if (this.bailIfStopRequested(task)) return;
 
     // Bring the branch up to date with main before merging. A sibling task
@@ -1569,7 +1592,7 @@ export class Orchestrator implements Scheduler {
     // would make `gh pr merge` fail as CONFLICTING. Git auto-resolves
     // non-overlapping changes; a genuine conflict is recoverable by retrying
     // against the now-current main, so requeue rather than fail outright.
-    const sync = await this.deps.git.syncBranchWithMain(project, task);
+    const sync = await this.deps.git.syncBranchWithMain(project, task, signal);
     if (this.bailIfStopRequested(task)) return;
     if (sync === "conflict") {
       const n = (this.mergeConflicts.get(task.id) ?? 0) + 1;
@@ -1633,6 +1656,7 @@ export class Orchestrator implements Scheduler {
             task.id,
           );
         },
+        signal,
       );
       if (this.bailIfStopRequested(task)) return;
       if (checksResult === "failed" || checksResult === "timeout") {
@@ -1654,8 +1678,8 @@ export class Orchestrator implements Scheduler {
         });
         if (this.bailIfStopRequested(task)) return;
         if (choice === "approve_merge") {
-          await this.deps.git.mergePr(project, task.prNumber!);
-          await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
+          await this.deps.git.mergePr(project, task.prNumber!, signal);
+          await this.deps.git.appendChangelogEntry(project, task, task.prNumber!, signal);
           task.status = "done";
           task.statusReason = `Merged PR #${task.prNumber} after you approved it despite ${reason.toLowerCase()}`;
           this.emit("info", "engine", `Merged: ${task.title}`, task.id);
@@ -1672,8 +1696,8 @@ export class Orchestrator implements Scheduler {
     const { canMerge, riskyReasons } = await this.canAutoMerge(project, task, finalGate);
     if (this.bailIfStopRequested(task)) return;
     if (canMerge) {
-      await this.deps.git.mergePr(project, task.prNumber!);
-      await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
+      await this.deps.git.mergePr(project, task.prNumber!, signal);
+      await this.deps.git.appendChangelogEntry(project, task, task.prNumber!, signal);
       task.status = "done";
       task.statusReason = `Merged PR #${task.prNumber} after ${task.attempts} attempt${task.attempts === 1 ? "" : "s"} — gates and validator passed`;
       this.emit("info", "engine", `Merged: ${task.title}`, task.id);
@@ -1700,8 +1724,8 @@ export class Orchestrator implements Scheduler {
       });
       if (this.bailIfStopRequested(task)) return;
       if (choice === "approve_merge") {
-        await this.deps.git.mergePr(project, task.prNumber!);
-        await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
+        await this.deps.git.mergePr(project, task.prNumber!, signal);
+        await this.deps.git.appendChangelogEntry(project, task, task.prNumber!, signal);
         task.status = "done";
         task.statusReason = isDestructive
           ? `Merged PR #${task.prNumber} after you approved a flagged destructive change (${riskyReasons[0]})`
@@ -1761,6 +1785,9 @@ export class Orchestrator implements Scheduler {
   ): Promise<void> {
     const path = task.worktreePath!;
     const branch = task.branch!;
+    const taskController = new AbortController();
+    this.taskAbortControllers.set(task.id, taskController);
+    const signal = taskController.signal;
     try {
       if (decision.verdict === "request_changes") {
         const choice = await this.deps.events.requestApproval({
@@ -1793,14 +1820,21 @@ export class Orchestrator implements Scheduler {
       }
 
       if (this.bailIfStopRequested(task)) return;
-      await this.resolveMergeOutcome(project, task, path, branch, decision.gate);
+      await this.resolveMergeOutcome(project, task, path, branch, decision.gate, signal);
     } catch (err: unknown) {
+      if (signal.aborted) {
+        if (this.stopRequested.has(task.id)) this.bailIfStopRequested(task);
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.emit("error", "engine", `Fatal: ${message}`, task.id);
       task.status = "failed";
       task.statusReason = `Fatal error: ${message}`;
       this.deps.events.onTaskUpdated(task);
     } finally {
+      if (this.taskAbortControllers.get(task.id) === taskController) {
+        this.taskAbortControllers.delete(task.id);
+      }
       this.stopRequested.delete(task.id);
       try {
         await this.deps.worktrees.remove(project, task);
@@ -1823,13 +1857,16 @@ export class Orchestrator implements Scheduler {
     task: Task,
     fixInstructions?: string,
     effectiveModel?: ModelId,
+    taskSignal?: AbortSignal,
   ): Promise<AgentRunResult | null> {
     const model = effectiveModel ?? task.assignedModel;
     const adapter = this.deps.adapterFor(model);
     const prompt = this.buildAuthorPrompt(project, task, fixInstructions);
 
     const controller = new AbortController();
-    this.taskAbortControllers.set(task.id, controller);
+    const onTaskAbort = () => controller.abort();
+    if (taskSignal?.aborted) onTaskAbort();
+    else taskSignal?.addEventListener("abort", onTaskAbort, { once: true });
 
     let lastLogTime = Date.now();
     let lastLine = "";
@@ -1884,6 +1921,21 @@ export class Orchestrator implements Scheduler {
         },
       });
 
+      if (controller.signal.aborted) {
+        if (this.paused || this.stopRequested.has(task.id) || taskSignal?.aborted) {
+          this.emitRunEvent(task, result, "stopped", model, startedAt);
+          return null;
+        }
+        const stuckResult: AgentRunResult = {
+          ...result,
+          ok: false,
+          exitReason: "stuck",
+          summary: result.summary || "Run killed by stuck detection",
+        };
+        this.emitRunEvent(task, stuckResult, "failed", model, startedAt);
+        return stuckResult;
+      }
+
       // adapter.run() can resolve with ok:false (e.g. exitReason "killed" from
       // an internal timeout) without throwing — label the run row to match,
       // not unconditionally "passed".
@@ -1918,7 +1970,7 @@ export class Orchestrator implements Scheduler {
     } finally {
       clearTimeout(maxRunTimer);
       clearInterval(idleTimer);
-      this.taskAbortControllers.delete(task.id);
+      taskSignal?.removeEventListener("abort", onTaskAbort);
     }
   }
 
@@ -1936,6 +1988,7 @@ export class Orchestrator implements Scheduler {
     task: Task,
     path: string,
     branch: string,
+    taskSignal?: AbortSignal,
   ): Promise<void> {
     if (project.config?.perTaskDocs === false) return;
 
@@ -1956,7 +2009,9 @@ export class Orchestrator implements Scheduler {
     const runId = `run-${task.id}-docs`;
     const startedAt = new Date().toISOString();
     const controller = new AbortController();
-    this.taskAbortControllers.set(task.id, controller);
+    const onTaskAbort = () => controller.abort();
+    if (taskSignal?.aborted) onTaskAbort();
+    else taskSignal?.addEventListener("abort", onTaskAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), DOCS_STAGE_TIMEOUT_MS);
     this.emitRunEvent(task, null, "running", docsModel, startedAt, runId);
 
@@ -1979,6 +2034,10 @@ export class Orchestrator implements Scheduler {
           }),
       });
     } catch (err: unknown) {
+      if (taskSignal?.aborted) {
+        this.emitRunEvent(task, null, "stopped", docsModel, startedAt, runId);
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.emit(
         "warn",
@@ -1990,9 +2049,13 @@ export class Orchestrator implements Scheduler {
       return;
     } finally {
       clearTimeout(timer);
-      this.taskAbortControllers.delete(task.id);
+      taskSignal?.removeEventListener("abort", onTaskAbort);
     }
 
+    if (taskSignal?.aborted) {
+      this.emitRunEvent(task, result, "stopped", docsModel, startedAt, runId);
+      return;
+    }
     this.emitRunEvent(task, result, result.ok ? "passed" : "failed", docsModel, startedAt, runId);
     if (!result.ok) {
       this.emit(
@@ -2017,8 +2080,8 @@ export class Orchestrator implements Scheduler {
           task.id,
         );
       }
-      await this.deps.git.commitAll(path, `docs: ${task.title}`);
-      await this.deps.git.push(path, branch);
+      await this.deps.git.commitAll(path, `docs: ${task.title}`, taskSignal);
+      await this.deps.git.push(path, branch, taskSignal);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       this.emit(

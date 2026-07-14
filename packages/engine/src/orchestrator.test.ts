@@ -867,16 +867,16 @@ test("F15: a Stop requested during the GitHub-checks wait blocks the task withou
   const waitStarted = new Promise<void>((r) => {
     resolveWaitStarted = r;
   });
-  let resolveChecks!: (v: "passed") => void;
-  const checksPromise = new Promise<"passed">((r) => {
-    resolveChecks = r;
-  });
   const deps = fakeDeps(
     {
       git: {
-        async waitForChecks() {
+        async waitForChecks(_project, _pr, _timeout, _onPoll, signal) {
           resolveWaitStarted();
-          return checksPromise;
+          assert.ok(signal, "task signal must reach the GitHub checks poll");
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          throw new DOMException("The operation was aborted", "AbortError");
         },
       },
     },
@@ -889,7 +889,6 @@ test("F15: a Stop requested during the GitHub-checks wait blocks the task withou
   await waitStarted;
   const stopped = orch.stopTask(t1.id);
   assert.equal(stopped, true);
-  resolveChecks("passed"); // simulate checks finishing after the stop was requested
   await runPromise;
   assert.equal(t1.status, "blocked");
   assert.equal(merged.length, 0, "must not merge after a stop, even if checks ultimately passed");
