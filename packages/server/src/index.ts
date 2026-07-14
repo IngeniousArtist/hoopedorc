@@ -1342,7 +1342,9 @@ async function main() {
       // never hard-fails, by design.
       const plannerModel = resolvePlannerModel(settings, "deconstruct");
       const cwd = await resolvePlannerCwd(project);
-      const plan = await runPlanner(goal, project.name, cwd, plannerModel);
+      const plan = await runPlanner(goal, project.name, cwd, plannerModel, (msg) =>
+        app.log.warn(msg),
+      );
       prdMarkdown = plan.prdMarkdown;
       // No review step on this single-shot path, so inject the standing docs
       // task here directly rather than relying on the Plan tab to add it.
@@ -1507,6 +1509,7 @@ async function main() {
         plannerModel,
         buildPriorContext(db, project),
         attachmentNames,
+        (msg) => app.log.warn(msg),
       );
       recordPlanningCost(id, costUsd);
       const tasks = withAssignedModels(output, settings);
