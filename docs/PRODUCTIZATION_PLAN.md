@@ -1,8 +1,8 @@
 # Productization Plan + Bug/Security Fix List
 
-**Audience: the implementing model (Sonnet).** This doc was produced by a full read of
+**Audience: the implementing model.** This doc was produced by a full read of
 the codebase (all of `packages/*` and `apps/web`) plus the existing docs (PRD,
-ARCHITECTURE, NEXT_STEPS, CONTRACT). It has nine parts:
+ARCHITECTURE, NEXT_STEPS, CONTRACT). It has ten parts:
 
 - **Part 1 — Fix first**: real bugs and security issues found in the current code,
   ordered by severity, each with a concrete fix. Do these before any Part 2 feature.
@@ -71,10 +71,20 @@ ARCHITECTURE, NEXT_STEPS, CONTRACT). It has nine parts:
   for fallback/requeue events, the opencode-runner rejection in the
   planner now that model routing exists, and planner-output hardening
   (flat task DAG, scope paths that cover shared wiring files).
+- **Part 10 — Reliability, portability, and mobile-control wave** (added
+  2026-07-14 after an independent Codex audit of the complete v0.6.0 codebase
+  and the owner's follow-up decisions): fixes the remaining execution-ownership,
+  process-cancellation, rollback, gate-safety, credential-boundary, runtime-
+  settings, dependency-cache, durability, accounting, and shutdown gaps; adds
+  per-model effort, portable project setup, Telegram hardening, frontend tests,
+  and a full responsive pass. The EC2 instance remains the Linux/web scheduled-
+  run host and a separate Hoopedorc installation on the owner's Mac handles
+  Xcode/Apple projects. Multi-host delegation is explicitly out of scope.
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
-  and `npm test -w @orc/engine` green on every PR.
+  `npm test -w @orc/engine`, `npm test -w @orc/server`, and
+  `npm test -w @orc/adapters` green on every PR.
 - The contract is `@orc/types`. If you add/change a route or type, update
   `packages/types/src/api.ts` (+ `ROUTES`), `docs/CONTRACT.md`, and the mock server.
 - Work top of this list downward. Each item states files and acceptance criteria —
@@ -1663,6 +1673,30 @@ already did. (2) S8's `rm -rf` detection only matched combined flags —
 split (`-r -f`) and long-form (`--recursive --force`) spellings evaded
 it; replaced with a flag tokenizer covering all three spellings, same
 target rules.
+
+### Phase 15 — Part 10: reliability, portability, and mobile-control wave — IN PROGRESS
+
+| Item | Status | PR |
+|---|---|---|
+| B34 — execution ownership + unified manual queue | pending | — |
+| B35 — managed subprocess lifecycle and cancellation | pending | — |
+| S9 — fail-closed gates, destructive rail, and worktree hygiene | pending | — |
+| B36 — rollback through a gated, human-approved PR | pending | — |
+| S10 — CLI credential/environment boundary | pending | — |
+| B37 — enabled models, live settings, and complete validation | pending | — |
+| F48 — per-model effort setting across all model stages | pending | — |
+| B38 — portable dependency setup and atomic caching | pending | — |
+| B39 — planning and git durability | pending | — |
+| B40 — complete model-invocation accounting | pending | — |
+| B41 — graceful shutdown and runtime recovery | pending | — |
+| F49 — Telegram reliability and phone-control hardening | pending | — |
+| T2 — frontend unit/E2E test foundation | pending | — |
+| U19 — full responsive UX pass | pending | — |
+
+The owner approved this wave on 2026-07-14. Implementation proceeds in
+the dependency order specified in Part 10 below, with Fable independently
+reviewing the merged work. No item is complete until its acceptance evidence
+is recorded here or in its item note and linked PR.
 
 ---
 
@@ -5471,6 +5505,391 @@ single test.
 
 ---
 
+## Part 10 — Reliability, portability, and mobile-control wave (Codex audit, 2026-07-14)
+
+This wave comes from a read-only audit of the full v0.6.0 repository followed
+by the owner's explicit product decisions. The baseline is healthy — typecheck,
+build, 113 engine tests, 94 server tests, and 4 adapter tests were green when
+the wave was scoped — so this is not a rewrite. It closes failure-mode and
+concurrency gaps the existing happy-path tests do not exercise, then adds the
+portable setup, model-effort, Telegram, testing, and responsive-UX work the
+owner requested.
+
+Owner decisions that constrain every item below:
+
+- Rollbacks create PRs and always require human approval; they never push
+  directly to the default branch.
+- Every model is already authenticated inside Claude Code, Codex, or OpenCode.
+  Hoopedorc must use those CLIs' authenticated state and does not need to accept
+  provider API keys itself. The server and CLIs run as the same Unix account.
+- Manual dispatch uses the same scheduler/runtime as autonomous work. It may be
+  prioritized, but may not bypass scope, lifecycle, or process-safety controls.
+- npm, pnpm, Yarn, and Bun receive first-class automatic setup. Other ecosystems
+  use an explicit structured per-project setup command rather than guessed
+  installer behavior.
+- EC2 remains the scheduled Linux/web host. A separate Hoopedorc installation
+  on the owner's Mac handles Xcode/Apple projects. No EC2-to-Mac delegation is
+  introduced in this wave.
+- The Telegram bot stays a private 1:1 long-polling bot. Full mobile editing is
+  in scope for the web app, not only read-only supervision.
+
+### B34. Execution ownership, stop/start safety, and unified manual queue — HIGH
+
+**Where:** `packages/server/src/engine-runner.ts`,
+`packages/engine/src/orchestrator.ts`, task/project routes in
+`packages/server/src/index.ts`, the shared task/API types, and DB schema/repo.
+
+**Confirmed problem:** a hard pause aborts controllers and returns without
+waiting for active task pipelines to settle, while `EngineRunner.pause()` drops
+the project registration immediately. A new Start can therefore overlap the
+old task, and the old background `finally` can delete the new registration.
+Project deletion checks autonomous runs but not manual ones; multiple manual
+dispatches use independent orchestrators; an empty scope (documented as
+unrestricted) is incorrectly treated as non-overlapping; the Stop route can
+rewrite an already-terminal task to `blocked`.
+
+**Fix:** introduce one generation-tagged `ProjectRuntime` per project, owning
+the orchestrator, a settled promise, lifecycle state (`starting`, `running`,
+`stopping`, `draining`), and its manual-priority queue. Cleanup may delete a
+registry entry only when its identity/generation still matches. Hard Stop aborts
+then awaits settlement with a bounded deadline; Start and Delete return a clear
+conflict while settlement is pending. Persist manual-dispatch intent so a queued
+request is not silently lost on restart; feed it into the same scheduler and
+clear it only when execution actually begins. Empty/unrestricted scopes overlap
+everything. A task Stop is valid only for a live/active task and preserves a
+terminal state won by a completion race.
+
+**Acceptance:** integration tests cover Stop → immediate Start, old-finally vs.
+new-run registration, Delete during manual work, two queued manual tasks with
+overlapping and non-overlapping scopes, empty scopes, process settlement, restart
+of a queued manual request, and Stop against done/failed/backlog tasks. No test
+may rely on arbitrary sleeps to make the race pass.
+
+### B35. Managed subprocess lifecycle and cancellation — HIGH
+
+**Where:** `packages/adapters/src/index.ts`, `packages/server/src/planner.ts`,
+`packages/engine/src/validator.ts`, `packages/engine/src/gate-runner.ts`,
+`packages/engine/src/git-service.ts`, and `packages/engine/src/sandbox.ts`.
+
+**Confirmed problem:** abort escalation checks `ChildProcess.killed`, which means
+"a signal was sent," not "the process exited," so a SIGTERM-resistant CLI
+normally never receives SIGKILL. Only the direct child is targeted. Validators,
+gate commands, dependency setup, Git/GitHub polling, retry sleeps, and Docker
+containers do not share one abort/deadline contract; Stop can wait minutes or
+hours for a later stage boundary.
+
+**Fix:** add one managed-process helper with an exit-settled flag, output limits,
+deadline, AbortSignal, listener/timer cleanup, and POSIX process-group shutdown
+(with a platform-safe fallback). Send SIGTERM once, then SIGKILL the still-live
+group after the grace period. Thread AbortSignal through planner, author,
+validator, gates, setup, git/gh polling, and retry waits. Give Docker runs a
+unique name or cidfile and force-remove the container on abort/timeout so killing
+the Docker client cannot leave work running in the background.
+
+**Acceptance:** real child-process tests launch a parent that traps SIGTERM and
+spawns a child; both must be gone after the deadline. Additional tests cover an
+aborted validator, OpenCode retry sleep, GitHub-check poll, gate, and Docker
+cleanup adapter (Docker itself may be stubbed in CI). B34 hard Stop returns only
+after these managed children have settled or the explicit shutdown deadline is
+recorded.
+
+### S9. Fail-closed gates, destructive rail, and worktree hygiene — HIGH
+
+**Where:** `packages/engine/src/gate-runner.ts`,
+`packages/engine/src/worktree-manager.ts`, `packages/engine/src/orchestrator.ts`,
+and `packages/engine/src/validator.ts`.
+
+**Confirmed problem:** a declared npm script whose runtime cannot be spawned can
+be reported as "nothing to run." Git diff/status failures are collapsed to empty
+results, allowing the destructive rail to see "nothing risky." The rail and
+validator see only the first 40,000 diff characters. Gate scripts run in a
+writable worktree after the author commit and may leave changes that a retry or
+documentation `commitAll()` later stages without validator review.
+
+**Fix:** distinguish "script absent" from infrastructure failure; the latter is
+a failed gate. Return typed diff acquisition results including `ok`, error, byte
+count, and truncation. Scan file statuses and added lines across the complete
+diff as a stream; if a safety limit or acquisition error is reached, require
+human approval even in fully autonomous mode. Snapshot cleanliness around each
+gate. A gate that dirties tracked/untracked source fails with named files, then
+the orchestrator restores only its disposable task worktree to committed HEAD
+before validator, docs, retry, or cleanup. Never reset the user's primary clone.
+
+**Acceptance:** tests cover ENOENT, git failure, huge diff with the destructive
+line after 40K, rename/delete status, a malicious passing gate that edits code,
+a gate that edits an allowed docs path, and a failing gate followed by retry.
+None of the gate-written content may reach the PR.
+
+### B36. Rollback through a gated, human-approved PR — HIGH
+
+**Where:** rollback API/types/UI, `packages/engine/src/git-service.ts`,
+`packages/server/src/engine-runner.ts`, DB schema/repo, notifications, and audit.
+
+**Confirmed problem:** normal PRs are squash-merged, but rollback always runs
+`git revert -m 1`; a squash commit has one parent, so the command fails. The
+current path also pushes directly to the default branch, bypassing the product's
+own branch/gate/approval contract.
+
+**Fix:** persist a rollback job, fetch the current remote default branch, create
+a unique rollback worktree/branch, inspect the target commit's parent count, and
+use plain `git revert` for a single-parent squash commit or `-m 1` only for a
+real merge commit. Run the standard applicable gates and independent validator,
+push, open a clearly labelled rollback PR, and send a mandatory approval with
+the PR link and reasons. Recovery after restart resumes the persisted job rather
+than issuing a second revert. Merge only after explicit approval; rejection
+leaves an auditable closed/abandoned rollback job.
+
+**Acceptance:** local real-git tests cover a squash commit, a two-parent merge,
+conflict, duplicate click/idempotency, restart recovery, reject, and approve.
+The remote default branch must never receive a direct rollback push.
+
+### S10. CLI credential and child-environment boundary — HIGH
+
+**Where:** `packages/adapters/src/env.ts`, every planner/adapter spawn, gate and
+setup sandbox environment assembly, README, architecture, and user guide.
+
+**Confirmed problem:** the "sanitized" environment explicitly preserves
+`CODEX_API_KEY`, all `ANTHROPIC_*`, and all `npm_config_*` variables; Claude's
+planner path inherits the entire server environment. This contradicts the README
+claim that provider keys are stripped. npm config may contain registry auth.
+
+**Fix:** build child environments from a small runtime allowlist, preserving the
+same user's `HOME`, `CODEX_HOME`, XDG/config paths, locale, PATH, and platform
+requirements needed for the three CLIs' already-authenticated OAuth/config/
+keychain state. Do not forward provider-key variables. Preserve safe npm settings
+such as registry/proxy only when their key is not auth/secret-shaped. Apply the
+same policy to every planner and adapter. Gate/setup containers receive no CLI or
+registry credentials by default. Document the honest remaining boundary: host-run
+agents retain host filesystem/network access and may reach credential files;
+environment filtering is not a substitute for F13 phases 2–3.
+
+**Acceptance:** sentinel-secret tests cover provider keys, Telegram/GitHub tokens,
+npm `_authToken`/password keys, and all three planner paths. On the owner's same-
+user setup, real Claude/Codex/OpenCode health calls still authenticate without
+Hoopedorc accepting a provider key.
+
+### B37. Enabled models, live operational settings, and complete validation — HIGH
+
+**Where:** shared Settings/ModelConfig types, settings API/repo, engine runner,
+orchestrator, planner routing, Telegram settings commands, and Settings UI.
+
+**Confirmed problem:** `enabled` is honored by setup/health UI but not dispatch;
+routing can point at a disabled model. Each orchestrator captures a Settings
+snapshot, so phone/web changes to merge policy, approval holds, quotas, budgets,
+or pricing do not reliably affect an active run. Several numeric/enumerated
+settings are accepted without finite/range validation, and DB JSON is trusted as
+the full current shape.
+
+**Fix:** classify settings as attempt-stable (the runner/model/effort selected for
+an already-started call) or live operational policy. Add validated live accessors
+for dispatch, budgets, quotas, hold behavior, merge policy, notifications, and
+pricing. Disabled models receive no new attempts or fallbacks, but disabling does
+not kill a call already in flight. Routing saves require enabled targets. Add one
+normalizer/validator used by defaults, migrations, GET/PUT, Telegram changes, and
+runtime reads; reject invalid runner, concurrency, confidence, budget, quota,
+timeout, policy, and boolean values with field-specific messages.
+
+**Acceptance:** tests flip each live policy during a run, disable a routed/fallback
+model, preserve an active call after disable, reject invalid persisted/API shapes,
+and prove both web and Telegram changes use the same validation path.
+
+### F48. Per-model effort setting
+
+**Where:** `ModelConfig`, defaults/migrations/validation, model editor and setup
+UI, adapters, planner/deconstructor, validator, docs stage, and model health.
+
+**Implementation:** add one optional effort value per model with a visible
+`CLI default` choice. Claude Code maps it to `--effort`; OpenCode maps it to its
+provider-specific `--variant` and permits a safely validated custom variant;
+Codex maps it to `-c model_reasoning_effort=...`. The same value applies to that
+model in planning, deconstruction, authoring, validation, documentation, and
+health tests. Runner changes reset or revalidate incompatible values. Logs and
+run metadata record the resolved effort so cost/quality comparisons are possible.
+
+**Acceptance:** adapter argument tests cover default and explicit effort for all
+three runners; planner paths receive the same setting; Settings round-trips it;
+mobile and desktop controls remain usable; an unsupported value produces an
+actionable save/test error rather than silently falling back.
+
+### B38. Portable dependency setup and atomic caching — MEDIUM
+
+**Where:** worktree manager, project config/types/API/UI, sandbox, setup health,
+and deployment/user docs.
+
+**Confirmed problem:** all Node projects share one mutable primary
+`node_modules` without an install lock. pnpm/Yarn lockfiles are detected but npm
+is still invoked. Concurrent worktrees can race, and a cache key omits package
+manager/runtime/platform details. Non-Node projects have no explicit setup hook.
+
+**Fix:** select Node tooling by `packageManager` first, then an unambiguous
+lockfile: npm, pnpm, Yarn, or Bun. Use the manager's frozen/reproducible install
+mode and fail actionably if the selected binary is absent. Serialize installation
+per cache key and publish a fingerprinted cache atomically only after success;
+include manifests/lockfile, manager/version, Node version, OS, and architecture.
+Never overwrite the primary clone's tracked manifests. Add an optional structured
+project setup command (`command` + argument array, no implicit shell) for SwiftPM,
+CocoaPods, Python, Rust, .NET, and specialist SDK workflows; it uses B35 timeouts/
+abort and the configured sandbox/host policy. Mac/Xcode projects run on the Mac
+instance; EC2 does not pretend to execute Apple toolchains.
+
+**Acceptance:** tests cover concurrent identical/different fingerprints, failed
+install without cache publication, npm/pnpm/Yarn/Bun selection, ambiguous locks,
+missing binary, monorepo manifests, OS/architecture key separation, structured
+custom setup, cancellation, and actionable Setup health output.
+
+### B39. Planning and git durability — MEDIUM
+
+**Where:** plan commit route, GitService helpers, planning archive/context code,
+and related server/engine tests.
+
+**Confirmed problem:** plan commit returns and marks the project planned before
+PRD/AGENTS/CLAUDE writes finish, so immediate Start may branch without context.
+Failures are swallowed. `commitAll()` treats every commit error as "nothing to
+commit"; fetch/push/sync paths also hide infrastructure failures as clean/best-
+effort outcomes where correctness depends on success.
+
+**Fix:** persist planning artifacts as one ordered, awaited operation and report
+partial failure without losing the DB draft/session needed to retry. Start is
+blocked until the planning persistence state is durable. `commitAll()` ignores
+only a confirmed clean status; identity, hook, index-lock, permission, fetch, and
+push errors remain typed failures. Make best-effort behavior explicit only for
+truly optional cleanup/telemetry and surface it in logs/audit.
+
+**Acceptance:** tests use delayed/failing commits followed by immediate Start,
+git identity/hook/index errors, fetch failure, optional cleanup failure, and retry
+after partial planning persistence. No context loss or false success is allowed.
+
+### B40. Complete model-invocation accounting — MEDIUM
+
+**Where:** DB schema/repo, planner, engine events, validators, docs, model tests,
+budget/quota logic, Cost UI, health, and Telegram summaries.
+
+**Confirmed problem:** quota run counts come from author `runs`, while planner,
+deconstructor, validator, and some health invocations consume the same model
+subscription without a run row. Max-run quotas can therefore be exceeded while
+the UI reports capacity remaining.
+
+**Fix:** add a unified invocation ledger with project/task/run correlation,
+stage (`planner`, `deconstructor`, `author`, `validator`, `docs`, `health`), model,
+runner, effort, start/end, outcome, exit reason, tokens, cached tokens, and cost.
+Write `started` before spawn and terminalize it exactly once. Derive rolling quota
+usage and model analytics from the ledger; keep compatibility views/migration for
+existing run/cost history and prevent double billing during rollout.
+
+**Acceptance:** tests cover every stage, crash/restart of an in-flight invocation,
+fallbacks, zero-cost subscription calls, token-priced calls, migration/backfill,
+and quota blocking based on planner/validator usage as well as author usage.
+
+### B41. Graceful shutdown, cooldown recovery, and runtime health — MEDIUM
+
+**Where:** server startup/shutdown, EngineRunner, DB lifecycle, scheduler,
+sandbox Docker detection, systemd/deploy docs, and health endpoints/UI.
+
+**Confirmed problem:** SIGTERM/SIGINT have no coordinated shutdown. Uncaught
+exceptions are logged and the potentially inconsistent process continues, so
+systemd cannot restart it. Cooldowns are memory-only. A failed Docker probe is
+cached for the process lifetime even if the daemon later becomes available.
+
+**Fix:** stop accepting starts, mark runtimes stopping, invoke B35 cancellation,
+await B34 settlement with a total deadline, stop Telegram polling, flush logs,
+checkpoint/close SQLite, then exit. On uncaught exception perform the same bounded
+best effort and exit nonzero. Persist cooldown/rate-limit-until state. Give Docker
+detection a short TTL and invalidate on execution failures. Expose shutdown/
+degraded dependency state through health without leaking secrets.
+
+**Acceptance:** child-process integration tests send SIGTERM and simulate an
+uncaught exception, assert no managed child survives, DB/audit state is durable,
+and verify systemd-compatible exit codes. Tests cover cooldown restart and Docker
+unavailable → available → unavailable transitions.
+
+### F49. Telegram reliability and phone-control hardening
+
+**Where:** Telegram client, shared command actions, engine lifecycle integration,
+Settings/health UI, user guide, and server tests.
+
+**Implementation:** retain the dependency-free private-chat long-poll design.
+Register `setMyCommands`; accept unique project name/id prefixes instead of full
+UUIDs; add compact inline Start/Pause/Status actions; route every command through
+the same validated HTTP/shared action and B34 runtime semantics. Enforce the
+private chat/user identity for callbacks. Add request deadlines, bounded retry
+with Telegram `retry_after` handling, long-message chunking, delivery state and
+last error in health, and a web notification when an approval cannot be delivered
+after retry. Correct `/autonomous` copy: the non-bypassable destructive rail and
+validator escalations still require humans. Keep Stop All's confirmation.
+
+**Acceptance:** tests cover unauthorized callback user, command registration,
+prefix ambiguity, command errors returned to the user, 429/backoff, network
+timeout, chunking, failed approval delivery, re-sending pending approval, restart,
+and Start/Pause/Stop All using the unified runtime. Live private-chat smoke test
+confirms buttons and commands without introducing a webhook or new framework.
+
+### T2. Frontend unit and end-to-end test foundation
+
+**Where:** `apps/web`, root scripts, and GitHub Actions.
+
+**Implementation:** add Vitest + React Testing Library for client/hooks/components
+and Playwright for critical browser workflows. Add root `test`, `test:web`, and
+lint scripts; run them in CI. Cover auth gate, navigation/deep links, WebSocket
+updates, settings dirty/save behavior, approvals, Stop/retry, project deletion
+guards, effort editing, responsive navigation, and error/toast states. Use stable
+mock fixtures and deterministic viewport tests rather than screenshot-only tests.
+
+**Acceptance:** CI runs all engine/server/adapter/web suites plus Playwright smoke
+tests. A deliberately broken route mapping, mobile overflow, or failed settings
+save must cause a test failure.
+
+### U19. Full responsive UX and mobile editing pass
+
+**Where:** every page/component in `apps/web`, with particular attention to App
+navigation, ProjectHeader, Board, PlanView, Settings/ModelsEditor/RoutingEditor,
+NewProject, AddTaskForm, Cost/Audit/Notifications, drawers, dialogs, and toasts.
+
+**Implementation:** preserve Hoopedorc's quiet, dense operational character; do
+not turn it into a marketing surface. Make all workflows fully usable at 360,
+390, 768, 1280, and 1440 CSS pixels. Collapse fixed two/three-column forms,
+maintain readable type and at least 40–44px primary mobile touch targets, keep
+labels/actions inside their containers, add safe-area padding to sticky controls,
+and prevent accidental page overflow. Intentional horizontal behavior is limited
+to clearly scrollable Board columns/navigation/data regions. Keep desktop density
+and fast repeated actions. Use familiar icons with accessible names/tooltips,
+visible focus, and reduced-motion support; do not add decorative animation.
+
+**Acceptance:** Playwright exercises onboarding, planning/editing, Board/task
+drawer, notifications/approval, costs, audit, projects, Settings/model effort,
+Setup, Stop/retry, and deletion at every target viewport. Screenshots and DOM
+overflow assertions show no overlaps, clipped controls, unreadable text, or sticky
+footer occlusion. A real phone smoke test over the owner's Tailscale route closes
+the item.
+
+### Phase 15 PR order
+
+1. Part 10 plan documentation.
+2. B34.
+3. B35.
+4. S9.
+5. B36.
+6. S10.
+7. B37 + F48 (same contract/settings/adapter surface).
+8. B38.
+9. B39 + B40 (shared DB durability/accounting surface, kept as separable commits).
+10. B41 + F49 (runtime lifecycle first, Telegram wired to it second).
+11. T2.
+12. U19.
+13. Final documentation/live acceptance and `v0.7.0`.
+
+### What Part 10 deliberately does NOT include
+
+- **Multi-host orchestration.** EC2 and Mac run separate Hoopedorc instances.
+- **F13 phases 2–3 / full agent containerization.** S10 removes accidental env
+  exposure and documents the honest host boundary; isolating OAuth/keychain-backed
+  agents without breaking Xcode remains its own design wave.
+- **A visual rebrand.** U19 is a responsive/product-quality pass.
+- **Guessed arbitrary ecosystem installs.** B38 provides explicit setup commands.
+- **Telegram webhooks or a bot framework migration.** Long polling fits the
+  private Tailscale/EC2 deployment and remains simpler to operate.
+
+---
+
 ## Suggested execution order
 
 | Phase | Items | Rationale | Status |
@@ -5489,6 +5908,7 @@ single test.
 | 12 | B28, U15–U18, F36–F39, F13-P1, B29 | Referential-integrity fix first (B28 — an autonomy footgun), the four small UX items together (U15–U18), then the wave in dependency order: Codex runner (F36) → swappable planner (F37, needs F36's adapter) → AGENTS.md pipeline (F38, planner-produced so it benefits from F37 landing first) → gates sandbox (F13-P1) → EC2 deploy checklist (F39 — the ship gate) → B29 (found live-verifying F36, fixed last). Tagged `v0.4.0`; the owner deploys to EC2 right after. | ✅ done |
 | 13 | B30, F40–F43 | Remote-supervision wave, built while the owner's EC2 deploy happens: approval re-arm on restart first (B30 — F40's `/pending` leans on its mechanism), then the Telegram commands (F40), then the three small ones (F41 hold-dispatch option, F43 sandbox UI toggle, F42 bootstrap script) in any order. Tagged `v0.5.0`. F42's live-on-real-EC2 half is still owed (no EC2 box/Docker daemon available in this environment). | ✅ done |
 | 14 | B31–B33, S8, F44–F47 | Autonomy-hardening wave from the owner's first real dogfooding runs: B31+F46+F47 first (one PR — all in `planner.ts`; B31 unblocks planning outright and F45 depends on it), then B32 (the autonomous-stall fix), then S8 (destructive-change rail — before more autonomous runs happen), then B33, F44, F45 in any order. Tag `v0.6.0` at the end. | ✅ done |
+| 15 | B34–B41, S9–S10, F48–F49, T2, U19 | Reliability/portability/mobile wave from the v0.6.0 Codex audit and owner decisions: execution ownership → process cancellation → fail-closed safety → rollback PR → credential boundary → live settings/effort → portable setup/cache → durability/accounting → shutdown/Telegram → web tests → responsive UX. Tag `v0.7.0` only after cross-platform/live acceptance. | in progress |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
@@ -5518,9 +5938,8 @@ underlying logic is otherwise fully verified (real git plumbing, real
 CLIs, real unit/integration tests; see each item's own done-note above).
 Fable independently re-verifies each wave after merge; verification
 evidence is in each item's PR description and in this doc's Progress
-section above.
-
-**No plan items remain open.** The next wave should be specced fresh
-once the owner has more autonomous-run experience against this hardened
-baseline, or once F13 phases 2–3 (agents in the sandbox) become the
-priority.
+section above. Phase 15 (Part 10) is now active; its approved item specs,
+PR order, acceptance criteria, owner decisions, and explicit non-goals are
+recorded above. F13 phases 2–3 remain deferred until a separate design can
+isolate agents without breaking same-user CLI OAuth/keychain access or the
+Mac/Xcode execution model.
