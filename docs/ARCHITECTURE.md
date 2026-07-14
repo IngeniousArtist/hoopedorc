@@ -51,6 +51,15 @@ the shared dependency install (ro), with an allowlist env built from
 scratch. Agents themselves still run on the host (sandbox phases 2–3 are
 future work; see `docs/specs/sandbox.md`).
 
+Every author, validator, documenter, and planner CLI receives the same
+`sanitizedEnv()` boundary: an explicit runtime/config allowlist containing the
+same user's HOME/XDG/CLI config roots, locale, PATH, platform requirements, and
+non-credential npm registry/proxy settings. Server/provider/GitHub/Telegram
+tokens and npm auth/password/config-indirection variables are not forwarded.
+This limits accidental environment leakage but does not sandbox host filesystem
+or network access; a host-run model can still reach files available to that OS
+user.
+
 ## Why this split
 - **One language (TS)** so the parallel agents share `@orc/types` and can't drift.
 - **OpenCode as the single gateway** for all API-billed models — one CLI

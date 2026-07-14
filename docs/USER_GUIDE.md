@@ -184,12 +184,15 @@ going on a always-on box.
   instead of directly on the host — see "Gate sandbox" below.
 - **What's NOT sandboxed (yet).** Every model's own tool use — the *author
   agent* that actually edits your code — still runs **directly on the host
-  machine** with your real `gh`/`claude`/`opencode` auth, regardless of the
-  gate sandbox setting above. Its environment is stripped of anything
-  secret-shaped before it runs, but it still has real filesystem/network
-  access. Don't point this at a repo you don't trust. Sandboxing the author
-  agent itself is tracked as future work (F13 phases 2/3 in
-  `docs/specs/sandbox.md`), not built yet.
+  machine** with the same user's stored `claude`/`opencode`/`codex` auth,
+  regardless of the gate sandbox setting above. Its process environment starts
+  from a small runtime/config allowlist: Hoopedorc does not forward provider
+  keys, app/GitHub/Telegram tokens, SSH agent sockets, or npm registry
+  credentials. This is not a sandbox: the model still has real filesystem and
+  network access and can reach credential files available to that OS user.
+  Don't point this at a repo you don't trust. Sandboxing the author agent itself
+  is tracked as future work (F13 phases 2/3 in `docs/specs/sandbox.md`), not
+  built yet.
 
 ## Notifications
 
@@ -537,29 +540,19 @@ your own setup, per the note on each step.
   relying on it), or run it once on a machine that does have a browser and
   copy the resulting `auth.json` over to the server under the same OS user
   that will run Hoopedorc.
-- **`claude`**: two real paths, confirmed via `claude --help`/`claude auth
-  --help`:
-  - **`claude setup-token`** — documented by the CLI itself as "Set up a
-    long-lived authentication token (requires Claude subscription)". This
-    is the headless-friendly path that still bills at your Pro/Max
-    subscription's flat rate rather than pay-per-token — run it once
-    (likely via a URL-based flow you complete in a browser elsewhere, the
-    same pattern as `gh auth login`'s device flow) and it should leave a
-    durable credential behind. **Not run end-to-end while writing this** —
-    confirm the exact prompts once on your box.
-  - **`ANTHROPIC_API_KEY`** — the documented escape hatch (`claude --help`
-    on `--bare` mode: "Anthropic auth is strictly `ANTHROPIC_API_KEY` or
-    `apiKeyHelper`... OAuth and keychain are never read"). Set it in `.env`
-    if `setup-token` doesn't fit your setup. **Caveat, already noted in
-    `deploy/README.md`**: this bills pay-per-token via the Anthropic
-    Console, not your subscription's flat rate — a real cost-model
-    difference, not just a config difference.
-  - Note this Linux-native path is a different situation from
-    `deploy/README.md`'s Docker section, which is specifically about **why
-    a container** can't reach `claude`'s macOS-Keychain-based login — that
-    problem is macOS/container-specific and doesn't apply to a normal
-    (non-containerized) Linux systemd deployment, which is what this
-    section assumes.
+- **`claude`**: use **`claude setup-token`**, documented by the CLI itself as
+  "Set up a long-lived authentication token (requires Claude subscription)".
+  This is the headless-friendly path that still bills at your Pro/Max
+  subscription's flat rate rather than pay-per-token — run it once (likely via
+  a URL-based flow you complete in a browser elsewhere, the same pattern as
+  `gh auth login`'s device flow) and it should leave a durable credential
+  behind. **Not run end-to-end while writing this** — confirm the exact prompts
+  once on your box. Hoopedorc intentionally does not forward
+  `ANTHROPIC_API_KEY` from its server environment; authenticate the CLI itself
+  under the service user instead. This Linux-native path differs from
+  `deploy/README.md`'s Docker case: a Linux container cannot reach Claude's
+  macOS Keychain login, while a native Linux systemd process uses its own
+  service user's stored login.
 - **`codex`** (only if you've configured a model with runner `codex` —
   otherwise skip this entirely, the Setup page won't even check for it):
   same shape as `opencode`'s pattern above. `codex login` is an interactive
@@ -567,12 +560,10 @@ your own setup, per the note on each step.
   the resulting credential file (`~/.codex/auth.json`, or wherever
   `$CODEX_HOME` points) over to the server under the same OS user that will
   run Hoopedorc — **treat it like a password**, same as any other CLI
-  credential file in this section. `CODEX_API_KEY` in `.env` is the
-  non-interactive alternative if you'd rather not seed a credential file at
-  all, at the cost of per-token billing instead of the subscription's flat
-  rate.
-- Once all three check out (`npm run setup` re-runs the same checks Setup
-  page does), follow `deploy/README.md`'s "Native + systemd" steps for the
+  credential file in this section. Hoopedorc intentionally does not forward
+  `CODEX_API_KEY`; use the CLI's stored login state.
+- Once all three check out (the **Setup & Health** page runs the filtered auth
+  checks), follow `deploy/README.md`'s "Native + systemd" steps for the
   actual service setup, see **Backups & data** above for where the DB and
   its backups live on disk, and **Updating** below for keeping this box
   current afterward (`npm run update` restarts the same systemd unit). Or
@@ -712,4 +703,4 @@ A few things follow from that split:
 | Approvals never reach Telegram | No bot token/chat id set, or the token has a Markdown metacharacter issue (also fixed — messages are plain text now). | Settings → Telegram: use the **Send test message** button to confirm delivery before relying on it live. |
 | The server won't start after setting `HOST=0.0.0.0` | No `API_TOKEN` set and `ALLOW_UNAUTHENTICATED` isn't `1` — this is an intentional refusal, not a bug. | Set `API_TOKEN` (see Remote setup above), or explicitly opt into `ALLOW_UNAUTHENTICATED=1` if you really mean to. |
 | The web UI shows nothing / a blank board in "real" (non-mock) mode | No project selected yet, or you're pointed at `MOCK=1` data. | Use the project picker in the nav; confirm `MOCK` isn't set in your `.env`/environment. |
-| Docker: `claude` fails to authenticate inside the container | Claude Code's login on macOS lives in the system Keychain, which a Linux container can't reach at all — no mount fixes this. | Set `ANTHROPIC_API_KEY` in `.env` instead (see `deploy/README.md`) — note this bills per-token via the Console, not your subscription's flat rate. |
+| Full-app Docker: `claude` fails to authenticate inside the container | Claude Code's login on macOS lives in the system Keychain, which a Linux container can't reach; Hoopedorc also does not forward provider-key environment variables. | Use the supported native install under the same OS user that authenticated the CLIs. Docker remains reference-only; the gate-only Docker sandbox does not run model CLIs. |

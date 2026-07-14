@@ -19,7 +19,7 @@ import type { ModelConfig, ModelId } from "@orc/types";
 import { sanitizedEnv } from "./env.js";
 import { abortableDelay, spawnManagedProcess } from "./managed-process.js";
 
-export { sanitizedEnv } from "./env.js";
+export { safeNpmConfigEnv, sanitizedEnv } from "./env.js";
 export {
   abortableDelay,
   execManagedProcess,

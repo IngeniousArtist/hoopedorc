@@ -15,8 +15,8 @@ real-CLI check before being trusted.
 The honest current security posture (established by S5 and B11) is: agents
 and gate scripts execute **directly on the host**, with the operator's own
 `gh`/`claude`/`opencode` auth, real filesystem access, and real network
-access. S5's `sanitizedEnv()` (`packages/adapters/src/env.ts`) strips
-secret-shaped environment variables before every spawn, and Claude runs
+access. S10's `sanitizedEnv()` (`packages/adapters/src/env.ts`) builds every
+agent/planner environment from a small runtime/config allowlist, and Claude runs
 under `--permission-mode bypassPermissions` (`packages/adapters/src/index.ts`)
 — but neither of those stops a prompt-injected agent, or a hostile
 `npm test`/`build` script in the repo being worked on, from reading
@@ -88,6 +88,12 @@ The other two CLIs are more container-friendly but still need care:
   cleaner sandbox path — generate a fine-grained PAT scoped to the one repo
   being worked on, inject it as an env var into the sandbox only, rather than
   mounting the host's `~/.config/gh`.
+
+The current owner decision is not to add provider-key handling to Hoopedorc;
+all models authenticate inside their CLI under the same OS user. Therefore the
+API-key injection ideas below are historical design options, not an approved
+implementation path, and phases 2–3 must revisit CLI authentication before they
+ship.
 
 **Implication for the phased rollout below:** the *author agent* stage is
 where this problem bites hardest (it needs `claude`/`opencode` auth to run

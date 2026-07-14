@@ -1682,7 +1682,7 @@ target rules.
 | B35 — managed subprocess lifecycle and cancellation | done | [#140](https://github.com/IngeniousArtist/hoopedorc/pull/140) |
 | S9 — fail-closed gates, destructive rail, and worktree hygiene | done | [#141](https://github.com/IngeniousArtist/hoopedorc/pull/141) |
 | B36 — rollback through a gated, human-approved PR | done | [#142](https://github.com/IngeniousArtist/hoopedorc/pull/142) |
-| S10 — CLI credential/environment boundary | pending | — |
+| S10 — CLI credential/environment boundary | done | [#143](https://github.com/IngeniousArtist/hoopedorc/pull/143) |
 | B37 — enabled models, live settings, and complete validation | pending | — |
 | F48 — per-model effort setting across all model stages | pending | — |
 | B38 — portable dependency setup and atomic caching | pending | — |
@@ -5753,6 +5753,30 @@ environment filtering is not a substitute for F13 phases 2–3.
 npm `_authToken`/password keys, and all three planner paths. On the owner's same-
 user setup, real Claude/Codex/OpenCode health calls still authenticate without
 Hoopedorc accepting a provider key.
+
+**S10 — done (PR [#143](https://github.com/IngeniousArtist/hoopedorc/pull/143)).**
+Agent and planner children now start from an explicit runtime/config allowlist
+instead of a copy of the server environment. The boundary preserves HOME,
+CODEX_HOME, XDG/CLI config roots, locale, PATH, platform/TLS/proxy requirements,
+and a small list of non-credential npm behavior settings. Provider keys,
+application/GitHub/Telegram tokens, SSH agent sockets, arbitrary app variables,
+`NODE_AUTH_TOKEN`, npm auth/password/client-key fields, and npm config-file
+indirection are not forwarded. Claude planning now uses the same boundary as
+Codex, OpenCode, authors, validators, and documenters. Gate containers receive
+only their synthetic HOME/PATH, safe npm settings, and non-secret Node runtime
+settings.
+
+Process-level fake-CLI tests inspect the actual child environment for all three
+planner runners, and Docker-argument tests prove the same sentinel credentials
+are absent from gate containers. On the owner's Mac, real zero-inference health
+calls through the filtered environment reported Claude Pro, Codex ChatGPT, and
+12 OpenCode credentials authenticated; a filtered `opencode models` call returned
+431 models. `npm run typecheck`, `npm run build`, 9 adapter tests, 132 engine
+tests, and 111 server tests pass. No model inference run was started. The README,
+architecture, user/deploy guides, sandbox design note, compose comments, and
+`.env.example` now document CLI-owned auth and the honest remaining host
+filesystem/network boundary. Fable review remains the independent post-merge
+check required for this wave.
 
 ### B37. Enabled models, live operational settings, and complete validation — HIGH
 

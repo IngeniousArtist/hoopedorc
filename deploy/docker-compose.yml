@@ -1,8 +1,8 @@
 # Reference only — see deploy/README.md for why native + systemd is the
-# primary path, and for the auth caveats this mounting glosses over
-# (in particular: Claude Code's login lives in the macOS Keychain, which is
-# NOT accessible from a Linux container at all — use ANTHROPIC_API_KEY in
-# .env instead of trying to mount claude's config).
+# primary path, and for the auth caveats this mounting glosses over. Claude
+# Code's macOS Keychain login is not accessible from Linux, and Hoopedorc does
+# not forward provider-key environment variables; full-app Docker therefore
+# remains unsuitable for real model runs.
 services:
   hoopedorc:
     build:

@@ -392,6 +392,7 @@ async function runClaudeJson(
   if (model) args.push("--model", model);
   const { stdout: out } = await execManagedProcess("claude", args, {
     cwd,
+    env: sanitizedEnv({ PWD: cwd }),
     input: prompt,
     signal,
     timeoutMs: PLAN_TIMEOUT_MS,
