@@ -5,6 +5,20 @@ All notable changes to Hoopedorc are recorded here. Format loosely follows
 
 ## Unreleased
 
+### B38 — portable dependency setup and atomic caching
+
+- Node projects now select npm, pnpm, Yarn, or Bun from `packageManager`
+  first and otherwise require one unambiguous lockfile; installs use each
+  manager's frozen mode and report missing tooling before author dispatch.
+- Dependency keys include every monorepo `package.json`, the selected lock,
+  manager/version, Node version, OS, and architecture. Per-key process/file
+  locks serialize identical installs, and successful artifacts are published
+  atomically outside the primary clone before being materialized per worktree.
+- Projects can configure a direct setup command plus literal argument array
+  for non-Node and specialist SDK workflows. It inherits sandbox policy,
+  timeout, and cancellation; Setup & Health reports the resolved tooling, and
+  Apple/Xcode projects fail actionably on non-macOS hosts.
+
 ### B37 — enabled models, live operational settings, and complete validation
 
 - Disabled models can no longer receive a new routed, fallback, validator,

@@ -300,18 +300,61 @@ back off — including for risky changes (DB migrations, new dependencies,
 auth/secret files, out-of-scope edits) — so treat it as a deliberate,
 temporary "trust everything" mode, not a default to leave on.
 
+## Project dependency setup
+
+Before an author starts, Hoopedorc prepares the task worktree's dependencies.
+For Node projects it reads `package.json#packageManager` first; without that
+field, exactly one supported root lockfile must identify npm, pnpm, Yarn, or
+Bun. Ambiguous locks stop the task with a message telling you to set
+`packageManager`, and a missing selected binary names the host or Docker image
+that needs it. Reproducible modes are mandatory:
+
+| Selected manager | Required lock | Install command |
+|---|---|---|
+| npm | `package-lock.json` | `npm ci` |
+| pnpm | `pnpm-lock.yaml` | `pnpm install --frozen-lockfile` |
+| Yarn 2+ | `yarn.lock` | `yarn install --immutable` |
+| Yarn 1 | `yarn.lock` | `yarn install --frozen-lockfile` |
+| Bun | `bun.lock` or `bun.lockb` | `bun install --frozen-lockfile` |
+
+The cache lives beside the primary clone at
+`<project.localPath>-hoopedorc-deps/<fingerprint>`. Its key includes every
+monorepo `package.json`, the selected lock, declared/detected manager version,
+Node version, OS, and architecture. Identical installs share a process and
+filesystem lock; different fingerprints may install concurrently. A failed
+install is deleted, while a successful staging directory becomes visible in
+one atomic rename. Only generated dependency artifacts are retained, and each
+task gets its own materialized copy—Hoopedorc never rewrites the primary
+clone's `package.json` or lockfile and sibling tasks do not share mutable
+`node_modules`.
+
+For SwiftPM, CocoaPods, Python, Rust, .NET, or a specialist SDK, open the
+project's **Advanced → Project setup** fields. Enter the executable separately
+from its arguments; each argument occupies one line and is passed literally,
+so a path containing spaces stays one argument. There is no implicit shell.
+The command is expected to be idempotent and reruns when a recognized stack
+manifest changes. It has a ten-minute timeout, responds to Stop/cancellation,
+and follows the Gate Sandbox policy and project image.
+
+**Setup & Health** shows one line per project with its resolved manager,
+versions, runtime platform, and custom setup target. Fix a red project-setup
+line before pressing Start. Xcode projects and CocoaPods/Xcode setup commands
+are refused on Linux with a direct instruction to use the Mac Hoopedorc
+instance; `sandboxGates: "auto"` uses that Mac's host toolchain because a
+Docker Desktop container is still Linux, while `"required"` must be relaxed
+for the Apple-owned project.
+
 ## Gate sandbox
 
 Gate scripts run the target repo's own `typecheck`/`lint`/`build`/`test` (or
-a project's `testCommand` override) — and `npm ci`/`install` runs whatever
-`postinstall` hooks the repo's `package.json` declares. Both are repo-owned
-code, not Hoopedorc's, so by default (`Settings.sandboxGates: "auto"`) they
+a project's `testCommand` override), and dependency/custom setup can execute
+repo-owned lifecycle code. Both are repo-owned code, not Hoopedorc's, so by
+default (`Settings.sandboxGates: "auto"`) they
 run inside a disposable `docker run --rm` container instead of directly on
 the host whenever a Docker daemon is reachable: the container sees only the
-one task's git worktree (bind-mounted read-write) plus, read-only, the
-project's shared `node_modules` install — not your home directory, not
-Hoopedorc's own database, not any other task's worktree, and none of your
-CLI credentials. No daemon reachable => it transparently falls back to
+one task's git worktree (bind-mounted read-write)—not your home directory,
+Hoopedorc's own database, any other task's worktree, or any CLI credentials.
+No daemon reachable => it transparently falls back to
 running on the host exactly as before, with a one-time log line noting the
 fallback.
 
@@ -329,9 +372,10 @@ Three modes (`Settings.sandboxGates`, a select in Settings → Gate Sandbox):
 Check **Setup & Health**'s "Gate sandbox" line to see which mode a given box
 is actually running in. A non-Node stack needs a different
 `ProjectConfig.gateImage` (Advanced accordion on the project, default
-`"node:22"`) — e.g. a Python repo's `testCommand: "pytest -q"` needs an
-image that actually has `pytest` installed, or it'll fail the same way
-running `pytest` on a machine that never installed it would.
+`"node:22"`)—e.g. a Python repo's setup command `python -m venv .venv` and
+`testCommand: "pytest -q"` need an image that actually has Python/pytest.
+Setup & Health checks the configured setup executable in that image before a
+run, and task preparation still fails closed if the real command cannot start.
 
 ## Scheduled runs
 
@@ -690,6 +734,12 @@ Apple/Xcode projects can't build on Linux, so if you have any of those,
 you'll run a second Hoopedorc instance on your Mac alongside the EC2 box —
 same install steps as above, minus Tailscale Serve/systemd if you'd rather
 just run it in the foreground there.
+
+B38 enforces this placement rather than relying on memory: Setup & Health
+marks an Apple/Xcode project red on EC2, and task preparation refuses to
+dispatch its author there. On the Mac, Apple setup uses the native host
+toolchain in `auto` mode; do not set gate sandboxing to `required` for that
+project because Docker Desktop provides a Linux, not macOS, container.
 
 **One project lives on exactly one box.** Point a project's repo at both
 instances and both will happily schedule and dispatch work against it —

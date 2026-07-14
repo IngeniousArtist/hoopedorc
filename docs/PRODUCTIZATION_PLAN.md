@@ -1685,7 +1685,7 @@ target rules.
 | S10 — CLI credential/environment boundary | done | [#143](https://github.com/IngeniousArtist/hoopedorc/pull/143) |
 | B37 — enabled models, live settings, and complete validation | done | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
 | F48 — per-model effort setting across all model stages | done | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
-| B38 — portable dependency setup and atomic caching | pending | — |
+| B38 — portable dependency setup and atomic caching | done | [#145](https://github.com/IngeniousArtist/hoopedorc/pull/145) |
 | B39 — planning and git durability | pending | — |
 | B40 — complete model-invocation accounting | pending | — |
 | B41 — graceful shutdown and runtime recovery | pending | — |
@@ -5881,6 +5881,21 @@ instance; EC2 does not pretend to execute Apple toolchains.
 install without cache publication, npm/pnpm/Yarn/Bun selection, ambiguous locks,
 missing binary, monorepo manifests, OS/architecture key separation, structured
 custom setup, cancellation, and actionable Setup health output.
+
+**Acceptance evidence (2026-07-14, PR [#145](https://github.com/IngeniousArtist/hoopedorc/pull/145)):**
+the engine suite passed 147/147 and the server suite passed 123/123, including
+real `npm ci`, all four manager command matrices, per-key concurrency, failed
+atomic publication, root and workspace artifact materialization, Yarn PnP,
+structured argv, cancellation, Apple/Linux refusal, API validation, and live
+manager/runtime health. The focused worktree/sandbox run passed 34/34; adapter
+tests passed 12/12; full typecheck, production build, and `git diff --check`
+passed. Browser acceptance at 1280px, 768px, and 375px confirmed literal
+argument editing, inline invalid-state blocking, 40px/focus-visible controls,
+and setup fields contained by their responsive fieldset. The live Setup &
+Health view rendered `Project setup — Hoopedorc Orchestrator` with an actionable
+missing-lockfile correction. The remaining 375px whole-page overflow comes from
+the pre-existing global navigation and remains tracked by U19; the B38 fieldset
+itself stayed within the viewport.
 
 ### B39. Planning and git durability — MEDIUM
 

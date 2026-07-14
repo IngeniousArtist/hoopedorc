@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { execManagedProcess, sanitizedEnv } from "@orc/adapters";
 import type { GateResult, Project, ProjectConfig, Settings, Task } from "@orc/types";
@@ -76,16 +76,24 @@ export class GateRunnerImpl implements GateRunner {
       signal?.throwIfAborted();
       const resolved = await this.sandbox.resolveMode(this.settings?.sandboxGates);
       if (resolved.useSandbox) {
-        // The worktree's node_modules (if any) is a symlink to an absolute
-        // path inside the project's PRIMARY clone (see worktree-manager.ts's
-        // ensureDeps) — the container's mount namespace can't see that path
-        // unless it's bind-mounted too, at the identical path so the symlink
-        // still resolves.
-        const primaryNodeModules = join(project.localPath, "node_modules");
+        // B38 materializes independent dependencies inside each worktree. Keep
+        // compatibility with pre-B38/external node_modules symlinks: Docker
+        // cannot see a sibling target unless it is bind-mounted at the same
+        // host path. Ordinary local directories need no additional mount.
+        let dependencyCache: string | undefined;
+        try {
+          const worktreeNodeModules = join(worktreePath, "node_modules");
+          if (lstatSync(worktreeNodeModules).isSymbolicLink()) {
+            dependencyCache = realpathSync(worktreeNodeModules);
+          }
+        } catch {
+          /* non-Node project, or setup did not create a dependency link */
+        }
         ctx = {
           sandboxed: true,
           image: project.config?.gateImage || DEFAULT_GATE_IMAGE,
-          readOnlyMounts: existsSync(primaryNodeModules) ? [primaryNodeModules] : [],
+          readOnlyMounts:
+            dependencyCache && existsSync(dependencyCache) ? [dependencyCache] : [],
         };
       } else {
         ctx = { sandboxed: false };

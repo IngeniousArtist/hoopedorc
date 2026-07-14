@@ -33,6 +33,23 @@ checks (the target repo's CI, distinct from this app's local gates) report
 `"passed"` or `"none"` (no checks configured); `"failed"`/`"timeout"`
 escalate to a human approval instead of merging.
 
+`ProjectConfig.setupCommand` (B38) is `{ command: string; args: string[] }`.
+The engine passes that exact argument array to a managed process—never an
+implicit shell—before authoring and again only when a recognized dependency
+manifest changes. It shares the gate sandbox/host policy, ten-minute timeout,
+and task cancellation signal. The API bounds the command to 200 characters
+and the array to 100 literal arguments of at most 1000 characters each.
+
+B38's Node setup selects `package.json#packageManager` first, otherwise one
+unambiguous root lockfile (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`,
+`bun.lock`, or `bun.lockb`). It runs npm `ci`, pnpm/Bun
+`install --frozen-lockfile`, Yarn 2+ `install --immutable`, or Yarn 1
+`install --frozen-lockfile`. The immutable cache key covers all monorepo
+`package.json` files, the selected lock, declared and detected manager
+versions, Node version, platform, and architecture. A cache entry becomes
+visible only by atomic rename after a successful install; worktrees receive
+independent materializations, and primary-clone manifests are never rewritten.
+
 `ModelConfig.quota` (F16) declares a subscription's rolling usage window —
 `windowHours` plus at least one of `maxRuns`/`maxCostUsd` (enforced on
 `PUT /api/settings`, a quota with neither set means nothing). When

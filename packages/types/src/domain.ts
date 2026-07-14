@@ -241,6 +241,17 @@ export interface Project {
  * exactly as it did before F9.
  */
 export interface ProjectConfig {
+  /**
+   * B38: optional dependency/bootstrap command for non-Node stacks and
+   * specialist SDKs. It is dispatched directly with an argument array —
+   * never through an implicit shell — and inherits the gate sandbox policy,
+   * timeout, and cancellation signal. Commands should be idempotent because
+   * they run again when a recognized dependency manifest changes.
+   */
+  setupCommand?: {
+    command: string;
+    args: string[];
+  };
   gates?: {
     /**
      * npm script name to run for each gate slot; falls back to the slot's
@@ -304,8 +315,9 @@ export interface ProjectConfig {
    */
   skillHints?: string[];
   /**
-   * F13-P1: Docker image gate scripts and `ensureDeps`'s `npm ci|install` run
-   * inside when `Settings.sandboxGates` isn't "off". Defaults to `"node:22"`
+   * F13-P1/B38: Docker image gate scripts, reproducible Node installs, and
+   * structured project setup run inside when `Settings.sandboxGates` isn't
+   * "off". Defaults to `"node:22"`
    * (`DEFAULT_GATE_IMAGE` in `@orc/engine`'s sandbox.ts). Only matters for
    * non-Node stacks (e.g. a `testCommand` like "pytest -q" needs an image
    * that actually has pytest) — most projects never need to touch this.

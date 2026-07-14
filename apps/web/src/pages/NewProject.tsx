@@ -38,10 +38,10 @@ export function NewProject({
       });
   }, []);
 
-  const scheduleError = projectConfigFormError(configForm);
+  const configError = projectConfigFormError(configForm);
 
   async function createProject() {
-    if (!name || scheduleError) return;
+    if (!name || configError) return;
     setCreating(true);
     setError(null);
     try {
@@ -188,14 +188,14 @@ export function NewProject({
 
         <button
           onClick={createProject}
-          disabled={!name || creating || (!createRepo && !repoUrl) || !!scheduleError}
-          title={scheduleError ?? undefined}
+          disabled={!name || creating || (!createRepo && !repoUrl) || !!configError}
+          title={configError ?? undefined}
           className="rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
         >
           {creating ? "Creating…" : "Create Project →"}
         </button>
-        {scheduleError && (
-          <p className="text-[11px] text-amber-400">{scheduleError}</p>
+        {configError && (
+          <p className="text-[11px] text-amber-400">{configError}</p>
         )}
       </section>
     </div>
