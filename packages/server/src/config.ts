@@ -1,6 +1,14 @@
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { ModelConfig, Settings } from "@orc/types";
+import {
+  modelEffortError,
+  type MergePolicy,
+  type ModelConfig,
+  type ModelId,
+  type Role,
+  type RunnerKind,
+  type Settings,
+} from "@orc/types";
 
 /**
  * Default model roster. The `opencodeModel` strings are verified against
@@ -99,9 +107,9 @@ export const DEFAULT_GUIDELINES = {
 - Sanitize and contain any filesystem path built from user input — never trust a client-supplied path as-is.`,
 };
 
-export function defaultSettings(): Settings {
+function rawDefaultSettings(): Settings {
   return {
-    models: DEFAULT_MODELS,
+    models: DEFAULT_MODELS.map((model) => ({ ...model, roles: [...model.roles] })),
     routing: {
       planner: "claude",
       // Quality-tiered by difficulty, per the webdev coding leaderboard
@@ -159,6 +167,480 @@ export function defaultSettings(): Settings {
     telegram: { enabled: false, botTokenRef: "TELEGRAM_BOT_TOKEN" },
     guidelines: { ...DEFAULT_GUIDELINES },
   };
+}
+
+export class SettingsValidationError extends Error {
+  constructor(
+    public readonly field: string,
+    message: string,
+  ) {
+    super(`${field} ${message}`);
+    this.name = "SettingsValidationError";
+  }
+}
+
+const RUNNERS: RunnerKind[] = ["claude-code", "opencode", "codex"];
+const ROLES: Role[] = [
+  "planner",
+  "frontend",
+  "hard",
+  "medium",
+  "docs",
+  "validator",
+  "updates",
+];
+const MERGE_POLICIES: MergePolicy[] = [
+  "hard_gate_flag_risky",
+  "fully_autonomous",
+  "always_ask",
+];
+const DIFFICULTIES = ["easy", "medium", "hard"] as const;
+const GUIDELINES_MAX_CHARS = 4000;
+
+function record(value: unknown, field: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new SettingsValidationError(field, "must be an object");
+  }
+  return value as Record<string, unknown>;
+}
+
+function boolean(value: unknown, field: string, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  if (typeof value !== "boolean") {
+    throw new SettingsValidationError(field, "must be a boolean");
+  }
+  return value;
+}
+
+function string(
+  value: unknown,
+  field: string,
+  options: { optional?: boolean; nonEmpty?: boolean; max?: number } = {},
+): string | undefined {
+  if (value === undefined || value === null) {
+    if (options.optional) return undefined;
+    throw new SettingsValidationError(field, "must be a string");
+  }
+  if (typeof value !== "string") {
+    throw new SettingsValidationError(field, "must be a string");
+  }
+  if (options.nonEmpty && value.trim().length === 0) {
+    throw new SettingsValidationError(field, "must not be empty");
+  }
+  if (options.max !== undefined && value.length > options.max) {
+    throw new SettingsValidationError(field, `must be at most ${options.max} characters`);
+  }
+  return value;
+}
+
+function finiteNumber(
+  value: unknown,
+  field: string,
+  options: { optional?: boolean; min?: number; max?: number; integer?: boolean; exclusiveMin?: boolean } = {},
+): number | undefined {
+  if (value === undefined || value === null) {
+    if (options.optional) return undefined;
+    throw new SettingsValidationError(field, "must be a number");
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new SettingsValidationError(field, "must be a finite number");
+  }
+  if (options.integer && !Number.isInteger(value)) {
+    throw new SettingsValidationError(field, "must be an integer");
+  }
+  if (
+    options.min !== undefined &&
+    (options.exclusiveMin ? value <= options.min : value < options.min)
+  ) {
+    throw new SettingsValidationError(
+      field,
+      `must be ${options.exclusiveMin ? "greater than" : "at least"} ${options.min}`,
+    );
+  }
+  if (options.max !== undefined && value > options.max) {
+    throw new SettingsValidationError(field, `must be at most ${options.max}`);
+  }
+  return value;
+}
+
+function enumValue<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  field: string,
+): T {
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    throw new SettingsValidationError(field, `must be one of: ${allowed.join(", ")}`);
+  }
+  return value as T;
+}
+
+function optionalString(value: unknown, field: string, max = 512): string | undefined {
+  const result = string(value, field, { optional: true, max });
+  return result === "" ? undefined : result;
+}
+
+function normalizeModel(value: unknown, index: number): ModelConfig {
+  const raw = record(value, `models[${index}]`);
+  const field = (name: string) => `models[${index}].${name}`;
+  const runner = enumValue(raw.runner, RUNNERS, field("runner"));
+  const id = string(raw.id, field("id"), { nonEmpty: true, max: 128 })!.trim() as ModelId;
+  const displayName = string(raw.displayName, field("displayName"), {
+    nonEmpty: true,
+    max: 200,
+  })!.trim();
+  const rolesRaw = raw.roles ?? [];
+  if (!Array.isArray(rolesRaw)) {
+    throw new SettingsValidationError(field("roles"), "must be an array");
+  }
+  const roles = rolesRaw.map((role, roleIndex) =>
+    enumValue(role, ROLES, `${field("roles")}[${roleIndex}]`),
+  );
+  if (new Set(roles).size !== roles.length) {
+    throw new SettingsValidationError(field("roles"), "must not contain duplicates");
+  }
+
+  const effort = optionalString(raw.effort, field("effort"), 64);
+  const effortError = modelEffortError(runner, effort);
+  if (effortError) throw new SettingsValidationError(field("effort"), effortError);
+
+  const model: ModelConfig = {
+    id,
+    displayName,
+    runner,
+    opencodeModel: optionalString(raw.opencodeModel, field("opencodeModel")),
+    claudeModel: optionalString(raw.claudeModel, field("claudeModel")),
+    codexModel: optionalString(raw.codexModel, field("codexModel")),
+    effort,
+    roles,
+    enabled: boolean(raw.enabled, field("enabled"), true),
+    maxConcurrent: finiteNumber(raw.maxConcurrent ?? 1, field("maxConcurrent"), {
+      min: 1,
+      max: 100,
+      integer: true,
+    })!,
+    costPerMInputUsd: finiteNumber(raw.costPerMInputUsd, field("costPerMInputUsd"), {
+      optional: true,
+      min: 0,
+    }),
+    costPerMCachedInputUsd: finiteNumber(
+      raw.costPerMCachedInputUsd,
+      field("costPerMCachedInputUsd"),
+      { optional: true, min: 0 },
+    ),
+    costPerMOutputUsd: finiteNumber(raw.costPerMOutputUsd, field("costPerMOutputUsd"), {
+      optional: true,
+      min: 0,
+    }),
+    monthlyBudgetUsd: finiteNumber(raw.monthlyBudgetUsd, field("monthlyBudgetUsd"), {
+      optional: true,
+      min: 0,
+      exclusiveMin: true,
+    }),
+  };
+
+  if (runner === "opencode" && !model.opencodeModel) {
+    throw new SettingsValidationError(
+      field("opencodeModel"),
+      "is required when runner is opencode",
+    );
+  }
+
+  if (raw.quota !== undefined && raw.quota !== null) {
+    const quota = record(raw.quota, field("quota"));
+    const maxRuns = finiteNumber(quota.maxRuns, `${field("quota")}.maxRuns`, {
+      optional: true,
+      min: 0,
+      exclusiveMin: true,
+      integer: true,
+    });
+    const maxCostUsd = finiteNumber(quota.maxCostUsd, `${field("quota")}.maxCostUsd`, {
+      optional: true,
+      min: 0,
+      exclusiveMin: true,
+    });
+    if (maxRuns === undefined && maxCostUsd === undefined) {
+      throw new SettingsValidationError(
+        field("quota"),
+        "must set at least one of maxRuns or maxCostUsd",
+      );
+    }
+    model.quota = {
+      windowHours: finiteNumber(quota.windowHours, `${field("quota")}.windowHours`, {
+        min: 0,
+        exclusiveMin: true,
+        max: 8760,
+      })!,
+      maxRuns,
+      maxCostUsd,
+    };
+  }
+
+  return model;
+}
+
+/**
+ * B37's single settings contract. Missing fields are migrated from the current
+ * defaults; present invalid fields fail with a precise path. Every settings
+ * read/write path calls this function, so HTTP, Telegram, boot migration and
+ * active runtimes cannot disagree about what a valid policy means.
+ */
+export function normalizeSettings(value: unknown): Settings {
+  const defaults = rawDefaultSettings();
+  const raw = record(value, "settings");
+  const modelsRaw = raw.models ?? defaults.models;
+  if (!Array.isArray(modelsRaw) || modelsRaw.length === 0) {
+    throw new SettingsValidationError("models", "must be a non-empty array");
+  }
+  const models = modelsRaw.map(normalizeModel);
+  const ids = new Set<string>();
+  for (const model of models) {
+    if (ids.has(model.id)) {
+      throw new SettingsValidationError("models", `contains duplicate id "${model.id}"`);
+    }
+    ids.add(model.id);
+  }
+
+  const defaultRouting = defaults.routing;
+  const routingRaw = record(raw.routing ?? defaultRouting, "routing");
+  const byDifficultyRaw = record(
+    routingRaw.byDifficulty ?? defaultRouting.byDifficulty,
+    "routing.byDifficulty",
+  );
+  const validatorsRaw = record(
+    routingRaw.validatorByDifficulty ?? defaultRouting.validatorByDifficulty,
+    "routing.validatorByDifficulty",
+  );
+  const byRoleRaw = record(routingRaw.byRole ?? defaultRouting.byRole, "routing.byRole");
+  const routing: Settings["routing"] = {
+    planner: string(routingRaw.planner ?? defaultRouting.planner, "routing.planner", {
+      nonEmpty: true,
+    }) as ModelId,
+    deconstructor: optionalString(routingRaw.deconstructor, "routing.deconstructor", 128) as
+      | ModelId
+      | undefined,
+    byDifficulty: {
+      easy: string(byDifficultyRaw.easy, "routing.byDifficulty.easy", { nonEmpty: true }) as ModelId,
+      medium: string(byDifficultyRaw.medium, "routing.byDifficulty.medium", { nonEmpty: true }) as ModelId,
+      hard: string(byDifficultyRaw.hard, "routing.byDifficulty.hard", { nonEmpty: true }) as ModelId,
+    },
+    byRole: {},
+    validatorByDifficulty: {
+      easy: string(validatorsRaw.easy, "routing.validatorByDifficulty.easy", { nonEmpty: true }) as ModelId,
+      medium: string(validatorsRaw.medium, "routing.validatorByDifficulty.medium", { nonEmpty: true }) as ModelId,
+      hard: string(validatorsRaw.hard, "routing.validatorByDifficulty.hard", { nonEmpty: true }) as ModelId,
+    },
+  };
+  for (const [role, modelId] of Object.entries(byRoleRaw)) {
+    if (!ROLES.includes(role as Role)) {
+      throw new SettingsValidationError(`routing.byRole.${role}`, "is not a recognized role");
+    }
+    routing.byRole[role as Role] = string(modelId, `routing.byRole.${role}`, {
+      nonEmpty: true,
+    }) as ModelId;
+  }
+  if (routingRaw.fallbacks !== undefined) {
+    if (!Array.isArray(routingRaw.fallbacks)) {
+      throw new SettingsValidationError("routing.fallbacks", "must be an array");
+    }
+    routing.fallbacks = routingRaw.fallbacks.map(
+      (modelId, index) =>
+        string(modelId, `routing.fallbacks[${index}]`, { nonEmpty: true }) as ModelId,
+    );
+    if (new Set(routing.fallbacks).size !== routing.fallbacks.length) {
+      throw new SettingsValidationError("routing.fallbacks", "must not contain duplicates");
+    }
+  }
+
+  const enabledIds = new Set(models.filter((model) => model.enabled).map((model) => model.id));
+  const routingRefs: Array<[string, ModelId | undefined]> = [
+    ["routing.planner", routing.planner],
+    ["routing.deconstructor", routing.deconstructor],
+    ...DIFFICULTIES.flatMap((difficulty) => [
+      [`routing.byDifficulty.${difficulty}`, routing.byDifficulty[difficulty]],
+      [
+        `routing.validatorByDifficulty.${difficulty}`,
+        routing.validatorByDifficulty[difficulty],
+      ],
+    ] as Array<[string, ModelId]>),
+    ...Object.entries(routing.byRole).map(
+      ([role, modelId]) => [`routing.byRole.${role}`, modelId] as [string, ModelId],
+    ),
+    ...(routing.fallbacks ?? []).map(
+      (modelId, index) => [`routing.fallbacks[${index}]`, modelId] as [string, ModelId],
+    ),
+  ];
+  for (const [field, modelId] of routingRefs) {
+    if (!modelId) continue;
+    if (!ids.has(modelId)) {
+      throw new SettingsValidationError(field, `references missing model "${modelId}"`);
+    }
+    if (!enabledIds.has(modelId)) {
+      throw new SettingsValidationError(field, `references disabled model "${modelId}"`);
+    }
+  }
+  for (const difficulty of DIFFICULTIES) {
+    if (routing.byDifficulty[difficulty] === routing.validatorByDifficulty[difficulty]) {
+      throw new SettingsValidationError(
+        `routing.validatorByDifficulty.${difficulty}`,
+        "must differ from the author model for the same difficulty",
+      );
+    }
+  }
+
+  const defaultRisky = defaults.riskyChangeRules;
+  const riskyRaw = record(raw.riskyChangeRules ?? defaultRisky, "riskyChangeRules");
+  const riskyChangeRules: Settings["riskyChangeRules"] = {
+    dbSchema: boolean(riskyRaw.dbSchema, "riskyChangeRules.dbSchema", defaultRisky.dbSchema),
+    newDependencies: boolean(
+      riskyRaw.newDependencies,
+      "riskyChangeRules.newDependencies",
+      defaultRisky.newDependencies,
+    ),
+    authOrSecrets: boolean(
+      riskyRaw.authOrSecrets,
+      "riskyChangeRules.authOrSecrets",
+      defaultRisky.authOrSecrets,
+    ),
+    outOfScopeEdits: boolean(
+      riskyRaw.outOfScopeEdits,
+      "riskyChangeRules.outOfScopeEdits",
+      defaultRisky.outOfScopeEdits,
+    ),
+    destructiveChanges: boolean(
+      riskyRaw.destructiveChanges,
+      "riskyChangeRules.destructiveChanges",
+      true,
+    ),
+  };
+
+  let telegram: Settings["telegram"];
+  if (raw.telegram === undefined || raw.telegram === null) {
+    telegram = defaults.telegram ? { ...defaults.telegram } : undefined;
+  } else {
+    const source = record(raw.telegram, "telegram");
+    const digest = source.digest === undefined
+      ? defaults.telegram?.digest
+      : enumValue(source.digest, ["off", "terminal", "all"] as const, "telegram.digest");
+    telegram = {
+      enabled: boolean(source.enabled, "telegram.enabled", false),
+      botTokenRef: optionalString(source.botTokenRef, "telegram.botTokenRef", 200),
+      botToken: optionalString(source.botToken, "telegram.botToken", 1000),
+      chatId: optionalString(source.chatId, "telegram.chatId", 100),
+      digest,
+      modelAlerts: boolean(source.modelAlerts, "telegram.modelAlerts", true),
+    };
+  }
+
+  let guidelines: Settings["guidelines"];
+  if (raw.guidelines === undefined || raw.guidelines === null) {
+    guidelines = defaults.guidelines ? { ...defaults.guidelines } : undefined;
+  } else {
+    const source = record(raw.guidelines, "guidelines");
+    guidelines = {
+      coding: string(source.coding ?? defaults.guidelines?.coding ?? "", "guidelines.coding", {
+        max: GUIDELINES_MAX_CHARS,
+      }),
+      ux: string(source.ux ?? defaults.guidelines?.ux ?? "", "guidelines.ux", {
+        max: GUIDELINES_MAX_CHARS,
+      }),
+      security: string(
+        source.security ?? defaults.guidelines?.security ?? "",
+        "guidelines.security",
+        { max: GUIDELINES_MAX_CHARS },
+      ),
+    };
+  }
+
+  return {
+    models,
+    routing,
+    mergePolicy: enumValue(
+      raw.mergePolicy ?? defaults.mergePolicy,
+      MERGE_POLICIES,
+      "mergePolicy",
+    ),
+    riskyChangeRules,
+    allowVacuousGates: boolean(
+      raw.allowVacuousGates,
+      "allowVacuousGates",
+      defaults.allowVacuousGates ?? false,
+    ),
+    onboardedAt: optionalString(raw.onboardedAt, "onboardedAt", 100),
+    globalMonthlyBudgetUsd: finiteNumber(raw.globalMonthlyBudgetUsd, "globalMonthlyBudgetUsd", {
+      optional: true,
+      min: 0,
+      exclusiveMin: true,
+    }),
+    confidenceThreshold: finiteNumber(
+      raw.confidenceThreshold ?? defaults.confidenceThreshold,
+      "confidenceThreshold",
+      { min: 0, max: 1 },
+    )!,
+    defaultProjectsDir: optionalString(raw.defaultProjectsDir, "defaultProjectsDir", 4096),
+    telegram,
+    apiToken: optionalString(raw.apiToken, "apiToken", 4096),
+    guidelines,
+    sandboxGates: enumValue(
+      raw.sandboxGates ?? defaults.sandboxGates ?? "auto",
+      ["off", "auto", "required"] as const,
+      "sandboxGates",
+    ),
+    holdWhileAwaitingApproval: boolean(
+      raw.holdWhileAwaitingApproval,
+      "holdWhileAwaitingApproval",
+      false,
+    ),
+  };
+}
+
+/** Deep-merge a partial API/Telegram update into the saved shape, then run it
+ * through the exact same contract used for persisted settings and defaults. */
+export function mergeSettingsUpdate(current: Settings, patch: unknown): Settings {
+  const raw = record(patch, "settings");
+  const routingPatch = raw.routing === undefined ? undefined : record(raw.routing, "routing");
+  const riskyPatch = raw.riskyChangeRules === undefined
+    ? undefined
+    : record(raw.riskyChangeRules, "riskyChangeRules");
+  const telegramPatch = raw.telegram === undefined ? undefined : record(raw.telegram, "telegram");
+  const guidelinesPatch = raw.guidelines === undefined
+    ? undefined
+    : record(raw.guidelines, "guidelines");
+  return normalizeSettings({
+    ...current,
+    ...raw,
+    routing: routingPatch
+      ? {
+          ...current.routing,
+          ...routingPatch,
+          byDifficulty: routingPatch.byDifficulty === undefined
+            ? current.routing.byDifficulty
+            : { ...current.routing.byDifficulty, ...record(routingPatch.byDifficulty, "routing.byDifficulty") },
+          byRole: routingPatch.byRole === undefined
+            ? current.routing.byRole
+            : { ...current.routing.byRole, ...record(routingPatch.byRole, "routing.byRole") },
+          validatorByDifficulty: routingPatch.validatorByDifficulty === undefined
+            ? current.routing.validatorByDifficulty
+            : {
+                ...current.routing.validatorByDifficulty,
+                ...record(routingPatch.validatorByDifficulty, "routing.validatorByDifficulty"),
+              },
+        }
+      : current.routing,
+    riskyChangeRules: riskyPatch
+      ? { ...current.riskyChangeRules, ...riskyPatch }
+      : current.riskyChangeRules,
+    telegram: telegramPatch
+      ? { ...(current.telegram ?? { enabled: false }), ...telegramPatch }
+      : current.telegram,
+    guidelines: guidelinesPatch
+      ? { ...(current.guidelines ?? {}), ...guidelinesPatch }
+      : current.guidelines,
+  });
+}
+
+/** Defaults pass through the same normalizer as every persisted/API value. */
+export function defaultSettings(): Settings {
+  return normalizeSettings(rawDefaultSettings());
 }
 
 const dbPath = process.env.DB_PATH ?? "hoopedorc.db";

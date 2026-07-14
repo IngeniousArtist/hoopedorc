@@ -272,7 +272,13 @@ export interface SchedulerDeps {
   git: GitService;
   gates: GateRunner;
   validator: Validator;
+  /** Initial settings used only for attempt-stable setup objects. Operational
+   * policy must read `getSettings` so a saved web/Telegram change affects an
+   * active runtime without restarting it. */
   settings: Settings;
+  /** B37: validated live settings. If omitted, tests/embedders keep the
+   * historical fixed-snapshot behavior through `settings`. */
+  getSettings?: () => Settings;
   events: EngineEvents;
   /** Resolves an author model id to the adapter that runs it. */
   adapterFor: (modelId: ModelId) => AgentAdapter;

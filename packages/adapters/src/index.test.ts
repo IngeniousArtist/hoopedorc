@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyFailure, OpenCodeAdapter } from "./index.js";
+import {
+  classifyFailure,
+  makeAdapter,
+  modelEffortArgs,
+  OpenCodeAdapter,
+} from "./index.js";
 
 test("classifyFailure recognizes rate-limit-shaped failures", () => {
   assert.equal(classifyFailure("Error: rate limit exceeded, try again later"), "rate_limited");
@@ -19,7 +24,7 @@ test("classifyFailure treats everything else as a plain error", () => {
 test("OpenCode transient retry sleep is cancelled by AbortSignal", async () => {
   const controller = new AbortController();
   let attempts = 0;
-  const adapter = new OpenCodeAdapter("", "test/model", async () => {
+  const adapter = new OpenCodeAdapter("", "test/model", undefined, async () => {
     attempts++;
     return {
       ok: false,
@@ -44,4 +49,52 @@ test("OpenCode transient retry sleep is cancelled by AbortSignal", async () => {
   assert.equal(result.exitReason, "killed");
   assert.equal(attempts, 1);
   assert.ok(Date.now() - started < 500);
+});
+
+test("F48: every runner maps default and explicit effort to the exact CLI arguments", () => {
+  assert.deepEqual(modelEffortArgs("claude-code"), []);
+  assert.deepEqual(modelEffortArgs("claude-code", "high"), ["--effort", "high"]);
+  assert.deepEqual(modelEffortArgs("opencode"), []);
+  assert.deepEqual(modelEffortArgs("opencode", "provider-max"), [
+    "--variant",
+    "provider-max",
+  ]);
+  assert.deepEqual(modelEffortArgs("codex"), []);
+  assert.deepEqual(modelEffortArgs("codex", "xhigh"), [
+    "-c",
+    "model_reasoning_effort=xhigh",
+  ]);
+});
+
+test("F48: unsupported or unsafe effort fails actionably instead of falling back", () => {
+  assert.throws(
+    () => modelEffortArgs("claude-code", "ultra"),
+    /claude-code effort must be one of/,
+  );
+  assert.throws(
+    () => modelEffortArgs("codex", "minimal"),
+    /codex effort must be one of/,
+  );
+  assert.throws(
+    () => modelEffortArgs("opencode", "high;rm -rf"),
+    /safe provider variant/,
+  );
+});
+
+test("B37: makeAdapter refuses a disabled model before any process starts", () => {
+  assert.throws(
+    () =>
+      makeAdapter(
+        {
+          id: "disabled",
+          displayName: "Disabled",
+          runner: "codex",
+          roles: [],
+          enabled: false,
+          maxConcurrent: 1,
+        },
+        "",
+      ),
+    /model disabled is disabled/,
+  );
 });

@@ -167,6 +167,7 @@ export async function testModels(
         return {
           id: cfg.id,
           displayName: cfg.displayName,
+          effort: cfg.effort ?? "default",
           ok: res.ok,
           costUsd: res.costUsd,
           ms: Date.now() - start,
@@ -177,6 +178,7 @@ export async function testModels(
         return {
           id: cfg.id,
           displayName: cfg.displayName,
+          effort: cfg.effort ?? "default",
           ok: false,
           costUsd: 0,
           ms: Date.now() - start,

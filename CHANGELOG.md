@@ -3,6 +3,24 @@
 All notable changes to Hoopedorc are recorded here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### B37 — enabled models, live operational settings, and complete validation
+
+- Disabled models can no longer receive a new routed, fallback, validator,
+  planner, documenter, or health invocation; active calls still finish.
+- Active project runtimes now read routing, budgets, quotas, approval holds,
+  merge policy, notification gates, and manual pricing live from Settings.
+- Defaults, boot migration, repository/API/Telegram writes, and runtime reads
+  now share one field-specific settings normalizer and validator.
+
+### F48 — per-model reasoning effort
+
+- Model Settings now configure Claude Code `--effort`, OpenCode `--variant`,
+  and Codex `model_reasoning_effort` consistently across every model stage.
+- Run records, logs, task history, model-test results, and model health expose
+  the resolved effort; runner changes clear incompatible values.
+
 ## [0.6.0] — 2026-07-14
 
 Part 9 of `docs/PRODUCTIZATION_PLAN.md` is complete as of this tag: an

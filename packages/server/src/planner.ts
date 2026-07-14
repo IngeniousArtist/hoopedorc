@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execManagedProcess, sanitizedEnv } from "@orc/adapters";
+import { execManagedProcess, modelEffortArgs, sanitizedEnv } from "@orc/adapters";
 import type { Difficulty, PlanChatMessage, Role, Settings } from "@orc/types";
 import { ENV } from "./config.js";
 
@@ -32,6 +32,8 @@ export interface PlannerModel {
    *  id; omitted => CLI default (claude-code/codex only — opencode always
    *  requires an explicit model, enforced where this is constructed). */
   model?: string;
+  /** Attempt-stable effort/variant resolved from the routed ModelConfig. */
+  effort?: string;
   /** F45: shared `opencode serve` URL (ENV.opencodeBaseUrl) — only
    *  meaningful when runner === "opencode". Empty/unset runs opencode
    *  locally instead of attaching to a shared server. */
@@ -64,7 +66,11 @@ export function resolvePlannerModel(
       ? (settings.routing.deconstructor ?? settings.routing.planner)
       : settings.routing.planner;
   const cfg = settings.models.find((m) => m.id === routedId);
-  if (cfg?.runner === "codex") return { runner: "codex", model: cfg.codexModel };
+  if (!cfg) throw new Error(`planner routing references missing model "${routedId}"`);
+  if (!cfg.enabled) throw new Error(`planner model "${cfg.displayName}" is disabled`);
+  if (cfg.runner === "codex") {
+    return { runner: "codex", model: cfg.codexModel, effort: cfg.effort };
+  }
   if (cfg?.runner === "opencode") {
     if (!cfg.opencodeModel) {
       const field = tier === "deconstruct" && settings.routing.deconstructor
@@ -76,9 +82,18 @@ export function resolvePlannerModel(
           `to a different model`,
       );
     }
-    return { runner: "opencode", model: cfg.opencodeModel, opencodeBaseUrl: ENV.opencodeBaseUrl };
+    return {
+      runner: "opencode",
+      model: cfg.opencodeModel,
+      effort: cfg.effort,
+      opencodeBaseUrl: ENV.opencodeBaseUrl,
+    };
   }
-  return { runner: "claude-code", model: cfg?.claudeModel ?? ENV.plannerModel };
+  return {
+    runner: "claude-code",
+    model: cfg.claudeModel ?? ENV.plannerModel,
+    effort: cfg.effort,
+  };
 }
 
 /** Display label for the plan-session markdown's "Planner model:" line —
@@ -87,9 +102,10 @@ export function resolvePlannerModel(
  *  non-claude-code-routed planner doesn't render as a bare, ambiguous
  *  model id. */
 export function plannerModelLabel(pm: PlannerModel): string {
-  if (pm.runner === "codex") return `codex:${pm.model ?? "default"}`;
-  if (pm.runner === "opencode") return `opencode:${pm.model ?? "default"}`;
-  return pm.model ?? "claude";
+  const effort = pm.effort ? ` [effort: ${pm.effort}]` : " [effort: CLI default]";
+  if (pm.runner === "codex") return `codex:${pm.model ?? "default"}${effort}`;
+  if (pm.runner === "opencode") return `opencode:${pm.model ?? "default"}${effort}`;
+  return `${pm.model ?? "claude"}${effort}`;
 }
 
 export interface PlannedTask {
@@ -382,6 +398,7 @@ async function runClaudeJson(
   prompt: string,
   cwd: string,
   model?: string,
+  effort?: string,
   signal?: AbortSignal,
 ): Promise<ClaudeJsonResult> {
   // Prompt goes on stdin, not argv: a long planning chat (full transcript +
@@ -390,6 +407,7 @@ async function runClaudeJson(
   // from stdin (verified against the real CLI).
   const args = ["-p", "--output-format", "json"];
   if (model) args.push("--model", model);
+  args.push(...modelEffortArgs("claude-code", effort));
   const { stdout: out } = await execManagedProcess("claude", args, {
     cwd,
     env: sanitizedEnv({ PWD: cwd }),
@@ -426,6 +444,7 @@ async function runCodexJson(
   prompt: string,
   cwd: string,
   model?: string,
+  effort?: string,
   outputSchema?: object,
   signal?: AbortSignal,
 ): Promise<ClaudeJsonResult> {
@@ -469,6 +488,7 @@ async function runCodexJson(
       "--skip-git-repo-check",
     ];
     if (model) args.push("-m", model);
+    args.push(...modelEffortArgs("codex", effort));
     if (schemaFile) args.push("--output-schema", schemaFile);
 
     try {
@@ -515,12 +535,14 @@ async function runOpencodeJson(
   prompt: string,
   cwd: string,
   model: string,
+  effort: string | undefined,
   opencodeBaseUrl: string,
   signal?: AbortSignal,
 ): Promise<ClaudeJsonResult> {
     // Prompt on stdin, not argv — same argv-cap reasoning as every other
     // planner/adapter spawn in this codebase.
     const args = ["run", "-m", model, "--format", "json", "--dir", cwd];
+    args.push(...modelEffortArgs("opencode", effort));
     if (opencodeBaseUrl) args.push("--attach", opencodeBaseUrl);
 
     const { stdout } = await execManagedProcess("opencode", args, {
@@ -560,7 +582,14 @@ function runPlannerJson(
   signal?: AbortSignal,
 ): Promise<ClaudeJsonResult> {
   if (plannerModel.runner === "codex") {
-    return runCodexJson(prompt, cwd, plannerModel.model, outputSchema, signal);
+    return runCodexJson(
+      prompt,
+      cwd,
+      plannerModel.model,
+      plannerModel.effort,
+      outputSchema,
+      signal,
+    );
   }
   if (plannerModel.runner === "opencode") {
     if (!plannerModel.model) {
@@ -570,11 +599,12 @@ function runPlannerJson(
       prompt,
       cwd,
       plannerModel.model,
+      plannerModel.effort,
       plannerModel.opencodeBaseUrl ?? "",
       signal,
     );
   }
-  return runClaudeJson(prompt, cwd, plannerModel.model, signal);
+  return runClaudeJson(prompt, cwd, plannerModel.model, plannerModel.effort, signal);
 }
 
 /**

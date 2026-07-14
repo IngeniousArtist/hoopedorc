@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENV } from "../config";
+import { ENV, normalizeSettings } from "../config";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -60,8 +60,21 @@ export function initDb(path: string = ENV.dbPath): Db {
     // cached input bill at different rates).
     "ALTER TABLE runs ADD COLUMN tokens_cached INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE costs ADD COLUMN tokens_cached INTEGER NOT NULL DEFAULT 0",
+    // F48: attempt-stable CLI effort used for this run (`default` when the
+    // model config left effort unset).
+    "ALTER TABLE runs ADD COLUMN effort TEXT",
   ]) {
     try { db.exec(col); } catch { /* column already exists */ }
+  }
+  // B37: migrate every historical settings blob through the current deep
+  // defaults and reject corrupt persisted policy at boot instead of trusting
+  // it until an arbitrary runtime path crashes later.
+  const settingsRow = db.prepare("SELECT json FROM settings WHERE id = 1").get() as
+    | { json: string }
+    | undefined;
+  if (settingsRow) {
+    const normalized = normalizeSettings(JSON.parse(settingsRow.json) as unknown);
+    db.prepare("UPDATE settings SET json = ? WHERE id = 1").run(JSON.stringify(normalized));
   }
   return db;
 }

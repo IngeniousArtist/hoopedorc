@@ -14,6 +14,7 @@ import type {
   Task,
 } from "@orc/types";
 import type { Db } from "./index";
+import { normalizeSettings } from "../config";
 
 function json<T>(raw: unknown): T {
   if (typeof raw === "string") return JSON.parse(raw) as T;
@@ -521,6 +522,7 @@ function mapRun(row: Record<string, unknown>): Run {
     projectId: row.project_id ? asStr(row.project_id) : "",
     taskId: asStr(row.task_id),
     model: asStr(row.model) as Run["model"],
+    effort: row.effort ? asStr(row.effort) : undefined,
     attempt: Number(row.attempt),
     status: asStr(row.status) as Run["status"],
     startedAt: asStr(row.started_at),
@@ -553,13 +555,14 @@ export function createRun(
 ): Run {
   const id = r.id ?? crypto.randomUUID();
   db.prepare(
-    `INSERT INTO runs (id, project_id, task_id, model, attempt, status, started_at, ended_at, exit_reason, cost_usd, tokens_in, tokens_out, tokens_cached)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO runs (id, project_id, task_id, model, effort, attempt, status, started_at, ended_at, exit_reason, cost_usd, tokens_in, tokens_out, tokens_cached)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     r.projectId,
     r.taskId,
     r.model,
+    r.effort ?? null,
     r.attempt,
     r.status,
     r.startedAt,
@@ -589,6 +592,7 @@ export function updateRun(
     tokensIn: "tokens_in",
     tokensOut: "tokens_out",
     tokensCached: "tokens_cached",
+    effort: "effort",
   };
 
   for (const [key, col] of Object.entries(colMap)) {
@@ -1343,13 +1347,14 @@ export function getSettings(db: Db): Settings | null {
   const row = db.prepare("SELECT json FROM settings WHERE id = 1").get() as
     | { json: string }
     | undefined;
-  return row ? json<Settings>(row.json) : null;
+  return row ? normalizeSettings(json<unknown>(row.json)) : null;
 }
 
-export function upsertSettings(db: Db, s: Settings): Settings {
+export function upsertSettings(db: Db, s: unknown): Settings {
+  const normalized = normalizeSettings(s);
   db.prepare(
     `INSERT INTO settings (id, json) VALUES (1, ?)
      ON CONFLICT(id) DO UPDATE SET json = excluded.json`,
-  ).run(JSON.stringify(s));
+  ).run(JSON.stringify(normalized));
   return getSettings(db)!;
 }
