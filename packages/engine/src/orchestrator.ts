@@ -197,6 +197,13 @@ export class Orchestrator implements Scheduler {
    *  logged, so a multi-second hold doesn't re-emit the same warn on every
    *  ~250ms poll. Reset the moment the pending approval clears. */
   private holdForApprovalWarned = false;
+  /** B32: true once the run has fired its one onModelTrouble("quota_wait")
+   *  notification for the CURRENT stall — every ready task's whole fallback
+   *  chain is cooldown/quota-blocked (both time-bounded; they clear on
+   *  their own) and nothing is active, so the loop is polling instead of
+   *  winding down. Reset the moment dispatch succeeds again, so a later,
+   *  separate stall still gets its own notification. */
+  private quotaWaitNotified = false;
 
   constructor(private readonly deps: SchedulerDeps) {}
 
@@ -232,6 +239,40 @@ export class Orchestrator implements Scheduler {
     if (prev) this.decModel(prev);
     this.incModel(next);
     this.runningModel.set(taskId, next);
+  }
+
+  /**
+   * B32: when a ready task's assigned model is cooldown- or quota-blocked —
+   * both are TIME-BOUNDED (a cooldown clears in minutes, a quota window
+   * rolls over on its own) — walk the task's fallback chain for a model
+   * that's dispatchable RIGHT NOW rather than just holding the task until
+   * its own assigned model frees up. Every candidate (including the
+   * assigned model itself, skipped as already known-blocked) is checked
+   * against budget/cooldown/quota/capacity exactly like the normal dispatch
+   * path — a fallback that's ALSO blocked is not a real fallback. Returns
+   * `undefined` when nothing in the chain is currently dispatchable, so the
+   * caller falls through to the existing hold-and-wait behavior. Budget is
+   * deliberately excluded as a TRIGGER for this search (only consulted
+   * per-candidate) — a spend cap is a human decision, and project/global
+   * budgets block every model equally, so there's nothing to fall back to.
+   */
+  private resolveDispatchModel(task: Task): ModelId | undefined {
+    const chain = buildFallbackChain(
+      task.assignedModel,
+      task.difficulty,
+      this.deps.settings.routing,
+    );
+    for (const model of chain) {
+      if (model === task.assignedModel) continue; // already known blocked
+      const cfg = this.deps.settings.models.find((m) => m.id === model);
+      if (!cfg) continue;
+      if (this.deps.checkBudget?.(model)) continue;
+      if (this.deps.checkModelCooldown?.(model)) continue;
+      if (this.deps.checkModelQuota?.(model)) continue;
+      if (this.getModelActive(model) >= cfg.maxConcurrent) continue;
+      return model;
+    }
+    return undefined;
   }
 
   /**
@@ -307,6 +348,7 @@ export class Orchestrator implements Scheduler {
     this.quotaBlockedWarned.clear();
     this.missingModelWarned.clear();
     this.holdForApprovalWarned = false;
+    this.quotaWaitNotified = false;
 
     // Orphan recovery: this Orchestrator instance starts with empty
     // activeTaskIds, so any task already "in_progress" or "in_review" was
@@ -414,6 +456,17 @@ export class Orchestrator implements Scheduler {
       // dispatched and nothing of mine is active" break below would end the
       // run right when the other project's task is about to free up the slot.
       let blockedByCapacity = false;
+      // B32: true if a ready task (and its ENTIRE fallback chain) was held
+      // back purely by TIME-BOUNDED blocks — cooldown or quota, both of
+      // which clear on their own — with no dispatchable fallback found.
+      // Like blockedByCapacity, this keeps the loop polling instead of
+      // winding the run down: a run that hits a subscription's usage window
+      // should wait the few minutes/hours for it to clear, not silently end
+      // for the night. `timeBoundedExample` names one such task/model so the
+      // one-time onModelTrouble notification below has something concrete
+      // to report.
+      let blockedByTimeBounded = false;
+      let timeBoundedExample: { task: Task; model: ModelId; detail: string } | undefined;
       for (const task of ready) {
         if (this.paused) break;
         if (this.activeTaskIds.has(task.id)) continue;
@@ -475,75 +528,130 @@ export class Orchestrator implements Scheduler {
         }
         this.budgetBlockedWarned.delete(task.id);
 
-        // F6: skip (don't fail) a task whose assigned model is cooling down
-        // from a rate-limit-shaped failure — same "hold, don't burn an
-        // attempt" treatment as the budget guard above.
+        // F6/F16: a task whose assigned model is cooling down (rate-limit
+        // shaped failure) or has hit its configured subscription quota is
+        // held, not failed — but B32: unlike the budget guard above, both
+        // of these are TIME-BOUNDED (a cooldown clears in minutes, a quota
+        // window rolls over on its own), so before just holding the task,
+        // try the rest of its fallback chain for a model that's
+        // dispatchable RIGHT NOW.
         const cooldownMsg = this.deps.checkModelCooldown?.(task.assignedModel) ?? null;
-        if (cooldownMsg) {
-          if (!this.cooldownBlockedWarned.has(task.id)) {
-            this.cooldownBlockedWarned.add(task.id);
-            this.emit(
-              "warn",
-              "engine",
-              `Model cooling down, not dispatching: ${cooldownMsg}`,
-              task.id,
-            );
-          }
-          continue;
-        }
-        this.cooldownBlockedWarned.delete(task.id);
-
-        // F16: skip (don't fail) a task whose assigned model has hit its
-        // configured subscription quota — same "hold, don't burn an
-        // attempt" treatment as budget/cooldown above.
         const quotaMsg = this.deps.checkModelQuota?.(task.assignedModel) ?? null;
-        if (quotaMsg) {
-          if (!this.quotaBlockedWarned.has(task.id)) {
-            this.quotaBlockedWarned.add(task.id);
+        let dispatchModel = task.assignedModel;
+
+        if (cooldownMsg || quotaMsg) {
+          const fallback = this.resolveDispatchModel(task);
+          if (fallback) {
+            dispatchModel = fallback;
+            const reason = cooldownMsg ?? quotaMsg!;
             this.emit(
               "warn",
               "engine",
-              `Model quota reached, not dispatching: ${quotaMsg}`,
+              `Assigned model "${task.assignedModel}" blocked (${reason}) — dispatching on fallback ${fallback}`,
               task.id,
             );
-          }
-          continue;
-        }
-        this.quotaBlockedWarned.delete(task.id);
-
-        const active = this.getModelActive(task.assignedModel);
-        if (active >= cfg.maxConcurrent) {
-          blockedByCapacity = true;
-          if (!this.capacityBlockedWarned.has(task.id)) {
-            this.capacityBlockedWarned.add(task.id);
-            this.emit(
-              "warn",
-              "engine",
-              `Model at capacity (in use by another task or project), holding: ${task.assignedModel}`,
-              task.id,
+            this.notifyModelTrouble(
+              task,
+              fallback,
+              "fallback",
+              `Switched to fallback model at dispatch time (${reason})`,
             );
+          } else {
+            blockedByTimeBounded = true;
+            if (cooldownMsg && !this.cooldownBlockedWarned.has(task.id)) {
+              this.cooldownBlockedWarned.add(task.id);
+              this.emit(
+                "warn",
+                "engine",
+                `Model cooling down, not dispatching: ${cooldownMsg}`,
+                task.id,
+              );
+            }
+            if (quotaMsg && !this.quotaBlockedWarned.has(task.id)) {
+              this.quotaBlockedWarned.add(task.id);
+              this.emit(
+                "warn",
+                "engine",
+                `Model quota reached, not dispatching: ${quotaMsg}`,
+                task.id,
+              );
+            }
+            timeBoundedExample ??= { task, model: task.assignedModel, detail: cooldownMsg ?? quotaMsg! };
+            continue;
           }
-          continue;
         }
-        this.capacityBlockedWarned.delete(task.id);
+        if (!cooldownMsg) this.cooldownBlockedWarned.delete(task.id);
+        if (!quotaMsg) this.quotaBlockedWarned.delete(task.id);
 
-        this.incModel(task.assignedModel);
-        this.runningModel.set(task.id, task.assignedModel);
+        // The shared per-model concurrency cap only needs checking here for
+        // the ORIGINAL assigned model — a fallback candidate chosen by
+        // resolveDispatchModel above has already passed this same check
+        // against its own maxConcurrent.
+        if (dispatchModel === task.assignedModel) {
+          const active = this.getModelActive(task.assignedModel);
+          if (active >= cfg.maxConcurrent) {
+            blockedByCapacity = true;
+            if (!this.capacityBlockedWarned.has(task.id)) {
+              this.capacityBlockedWarned.add(task.id);
+              this.emit(
+                "warn",
+                "engine",
+                `Model at capacity (in use by another task or project), holding: ${task.assignedModel}`,
+                task.id,
+              );
+            }
+            continue;
+          }
+          this.capacityBlockedWarned.delete(task.id);
+        }
+
+        this.incModel(dispatchModel);
+        this.runningModel.set(task.id, dispatchModel);
         this.activeTaskIds.add(task.id);
         activeScopePaths.push(...task.scopePaths);
         dispatched++;
 
-        this.executeTask(project, task).finally(() => {
+        this.executeTask(project, task, dispatchModel).finally(() => {
           // Decrement whichever model the task was last running on (fallback
-          // escalation may have switched it from task.assignedModel).
-          const ran = this.runningModel.get(task.id) ?? task.assignedModel;
+          // escalation may have switched it further from dispatchModel).
+          const ran = this.runningModel.get(task.id) ?? dispatchModel;
           this.decModel(ran);
           this.runningModel.delete(task.id);
           this.activeTaskIds.delete(task.id);
         });
       }
 
-      if (dispatched === 0 && (this.activeTaskIds.size > 0 || blockedByCapacity || pendingApproval)) {
+      // B32: fire the one-time "run is waiting on a model's cooldown/quota
+      // window" notification exactly when the run would otherwise be about
+      // to wind down for this reason alone (nothing active, no capacity/
+      // approval hold also in play) — not on every ~250ms poll while it
+      // keeps waiting.
+      if (
+        blockedByTimeBounded &&
+        dispatched === 0 &&
+        this.activeTaskIds.size === 0 &&
+        !blockedByCapacity &&
+        !pendingApproval &&
+        !this.quotaWaitNotified &&
+        timeBoundedExample
+      ) {
+        this.quotaWaitNotified = true;
+        this.notifyModelTrouble(
+          timeBoundedExample.task,
+          timeBoundedExample.model,
+          "quota_wait",
+          `Run is waiting for ${timeBoundedExample.model}'s cooldown/quota window — ${timeBoundedExample.detail}`,
+        );
+      }
+      if (!blockedByTimeBounded) this.quotaWaitNotified = false;
+
+      if (
+        dispatched === 0 &&
+        (this.activeTaskIds.size > 0 ||
+          blockedByCapacity ||
+          blockedByTimeBounded ||
+          pendingApproval)
+      ) {
         await new Promise((r) => setTimeout(r, 250));
         continue;
       }
@@ -637,7 +745,7 @@ export class Orchestrator implements Scheduler {
   private notifyModelTrouble(
     task: Task,
     model: ModelId,
-    event: "rate_limit_wait" | "fallback" | "exhausted",
+    event: "rate_limit_wait" | "fallback" | "exhausted" | "quota_wait",
     detail: string,
   ): void {
     this.deps.events.onModelTrouble?.({
@@ -702,6 +810,13 @@ export class Orchestrator implements Scheduler {
   private async executeTask(
     project: Project,
     task: Task,
+    // B32: dispatch-time fallback (start()'s dispatch loop already found
+    // this model dispatchable when task.assignedModel was cooldown/quota-
+    // blocked) — the in-run escalation chain below continues from wherever
+    // this model sits in the chain instead of always starting at index 0.
+    // Defaults to task.assignedModel (today's behavior) for every other
+    // caller (runTask's manual dispatch, and the normal no-block path).
+    startModel: ModelId = task.assignedModel,
   ): Promise<void> {
     this.emit("info", "engine", `Starting: ${task.title}`, task.id);
 
@@ -717,8 +832,8 @@ export class Orchestrator implements Scheduler {
       task.difficulty,
       this.deps.settings.routing,
     );
-    let fallbackIdx = 0;
-    let currentModel = fallbackChain[0]!;
+    let fallbackIdx = Math.max(0, fallbackChain.indexOf(startModel));
+    let currentModel = fallbackChain[fallbackIdx]!;
 
     try {
       const { branch, path } = await this.deps.worktrees.create(

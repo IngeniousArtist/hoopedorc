@@ -91,7 +91,7 @@ export interface ModelTroubleNotification {
   projectName: string;
   taskTitle: string;
   model: string;
-  event: "rate_limit_wait" | "fallback" | "exhausted";
+  event: "rate_limit_wait" | "fallback" | "exhausted" | "quota_wait";
   detail: string;
 }
 
