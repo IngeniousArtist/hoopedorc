@@ -5084,6 +5084,45 @@ contain the new blocks. Live: a deliberately destructive task ("delete
 the src directory") on a scratch repo gets held for approval under
 `fully_autonomous` with the reason named, on both web and Telegram.
 
+**S8 — done (PR [#129](https://github.com/IngeniousArtist/hoopedorc/pull/129)).**
+`detectDestructiveChanges` (orchestrator.ts) implements all four
+detection classes from the spec, fed by two new `WorktreeManager`
+methods (`changedFilesWithStatus` via `git diff --name-status`,
+`diffText`, both real git plumbing, no shortcuts). `canAutoMerge` runs
+the check FIRST — before `mergePolicy === "fully_autonomous"`'s early
+return — gated by `riskyChangeRules.destructiveChanges` (`!== false`,
+so settings persisted before this field existed default to enabled);
+its return type grew a `riskyReasons: string[]` so
+`resolveMergeOutcome`'s approval message names the tripped reasons
+verbatim instead of the generic risky-change copy (the other,
+pre-existing risky-rule trips keep that generic message — out of S8's
+stated scope). Fixed (non-operator-editable) blocks added to both
+prompts: validator.ts's `DESTRUCTIVE_CHANGES_BLOCK` instructs `escalate`
+never `approve` for an unrequired destructive change found in the diff;
+guidelines.ts's `SAFETY_GUARDRAILS_BLOCK` tells every author not to
+delete unrelated files, write destructive migrations/data-wipes, or
+touch credentials unless the task requires it. Settings UI: new
+"Destructive changes" checkbox in Risky Change Rules with copy stating
+it applies even under Fully Autonomous. Verified: 108/108 engine tests
+(23 new — 10 detection-pattern unit tests each with a near-miss
+negative including the plan's own `DELETE FROM x WHERE id = ?` example,
+3 `canAutoMerge`-level tests covering all three stated acceptance cases,
+1 author-prompt content test, plus `fakeDeps`'/`gate-runner.test.ts`'s
+fake `WorktreeManager`s updated with clean-default implementations of
+the two new interface methods since `canAutoMerge` now unconditionally
+consults them), 83/83 server, 4/4 adapters, typecheck + build green.
+**Live-verified the real git plumbing** (not just mocked tests): built
+a real scratch git repo, made a destructive change on a branch (deleted
+a migration file + added a `DROP TABLE` line), ran the actual
+`WorktreeManagerImpl` methods against it and fed the real output into
+`detectDestructiveChanges` — correctly flagged both; a second, clean
+branch (an unrelated added component) correctly produced zero reasons.
+**Still owed**: the plan's own live acceptance line (a deliberately
+destructive task on a scratch repo, verified end-to-end through a real
+autonomous run held for approval on both web and Telegram) — needs a
+live model run to exercise the full pipeline, not just the isolated git
++ detection logic this session verified directly.
+
 ### F44. Automode notification parity — model trouble & requeues visible in the web UI — MEDIUM
 
 **Where:** `packages/server/src/engine-runner.ts` (`onModelTrouble`
