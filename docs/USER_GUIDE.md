@@ -187,6 +187,26 @@ going on a always-on box.
   agent itself is tracked as future work (F13 phases 2/3 in
   `docs/specs/sandbox.md`), not built yet.
 
+## Notifications
+
+Three channels surface different things — none of them shows everything, so
+it's worth knowing which to check for what:
+
+| Event | Web bell (Notifications) | Telegram |
+|---|---|---|
+| Approval needed (risky change, escalation, `always_ask`) | ✅ always | ✅ always, with inline Approve/Reject buttons |
+| Model trouble — rate-limit wait, fallback switch, exhausted chain, or a run-wide cooldown/quota stall (`quota_wait`) | ✅ always, one entry per task+event type per run | ✅ if Settings → Telegram → "Alert me when a model hits trouble" is checked (default on) |
+| A run ends without finishing (`paused`/`failed`, not `completed`) | ✅ one entry naming the blocked tasks and why | ✅ as part of the end-of-run digest |
+| Budget threshold crossed (50%/80%) | ✅ | ✅ |
+| Task status changes (in progress → in review → done, etc.) | — (see the Board itself) | Only if `Settings → Telegram → Digest` is `"all"` (default `"terminal"`, which is done/failed only) |
+
+If you want to watch a run's step-by-step progress — including "a task is
+now being validated" — from your phone rather than the app, set
+`Settings → Telegram → Digest` to **"all"**; the web UI doesn't need this
+setting since you can just watch the Board directly. Browser notifications
+(see above) mirror a subset of the bell's entries while the tab is hidden;
+Telegram is still the reliable channel for phones.
+
 ## Fallbacks, pricing, and cleanup
 
 - **Fallback models (Settings → Routing → Fallback 1/2).** When a task's
