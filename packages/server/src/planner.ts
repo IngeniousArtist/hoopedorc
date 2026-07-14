@@ -800,14 +800,21 @@ export function flattenRawTasks(raw: unknown[]): Record<string, unknown>[] {
   const isPlainObject = (v: unknown): v is Record<string, unknown> =>
     typeof v === "object" && v !== null && !Array.isArray(v);
 
-  const topLevel = raw.filter(isPlainObject);
-
-  // originalTopLevelIndex -> its new index in the flattened output, so a
-  // sibling's dependsOn (which only ever references OTHER top-level tasks)
-  // can be corrected for the children spliced in ahead of it.
-  const remap: number[] = [];
+  // rawIndex -> its new index in the flattened output (undefined for a
+  // dropped non-object entry), so a sibling's dependsOn — which references
+  // positions in the model's own emitted array, dropped garbage included —
+  // is corrected for BOTH shifts this function introduces: children spliced
+  // in ahead of it, and non-object entries dropped before it. Keying this by
+  // raw index (not filtered position) is what keeps a dependency declared
+  // past a dropped entry pointing at the task it meant instead of the one
+  // that slid into its slot.
+  const remap: (number | undefined)[] = [];
   let cursor = 0;
-  for (const entry of topLevel) {
+  for (const entry of raw) {
+    if (!isPlainObject(entry)) {
+      remap.push(undefined);
+      continue;
+    }
     remap.push(cursor);
     const nested = Array.isArray(entry.subtasks)
       ? entry.subtasks
@@ -818,7 +825,8 @@ export function flattenRawTasks(raw: unknown[]): Record<string, unknown>[] {
   }
 
   const flat: Record<string, unknown>[] = [];
-  for (const entry of topLevel) {
+  for (const entry of raw) {
+    if (!isPlainObject(entry)) continue;
     const { subtasks, children, dependsOn, ...parentFields } = entry;
     const remappedDependsOn = Array.isArray(dependsOn)
       ? dependsOn
@@ -884,7 +892,28 @@ export function parsePlanOutput(
   }
 
   const flattened = flattenRawTasks(parsed.tasks);
-  let candidates = flattened.filter((t) => !isEmptyTaskLike(t));
+
+  // Dropping an empty entry shifts every later index, so surviving tasks'
+  // dependsOn must be remapped through that shift (same reasoning as
+  // flattenRawTasks' own remap) — otherwise a dependency declared past a
+  // dropped slot silently lands on whichever task slid into it. A reference
+  // TO a dropped task is itself dropped.
+  const emptyRemap: (number | undefined)[] = [];
+  let keptCount = 0;
+  for (const t of flattened) emptyRemap.push(isEmptyTaskLike(t) ? undefined : keptCount++);
+
+  let candidates = flattened
+    .filter((t) => !isEmptyTaskLike(t))
+    .map((t) =>
+      Array.isArray(t.dependsOn)
+        ? {
+            ...t,
+            dependsOn: t.dependsOn
+              .map((n) => (typeof n === "number" ? emptyRemap[n] : undefined))
+              .filter((n): n is number => typeof n === "number"),
+          }
+        : t,
+    );
   const droppedEmpty = flattened.length - candidates.length;
   if (droppedEmpty > 0) {
     onWarn(`planner: dropped ${droppedEmpty} task(s) with no title or description`);

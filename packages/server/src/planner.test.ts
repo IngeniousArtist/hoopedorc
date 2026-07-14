@@ -131,6 +131,24 @@ test("flattenRawTasks: drops non-object entries", () => {
   assert.equal(flat.length, 1);
 });
 
+test("flattenRawTasks: remaps dependsOn across a dropped non-object entry", () => {
+  const raw = [
+    { title: "A", description: "a" },
+    "garbage", // original index 1 — dropped
+    { title: "C", description: "c" }, // original index 2
+    { title: "D", description: "d", dependsOn: [2, 1] }, // depends on C; the garbage ref is dropped
+  ];
+  const flat = flattenRawTasks(raw);
+  assert.deepEqual(
+    flat.map((t) => t.title),
+    ["A", "C", "D"],
+  );
+  // D's [2] must follow C to its post-drop index (1), not land on D itself
+  // (which now occupies the OLD index 2); the reference to the dropped
+  // garbage entry disappears entirely.
+  assert.deepEqual(flat[2]!.dependsOn, [1]);
+});
+
 // F46: garbage entries (no title AND no description) are dropped rather
 // than materializing as a blank task on the Board.
 test("parsePlanOutput drops tasks with no title or description", () => {
@@ -146,6 +164,29 @@ test("parsePlanOutput drops tasks with no title or description", () => {
   const out = parsePlanOutput(text, "proj");
   assert.equal(out.tasks.length, 1);
   assert.equal(out.tasks[0]!.title, "Real task");
+});
+
+test("parsePlanOutput remaps dependsOn across a dropped empty task", () => {
+  const text = JSON.stringify({
+    prd: "p",
+    agentsMd: "",
+    tasks: [
+      { title: "A", description: "a" },
+      { title: "", description: "" }, // index 1 — dropped
+      { title: "C", description: "c" }, // index 2 -> 1 after the drop
+      { title: "D", description: "d" },
+      { title: "E", description: "e", dependsOn: [2, 1] }, // depends on C; the empty ref is dropped
+    ],
+  });
+  const out = parsePlanOutput(text, "proj");
+  assert.deepEqual(
+    out.tasks.map((t) => t.title),
+    ["A", "C", "D", "E"],
+  );
+  // E's [2] must follow C to its post-drop index (1) instead of silently
+  // landing on D (which slid into the old index 2); the reference to the
+  // dropped empty task disappears entirely.
+  assert.deepEqual(out.tasks[3]!.dependsOn, [1]);
 });
 
 test("parsePlanOutput throws when every task is empty (routes to B31's retry)", () => {

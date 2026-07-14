@@ -95,9 +95,36 @@ const DESTRUCTIVE_SQL = /\b(DROP\s+TABLE|DROP\s+DATABASE|TRUNCATE)\b/i;
 const DELETE_FROM = /\bDELETE\s+FROM\s+\S+/i;
 const WHERE_CLAUSE = /\bWHERE\b/i;
 const EMPTY_DELETE_MANY = /\.deleteMany\s*\(\s*\)/;
-// Requires an -r and an -f (in either order, with anything else mixed in)
-// after a single dash — matches -rf/-fr/-Rf/-frx, not plain -r or -f alone.
-const RM_RF = /\brm\s+-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*\s+(\S+)|\brm\s+-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*\s+(\S+)/;
+/**
+ * Extracts the first target of an `rm` invocation that is both recursive and
+ * forced — combined flags (-rf/-fr/-Rf/-frx), split flags (-r -f), or
+ * long-form (--recursive --force), in any order and mix. Returns undefined
+ * when the line has no such rm (including a plain `rm -r` or `rm -f` alone).
+ * Flags placed AFTER the target (`rm /path -rf` — legal in GNU rm) are not
+ * recognized, same as the combined-flag regex this replaced.
+ */
+function rmRfTarget(line: string): string | undefined {
+  const m = line.match(/\brm\s+(\S.*)/);
+  if (!m) return undefined;
+  let recursive = false;
+  let force = false;
+  for (const tok of m[1]!.split(/\s+/)) {
+    if (tok === "--") continue; // end-of-options marker, target follows
+    if (tok.startsWith("--")) {
+      if (tok === "--recursive") recursive = true;
+      else if (tok === "--force") force = true;
+      continue; // other long options (--verbose, …) don't affect the verdict
+    }
+    if (tok.startsWith("-") && tok.length > 1) {
+      if (/[rR]/.test(tok)) recursive = true;
+      if (/[fF]/.test(tok)) force = true;
+      continue;
+    }
+    // First non-flag token is the target.
+    return recursive && force ? tok : undefined;
+  }
+  return undefined;
+}
 
 /** True if an `rm -rf`-style target looks like it reaches outside the repo
  *  checkout or a scratch/tmp directory — a bare relative path (`dist`,
@@ -171,8 +198,7 @@ export function detectDestructiveChanges(
       reasons.push(`added an empty-filter deleteMany(): ${line.trim().slice(0, 200)}`);
     }
 
-    const rm = line.match(RM_RF);
-    const target = rm?.[1] ?? rm?.[2];
+    const target = rmRfTarget(line);
     if (target && looksLikeRiskyRmTarget(target)) {
       reasons.push(`added an rm -rf targeting a path outside the repo/tmp: ${line.trim().slice(0, 200)}`);
     }
