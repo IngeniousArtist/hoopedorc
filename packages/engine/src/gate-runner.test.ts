@@ -1,12 +1,23 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 import type { Project, Task } from "@orc/types";
 import { GateRunnerImpl, type SandboxDeps } from "./gate-runner.js";
 import type { WorktreeManager } from "./index.js";
 import { DEFAULT_GATE_IMAGE } from "./sandbox.js";
+import { WorktreeManagerImpl } from "./worktree-manager.js";
+
+const pexecFile = promisify(execFile);
 
 const worktrees: WorktreeManager = {
   async create(_p, t) {
@@ -23,10 +34,16 @@ const worktrees: WorktreeManager = {
     return [];
   },
   async changedFilesWithStatus() {
-    return [];
+    return { ok: true, value: [], byteCount: 0, truncated: false };
   },
   async diffText() {
-    return "";
+    return { ok: true, value: "", byteCount: 0, truncated: false };
+  },
+  async worktreeChanges() {
+    return { ok: true, value: [], byteCount: 0, truncated: false };
+  },
+  async restoreToHead() {
+    return { ok: true, value: undefined, byteCount: 0, truncated: false };
   },
   async primaryDirtyFiles() {
     return [];
@@ -73,6 +90,21 @@ function tmpRepo(scripts: Record<string, string>): string {
   return dir;
 }
 
+async function tmpGitRepo(gateProgram: string): Promise<string> {
+  const dir = tmpRepo({ typecheck: "node gate-write.cjs" });
+  mkdirSync(join(dir, "src"), { recursive: true });
+  writeFileSync(join(dir, "src", "app.ts"), "export const clean = true;\n");
+  writeFileSync(join(dir, "gate-write.cjs"), gateProgram);
+  await pexecFile("git", ["init", "-q"], { cwd: dir });
+  await pexecFile("git", ["add", "-A"], { cwd: dir });
+  await pexecFile(
+    "git",
+    ["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "init"],
+    { cwd: dir },
+  );
+  return dir;
+}
+
 test("a gate script name override (F9) runs the configured npm script instead of the default", async () => {
   const dir = tmpRepo({ "tc:strict": 'node -e "process.exit(0)"' });
   const runner = new GateRunnerImpl(worktrees, { sandboxGates: "off" });
@@ -101,6 +133,54 @@ test("an aborted gate kills its command and rejects promptly", async () => {
   setTimeout(() => controller.abort(), 100);
   await assert.rejects(run, { name: "AbortError" });
   assert.ok(Date.now() - started < 1_000);
+});
+
+test("a declared script fails closed when npm cannot be spawned", async () => {
+  const dir = tmpRepo({ typecheck: "missing-tool" });
+  const runner = new GateRunnerImpl(worktrees, { sandboxGates: "off" });
+  const previousPath = process.env.PATH;
+  process.env.PATH = "";
+  try {
+    const result = await runner.run(project(), task(dir));
+    assert.equal(result.typecheck, false);
+    assert.match(result.details.typecheck ?? "", /ENOENT|spawn npm/);
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
+});
+
+test("a passing gate that edits tracked source fails, names it, and restores HEAD", async () => {
+  const dir = await tmpGitRepo(
+    'require("node:fs").writeFileSync("src/app.ts", "export const clean = false;\\n");',
+  );
+  const runner = new GateRunnerImpl(
+    new WorktreeManagerImpl({ sandboxGates: "off" }),
+    { sandboxGates: "off" },
+  );
+  const result = await runner.run(project(), task(dir));
+  assert.equal(result.typecheck, false);
+  assert.match(result.details.typecheck ?? "", /modified the worktree: src\/app\.ts/);
+  assert.equal(readFileSync(join(dir, "src", "app.ts"), "utf8"), "export const clean = true;\n");
+  const { stdout } = await pexecFile("git", ["status", "--porcelain"], { cwd: dir });
+  assert.equal(stdout, "");
+});
+
+test("a gate-created docs file fails even when the task scope allows docs", async () => {
+  const dir = await tmpGitRepo(
+    'require("node:fs").mkdirSync("docs", { recursive: true });' +
+      'require("node:fs").writeFileSync("docs/generated.md", "gate output\\n");',
+  );
+  const runner = new GateRunnerImpl(
+    new WorktreeManagerImpl({ sandboxGates: "off" }),
+    { sandboxGates: "off" },
+  );
+  const scopedTask = task(dir);
+  scopedTask.scopePaths = ["docs/**"];
+  const result = await runner.run(project(), scopedTask);
+  assert.equal(result.typecheck, false);
+  assert.match(result.details.typecheck ?? "", /docs\/generated\.md/);
+  assert.equal(existsSync(join(dir, "docs", "generated.md")), false);
 });
 
 test("testCommand (F9) runs via execFile directly and its failure fails the test gate", async () => {

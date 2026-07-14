@@ -98,11 +98,16 @@ export class GateRunnerImpl implements GateRunner {
     }
 
     const gates = project.config?.gates;
-    const typecheck = await this.runGate(worktreePath, "typecheck", gates?.typecheckScript, ctx, signal);
-    const lint = await this.runGate(worktreePath, "lint", gates?.lintScript, ctx, signal);
-    const build = await this.runGate(worktreePath, "build", gates?.buildScript, ctx, signal);
-    const tests = await this.runTestsGate(worktreePath, gates, ctx, signal);
-    const noConflicts = await this.checkNoConflicts(project, worktreePath, signal);
+    const typecheck = await this.runGate(task, worktreePath, "typecheck", gates?.typecheckScript, ctx, signal);
+    const lint = await this.runGate(task, worktreePath, "lint", gates?.lintScript, ctx, signal);
+    const build = await this.runGate(task, worktreePath, "build", gates?.buildScript, ctx, signal);
+    const tests = await this.runTestsGate(task, worktreePath, gates, ctx, signal);
+    const noConflictsGate = await this.withCleanWorktree(task, "no-conflicts", async () => ({
+      passed: await this.checkNoConflicts(project, worktreePath, signal),
+      ran: true,
+      output: "",
+    }));
+    const noConflicts = noConflictsGate.passed;
     const inScope = await this.worktrees.changedFilesInScope(project, task);
     // Every objective gate was a no-op (script-less repo, e.g. a brand-new
     // scaffold) — nothing actually verified this change; canAutoMerge treats
@@ -122,7 +127,9 @@ export class GateRunnerImpl implements GateRunner {
         lint: lint.output,
         build: build.output,
         tests: tests.output,
-        noConflicts: noConflicts ? "" : "conflicts with default branch detected",
+        noConflicts: noConflicts
+          ? ""
+          : noConflictsGate.output || "conflicts with default branch detected",
         inScope: inScope ? "" : "files modified outside task.scopePaths",
       },
     };
@@ -131,6 +138,7 @@ export class GateRunnerImpl implements GateRunner {
   /** typecheck/lint/build: run the configured script name (or the slot's
    *  default), or skip entirely when the override is `false`. */
   private async runGate(
+    task: Task,
     cwd: string,
     slot: string,
     scriptOverride: string | false | undefined,
@@ -151,10 +159,11 @@ export class GateRunnerImpl implements GateRunner {
         output: `configured gate script "${scriptOverride}" not found in package.json`,
       };
     }
-    return this.runScript(cwd, scriptOverride || slot, ctx, signal);
+    return this.runScript(task, cwd, scriptOverride || slot, ctx, signal);
   }
 
   private async runTestsGate(
+    task: Task,
     cwd: string,
     gates: ProjectConfig["gates"] | undefined,
     ctx: GateExecContext,
@@ -164,7 +173,7 @@ export class GateRunnerImpl implements GateRunner {
       return { passed: true, ran: false, output: 'gate "test" disabled by project config' };
     }
     if (gates?.testCommand) {
-      return this.runCommand(cwd, gates.testCommand, ctx, signal);
+      return this.runCommand(task, cwd, gates.testCommand, ctx, signal);
     }
     if (gates?.testScript) {
       if (!hasNpmScript(cwd, gates.testScript)) {
@@ -174,11 +183,11 @@ export class GateRunnerImpl implements GateRunner {
           output: `configured gate script "${gates.testScript}" not found in package.json`,
         };
       }
-      return this.runScript(cwd, gates.testScript, ctx, signal);
+      return this.runScript(task, cwd, gates.testScript, ctx, signal);
     }
     // Default: support either a "test" or "tests" npm script; both must pass if present.
-    const testRun = await this.runScript(cwd, "test", ctx, signal);
-    const testsRun = await this.runScript(cwd, "tests", ctx, signal);
+    const testRun = await this.runScript(task, cwd, "test", ctx, signal);
+    const testsRun = await this.runScript(task, cwd, "tests", ctx, signal);
     return {
       passed: testRun.passed && testsRun.passed,
       ran: testRun.ran || testsRun.ran,
@@ -194,6 +203,7 @@ export class GateRunnerImpl implements GateRunner {
    * command doesn't exist") is a real gate failure, not a silent pass.
    */
   private async runCommand(
+    task: Task,
     cwd: string,
     command: string,
     ctx: GateExecContext,
@@ -201,21 +211,24 @@ export class GateRunnerImpl implements GateRunner {
   ): Promise<{ passed: boolean; ran: boolean; output: string }> {
     const [cmd, ...args] = command.trim().split(/\s+/).filter(Boolean);
     if (!cmd) return { passed: true, ran: false, output: "empty testCommand" };
-    try {
-      const { stdout } = await this.exec(ctx, cwd, cmd, args, signal);
-      return { passed: true, ran: true, output: stdout };
-    } catch (err: unknown) {
-      if (signal?.aborted) throw err;
-      const e = err as { stderr?: string; stdout?: string; message?: string; killed?: boolean };
-      const out = e.stderr || e.stdout || e.message || "";
-      if (e.killed) {
-        return { passed: false, ran: true, output: `command "${command}" timed out` };
+    return this.withCleanWorktree(task, `command "${command}"`, async () => {
+      try {
+        const { stdout } = await this.exec(ctx, cwd, cmd, args, signal);
+        return { passed: true, ran: true, output: stdout };
+      } catch (err: unknown) {
+        if (signal?.aborted) throw err;
+        const e = err as { stderr?: string; stdout?: string; message?: string; killed?: boolean };
+        const out = e.stderr || e.stdout || e.message || "";
+        if (e.killed) {
+          return { passed: false, ran: true, output: `command "${command}" timed out` };
+        }
+        return { passed: false, ran: true, output: String(out) };
       }
-      return { passed: false, ran: true, output: String(out) };
-    }
+    });
   }
 
   private async runScript(
+    task: Task,
     cwd: string,
     script: string,
     ctx: GateExecContext,
@@ -224,36 +237,76 @@ export class GateRunnerImpl implements GateRunner {
     if (!hasNpmScript(cwd, script)) {
       return { passed: true, ran: false, output: `script "${script}" not defined in package.json` };
     }
-    try {
-      const { stdout } = await this.exec(ctx, cwd, "npm", ["run", script, "--if-present"], signal);
-      return { passed: true, ran: true, output: stdout };
-    } catch (err: unknown) {
-      if (signal?.aborted) throw err;
-      const e = err as {
-        stderr?: string;
-        stdout?: string;
-        message?: string;
-        code?: number | string;
-        killed?: boolean;
-      };
-      const out = e.stderr || e.stdout || e.message || "";
-      // Timed out / hung → a real failure, don't let it pass.
-      if (e.killed) {
-        return { passed: false, ran: true, output: `script "${script}" timed out` };
-      }
-      // Non-numeric code (ENOENT etc.) at this point means npm itself (or the
-      // script's own tool) couldn't be spawned, not that the script is
-      // missing (hasNpmScript already confirmed it's declared) — treat it as
-      // "nothing to run" rather than failing the gate outright.
-      if (typeof e.code !== "number") {
-        return {
-          passed: true,
-          ran: false,
-          output: `script "${script}" unavailable — ${String(out).slice(0, 200)}`,
+    return this.withCleanWorktree(task, `script "${script}"`, async () => {
+      try {
+        const { stdout } = await this.exec(ctx, cwd, "npm", ["run", script, "--if-present"], signal);
+        return { passed: true, ran: true, output: stdout };
+      } catch (err: unknown) {
+        if (signal?.aborted) throw err;
+        const e = err as {
+          stderr?: string;
+          stdout?: string;
+          message?: string;
+          killed?: boolean;
         };
+        const out = e.stderr || e.stdout || e.message || "";
+        if (e.killed) {
+          return { passed: false, ran: true, output: `script "${script}" timed out` };
+        }
+        // hasNpmScript already proved the script is declared. ENOENT and
+        // every other spawn/infrastructure failure are real failed gates.
+        return { passed: false, ran: true, output: String(out) };
       }
-      return { passed: false, ran: true, output: String(out) };
+    });
+  }
+
+  private async withCleanWorktree(
+    task: Task,
+    label: string,
+    execute: () => Promise<{ passed: boolean; ran: boolean; output: string }>,
+  ): Promise<{ passed: boolean; ran: boolean; output: string }> {
+    const before = await this.worktrees.worktreeChanges(task);
+    if (!before.ok) {
+      return {
+        passed: false,
+        ran: true,
+        output: `could not inspect worktree before ${label}: ${before.error ?? "unknown git error"}`,
+      };
     }
+    if (before.value.length > 0) {
+      const restored = await this.worktrees.restoreToHead(task);
+      return {
+        passed: false,
+        ran: true,
+        output:
+          `worktree was dirty before ${label}: ${before.value.join(", ")}` +
+          (restored.ok ? " (restored to HEAD)" : `; restore failed: ${restored.error}`),
+      };
+    }
+
+    const result = await execute();
+    const after = await this.worktrees.worktreeChanges(task);
+    if (!after.ok) {
+      const restored = await this.worktrees.restoreToHead(task);
+      return {
+        passed: false,
+        ran: true,
+        output:
+          `${result.output}\ncould not inspect worktree after ${label}: ` +
+          `${after.error ?? "unknown git error"}` +
+          (restored.ok ? " (restored to HEAD)" : `; restore failed: ${restored.error}`),
+      };
+    }
+    if (after.value.length === 0) return result;
+
+    const restored = await this.worktrees.restoreToHead(task);
+    return {
+      passed: false,
+      ran: true,
+      output:
+        `${result.output}\n${label} modified the worktree: ${after.value.join(", ")}` +
+        (restored.ok ? " (restored to HEAD)" : `; restore failed: ${restored.error}`),
+    };
   }
 
   /** Dispatches to Docker or a direct host `execFile`, per the mode resolved

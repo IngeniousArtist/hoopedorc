@@ -192,22 +192,30 @@ export function detectDestructiveChanges(
     reasons.push(`deleted sensitive file(s): ${deletedSensitive.join(", ")}`);
   }
 
-  // Only lines the diff ADDS (a leading `+`, not the `+++` file header) —
-  // a destructive statement being REMOVED is the opposite of risky.
-  const addedLines = diffText.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
-  for (const line of addedLines) {
-    if (DESTRUCTIVE_SQL.test(line)) {
-      reasons.push(`added a destructive SQL statement: ${line.trim().slice(0, 200)}`);
-    } else if (DELETE_FROM.test(line) && !WHERE_CLAUSE.test(line)) {
-      reasons.push(`added a DELETE with no WHERE clause: ${line.trim().slice(0, 200)}`);
-    } else if (EMPTY_DELETE_MANY.test(line)) {
-      reasons.push(`added an empty-filter deleteMany(): ${line.trim().slice(0, 200)}`);
-    }
+  // Scan one line at a time rather than building an array proportional to the
+  // diff. Only added lines count (a leading `+`, excluding the `+++` header):
+  // a destructive statement being removed is the opposite of risky.
+  let lineStart = 0;
+  while (lineStart <= diffText.length) {
+    const newline = diffText.indexOf("\n", lineStart);
+    const lineEnd = newline === -1 ? diffText.length : newline;
+    const line = diffText.slice(lineStart, lineEnd);
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      if (DESTRUCTIVE_SQL.test(line)) {
+        reasons.push(`added a destructive SQL statement: ${line.trim().slice(0, 200)}`);
+      } else if (DELETE_FROM.test(line) && !WHERE_CLAUSE.test(line)) {
+        reasons.push(`added a DELETE with no WHERE clause: ${line.trim().slice(0, 200)}`);
+      } else if (EMPTY_DELETE_MANY.test(line)) {
+        reasons.push(`added an empty-filter deleteMany(): ${line.trim().slice(0, 200)}`);
+      }
 
-    const target = rmRfTarget(line);
-    if (target && looksLikeRiskyRmTarget(target)) {
-      reasons.push(`added an rm -rf targeting a path outside the repo/tmp: ${line.trim().slice(0, 200)}`);
+      const target = rmRfTarget(line);
+      if (target && looksLikeRiskyRmTarget(target)) {
+        reasons.push(`added an rm -rf targeting a path outside the repo/tmp: ${line.trim().slice(0, 200)}`);
+      }
     }
+    if (newline === -1) break;
+    lineStart = newline + 1;
   }
 
   return reasons;
@@ -1310,6 +1318,16 @@ export class Orchestrator implements Scheduler {
         this.deps.events.onTaskUpdated(task);
 
         const gateResult = await this.deps.gates.run(project, task, signal);
+        // Defense in depth: GateRunner restores after every individual gate
+        // so later gates cannot consume generated source. This final reset is
+        // the stage boundary guarantee before retry, validator, docs, or merge.
+        const gateCleanup = await this.deps.worktrees.restoreToHead(task);
+        if (!gateCleanup.ok) {
+          gateResult.tests = false;
+          gateResult.details.tests =
+            `${gateResult.details.tests ?? ""}\nCould not restore the disposable worktree ` +
+            `after gates: ${gateCleanup.error ?? "unknown git error"}`;
+        }
         finalGate = gateResult;
         if (this.bailIfStopRequested(task)) return;
 
@@ -1693,7 +1711,8 @@ export class Orchestrator implements Scheduler {
       }
     }
 
-    const { canMerge, riskyReasons } = await this.canAutoMerge(project, task, finalGate);
+    const { canMerge, riskyReasons, safetyInspectionFailed } =
+      await this.canAutoMerge(project, task, finalGate);
     if (this.bailIfStopRequested(task)) return;
     if (canMerge) {
       await this.deps.git.mergePr(project, task.prNumber!, signal);
@@ -1707,7 +1726,7 @@ export class Orchestrator implements Scheduler {
       // "risky changes detected" copy every other risky-rule trip still
       // uses (those already log their own specific reason; this message
       // being generic for them is unchanged from before S8).
-      const isDestructive = riskyReasons.length > 0;
+      const hasSafetyReasons = riskyReasons.length > 0;
       this.emit(
         "warn",
         "engine",
@@ -1717,8 +1736,9 @@ export class Orchestrator implements Scheduler {
       const choice = await this.deps.events.requestApproval({
         taskId: task.id,
         title: `Risky changes in ${task.title}`,
-        message: isDestructive
-          ? `Destructive change detected — this requires approval regardless of merge policy:\n${riskyReasons.map((r) => `- ${r}`).join("\n")}`
+        message: hasSafetyReasons
+          ? `${safetyInspectionFailed ? "Safety inspection could not complete" : "Destructive change detected"} — ` +
+            `this requires approval regardless of merge policy:\n${riskyReasons.map((r) => `- ${r}`).join("\n")}`
           : `Out-of-scope edits or risky changes detected. Approve merge?`,
         options: ["approve_merge", "reject"],
       });
@@ -1727,14 +1747,18 @@ export class Orchestrator implements Scheduler {
         await this.deps.git.mergePr(project, task.prNumber!, signal);
         await this.deps.git.appendChangelogEntry(project, task, task.prNumber!, signal);
         task.status = "done";
-        task.statusReason = isDestructive
-          ? `Merged PR #${task.prNumber} after you approved a flagged destructive change (${riskyReasons[0]})`
+        task.statusReason = hasSafetyReasons
+          ? safetyInspectionFailed
+            ? `Merged PR #${task.prNumber} after you approved an incomplete safety inspection (${riskyReasons[0]})`
+            : `Merged PR #${task.prNumber} after you approved a flagged destructive change (${riskyReasons[0]})`
           : `Merged PR #${task.prNumber} after you approved a risky/out-of-scope change`;
         this.emit("info", "engine", `Merged: ${task.title}`, task.id);
       } else {
         task.status = "failed";
-        task.statusReason = isDestructive
-          ? `Flagged as a destructive change (${riskyReasons[0]}) and you rejected the merge`
+        task.statusReason = hasSafetyReasons
+          ? safetyInspectionFailed
+            ? `Safety inspection was incomplete (${riskyReasons[0]}) and you rejected the merge`
+            : `Flagged as a destructive change (${riskyReasons[0]}) and you rejected the merge`
           : "Flagged as risky (out-of-scope edits or a risky change class) and you rejected the merge";
         this.emit("warn", "engine", `Rejected: ${task.title}`, task.id);
       }
@@ -2216,17 +2240,20 @@ export class Orchestrator implements Scheduler {
 
   /**
    * Returns `canMerge: false` with populated `riskyReasons` whenever a
-   * destructive change was detected — that's the ONLY case with reasons
-   * attached; every other risky-rule trip returns `riskyReasons: []` and
-   * relies on its own `this.emit` warn log for detail (unchanged from
-   * before S8). `riskyReasons` exists so the human-facing approval message
-   * in `resolveMergeOutcome` can name exactly what tripped, verbatim.
+   * destructive change is detected or its safety inspection cannot complete.
+   * Every other risky-rule trip returns `riskyReasons: []` and relies on its
+   * own warning log for detail. The populated reasons let the human-facing
+   * approval message name exactly what tripped.
    */
   private async canAutoMerge(
     project: Project,
     task: Task,
     gate: GateResult,
-  ): Promise<{ canMerge: boolean; riskyReasons: string[] }> {
+  ): Promise<{
+    canMerge: boolean;
+    riskyReasons: string[];
+    safetyInspectionFailed?: boolean;
+  }> {
     const { riskyChangeRules } = this.deps.settings;
 
     // S8: runs BEFORE any merge-policy branch below, including
@@ -2240,7 +2267,44 @@ export class Orchestrator implements Scheduler {
         this.deps.worktrees.changedFilesWithStatus(project, task),
         this.deps.worktrees.diffText(project, task),
       ]);
-      const reasons = detectDestructiveChanges(filesWithStatus, diff);
+      const acquisitionReasons: string[] = [];
+      if (!filesWithStatus.ok && !filesWithStatus.truncated) {
+        acquisitionReasons.push(
+          `Could not inspect changed-file statuses: ${filesWithStatus.error ?? "unknown git error"}`,
+        );
+      }
+      if (filesWithStatus.truncated) {
+        acquisitionReasons.push(
+          `Changed-file status output exceeded the ${filesWithStatus.byteCount}-byte safety limit`,
+        );
+      }
+      if (!diff.ok && !diff.truncated) {
+        acquisitionReasons.push(
+          `Could not inspect the complete diff: ${diff.error ?? "unknown git error"}`,
+        );
+      }
+      if (diff.truncated) {
+        acquisitionReasons.push(
+          `Diff exceeded the ${diff.byteCount}-byte safety limit and could not be fully scanned`,
+        );
+      }
+      if (acquisitionReasons.length > 0) {
+        this.emit(
+          "warn",
+          "engine",
+          `Safety inspection incomplete — ${acquisitionReasons.join("; ")}`,
+          task.id,
+        );
+        return {
+          canMerge: false,
+          riskyReasons: acquisitionReasons,
+          safetyInspectionFailed: true,
+        };
+      }
+      const reasons = detectDestructiveChanges(
+        filesWithStatus.value,
+        diff.value,
+      );
       if (reasons.length > 0) {
         this.emit(
           "warn",

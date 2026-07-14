@@ -12,7 +12,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { minimatch } from "minimatch";
 import { execManagedProcess, sanitizedEnv } from "@orc/adapters";
 import type { Project, Settings, Task } from "@orc/types";
-import type { WorktreeManager } from "./index.js";
+import type { GitAcquisition, WorktreeManager } from "./index.js";
 import {
   DEFAULT_GATE_IMAGE,
   resolveSandboxMode,
@@ -22,10 +22,8 @@ import {
 
 const DEPS_TIMEOUT_MS = 10 * 60 * 1000;
 const DEPS_MAX_BUFFER = 32 * 1024 * 1024;
-// S8: same cap validator.ts's own (separate) diff fetch uses — bounds the
-// text detectDestructiveChanges scans without needing the whole diff for a
-// huge change.
-const MAX_DIFF_CHARS = 40_000;
+const MAX_SAFETY_DIFF_BYTES = 16 * 1024 * 1024;
+const MAX_STATUS_BYTES = 8 * 1024 * 1024;
 
 // Argument arrays only, never a shell — otherwise project.defaultBranch and
 // task.branch (both derived from HTTP-supplied fields) could smuggle shell
@@ -41,6 +39,35 @@ async function git(
     maxOutputBytes: 64 * 1024 * 1024,
   });
   return stdout;
+}
+
+function acquisitionFailure<T>(err: unknown, value: T): GitAcquisition<T> {
+  const processError = err as {
+    stdout?: string;
+    stderr?: string;
+    message?: string;
+    outputLimitExceeded?: boolean;
+  };
+  const captured = processError.stdout ?? "";
+  return {
+    ok: false,
+    value,
+    error:
+      processError.stderr?.trim() ||
+      processError.message ||
+      "git inspection failed",
+    byteCount: Buffer.byteLength(captured),
+    truncated: processError.outputLimitExceeded === true,
+  };
+}
+
+function acquisitionSuccess<T>(value: T, output = ""): GitAcquisition<T> {
+  return {
+    ok: true,
+    value,
+    byteCount: Buffer.byteLength(output),
+    truncated: false,
+  };
 }
 
 const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
@@ -309,30 +336,31 @@ export class WorktreeManagerImpl implements WorktreeManager {
   async changedFiles(project: Project, task: Task): Promise<string[]> {
     const worktreePath = task.worktreePath;
     if (!worktreePath) return [];
-    try {
-      // Three-dot diff (merge-base...HEAD) — only THIS branch's own changes.
-      // The two-dot form (origin/main HEAD) also reports files that advanced on
-      // main since this worktree was created, so when a sibling task merges
-      // mid-run those files leak into this task's "changed" set and the inScope
-      // gate fails it for files it never touched.
-      const output = await git(
-        ["diff", "--name-only", `origin/${project.defaultBranch}...HEAD`],
-        worktreePath,
-      );
-      return output
-        .split("\n")
-        .map((f) => f.trim())
-        .filter(Boolean);
-    } catch {
-      return [];
-    }
+    // Three-dot diff (merge-base...HEAD) — only THIS branch's own changes.
+    // The two-dot form (origin/main HEAD) also reports files that advanced on
+    // main since this worktree was created, so when a sibling task merges
+    // mid-run those files leak into this task's "changed" set and the inScope
+    // gate fails it for files it never touched.
+    const output = await git(
+      ["diff", "--name-only", `origin/${project.defaultBranch}...HEAD`],
+      worktreePath,
+    );
+    return output
+      .split("\n")
+      .map((f) => f.trim())
+      .filter(Boolean);
   }
 
   async changedFilesInScope(project: Project, task: Task): Promise<boolean> {
     if (!task.worktreePath) return false;
     if (task.scopePaths.length === 0) return true;
 
-    const changed = await this.changedFiles(project, task);
+    let changed: string[];
+    try {
+      changed = await this.changedFiles(project, task);
+    } catch {
+      return false;
+    }
     if (changed.length === 0) return true;
 
     return changed.every((file) =>
@@ -381,18 +409,27 @@ export class WorktreeManagerImpl implements WorktreeManager {
   async changedFilesWithStatus(
     project: Project,
     task: Task,
-  ): Promise<{ path: string; status: string }[]> {
+  ): Promise<GitAcquisition<{ path: string; status: string }[]>> {
     const worktreePath = task.worktreePath;
-    if (!worktreePath) return [];
+    if (!worktreePath) {
+      return {
+        ok: false,
+        value: [],
+        error: "no worktree path set",
+        byteCount: 0,
+        truncated: false,
+      };
+    }
     try {
       // Same three-dot reasoning as changedFiles: only this branch's own
       // changes, not files that advanced on main since the worktree was
       // created.
-      const output = await git(
+      const { stdout: output } = await execManagedProcess(
+        "git",
         ["diff", "--name-status", `origin/${project.defaultBranch}...HEAD`],
-        worktreePath,
+        { cwd: worktreePath, maxOutputBytes: MAX_STATUS_BYTES },
       );
-      return output
+      const value = output
         .split("\n")
         .map((l) => l.trim())
         .filter(Boolean)
@@ -404,24 +441,113 @@ export class WorktreeManagerImpl implements WorktreeManager {
           const parts = line.split("\t");
           return { status: parts[0] ?? "", path: parts[parts.length - 1] ?? "" };
         });
-    } catch {
-      return [];
+      return acquisitionSuccess(value, output);
+    } catch (err) {
+      return acquisitionFailure(err, []);
     }
   }
 
-  async diffText(project: Project, task: Task): Promise<string> {
+  async diffText(project: Project, task: Task): Promise<GitAcquisition<string>> {
     const worktreePath = task.worktreePath;
-    if (!worktreePath) return "";
+    if (!worktreePath) {
+      return {
+        ok: false,
+        value: "",
+        error: "no worktree path set",
+        byteCount: 0,
+        truncated: false,
+      };
+    }
     try {
-      const output = await git(
+      const { stdout: output } = await execManagedProcess(
+        "git",
         ["diff", `origin/${project.defaultBranch}...HEAD`],
-        worktreePath,
+        { cwd: worktreePath, maxOutputBytes: MAX_SAFETY_DIFF_BYTES },
       );
-      return output.length > MAX_DIFF_CHARS
-        ? output.slice(0, MAX_DIFF_CHARS) + "\n... (diff truncated)"
-        : output;
-    } catch {
-      return "";
+      return acquisitionSuccess(output, output);
+    } catch (err) {
+      const processError = err as { stdout?: string };
+      return acquisitionFailure(err, processError.stdout ?? "");
+    }
+  }
+
+  async worktreeChanges(task: Task): Promise<GitAcquisition<string[]>> {
+    const worktreePath = task.worktreePath;
+    if (!worktreePath) {
+      return {
+        ok: false,
+        value: [],
+        error: "no worktree path set",
+        byteCount: 0,
+        truncated: false,
+      };
+    }
+    try {
+      const { stdout } = await execManagedProcess(
+        "git",
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        { cwd: worktreePath, maxOutputBytes: MAX_STATUS_BYTES },
+      );
+      const paths = stdout
+        .split("\n")
+        .filter(Boolean)
+        .map((entry) => entry.slice(3).trim())
+        .filter(Boolean);
+      return acquisitionSuccess(paths, stdout);
+    } catch (err) {
+      return acquisitionFailure(err, []);
+    }
+  }
+
+  async restoreToHead(task: Task): Promise<GitAcquisition<void>> {
+    const worktreePath = task.worktreePath;
+    if (!worktreePath) {
+      return {
+        ok: false,
+        value: undefined,
+        error: "no worktree path set",
+        byteCount: 0,
+        truncated: false,
+      };
+    }
+    try {
+      const reset = await execManagedProcess("git", ["reset", "--hard", "HEAD"], {
+        cwd: worktreePath,
+        maxOutputBytes: MAX_STATUS_BYTES,
+      });
+      // Two -f flags allow removal of an untracked nested repository. This is
+      // safe here because the path is the disposable per-task worktree, never
+      // the operator's primary clone; ignored files (for example node_modules)
+      // remain untouched because -x is deliberately absent.
+      const clean = await execManagedProcess("git", ["clean", "-ffd"], {
+        cwd: worktreePath,
+        maxOutputBytes: MAX_STATUS_BYTES,
+      });
+      const remaining = await this.worktreeChanges(task);
+      if (!remaining.ok) {
+        return {
+          ok: false,
+          value: undefined,
+          error: `restore completed but cleanliness could not be verified: ${remaining.error ?? "unknown git error"}`,
+          byteCount: remaining.byteCount,
+          truncated: remaining.truncated,
+        };
+      }
+      if (remaining.value.length > 0) {
+        return {
+          ok: false,
+          value: undefined,
+          error: `restore left worktree changes: ${remaining.value.join(", ")}`,
+          byteCount: remaining.byteCount,
+          truncated: false,
+        };
+      }
+      return acquisitionSuccess(
+        undefined,
+        reset.stdout + reset.stderr + clean.stdout + clean.stderr,
+      );
+    } catch (err) {
+      return acquisitionFailure(err, undefined);
     }
   }
 

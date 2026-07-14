@@ -1,11 +1,20 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
-import type { Project } from "@orc/types";
+import type { Project, Task } from "@orc/types";
+import { detectDestructiveChanges } from "./orchestrator.js";
 import { WorktreeManagerImpl } from "./worktree-manager.js";
 
 const pexecFile = promisify(execFile);
@@ -28,6 +37,26 @@ function project(localPath: string): Project {
 
 function tmpDir(name: string): string {
   return mkdtempSync(join(tmpdir(), `hoopedorc-${name}-`));
+}
+
+function worktreeTask(path: string): Task {
+  return {
+    id: "t1",
+    projectId: "p1",
+    title: "task",
+    description: "",
+    difficulty: "medium",
+    status: "in_review",
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: ["**/*"],
+    worktreePath: path,
+    attempts: 1,
+    maxAttempts: 2,
+    createdAt: "",
+    updatedAt: "",
+  };
 }
 
 test("B29: ensureDeps fingerprints the worktree's manifest, not the primary clone's stale one", async () => {
@@ -135,4 +164,77 @@ test("B33: primaryDirtyFiles reports real git dirt, excluding package.json/lockf
   writeFileSync(join(primary, "src-oops.ts"), "// written to the wrong place\n");
   const dirty = await runner.primaryDirtyFiles(project(primary));
   assert.deepEqual(dirty, ["src-oops.ts"], "an unrelated dirty file must be named, package.json still excluded");
+});
+
+test("S9: typed diff acquisition scans destructive lines beyond the old 40K cap", async () => {
+  const repo = tmpDir("wt-safety-diff");
+  await git(["init", "-q"], repo);
+  await git(["branch", "-M", "main"], repo);
+  writeFileSync(join(repo, "rename-me.txt"), "same content\n");
+  writeFileSync(join(repo, "delete-me.txt"), "delete me\n");
+  writeFileSync(join(repo, "query.sql"), "SELECT 1;\n");
+  await git(["add", "-A"], repo);
+  await git(["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "base"], repo);
+  await git(["update-ref", "refs/remotes/origin/main", "HEAD"], repo);
+
+  renameSync(join(repo, "rename-me.txt"), join(repo, "renamed.txt"));
+  unlinkSync(join(repo, "delete-me.txt"));
+  writeFileSync(join(repo, "query.sql"), "x".repeat(50_000) + "\nDROP TABLE users;\n");
+  await git(["add", "-A"], repo);
+  await git(["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "change"], repo);
+
+  const runner = new WorktreeManagerImpl({ sandboxGates: "off" });
+  const status = await runner.changedFilesWithStatus(project(repo), worktreeTask(repo));
+  const diff = await runner.diffText(project(repo), worktreeTask(repo));
+  assert.equal(status.ok, true);
+  assert.equal(diff.ok, true);
+  assert.equal(diff.truncated, false);
+  assert.ok(diff.byteCount > 40_000);
+  assert.ok(diff.value.indexOf("DROP TABLE users") > 40_000);
+  assert.ok(status.value.some((entry) => entry.status.startsWith("R") && entry.path === "renamed.txt"));
+  assert.ok(status.value.some((entry) => entry.status === "D" && entry.path === "delete-me.txt"));
+  assert.ok(
+    detectDestructiveChanges(status.value, diff.value).some((reason) =>
+      /destructive SQL/.test(reason),
+    ),
+  );
+});
+
+test("S9: git inspection failure is typed, never an empty clean result", async () => {
+  const dir = tmpDir("wt-not-git");
+  const runner = new WorktreeManagerImpl({ sandboxGates: "off" });
+  const task = worktreeTask(dir);
+  const status = await runner.changedFilesWithStatus(project(dir), task);
+  const diff = await runner.diffText(project(dir), task);
+  assert.equal(status.ok, false);
+  assert.equal(diff.ok, false);
+  assert.match(status.error ?? "", /not a git repository/i);
+  assert.match(diff.error ?? "", /not a git repository/i);
+});
+
+test("S9: restoreToHead removes tracked, untracked, and nested-repository gate output", async () => {
+  const repo = tmpDir("wt-gate-restore");
+  await git(["init", "-q"], repo);
+  writeFileSync(join(repo, "source.ts"), "export const clean = true;\n");
+  await git(["add", "-A"], repo);
+  await git(
+    ["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "base"],
+    repo,
+  );
+
+  writeFileSync(join(repo, "source.ts"), "export const clean = false;\n");
+  writeFileSync(join(repo, "generated.txt"), "gate output\n");
+  mkdirSync(join(repo, "nested"));
+  await git(["init", "-q"], join(repo, "nested"));
+  writeFileSync(join(repo, "nested", "artifact.txt"), "nested gate output\n");
+
+  const runner = new WorktreeManagerImpl({ sandboxGates: "off" });
+  const task = worktreeTask(repo);
+  const restored = await runner.restoreToHead(task);
+
+  assert.equal(restored.ok, true, restored.error);
+  assert.equal(readFileSync(join(repo, "source.ts"), "utf8"), "export const clean = true;\n");
+  assert.equal(existsSync(join(repo, "generated.txt")), false);
+  assert.equal(existsSync(join(repo, "nested")), false);
+  assert.deepEqual((await runner.worktreeChanges(task)).value, []);
 });

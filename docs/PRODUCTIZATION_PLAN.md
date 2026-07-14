@@ -5665,6 +5665,29 @@ line after 40K, rename/delete status, a malicious passing gate that edits code,
 a gate that edits an allowed docs path, and a failing gate followed by retry.
 None of the gate-written content may reach the PR.
 
+**S9 — done (PR [#141](https://github.com/IngeniousArtist/hoopedorc/pull/141)).**
+Declared scripts now fail on runtime/spawn errors instead of becoming a
+vacuous pass. Every executed gate is bracketed by typed worktree-status checks;
+any nonignored tracked or untracked output fails the gate, names the paths, and
+is removed from the disposable task worktree. The orchestrator repeats that
+restore at the stage boundary before retry, validator, docs, or merge, and the
+restore verifies its result (including nested untracked repositories). The
+primary clone and ignored dependency/cache paths are never reset.
+
+Changed-file status and diff acquisition now report success, errors, observed
+bytes, and truncation. The mechanical destructive rail scans added lines across
+the complete bounded diff one line at a time, sees rename/delete status and
+content beyond the old 40K cutoff, and forces approval under every merge policy
+when Git inspection fails or reaches its safety limit. Validator diff failures
+and truncation are visible in its prompt and mechanically override any model
+approval to escalation. Regression coverage includes ENOENT, typed Git failure,
+a post-40K destructive SQL line, rename/delete status, tracked source output,
+scope-allowed docs output, retry cleanup, nested-repository cleanup, and an
+incomplete validator diff. `npm run typecheck`, `npm run build`, 8 adapter
+tests, 128 engine tests, and 102 server tests pass. No authenticated model run
+was started; Fable review remains the independent post-merge check required for
+the wave.
+
 ### B36. Rollback through a gated, human-approved PR — HIGH
 
 **Where:** rollback API/types/UI, `packages/engine/src/git-service.ts`,
