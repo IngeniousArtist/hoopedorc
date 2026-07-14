@@ -1,7 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { abortableDelay, execManagedProcess } from "@orc/adapters";
-import type { Project, Task } from "@orc/types";
+import type { Project, RollbackJob, Task } from "@orc/types";
 import type { GitService } from "./index.js";
 
 // All commands use the managed process runner with argument arrays (no shell), so task titles,
@@ -151,6 +157,40 @@ export class GitServiceImpl implements GitService {
   }
 
   async mergePr(project: Project, prNumber: number, signal?: AbortSignal): Promise<void> {
+    // Restart idempotency: a process can die after GitHub merged the PR but
+    // before the durable caller records completion. Treat that state as done
+    // instead of trying to merge the already-merged PR again.
+    try {
+      const state = (
+        await gh(
+          [
+            "pr",
+            "view",
+            String(prNumber),
+            "--repo",
+            project.repoUrl,
+            "--json",
+            "state",
+            "--jq",
+            ".state",
+          ],
+          undefined,
+          signal,
+        )
+      ).trim();
+      if (state === "MERGED") {
+        await withRepoLock(
+          project.localPath,
+          () => this.syncPrimary(project, signal).catch(() => {}),
+          signal,
+        );
+        return;
+      }
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      // A transient state lookup must not prevent the normal merge path.
+    }
+
     // GitHub computes a PR's mergeability asynchronously; for the first few
     // seconds after `gh pr create` it reports UNKNOWN, and `gh pr merge` then
     // fails with "Pull Request is not mergeable". Poll until GitHub resolves
@@ -466,7 +506,11 @@ export class GitServiceImpl implements GitService {
     }
   }
 
-  async revertMerge(project: Project, prNumber: number): Promise<void> {
+  async resolvePrMergeCommit(
+    project: Project,
+    prNumber: number,
+    signal?: AbortSignal,
+  ): Promise<string> {
     const mergeCommit = (
       await gh(
         [
@@ -481,20 +525,357 @@ export class GitServiceImpl implements GitService {
           ".mergeCommit.oid",
         ],
         project.localPath,
+        signal,
       )
     ).trim();
-
-    if (!mergeCommit) {
+    if (!/^[0-9a-f]{40}$/i.test(mergeCommit)) {
       throw new Error(`No merge commit found for PR #${prNumber}`);
     }
-
-    await withRepoLock(project.localPath, async () => {
-      await git(["fetch", "origin"], project.localPath);
-      await git(
-        ["revert", "-m", "1", mergeCommit, "--no-edit"],
-        project.localPath,
-      );
-      await git(["push", "origin", project.defaultBranch], project.localPath);
-    });
+    return mergeCommit;
   }
+
+  async prepareRollback(
+    project: Project,
+    job: RollbackJob,
+    signal?: AbortSignal,
+  ): Promise<{ sourceCommit: string; sourceParentCount: number }> {
+    const expectedBranch = `orc/rollback-${job.id}`;
+    const expectedPath = `${project.localPath}-rollback-${job.id}`;
+    if (job.branch !== expectedBranch || job.worktreePath !== expectedPath) {
+      throw new Error("Rollback branch/worktree does not match its deterministic job path");
+    }
+    const sourceCommit =
+      job.sourceCommit ??
+      (await this.resolvePrMergeCommit(project, job.sourcePrNumber, signal));
+    if (!/^[0-9a-f]{40}$/i.test(sourceCommit)) {
+      throw new Error(`Invalid rollback source commit: ${sourceCommit}`);
+    }
+
+    return withRepoLock(
+      project.localPath,
+      async () => {
+        await git(
+          ["fetch", "origin", project.defaultBranch],
+          project.localPath,
+          signal,
+        );
+        try {
+          await git(
+            [
+              "merge-base",
+              "--is-ancestor",
+              sourceCommit,
+              `origin/${project.defaultBranch}`,
+            ],
+            project.localPath,
+            signal,
+          );
+        } catch (err) {
+          if (signal?.aborted) throw err;
+          throw new Error(
+            `PR #${job.sourcePrNumber} commit ${sourceCommit} is not on origin/${project.defaultBranch}`,
+          );
+        }
+
+        const parentLine = (
+          await git(
+            ["rev-list", "--parents", "-n", "1", sourceCommit],
+            project.localPath,
+            signal,
+          )
+        ).trim();
+        const sourceParentCount = Math.max(
+          0,
+          parentLine.split(/\s+/).filter(Boolean).length - 1,
+        );
+        if (sourceParentCount === 0) {
+          throw new Error(`Cannot roll back root commit ${sourceCommit}`);
+        }
+
+        let worktreeReady = false;
+        try {
+          const currentBranch = (
+            await git(
+              ["rev-parse", "--abbrev-ref", "HEAD"],
+              job.worktreePath,
+              signal,
+            )
+          ).trim();
+          worktreeReady = currentBranch === job.branch;
+        } catch (err) {
+          if (signal?.aborted) throw err;
+        }
+
+        if (!worktreeReady) {
+          await git(
+            ["worktree", "remove", job.worktreePath, "--force"],
+            project.localPath,
+            signal,
+          ).catch((err) => {
+            if (signal?.aborted) throw err;
+          });
+          rmSync(job.worktreePath, { recursive: true, force: true });
+          await git(["worktree", "prune"], project.localPath, signal);
+
+          let localBranchExists = true;
+          try {
+            await git(
+              ["show-ref", "--verify", `refs/heads/${job.branch}`],
+              project.localPath,
+              signal,
+            );
+          } catch (err) {
+            if (signal?.aborted) throw err;
+            localBranchExists = false;
+          }
+
+          if (!localBranchExists) {
+            let remoteBranchExists = true;
+            try {
+              await git(
+                ["ls-remote", "--exit-code", "--heads", "origin", job.branch],
+                project.localPath,
+                signal,
+              );
+            } catch (err) {
+              if (signal?.aborted) throw err;
+              remoteBranchExists = false;
+            }
+            if (remoteBranchExists) {
+              await git(
+                ["fetch", "origin", `${job.branch}:refs/heads/${job.branch}`],
+                project.localPath,
+                signal,
+              );
+              localBranchExists = true;
+            }
+          }
+
+          if (localBranchExists) {
+            await git(
+              ["worktree", "add", job.worktreePath, job.branch],
+              project.localPath,
+              signal,
+            );
+          } else {
+            await git(
+              [
+                "worktree",
+                "add",
+                job.worktreePath,
+                "-b",
+                job.branch,
+                `origin/${project.defaultBranch}`,
+              ],
+              project.localPath,
+              signal,
+            );
+          }
+        }
+
+        const trailer = `Hoopedorc-Rollback-Job: ${job.id}`;
+        const headMessage = await git(
+          ["log", "-50", "--format=%B"],
+          job.worktreePath,
+          signal,
+        );
+        if (headMessage.includes(trailer)) {
+          return { sourceCommit, sourceParentCount };
+        }
+
+        const head = (
+          await git(["rev-parse", "HEAD"], job.worktreePath, signal)
+        ).trim();
+        const base = (
+          await git(
+            ["rev-parse", `origin/${project.defaultBranch}`],
+            job.worktreePath,
+            signal,
+          )
+        ).trim();
+        if (head !== base) {
+          throw new Error(
+            `Rollback branch ${job.branch} has unrecognized commits; refusing to reset or reapply the revert`,
+          );
+        }
+
+        const revertArgs = ["revert"];
+        if (sourceParentCount > 1) revertArgs.push("-m", "1");
+        revertArgs.push(sourceCommit, "--no-edit");
+        try {
+          await git(revertArgs, job.worktreePath, signal);
+        } catch (err) {
+          if (signal?.aborted) throw err;
+          let conflicts = "";
+          try {
+            conflicts = await git(
+              ["diff", "--name-only", "--diff-filter=U"],
+              job.worktreePath,
+            );
+          } finally {
+            await git(["revert", "--abort"], job.worktreePath).catch(() => {});
+          }
+          if (conflicts.trim()) {
+            throw new RollbackConflictError(
+              `Rollback conflicts in: ${conflicts.trim().split("\n").join(", ")}`,
+            );
+          }
+          throw err;
+        }
+
+        const subject = (
+          await git(
+            ["show", "-s", "--format=%s", sourceCommit],
+            job.worktreePath,
+            signal,
+          )
+        ).trim();
+        await git(
+          [
+            "commit",
+            "--amend",
+            "-m",
+            `revert: rollback PR #${job.sourcePrNumber}`,
+            "-m",
+            `Reverts ${sourceCommit} (${subject}).`,
+            "-m",
+            trailer,
+          ],
+          job.worktreePath,
+          signal,
+        );
+        return { sourceCommit, sourceParentCount };
+      },
+      signal,
+    );
+  }
+
+  async openRollbackPr(
+    project: Project,
+    task: Task,
+    job: RollbackJob,
+    signal?: AbortSignal,
+  ): Promise<number> {
+    const existing = (
+      await gh(
+        [
+          "pr",
+          "list",
+          "--repo",
+          project.repoUrl,
+          "--head",
+          job.branch,
+          "--state",
+          "open",
+          "--json",
+          "number",
+          "--jq",
+          ".[0].number // empty",
+        ],
+        job.worktreePath,
+        signal,
+      )
+    ).trim();
+    if (/^\d+$/.test(existing)) return Number(existing);
+
+    const gateNames = [
+      "typecheck",
+      "lint",
+      "build",
+      "tests",
+      "noConflicts",
+    ] as const;
+    const gateSummary = job.gate
+      ? gateNames
+          .map((name) => `- ${name}: ${job.gate![name] ? "PASS" : "FAIL"}`)
+          .join("\n")
+      : "- not recorded";
+    const reasons = job.decision?.reasons?.length
+      ? job.decision.reasons.map((reason) => `- ${reason}`).join("\n")
+      : "- validator supplied no reasons";
+    const output = await gh(
+      [
+        "pr",
+        "create",
+        "--repo",
+        project.repoUrl,
+        "--base",
+        project.defaultBranch,
+        "--head",
+        job.branch,
+        "--title",
+        `Rollback PR #${job.sourcePrNumber}: ${task.title}`,
+        "--body",
+        `## Rollback\nReverts the commit merged by PR #${job.sourcePrNumber}.\n\n## Gate results\n${gateSummary}\n\n## Independent validator\n${reasons}\n\nRollback job: ${job.id}`,
+      ],
+      job.worktreePath,
+      signal,
+    );
+    const match = output.match(/\/pull\/(\d+)/);
+    if (match) return Number(match[1]);
+    if (/^\d+$/.test(output.trim())) return Number(output.trim());
+    throw new Error(`Could not parse rollback PR number from: ${output}`);
+  }
+
+  async closeRollbackPr(
+    project: Project,
+    job: RollbackJob,
+    reason: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (job.rollbackPrNumber != null) {
+      const state = (
+        await gh(
+          [
+            "pr",
+            "view",
+            String(job.rollbackPrNumber),
+            "--repo",
+            project.repoUrl,
+            "--json",
+            "state",
+            "--jq",
+            ".state",
+          ],
+          project.localPath,
+          signal,
+        )
+      ).trim();
+      if (state === "CLOSED") return;
+      if (state === "MERGED") {
+        throw new Error(
+          `Rollback PR #${job.rollbackPrNumber} was already merged and cannot be rejected`,
+        );
+      }
+      await gh(
+        [
+          "pr",
+          "close",
+          String(job.rollbackPrNumber),
+          "--repo",
+          project.repoUrl,
+          "--comment",
+          reason,
+          "--delete-branch",
+        ],
+        project.localPath,
+        signal,
+      );
+      return;
+    }
+    try {
+      await git(
+        ["push", "origin", "--delete", job.branch],
+        project.localPath,
+        signal,
+      );
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      // No remote branch was pushed yet.
+    }
+  }
+}
+
+export class RollbackConflictError extends Error {
+  override name = "RollbackConflictError";
 }

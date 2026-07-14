@@ -24,6 +24,7 @@ const worktrees: WorktreeManager = {
     return { branch: `orc/${t.id}`, path: "" };
   },
   async remove() {},
+  async prepareForGates() {},
   async changedFiles() {
     return [];
   },

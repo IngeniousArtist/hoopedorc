@@ -4,6 +4,7 @@ import {
   type LogEvent,
   type ModelId,
   type RetryTaskResponse,
+  type RollbackJob,
   type ServerEvent,
   type Settings as SettingsType,
   type StopTaskResponse,
@@ -58,6 +59,7 @@ export function Board({
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  const [rollbackJobs, setRollbackJobs] = useState<Record<string, RollbackJob>>({});
   const [diff, setDiff] = useState<string | null>(null);
   const [costUsd, setCostUsd] = useState(0);
   const [budgetUsd, setBudgetUsd] = useState<number | undefined>(undefined);
@@ -100,6 +102,7 @@ export function Board({
 
   const selectedTask =
     tasks.find((t) => t.id === selectedTaskId) ?? null;
+  const selectedTaskPrNumber = selectedTask?.prNumber;
 
   const fetchEstimates = useCallback(async () => {
     try {
@@ -167,10 +170,23 @@ export function Board({
       }
     }
     loadLogs();
+    api<{ rollback: RollbackJob | null }>("taskRollback", {
+      params: { id: selectedTaskId },
+    })
+      .then(({ rollback }) => {
+        if (cancelled) return;
+        setRollbackJobs((current) => {
+          if (rollback) return { ...current, [rollback.taskId]: rollback };
+          const next = { ...current };
+          delete next[selectedTaskId];
+          return next;
+        });
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [selectedTaskId]);
+  }, [selectedTaskId, selectedTaskPrNumber]);
 
   const markActivity = useCallback((taskId: string | undefined) => {
     if (taskId) setActivity((a) => ({ ...a, [taskId]: Date.now() }));
@@ -212,6 +228,14 @@ export function Board({
           markActivity(event.payload.taskId);
           break;
         }
+        case "rollback.updated": {
+          const rollback = event.payload;
+          setRollbackJobs((current) => ({
+            ...current,
+            [rollback.taskId]: rollback,
+          }));
+          break;
+        }
         case "cost.updated": {
           // The hub broadcasts to all clients; only count this project's spend
           // (a concurrently-running project would otherwise inflate the total).
@@ -250,19 +274,20 @@ export function Board({
   const handleRollback = async (taskId: string, prNumber: number) => {
     if (
       !window.confirm(
-        `Revert PR #${prNumber}? This pushes a revert commit to the default branch.`,
+        `Create a rollback PR for #${prNumber}? Hoopedorc will run gates and an independent review, then require your approval before merging it.`,
       )
     )
       return;
     setActionBusy(true);
     try {
-      const res = await api<{ task: Task }>("rollbackTask", {
+      const res = await api<{ task: Task; rollback: RollbackJob }>("rollbackTask", {
         params: { id: taskId },
       });
-      setTasks((prev) =>
-        prev.map((t) => (t.id === taskId ? res.task : t)),
-      );
-      toast(`Reverted PR #${prNumber}.`, "success");
+      setRollbackJobs((current) => ({
+        ...current,
+        [taskId]: res.rollback,
+      }));
+      toast(`Rollback job started for PR #${prNumber}.`, "success");
     } catch (e) {
       toast(String(e), "error");
     } finally {
@@ -562,6 +587,11 @@ export function Board({
           logs={logs}
           logsLoading={logsLoading}
           diff={diff}
+          rollbackJob={
+            rollbackJobs[selectedTask.id]?.sourcePrNumber === selectedTask.prNumber
+              ? rollbackJobs[selectedTask.id]
+              : undefined
+          }
           actionBusy={actionBusy}
           onClose={() => setSelectedTaskId(null)}
           onViewDiff={() => handleViewDiff(selectedTask.id)}

@@ -6,6 +6,7 @@ import type {
   MergeDecision,
   Notification,
   Project,
+  RollbackJob,
   Run,
   Task,
 } from "./domain";
@@ -18,6 +19,7 @@ export type ServerEvent =
   | { type: "project.updated"; payload: Project }
   | { type: "project.deleted"; payload: { id: string } }
   | { type: "merge.decision"; payload: MergeDecision }
+  | { type: "rollback.updated"; payload: RollbackJob }
   | { type: "notification"; payload: Notification }
   | { type: "cost.updated"; payload: CostRecord };
 

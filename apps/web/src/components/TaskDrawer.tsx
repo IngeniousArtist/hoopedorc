@@ -4,6 +4,7 @@ import type {
   MergeDecision,
   ModelConfig,
   ModelId,
+  RollbackJob,
   Run,
   Task,
   TaskDecisionsResponse,
@@ -55,6 +56,7 @@ export function TaskDrawer({
   logs,
   logsLoading,
   diff,
+  rollbackJob,
   actionBusy,
   onClose,
   onViewDiff,
@@ -68,6 +70,7 @@ export function TaskDrawer({
   logs: LogEvent[];
   logsLoading: boolean;
   diff: string | null;
+  rollbackJob?: RollbackJob;
   actionBusy: boolean;
   onClose: () => void;
   onViewDiff: () => void;
@@ -384,7 +387,7 @@ export function TaskDrawer({
                       {actionBusy ? "Working…" : "↻ Retry task"}
                     </button>
                   )}
-                  {task.status === "done" && (
+                  {task.status === "done" && !rollbackJob && (
                     <button
                       onClick={onRollback}
                       disabled={actionBusy}
@@ -394,6 +397,28 @@ export function TaskDrawer({
                     </button>
                   )}
                 </div>
+                {rollbackJob && (
+                  <div className="border-l-2 border-amber-700 pl-3 text-neutral-300">
+                    <div className="font-medium text-amber-300">
+                      Rollback {rollbackJob.status.replaceAll("_", " ")}
+                    </div>
+                    {rollbackJob.statusReason && (
+                      <p className="mt-1 text-neutral-400">
+                        {rollbackJob.statusReason}
+                      </p>
+                    )}
+                    {repoUrl && rollbackJob.rollbackPrNumber && (
+                      <a
+                        href={`${repoUrl}/pull/${rollbackJob.rollbackPrNumber}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 inline-block text-blue-300 hover:text-blue-200"
+                      >
+                        View rollback PR #{rollbackJob.rollbackPrNumber} {"↗"}
+                      </a>
+                    )}
+                  </div>
+                )}
                 {diff && (
                   <pre className="max-h-96 overflow-auto rounded border border-neutral-800 bg-neutral-950 p-3 font-mono text-[11px] leading-relaxed text-neutral-300">
                     {diff}

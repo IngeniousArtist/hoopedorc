@@ -1680,7 +1680,7 @@ target rules.
 |---|---|---|
 | B34 — execution ownership + unified manual queue | done | [#139](https://github.com/IngeniousArtist/hoopedorc/pull/139) |
 | B35 — managed subprocess lifecycle and cancellation | done | [#140](https://github.com/IngeniousArtist/hoopedorc/pull/140) |
-| S9 — fail-closed gates, destructive rail, and worktree hygiene | pending | — |
+| S9 — fail-closed gates, destructive rail, and worktree hygiene | done | [#141](https://github.com/IngeniousArtist/hoopedorc/pull/141) |
 | B36 — rollback through a gated, human-approved PR | pending | — |
 | S10 — CLI credential/environment boundary | pending | — |
 | B37 — enabled models, live settings, and complete validation | pending | — |

@@ -14,6 +14,7 @@ import type {
   MergeDecision,
   ModelId,
   Project,
+  RollbackJob,
   Run,
   Settings,
   Task,
@@ -22,7 +23,7 @@ import type { AgentAdapter } from "@orc/adapters";
 
 export { STUCK_DETECTION } from "./constants.js";
 export { WorktreeManagerImpl } from "./worktree-manager.js";
-export { GitServiceImpl } from "./git-service.js";
+export { GitServiceImpl, RollbackConflictError } from "./git-service.js";
 export { GateRunnerImpl } from "./gate-runner.js";
 export { ValidatorImpl, SelfReviewError } from "./validator.js";
 export type { ValidatorCostSink } from "./validator.js";
@@ -43,6 +44,11 @@ export interface GitAcquisition<T> {
   byteCount: number;
   /** True when output hit the safety limit and is therefore incomplete. */
   truncated: boolean;
+}
+
+export interface RollbackPreparation {
+  sourceCommit: string;
+  sourceParentCount: number;
 }
 
 /** Callbacks the engine uses to report progress + ask humans for decisions. */
@@ -88,6 +94,12 @@ export interface WorktreeManager {
     signal?: AbortSignal,
   ): Promise<{ branch: string; path: string }>;
   remove(project: Project, task: Task): Promise<void>;
+  /** Ensure an existing worktree has local excludes and shared dependencies. */
+  prepareForGates(
+    project: Project,
+    task: Task,
+    signal?: AbortSignal,
+  ): Promise<void>;
   /** Paths changed in the task's worktree vs the project default branch. */
   changedFiles(project: Project, task: Task): Promise<string[]>;
   /** True if the task modified only files matching task.scopePaths. */
@@ -149,7 +161,28 @@ export interface GitService {
   push(worktreePath: string, branch: string, signal?: AbortSignal): Promise<void>;
   openPr(project: Project, task: Task, signal?: AbortSignal): Promise<number>;
   mergePr(project: Project, prNumber: number, signal?: AbortSignal): Promise<void>;
-  revertMerge(project: Project, prNumber: number): Promise<void>;
+  resolvePrMergeCommit(
+    project: Project,
+    prNumber: number,
+    signal?: AbortSignal,
+  ): Promise<string>;
+  prepareRollback(
+    project: Project,
+    job: RollbackJob,
+    signal?: AbortSignal,
+  ): Promise<RollbackPreparation>;
+  openRollbackPr(
+    project: Project,
+    task: Task,
+    job: RollbackJob,
+    signal?: AbortSignal,
+  ): Promise<number>;
+  closeRollbackPr(
+    project: Project,
+    job: RollbackJob,
+    reason: string,
+    signal?: AbortSignal,
+  ): Promise<void>;
   /**
    * Close a terminally-failed task's open PR (with a comment explaining why)
    * and delete its remote branch, so failed attempts don't pile dead orc/*

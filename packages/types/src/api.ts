@@ -506,6 +506,7 @@ export const ROUTES = {
   respondNotification: "POST /api/notifications/:id/respond",
   auditLog: "GET /api/projects/:id/audit",
   rollbackTask: "POST /api/tasks/:id/rollback",
+  taskRollback: "GET /api/tasks/:id/rollback",
   taskDecisions: "GET /api/tasks/:id/decisions",
   setupHealth: "GET /api/setup",
   setupModels: "GET /api/setup/models",

@@ -150,6 +150,31 @@ CREATE TABLE IF NOT EXISTS settings (
   json TEXT NOT NULL                            -- JSON Settings blob
 );
 
+-- B36: restart-safe rollback pipeline. A task/PR pair owns one durable job so
+-- duplicate clicks and process restarts cannot issue the revert twice.
+CREATE TABLE IF NOT EXISTS rollback_jobs (
+  id                       TEXT PRIMARY KEY,
+  project_id               TEXT NOT NULL REFERENCES projects(id),
+  task_id                  TEXT NOT NULL REFERENCES tasks(id),
+  source_pr_number         INTEGER NOT NULL,
+  source_commit            TEXT,
+  source_parent_count      INTEGER,
+  branch                   TEXT NOT NULL,
+  worktree_path            TEXT NOT NULL,
+  rollback_pr_number       INTEGER,
+  status                   TEXT NOT NULL,
+  status_reason            TEXT,
+  gate                     TEXT,
+  decision                 TEXT,
+  approval_notification_id TEXT,
+  approval_choice          TEXT,
+  created_at               TEXT NOT NULL,
+  updated_at               TEXT NOT NULL,
+  UNIQUE(task_id, source_pr_number)
+);
+CREATE INDEX IF NOT EXISTS idx_rollback_jobs_project ON rollback_jobs(project_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_rollback_jobs_status ON rollback_jobs(status, updated_at);
+
 -- Append-only audit trail: every merge decision, approval, terminal task
 -- transition, and rollback. PRD requires a persisted who/what/when/why trail.
 CREATE TABLE IF NOT EXISTS audit_log (
