@@ -16,6 +16,24 @@ export const DOCS_GUIDELINES = `- README: lead with what the project does and wh
 - Helper docs (docs/**): only when a topic outgrows the README (API reference, architecture). Say when each doc was last true; cross-link instead of duplicating content.`;
 
 /**
+ * S8: a fixed, non-operator-editable safety floor appended to EVERY author
+ * prompt unconditionally — unlike Settings.guidelines (F31), this isn't a
+ * house-style preference the operator can blank out; it's the same
+ * non-bypassable line orchestrator.ts's detectDestructiveChanges enforces
+ * mechanically after the fact, restated here so the author is told up
+ * front instead of only finding out once its PR gets held for approval.
+ */
+export const SAFETY_GUARDRAILS_BLOCK = `
+## Safety
+- Never delete files or directories unrelated to this task.
+- Never write destructive database migrations, data-wipe scripts, or bulk deletions of records
+  unless the task explicitly requires it.
+- Prefer additive changes over deletions or rewrites when both accomplish the task.
+- Never touch credentials, secrets, or auth/authorization checks unless the task explicitly asks
+  you to.
+`;
+
+/**
  * F31: renders Settings.guidelines (plus F29's fixed docs guidelines) into
  * a "## Engineering standards" prompt block — coding + security always
  * included, ux only when `includeUx` (the task looks UI-flavored:

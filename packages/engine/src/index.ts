@@ -90,6 +90,26 @@ export interface WorktreeManager {
    * before committing its changes.
    */
   revertOutOfScope(task: Task, allowedPatterns: string[]): Promise<string[]>;
+  /**
+   * S8: like `changedFiles`, but pairs each path with its git status
+   * (A/M/D/R100/C100/...) — destructive-change detection needs to know
+   * WHICH changed files were DELETED, not just that they changed. Renames
+   * report the path they were renamed TO (a rename isn't a deletion).
+   */
+  changedFilesWithStatus(
+    project: Project,
+    task: Task,
+  ): Promise<{ path: string; status: string }[]>;
+  /**
+   * S8: the task's diff vs the default branch, capped to a bounded length
+   * — used by canAutoMerge's destructive-change detection (a second,
+   * independent fetch from the validator's own diff — see validator.ts's
+   * getDiff — since canAutoMerge runs later, after the worktree the
+   * validator read from is still around but on a different code path).
+   * Empty string if there's no worktree or the diff couldn't be computed
+   * (best-effort, mirrors changedFiles' error handling).
+   */
+  diffText(project: Project, task: Task): Promise<string>;
 }
 
 /** Thin wrapper over git + the `gh` CLI. */

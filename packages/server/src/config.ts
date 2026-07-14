@@ -142,6 +142,7 @@ export function defaultSettings(): Settings {
       newDependencies: true,
       authOrSecrets: true,
       outOfScopeEdits: true,
+      destructiveChanges: true,
     },
     allowVacuousGates: false,
     // F13-P1: sandbox gate scripts + dep installs in Docker when a daemon is

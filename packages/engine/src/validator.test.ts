@@ -147,3 +147,24 @@ test("F29: a docs-role task's review prompt includes the docs guidelines; a fron
 
   assert.doesNotMatch(frontendPrompt!, /### Docs/);
 });
+
+test("S8: the review prompt always includes the fixed destructive-changes block, regardless of guidelines", async () => {
+  const prompts: string[] = [];
+  // No Settings.guidelines configured — like DOCS_GUIDELINES, the
+  // destructive-changes block is a fixed engine constant, not
+  // operator-editable, so it must appear even with every guideline blank.
+  const settings = baseSettings();
+  const validator = new ValidatorImpl(capturingAdapterFactory(prompts), settings);
+
+  await validator.review(PROJECT, task(), GATE, "deepseek-flash");
+
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0]!, /## Destructive & dangerous changes/);
+  assert.match(prompts[0]!, /Destructive database migrations or data-wipe operations/);
+  assert.match(prompts[0]!, /Bulk deletion of user or production data/);
+  assert.match(
+    prompts[0]!,
+    /use verdict "escalate"/,
+    "should instruct the reviewer to escalate, never approve, an unrequired destructive change",
+  );
+});

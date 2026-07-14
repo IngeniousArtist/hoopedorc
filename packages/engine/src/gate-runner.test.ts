@@ -22,6 +22,12 @@ const worktrees: WorktreeManager = {
   async revertOutOfScope() {
     return [];
   },
+  async changedFilesWithStatus() {
+    return [];
+  },
+  async diffText() {
+    return "";
+  },
 };
 
 function project(config?: Project["config"]): Project {

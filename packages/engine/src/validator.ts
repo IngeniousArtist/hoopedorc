@@ -17,6 +17,27 @@ const pexecFile = promisify(execFile);
 
 const MAX_DIFF_CHARS = 40_000;
 
+/**
+ * S8: a fixed block always included in the review prompt (unlike
+ * buildEngineeringStandardsBlock's operator-editable text) — the same
+ * safety floor orchestrator.ts's detectDestructiveChanges enforces
+ * mechanically, restated here as a second, model-judgment layer since the
+ * mechanical detector's pattern list can't catch everything.
+ */
+const DESTRUCTIVE_CHANGES_BLOCK = `
+## Destructive & dangerous changes
+Before deciding your verdict, check the diff for any of the following — regardless of whether the
+gates passed:
+- Deleting directories or many files unrelated to what this task asked for.
+- Destructive database migrations or data-wipe operations (dropping tables/databases, truncating,
+  unconditional bulk deletes).
+- Bulk deletion of user or production data — accounts, subscriptions, records.
+- Disabling authentication, authorization, or other safety checks.
+- Secrets or credentials committed into the code.
+If you find any of these and the task did NOT explicitly require it, use verdict "escalate"
+(never "approve") and name exactly what you found in "reasons".
+`;
+
 /** Thrown when the configured validator would review its own author's work. */
 export class SelfReviewError extends Error {}
 
@@ -165,6 +186,7 @@ ${
     ? `\nIf the diff clearly violates the Engineering standards above, name it in "reasons" and lean toward "request_changes" for a substantive violation — but don't nitpick style choices those standards don't mention.\n`
     : ""
 }
+${DESTRUCTIVE_CHANGES_BLOCK}
 Respond with ONLY a JSON object (no markdown, no explanation):
 {
   "verdict": "approve" | "request_changes" | "escalate",

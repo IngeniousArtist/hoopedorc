@@ -39,11 +39,17 @@ const SANDBOX_GATES_HELP: Record<SandboxGatesMode, string> = {
 const RISKY_RULES: {
   key: keyof SettingsType["riskyChangeRules"];
   label: string;
+  hint?: string;
 }[] = [
   { key: "dbSchema", label: "Database schema changes" },
   { key: "newDependencies", label: "New dependencies" },
   { key: "authOrSecrets", label: "Auth / secrets changes" },
   { key: "outOfScopeEdits", label: "Out-of-scope edits" },
+  {
+    key: "destructiveChanges",
+    label: "Destructive changes (mass deletions, DB wipes, etc.)",
+    hint: "Applies even under Fully Autonomous — this rule can't be bypassed by merge policy.",
+  },
 ];
 
 /** F31: injected into every author prompt (always) and validator review
@@ -440,21 +446,27 @@ export function Settings({
           Risky Change Rules
         </h3>
         <div className="space-y-2">
-          {RISKY_RULES.map(({ key, label }) => (
-            <label
-              key={key}
-              className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer"
-            >
-              <input
-                type="checkbox"
-                checked={settings.riskyChangeRules[key]}
-                onChange={(e) =>
-                  updateRiskyRule(key, e.target.checked)
-                }
-                className="rounded border-neutral-700 bg-neutral-800"
-              />
-              {label}
-            </label>
+          {RISKY_RULES.map(({ key, label, hint }) => (
+            <div key={key}>
+              <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  // S8's destructiveChanges is optional (absent on settings
+                  // persisted before it existed) and defaults to enabled —
+                  // `!== false` renders that "absent" state as checked,
+                  // matching how the engine enforces it.
+                  checked={settings.riskyChangeRules[key] !== false}
+                  onChange={(e) =>
+                    updateRiskyRule(key, e.target.checked)
+                  }
+                  className="rounded border-neutral-700 bg-neutral-800"
+                />
+                {label}
+              </label>
+              {hint && (
+                <p className="ml-6 mt-0.5 text-[10px] text-neutral-600">{hint}</p>
+              )}
+            </div>
           ))}
         </div>
       </section>
