@@ -391,4 +391,21 @@ export class WorktreeManagerImpl implements WorktreeManager {
       return "";
     }
   }
+
+  async primaryDirtyFiles(project: Project): Promise<string[]> {
+    try {
+      // Porcelain format: two status chars + a space, then the path (or,
+      // for a rename, "old -> new" — left as-is, good enough for a
+      // diagnostic message).
+      const output = await git(["status", "--porcelain"], project.localPath);
+      const ignored = new Set<string>([...LOCKFILES, "package.json"]);
+      return output
+        .split("\n")
+        .map((l) => l.slice(3).trim())
+        .filter(Boolean)
+        .filter((f) => !ignored.has(f));
+    } catch {
+      return [];
+    }
+  }
 }

@@ -83,6 +83,10 @@ function fakeDeps(
       // always consulting these two.
       async changedFilesWithStatus() { return changed.map((f) => ({ path: f, status: "M" })); },
       async diffText() { return ""; },
+      // B33: clean by default — most tests aren't exercising the
+      // wrote-to-the-wrong-place diagnosis, so the primary clone reads as
+      // undirtied unless a test overrides this.
+      async primaryDirtyFiles() { return []; },
       ...worktreesOver,
     },
     git: {
@@ -2200,6 +2204,92 @@ test("S8: the author prompt includes the fixed safety guardrails block", async (
   assert.match(capturedPrompts[0]!, /## Safety/);
   assert.match(capturedPrompts[0]!, /Never delete files or directories unrelated to this task/);
   assert.match(capturedPrompts[0]!, /Never touch credentials, secrets, or auth\/authorization checks/);
+});
+
+test("B33: the author prompt includes the working-directory block", async () => {
+  const capturedPrompts: string[] = [];
+  const capturingAdapter: AgentAdapter = {
+    runner: "opencode",
+    async run(opts): Promise<AgentRunResult> {
+      capturedPrompts.push(opts.prompt);
+      return {
+        ok: true, exitReason: "completed", costUsd: 0.01, tokensIn: 1, tokensOut: 1,
+        summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+      };
+    },
+  };
+  const t1 = task("t1");
+  await new Orchestrator(fakeDeps({ adapterFor: () => capturingAdapter }, [])).start(PROJECT, [t1]);
+  assert.equal(capturedPrompts.length, 1);
+  assert.match(capturedPrompts[0]!, /## Working Directory/);
+  assert.match(capturedPrompts[0]!, /dedicated git worktree/);
+  assert.match(capturedPrompts[0]!, /run `git status`/);
+});
+
+test("B33: no-changes diagnosis names the primary clone + offending files when the agent wrote there", async () => {
+  const logs: { level: string; message: string }[] = [];
+  const deps = fakeDeps(
+    {
+      worktrees: {
+        async primaryDirtyFiles() { return ["src/oops.ts"]; },
+      },
+      events: {
+        onLog(e) { logs.push({ level: e.level, message: e.message }); },
+        onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() { return "reject"; },
+      },
+    },
+    [],
+    [], // changedFiles() returns [] — no changes in the task's own worktree.
+  );
+  const t1 = task("t1", [], { maxAttempts: 1 });
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.ok(
+    logs.some(
+      (l) =>
+        l.level === "error" &&
+        /appears to have written into the primary clone/.test(l.message) &&
+        /src\/oops\.ts/.test(l.message),
+    ),
+    "should name the primary clone and the offending file",
+  );
+  assert.equal(t1.status, "failed");
+  assert.ok(
+    t1.statusReason && /wrote to the primary clone/.test(t1.statusReason),
+    `got: ${t1.statusReason}`,
+  );
+});
+
+test("B33: no-changes diagnosis keeps today's generic message when the primary clone is clean", async () => {
+  const logs: { level: string; message: string }[] = [];
+  const deps = fakeDeps(
+    {
+      // primaryDirtyFiles defaults to [] (clean) via fakeDeps' own default.
+      events: {
+        onLog(e) { logs.push({ level: e.level, message: e.message }); },
+        onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval() { return "reject"; },
+      },
+    },
+    [],
+    [], // changedFiles() returns [] — no changes in the task's own worktree.
+  );
+  const t1 = task("t1", [], { maxAttempts: 1 });
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  assert.ok(
+    logs.some(
+      (l) =>
+        l.level === "error" &&
+        /Nothing to commit\/PR — check that the agent wrote into the worktree/.test(l.message),
+    ),
+  );
+  assert.equal(t1.status, "failed");
+  assert.ok(
+    t1.statusReason && /models ran out of steps or wrote outside the worktree/.test(t1.statusReason),
+    `got: ${t1.statusReason}`,
+  );
 });
 
 test("a terminally-failed task gets its remote branch/PR cleaned up; a merged one does not (gh already did it)", async () => {

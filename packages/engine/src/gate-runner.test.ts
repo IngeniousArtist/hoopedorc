@@ -28,6 +28,9 @@ const worktrees: WorktreeManager = {
   async diffText() {
     return "";
   },
+  async primaryDirtyFiles() {
+    return [];
+  },
 };
 
 function project(config?: Project["config"]): Project {

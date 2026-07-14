@@ -301,16 +301,33 @@ export class OpenCodeAdapter implements AgentAdapter {
     // goes on stdin rather than as a trailing positional arg — `opencode run`
     // with no positional message reads it from stdin (verified against the
     // real CLI) — so a large task prompt can't hit macOS's ~1MB argv cap.
-    const args = ["run", "-m", this.opencodeModel, "--format", "json"];
+    //
+    // B33: `--dir <path>` is passed EXPLICITLY and unconditionally — this
+    // was a real, live-verified bug before this fix. `PWD` alone (the old
+    // approach) only works for a LOCAL, non-attached run: with `--attach`
+    // set, tool execution happens on the ATTACHED SERVER's own process,
+    // which never inherits this client process's env vars at all — the CLI's
+    // own `--dir` help text confirms this ("path on remote server if
+    // attaching"). Verified directly against the installed CLI (1.17.8):
+    // spun up a real `opencode serve`, ran `opencode run --attach <url>`
+    // with only `PWD` set (no `--dir`) from a different directory — the
+    // agent's `write` tool call landed in the SERVER's launch directory,
+    // not the client's cwd. Adding `--dir <cwd>` fixed it immediately, and
+    // `--dir` also works correctly for the local (non-attached) case, so
+    // it's passed every time rather than conditionally. Any Hoopedorc
+    // deployment with `OPENCODE_BASE_URL` set (attaching to a shared
+    // server) was silently writing every task's changes into the server's
+    // own directory instead of the task's worktree — which surfaces
+    // exactly as an "Author produced no changes in the worktree" failure.
+    const args = ["run", "-m", this.opencodeModel, "--format", "json", "--dir", opts.cwd];
     if (this.baseUrl) args.push("--attach", this.baseUrl);
 
     return new Promise((resolve) => {
       const proc = spawn("opencode", args, {
         cwd: opts.cwd,
-        // PWD must be set explicitly: spawn's `cwd` does NOT update the inherited
-        // $PWD env var, and `opencode run` resolves its working directory from
-        // $PWD (verified). Without this it runs in the server's launch directory
-        // and writes files there instead of the task worktree.
+        // PWD kept as belt-and-suspenders for the local (non-attached) case
+        // — `--dir` above is what actually matters now, including (unlike
+        // PWD) when attaching to a remote server.
         env: sanitizedEnv({ PWD: opts.cwd }),
         stdio: ["pipe", "pipe", "pipe"],
       });

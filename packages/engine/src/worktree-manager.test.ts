@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { test } from "node:test";
 import type { Project } from "@orc/types";
 import { WorktreeManagerImpl } from "./worktree-manager.js";
+
+const pexecFile = promisify(execFile);
+async function git(args: string[], cwd: string): Promise<void> {
+  await pexecFile("git", args, { cwd });
+}
 
 function project(localPath: string): Project {
   return {
@@ -99,4 +106,33 @@ test("B29: an unchanged worktree manifest across two worktrees does not force a 
     const secondHash = readFileSync(marker, "utf-8").trim();
     assert.equal(secondHash, firstHash, "identical manifests across worktrees must reuse the existing marker, not reinstall");
   });
+});
+
+test("B33: primaryDirtyFiles reports real git dirt, excluding package.json/lockfiles", async () => {
+  const primary = tmpDir("wt-primary-dirty");
+  await git(["init", "-q"], primary);
+  writeFileSync(join(primary, "package.json"), JSON.stringify({ name: "x" }));
+  writeFileSync(join(primary, "README.md"), "# hello\n");
+  await git(["add", "-A"], primary);
+  await git(["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "init"], primary);
+
+  const runner = new WorktreeManagerImpl({ sandboxGates: "off" });
+
+  // Clean working tree: nothing to report.
+  assert.deepEqual(await runner.primaryDirtyFiles(project(primary)), []);
+
+  // B29's manifest copy legitimately dirties package.json/lockfiles before
+  // an install — those must never be reported as a sign something's wrong.
+  writeFileSync(join(primary, "package.json"), JSON.stringify({ name: "x", version: "2.0.0" }));
+  writeFileSync(join(primary, "package-lock.json"), "{}");
+  assert.deepEqual(
+    await runner.primaryDirtyFiles(project(primary)),
+    [],
+    "package.json/lockfile dirt alone must not be reported",
+  );
+
+  // A file an agent should never have touched here — this IS the signal.
+  writeFileSync(join(primary, "src-oops.ts"), "// written to the wrong place\n");
+  const dirty = await runner.primaryDirtyFiles(project(primary));
+  assert.deepEqual(dirty, ["src-oops.ts"], "an unrelated dirty file must be named, package.json still excluded");
 });
