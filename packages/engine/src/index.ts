@@ -22,7 +22,21 @@ import type {
 import type { AgentAdapter } from "@orc/adapters";
 
 export { STUCK_DETECTION } from "./constants.js";
-export { WorktreeManagerImpl } from "./worktree-manager.js";
+export {
+  dependencyCacheRoot,
+  frozenInstallArgs,
+  inspectNodeDependencies,
+  nodeDependencyFingerprint,
+  ProjectSetupError,
+  WorktreeManagerImpl,
+} from "./worktree-manager.js";
+export type {
+  NodeDependencyPlan,
+  NodePackageManager,
+  NodeRuntimeIdentity,
+  SetupProcessRequest,
+  WorktreeSetupDeps,
+} from "./worktree-manager.js";
 export { GitServiceImpl, RollbackConflictError } from "./git-service.js";
 export { GateRunnerImpl } from "./gate-runner.js";
 export { ValidatorImpl, SelfReviewError } from "./validator.js";
@@ -139,13 +153,11 @@ export interface WorktreeManager {
   restoreToHead(task: Task): Promise<GitAcquisition<void>>;
   /**
    * B33: diagnostic-only — names of files currently dirty in the PRIMARY
-   * clone's working tree, EXCLUDING package.json/lockfiles (B29's
-   * worktree-manifest copy legitimately dirties those before an install,
-   * so they're not a sign anything went wrong). Consulted when an author
-   * produced zero changes in its own worktree, to tell "wrote to the wrong
-   * directory" apart from "ran out of steps" — report-only, NEVER resets
-   * anything (syncPrimary elsewhere self-heals; a reset here could race
-   * it).
+   * clone's working tree. B38 no longer copies worktree manifests into the
+   * primary clone, so package.json/lockfile dirt is now a real wrong-directory
+   * signal too. Consulted when an author produced zero changes in its own
+   * worktree — report-only, NEVER resets anything (syncPrimary elsewhere
+   * self-heals; a reset here could race it).
    */
   primaryDirtyFiles(project: Project): Promise<string[]>;
 }

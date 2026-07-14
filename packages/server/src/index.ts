@@ -76,6 +76,7 @@ import {
 } from "./plan-sessions";
 import { TelegramBot, sendTelegramMessage } from "./telegram";
 import { getModelRoster, runSetupChecks, testModels } from "./setup";
+import { parseSetupCommand } from "./project-config";
 import type {
   DraftTask,
   Notification,
@@ -368,6 +369,12 @@ function parseProjectConfig(
   if (typeof input !== "object") return { error: "config must be an object" };
   const raw = input as Record<string, unknown>;
   const value: ProjectConfig = {};
+
+  if (raw.setupCommand !== undefined) {
+    const parsed = parseSetupCommand(raw.setupCommand);
+    if ("error" in parsed) return parsed;
+    value.setupCommand = parsed.value;
+  }
 
   if (raw.maxAttempts !== undefined) {
     const n = raw.maxAttempts;
@@ -2317,7 +2324,7 @@ async function main() {
   // ── Setup / health check ──
   app.get("/api/setup", async () => {
     const settings = repo.getSettings(db) ?? defaultSettings();
-    return runSetupChecks(settings);
+    return runSetupChecks(settings, repo.getProjects(db));
   });
 
   // Live-test every enabled model with a trivial prompt (costs a little).

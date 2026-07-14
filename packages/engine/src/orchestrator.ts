@@ -1294,9 +1294,9 @@ export class Orchestrator implements Scheduler {
         if (changed.length === 0) {
           // B33: diagnose WHERE the agent actually wrote, instead of just
           // reporting that the worktree is empty. If the primary clone is
-          // dirty (excluding package.json/lockfiles, which B29's manifest
-          // copy legitimately dirties before an install), that's a strong
-          // signal the agent wrote there instead of its own worktree —
+          // dirty, that's a strong signal the agent wrote there instead of
+          // its own worktree — B38 creates no legitimate primary-manifest
+          // dirt —
           // name it explicitly rather than leaving "ran out of steps" as
           // the only explanation. Report-only: never resets the primary
           // clone here (syncPrimary elsewhere self-heals; racing it would

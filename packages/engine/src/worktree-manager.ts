@@ -1,16 +1,22 @@
 import { createHash } from "node:crypto";
 import {
-  copyFileSync,
+  accessSync,
+  constants,
+  cpSync,
   existsSync,
+  lstatSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  renameSync,
   rmSync,
-  symlinkSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { minimatch } from "minimatch";
-import { execManagedProcess, sanitizedEnv } from "@orc/adapters";
+import { abortableDelay, execManagedProcess, sanitizedEnv } from "@orc/adapters";
 import type { Project, Settings, Task } from "@orc/types";
 import type { GitAcquisition, WorktreeManager } from "./index.js";
 import {
@@ -20,7 +26,6 @@ import {
   SANDBOX_TIMEOUT_GRACE_MS,
 } from "./sandbox.js";
 
-const DEPS_TIMEOUT_MS = 10 * 60 * 1000;
 const DEPS_MAX_BUFFER = 32 * 1024 * 1024;
 const MAX_SAFETY_DIFF_BYTES = 16 * 1024 * 1024;
 const MAX_STATUS_BYTES = 8 * 1024 * 1024;
@@ -70,18 +75,300 @@ function acquisitionSuccess<T>(value: T, output = ""): GitAcquisition<T> {
   };
 }
 
-const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock"];
-const DEPS_MARKER = ".hoopedorc-deps-hash";
+export type NodePackageManager = "npm" | "pnpm" | "yarn" | "bun";
+
+const MANAGER_LOCKFILES: Record<NodePackageManager, string[]> = {
+  npm: ["package-lock.json"],
+  pnpm: ["pnpm-lock.yaml"],
+  yarn: ["yarn.lock"],
+  bun: ["bun.lock", "bun.lockb"],
+};
+const ALL_LOCKFILES = Object.values(MANAGER_LOCKFILES).flat();
+const SETUP_MANIFESTS = new Set([
+  "Package.swift",
+  "Package.resolved",
+  "Podfile",
+  "Podfile.lock",
+  "requirements.txt",
+  "pyproject.toml",
+  "poetry.lock",
+  "Pipfile",
+  "Pipfile.lock",
+  "Cargo.toml",
+  "Cargo.lock",
+  "global.json",
+  "packages.lock.json",
+]);
+const DEPENDENCY_ARTIFACTS = [
+  ".pnp.cjs",
+  ".pnp.loader.mjs",
+  ".yarn/cache",
+  ".yarn/unplugged",
+  ".yarn/install-state.gz",
+] as const;
+const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+const PROBE_TIMEOUT_MS = 20_000;
+const installLocks = new Map<string, Promise<void>>();
+
+export interface NodeDependencyPlan {
+  manager: NodePackageManager;
+  declaredVersion?: string;
+  lockfile: string;
+  inputs: string[];
+}
+
+export interface NodeRuntimeIdentity {
+  nodeVersion: string;
+  platform: string;
+  arch: string;
+}
+
+export interface SetupProcessRequest {
+  project: Project;
+  cwd: string;
+  command: string;
+  args: string[];
+  signal?: AbortSignal;
+  timeoutMs: number;
+  useSandbox: boolean;
+}
+
+export interface WorktreeSetupDeps {
+  resolveMode?: typeof resolveSandboxMode;
+  execute?: (request: SetupProcessRequest) => Promise<{ stdout: string; stderr?: string }>;
+  cacheRoot?: (project: Project) => string;
+  hostPlatform?: NodeJS.Platform;
+  hostArch?: string;
+}
+
+export class ProjectSetupError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProjectSetupError";
+  }
+}
+
+function slash(path: string): string {
+  return path.split(sep).join("/");
+}
+
+/** Generated install outputs worth caching. Workspace-local node_modules
+ * directories matter for npm/pnpm monorepos, so discover them without
+ * descending into dependency trees; the fixed entries cover Yarn PnP. */
+function dependencyArtifacts(root: string): string[] {
+  const artifacts: string[] = DEPENDENCY_ARTIFACTS.filter((path) =>
+    existsSync(join(root, path)),
+  );
+  const visit = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === ".git" || entry.name === ".yarn") continue;
+      const path = join(dir, entry.name);
+      if (entry.name === "node_modules") {
+        artifacts.push(slash(relative(root, path)));
+      } else {
+        visit(path);
+      }
+    }
+  };
+  visit(root);
+  return [...new Set(artifacts)].sort((a, b) => a.localeCompare(b));
+}
+
+function validArtifactPath(root: string, artifact: unknown): artifact is string {
+  if (typeof artifact !== "string" || artifact.length === 0 || isAbsolute(artifact)) return false;
+  const rel = relative(root, resolve(root, artifact));
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+function walkFiles(root: string, wanted: (name: string) => boolean): string[] {
+  const found: string[] = [];
+  const visit = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === ".git" || entry.name === "node_modules") continue;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else if (entry.isFile() && wanted(entry.name)) found.push(path);
+    }
+  };
+  visit(root);
+  return found.sort((a, b) => slash(relative(root, a)).localeCompare(slash(relative(root, b))));
+}
+
+function readPackageJson(root: string): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as Record<string, unknown>;
+  } catch (err) {
+    throw new ProjectSetupError(
+      `package.json is not valid JSON: ${(err as Error).message}`,
+    );
+  }
+}
+
+/** Resolve one reproducible Node install strategy from packageManager first,
+ * then from exactly one supported root lockfile. */
+export function inspectNodeDependencies(root: string): NodeDependencyPlan | null {
+  if (!existsSync(join(root, "package.json"))) return null;
+  const pkg = readPackageJson(root);
+  const declared = pkg.packageManager;
+  let manager: NodePackageManager | undefined;
+  let declaredVersion: string | undefined;
+
+  if (declared !== undefined) {
+    if (typeof declared !== "string") {
+      throw new ProjectSetupError("package.json packageManager must be a string such as pnpm@9.15.0");
+    }
+    const match = /^(npm|pnpm|yarn|bun)@([^+\s]+)(?:\+.*)?$/.exec(declared.trim());
+    if (!match) {
+      throw new ProjectSetupError(
+        `Unsupported packageManager ${JSON.stringify(declared)}; use npm, pnpm, yarn, or bun with an explicit version`,
+      );
+    }
+    manager = match[1] as NodePackageManager;
+    declaredVersion = match[2];
+  }
+
+  const present = ALL_LOCKFILES.filter((name) => existsSync(join(root, name)));
+  if (!manager) {
+    const managers = (Object.keys(MANAGER_LOCKFILES) as NodePackageManager[]).filter((candidate) =>
+      MANAGER_LOCKFILES[candidate].some((name) => present.includes(name)),
+    );
+    if (managers.length === 0) {
+      throw new ProjectSetupError(
+        "No supported lockfile found; commit package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock, or bun.lockb for reproducible setup",
+      );
+    }
+    if (managers.length > 1) {
+      throw new ProjectSetupError(
+        `Ambiguous Node lockfiles (${present.join(", ")}); set package.json packageManager to npm, pnpm, yarn, or bun`,
+      );
+    }
+    manager = managers[0];
+  }
+
+  if (!manager) throw new ProjectSetupError("Could not select a Node package manager");
+  const selectedManager = manager;
+  const matchingLocks = MANAGER_LOCKFILES[selectedManager].filter((name) => present.includes(name));
+  if (matchingLocks.length === 0) {
+    throw new ProjectSetupError(
+      `packageManager selects ${selectedManager}, but its lockfile is missing (${MANAGER_LOCKFILES[selectedManager].join(" or ")})`,
+    );
+  }
+  if (matchingLocks.length > 1) {
+    throw new ProjectSetupError(
+      `Multiple ${selectedManager} lockfiles are present (${matchingLocks.join(", ")}); keep exactly one`,
+    );
+  }
+
+  const lockfile = matchingLocks[0];
+  if (!lockfile) throw new ProjectSetupError(`Could not select a ${selectedManager} lockfile`);
+  const inputs = walkFiles(root, (name) => name === "package.json");
+  inputs.push(join(root, lockfile));
+  inputs.sort((a, b) => slash(relative(root, a)).localeCompare(slash(relative(root, b))));
+  return { manager: selectedManager, declaredVersion, lockfile, inputs };
+}
+
+export function frozenInstallArgs(manager: NodePackageManager, version: string): string[] {
+  if (manager === "npm") return ["ci"];
+  if (manager === "pnpm") return ["install", "--frozen-lockfile"];
+  if (manager === "bun") return ["install", "--frozen-lockfile"];
+  const major = Number.parseInt(version.split(".")[0] ?? "", 10);
+  return major >= 2
+    ? ["install", "--immutable"]
+    : ["install", "--frozen-lockfile"];
+}
+
+export function nodeDependencyFingerprint(
+  root: string,
+  plan: NodeDependencyPlan,
+  managerVersion: string,
+  runtime: NodeRuntimeIdentity,
+): string {
+  const hash = createHash("sha256");
+  hash.update(JSON.stringify({
+    manager: plan.manager,
+    declaredVersion: plan.declaredVersion ?? null,
+    managerVersion,
+    ...runtime,
+  }));
+  for (const path of plan.inputs) {
+    hash.update("\0");
+    hash.update(slash(relative(root, path)));
+    hash.update("\0");
+    hash.update(readFileSync(path));
+  }
+  return hash.digest("hex");
+}
+
+export function dependencyCacheRoot(project: Project): string {
+  return `${project.localPath}-hoopedorc-deps`;
+}
+
+function waitForSharedInstall(promise: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise((resolvePromise, reject) => {
+    const onAbort = () => reject(new DOMException("The operation was aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      () => {
+        signal.removeEventListener("abort", onAbort);
+        resolvePromise();
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
+function executableOnHost(command: string, cwd: string): boolean {
+  const candidates = command.includes("/") || command.includes("\\")
+    ? [isAbsolute(command) ? command : resolve(cwd, command)]
+    : (process.env.PATH ?? "").split(delimiter).filter(Boolean).map((dir) => join(dir, command));
+  return candidates.some((path) => {
+    try {
+      accessSync(path, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function containsAppleProject(root: string, setupCommand?: string): boolean {
+  const command = setupCommand ? basename(setupCommand).toLowerCase() : "";
+  if (command === "xcodebuild" || command === "pod") return true;
+  const visit = (dir: string): boolean => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === ".git" || entry.name === "node_modules") continue;
+      if (entry.name.endsWith(".xcodeproj") || entry.name.endsWith(".xcworkspace")) return true;
+      if (entry.isDirectory() && visit(join(dir, entry.name))) return true;
+    }
+    return false;
+  };
+  return visit(root);
+}
+
 // Things the orchestrator (or an agent) generates that must never get staged by
-// `git add -A` and committed into a task's PR — most importantly the symlinked
-// node_modules we drop into every worktree for the gates.
-const GIT_EXCLUDE_ENTRIES = ["node_modules", ".hoopedorc-deps-hash"];
+// `git add -A` and committed into a task's PR — most importantly the materialized
+// dependency artifacts placed into every worktree for authors and gates.
+const GIT_EXCLUDE_ENTRIES = [
+  "node_modules",
+  ".pnp.cjs",
+  ".pnp.loader.mjs",
+  ".yarn/cache",
+  ".yarn/unplugged",
+  ".yarn/install-state.gz",
+  ".hoopedorc-setup-hash",
+];
 
 export class WorktreeManagerImpl implements WorktreeManager {
   constructor(
     // Narrowed to just the one field this class reads — see the same choice
     // on GateRunnerImpl in gate-runner.ts.
     private readonly settings?: Pick<Settings, "sandboxGates">,
+    private readonly setupDeps: WorktreeSetupDeps = {},
   ) {}
 
   async create(
@@ -152,27 +439,26 @@ export class WorktreeManagerImpl implements WorktreeManager {
         signal,
       );
 
-      // MUST run before ensureDeps drops the node_modules symlink, and before the
-      // agent's `git add -A`: otherwise node_modules gets committed into the
+      // MUST run before ensureDeps materializes dependency artifacts, and before
+      // the agent's `git add -A`: otherwise node_modules can get committed into the
       // task's PR and the inScope gate fails it as an out-of-scope change. This
       // is the local safety net; new repos also get a committed .gitignore.
       await this.ensureGitExclude(path, signal);
       await this.ensureDeps(project, path, signal);
     } catch (err) {
-      if (signal?.aborted) {
-        // create() has not returned yet, so the task does not carry the path
-        // that executeTask's finally normally removes. Clean the partial
-        // worktree here and do not reuse the aborted signal for cleanup.
-        await git(["worktree", "remove", path, "--force"], project.localPath).catch(
-          () => {},
-        );
-        try {
-          rmSync(path, { recursive: true, force: true });
-        } catch {
-          /* best effort */
-        }
-        await git(["branch", "-D", branch], project.localPath).catch(() => {});
+      // create() has not returned yet, so the task does not carry the path
+      // that executeTask's finally normally removes. This includes B38's hard
+      // setup failures as well as cancellation; clean every partial worktree
+      // here, and never reuse an aborted signal for cleanup.
+      await git(["worktree", "remove", path, "--force"], project.localPath).catch(
+        () => {},
+      );
+      try {
+        rmSync(path, { recursive: true, force: true });
+      } catch {
+        /* best effort */
       }
+      await git(["branch", "-D", branch], project.localPath).catch(() => {});
       throw err;
     }
 
@@ -181,7 +467,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
 
   /**
    * Append node_modules (etc.) to git's local exclude so `git add -A` in a
-   * worktree never stages the symlinked deps. Uses `info/exclude` (shared
+   * worktree never stages materialized deps. Uses `info/exclude` (shared
    * across all worktrees via the common git dir, never committed) so it works
    * even for older projects whose repo has no .gitignore.
    */
@@ -211,107 +497,490 @@ export class WorktreeManagerImpl implements WorktreeManager {
     }
   }
 
-  /**
-   * A fresh `git worktree add` checkout has no node_modules (it's gitignored),
-   * so the pre-merge gates (`npm run build/typecheck/...`) would fail for lack
-   * of deps unless the agent happened to install them. Rather than reinstall
-   * per worktree (minutes each), keep ONE installed node_modules in the
-   * primary clone and symlink it into every worktree. The install only re-runs
-   * when the lockfile (or package.json, if no lockfile) changes — tracked via
-   * a hash marker inside node_modules.
-   *
-   * Caveat: concurrent worktrees share this node_modules, so a task that runs
-   * `npm install <newdep>` mutates it for siblings. New-dependency tasks are
-   * the rare case (and are flagged risky by the merge policy), and scope
-   * serialization keeps most overlap out, so this trade is worth the massive
-   * per-task time saving.
-   *
-   * B29: fingerprint (and install) against the WORKTREE's manifest, not the
-   * primary clone's. `create()` just branched this worktree off a freshly-
-   * fetched `origin/<defaultBranch>`, so its package.json/lockfile always
-   * reflect the latest merged state. The primary clone's own working tree
-   * doesn't: nothing here keeps it in sync (git-service.ts's syncPrimary()
-   * runs on a different lock, in a different module, after PR merges — a
-   * best-effort call this class doesn't coordinate with), so once any task
-   * changes package.json the primary clone can go stale indefinitely and
-   * every later task would otherwise silently symlink into deps installed
-   * for that stale snapshot. Copying the worktree's manifest(s) into primary
-   * before installing keeps the single shared node_modules (still the
-   * expensive part to avoid repeating) while guaranteeing what actually gets
-   * fingerprinted and installed is always current.
-   */
+  private async executeSetup(request: SetupProcessRequest): Promise<{ stdout: string; stderr?: string }> {
+    if (this.setupDeps.execute) return this.setupDeps.execute(request);
+    if (request.useSandbox) {
+      return sandboxedExecFile(
+        request.project.config?.gateImage || DEFAULT_GATE_IMAGE,
+        request.cwd,
+        request.command,
+        request.args,
+        {
+          timeout: request.timeoutMs + SANDBOX_TIMEOUT_GRACE_MS,
+          maxBuffer: DEPS_MAX_BUFFER,
+          signal: request.signal,
+        },
+      );
+    }
+    return execManagedProcess(request.command, request.args, {
+      cwd: request.cwd,
+      signal: request.signal,
+      timeoutMs: request.timeoutMs,
+      maxOutputBytes: DEPS_MAX_BUFFER,
+      env: sanitizedEnv({ PWD: request.cwd }),
+    });
+  }
+
+  private async resolveSetupMode(project: Project, appleToolchain = false): Promise<boolean> {
+    const platform = this.setupDeps.hostPlatform ?? process.platform;
+    if (appleToolchain && platform !== "darwin") {
+      throw new ProjectSetupError(
+        `Project "${project.name}" requires an Apple/Xcode toolchain; run it on a macOS Hoopedorc instance (this host is ${platform})`,
+      );
+    }
+    const resolved = await (this.setupDeps.resolveMode ?? resolveSandboxMode)(
+      this.settings?.sandboxGates,
+    );
+    if (!appleToolchain || !resolved.useSandbox) return resolved.useSandbox;
+    if (this.settings?.sandboxGates === "required") {
+      throw new ProjectSetupError(
+        `Project "${project.name}" requires the macOS host toolchain, but sandboxGates is "required"; use a Mac instance and set gate sandboxing to off or auto`,
+      );
+    }
+    // Docker Desktop still supplies a Linux container. Apple projects must
+    // use the real Mac toolchain even when auto mode detects Docker.
+    return false;
+  }
+
+  private async nodeRuntime(
+    project: Project,
+    cwd: string,
+    useSandbox: boolean,
+    signal?: AbortSignal,
+  ): Promise<NodeRuntimeIdentity> {
+    try {
+      const result = await this.executeSetup({
+        project,
+        cwd,
+        command: "node",
+        args: ["-p", "JSON.stringify({nodeVersion:process.version,platform:process.platform,arch:process.arch})"],
+        signal,
+        timeoutMs: PROBE_TIMEOUT_MS,
+        useSandbox,
+      });
+      const parsed = JSON.parse(result.stdout.trim()) as NodeRuntimeIdentity;
+      if (!parsed.nodeVersion || !parsed.platform || !parsed.arch) throw new Error("incomplete output");
+      return parsed;
+    } catch (err) {
+      signal?.throwIfAborted();
+      const where = useSandbox
+        ? `Docker image ${project.config?.gateImage || DEFAULT_GATE_IMAGE}`
+        : "the Hoopedorc host";
+      throw new ProjectSetupError(
+        `Node.js is unavailable in ${where}; install Node there or select an image that contains it (${(err as Error).message})`,
+      );
+    }
+  }
+
+  private async managerVersion(
+    project: Project,
+    cwd: string,
+    manager: NodePackageManager,
+    useSandbox: boolean,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    try {
+      const result = await this.executeSetup({
+        project,
+        cwd,
+        command: manager,
+        args: ["--version"],
+        signal,
+        timeoutMs: PROBE_TIMEOUT_MS,
+        useSandbox,
+      });
+      const version = result.stdout.trim().split("\n")[0]?.trim();
+      if (!version) throw new Error("version command returned no output");
+      return version;
+    } catch (err) {
+      signal?.throwIfAborted();
+      const where = useSandbox
+        ? `Docker image ${project.config?.gateImage || DEFAULT_GATE_IMAGE}`
+        : "the Hoopedorc host PATH";
+      throw new ProjectSetupError(
+        `Project "${project.name}" selects ${manager}, but the ${manager} binary is unavailable in ${where}. Install ${manager} there or update package.json packageManager / the lockfile (${(err as Error).message})`,
+      );
+    }
+  }
+
+  private cacheMetadata(path: string): { fingerprint?: string; artifacts?: string[] } | null {
+    try {
+      return JSON.parse(
+        readFileSync(join(path, ".hoopedorc-deps.json"), "utf8"),
+      ) as { fingerprint?: string; artifacts?: string[] };
+    } catch {
+      return null;
+    }
+  }
+
+  private cacheReady(path: string, fingerprint: string): boolean {
+    const metadata = this.cacheMetadata(path);
+    return metadata?.fingerprint === fingerprint &&
+      Array.isArray(metadata.artifacts) &&
+      metadata.artifacts.length > 0 &&
+      metadata.artifacts.every((artifact) =>
+        validArtifactPath(path, artifact) && existsSync(join(path, artifact))
+      );
+  }
+
+  private async withFileInstallLock(
+    finalPath: string,
+    fingerprint: string,
+    signal: AbortSignal | undefined,
+    install: () => Promise<void>,
+  ): Promise<void> {
+    const lockPath = `${finalPath}.lock`;
+    mkdirSync(dirname(finalPath), { recursive: true });
+    for (;;) {
+      signal?.throwIfAborted();
+      if (this.cacheReady(finalPath, fingerprint)) return;
+      try {
+        mkdirSync(lockPath);
+        writeFileSync(
+          join(lockPath, "owner.json"),
+          JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+        );
+        break;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "EEXIST") throw err;
+        let stale = false;
+        try {
+          const owner = JSON.parse(readFileSync(join(lockPath, "owner.json"), "utf8")) as {
+            pid?: number;
+            createdAt?: number;
+          };
+          if (owner.pid && owner.pid !== process.pid) {
+            try {
+              process.kill(owner.pid, 0);
+            } catch (probeError) {
+              stale = (probeError as NodeJS.ErrnoException).code === "ESRCH";
+            }
+          }
+          stale ||= Date.now() - (owner.createdAt ?? statSync(lockPath).mtimeMs) >
+            INSTALL_TIMEOUT_MS + SANDBOX_TIMEOUT_GRACE_MS * 2;
+        } catch {
+          try {
+            stale = Date.now() - statSync(lockPath).mtimeMs > PROBE_TIMEOUT_MS;
+          } catch {
+            continue; // lock disappeared between probes; retry acquisition
+          }
+        }
+        if (stale) {
+          rmSync(lockPath, { recursive: true, force: true });
+          continue;
+        }
+        await abortableDelay(100, signal);
+      }
+    }
+    try {
+      await install();
+    } finally {
+      rmSync(lockPath, { recursive: true, force: true });
+    }
+  }
+
+  private async publishDependencyCache(
+    project: Project,
+    worktreePath: string,
+    plan: NodeDependencyPlan,
+    managerVersion: string,
+    runtime: NodeRuntimeIdentity,
+    fingerprint: string,
+    finalPath: string,
+    useSandbox: boolean,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (this.cacheReady(finalPath, fingerprint)) return;
+    if (existsSync(finalPath)) rmSync(finalPath, { recursive: true, force: true });
+
+    const root = dirname(finalPath);
+    mkdirSync(root, { recursive: true });
+    const installRoot = mkdtempSync(join(root, `.install-${fingerprint.slice(0, 12)}-`));
+    const publishRoot = mkdtempSync(join(root, `.publish-${fingerprint.slice(0, 12)}-`));
+    try {
+      cpSync(worktreePath, installRoot, {
+        recursive: true,
+        filter: (source) => {
+          const rel = relative(worktreePath, source);
+          if (!rel) return true;
+          const segments = rel.split(sep);
+          return !segments.includes(".git") &&
+            !segments.includes("node_modules") &&
+            !segments.includes(".hoopedorc-setup-hash");
+        },
+      });
+      await this.executeSetup({
+        project,
+        cwd: installRoot,
+        command: plan.manager,
+        args: frozenInstallArgs(plan.manager, managerVersion),
+        signal,
+        timeoutMs: INSTALL_TIMEOUT_MS,
+        useSandbox,
+      });
+      signal?.throwIfAborted();
+      const artifacts = dependencyArtifacts(installRoot);
+      for (const artifact of artifacts) {
+        const source = join(installRoot, artifact);
+        const destination = join(publishRoot, artifact);
+        mkdirSync(dirname(destination), { recursive: true });
+        renameSync(source, destination);
+      }
+      // A valid empty dependency graph may leave no install artifact. Keep an
+      // empty node_modules template so the successful fingerprint is still
+      // cacheable and future worktrees do not reinstall forever.
+      if (artifacts.length === 0) {
+        mkdirSync(join(publishRoot, "node_modules"), { recursive: true });
+        artifacts.push("node_modules");
+      }
+      writeFileSync(
+        join(publishRoot, ".hoopedorc-deps.json"),
+        JSON.stringify({
+          fingerprint,
+          manager: plan.manager,
+          declaredVersion: plan.declaredVersion ?? null,
+          managerVersion,
+          lockfile: plan.lockfile,
+          runtime,
+          artifacts,
+          inputs: plan.inputs.map((path) => slash(relative(worktreePath, path))),
+          createdAt: new Date().toISOString(),
+        }, null, 2),
+      );
+      try {
+        renameSync(publishRoot, finalPath);
+      } catch (err) {
+        // Another process may have won the same atomic publish. Its entry is
+        // reusable only when the metadata proves it is the exact same cache.
+        if (!this.cacheReady(finalPath, fingerprint)) throw err;
+      }
+    } finally {
+      if (existsSync(installRoot)) rmSync(installRoot, { recursive: true, force: true });
+      if (existsSync(publishRoot)) rmSync(publishRoot, { recursive: true, force: true });
+    }
+  }
+
+  private materializeDependencyCache(worktreePath: string, cachePath: string): void {
+    const metadata = this.cacheMetadata(cachePath);
+    if (
+      !metadata?.artifacts?.length ||
+      !metadata.artifacts.every((artifact) => validArtifactPath(cachePath, artifact))
+    ) {
+      throw new ProjectSetupError(`Dependency cache ${cachePath} has no published artifacts`);
+    }
+    const staging = mkdtempSync(join(dirname(worktreePath), ".hoopedorc-materialize-"));
+    try {
+      for (const artifact of metadata.artifacts) {
+        const destination = join(staging, artifact);
+        mkdirSync(dirname(destination), { recursive: true });
+        cpSync(join(cachePath, artifact), destination, {
+          recursive: true,
+          verbatimSymlinks: true,
+        });
+      }
+      for (const artifact of metadata.artifacts) {
+        const destination = join(worktreePath, artifact);
+        try {
+          lstatSync(destination);
+          rmSync(destination, { recursive: true, force: true });
+        } catch {
+          /* artifact is absent in this fresh worktree */
+        }
+        mkdirSync(dirname(destination), { recursive: true });
+        renameSync(join(staging, artifact), destination);
+      }
+    } finally {
+      rmSync(staging, { recursive: true, force: true });
+    }
+  }
+
+  private async ensureNodeDeps(
+    project: Project,
+    worktreePath: string,
+    plan: NodeDependencyPlan,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const useSandbox = await this.resolveSetupMode(project);
+    const runtime = await this.nodeRuntime(project, worktreePath, useSandbox, signal);
+    const version = await this.managerVersion(
+      project,
+      worktreePath,
+      plan.manager,
+      useSandbox,
+      signal,
+    );
+    const fingerprint = nodeDependencyFingerprint(worktreePath, plan, version, runtime);
+    const cacheRoot = (this.setupDeps.cacheRoot ?? dependencyCacheRoot)(project);
+    const finalPath = join(cacheRoot, fingerprint);
+
+    let pending = installLocks.get(finalPath);
+    if (!pending) {
+      pending = this.withFileInstallLock(finalPath, fingerprint, signal, () =>
+        this.publishDependencyCache(
+          project,
+          worktreePath,
+          plan,
+          version,
+          runtime,
+          fingerprint,
+          finalPath,
+          useSandbox,
+          signal,
+        ),
+      ).finally(() => {
+        if (installLocks.get(finalPath) === pending) installLocks.delete(finalPath);
+      });
+      installLocks.set(finalPath, pending);
+    }
+    try {
+      await waitForSharedInstall(pending, signal);
+    } catch (err) {
+      signal?.throwIfAborted();
+      if (err instanceof ProjectSetupError) throw err;
+      throw new ProjectSetupError(
+        `${plan.manager} frozen install failed for project "${project.name}"; no dependency cache was published. Fix the lockfile/tooling error and retry: ${(err as Error).message}`,
+      );
+    }
+    this.materializeDependencyCache(worktreePath, finalPath);
+    return `${plan.manager}@${version} (${plan.lockfile}; ${runtime.nodeVersion} ${runtime.platform}/${runtime.arch})`;
+  }
+
+  private customSetupFingerprint(project: Project, worktreePath: string): string {
+    const setup = project.config?.setupCommand;
+    if (!setup) return "";
+    const hash = createHash("sha256");
+    hash.update(JSON.stringify({
+      command: setup.command,
+      args: setup.args,
+      platform: this.setupDeps.hostPlatform ?? process.platform,
+      arch: this.setupDeps.hostArch ?? process.arch,
+      sandbox: this.settings?.sandboxGates ?? "auto",
+      image: project.config?.gateImage ?? DEFAULT_GATE_IMAGE,
+    }));
+    const inputs = walkFiles(
+      worktreePath,
+      (name) => SETUP_MANIFESTS.has(name) || name.endsWith(".csproj") || name.endsWith(".fsproj"),
+    );
+    for (const path of inputs) {
+      hash.update("\0");
+      hash.update(slash(relative(worktreePath, path)));
+      hash.update("\0");
+      hash.update(readFileSync(path));
+    }
+    return hash.digest("hex");
+  }
+
+  private async ensureCustomSetup(
+    project: Project,
+    worktreePath: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    const setup = project.config?.setupCommand;
+    if (!setup) return null;
+    const fingerprint = this.customSetupFingerprint(project, worktreePath);
+    const marker = join(worktreePath, ".hoopedorc-setup-hash");
+    if (existsSync(marker) && readFileSync(marker, "utf8").trim() === fingerprint) {
+      return `${setup.command} (cached for this worktree)`;
+    }
+    const appleToolchain = containsAppleProject(worktreePath, setup.command);
+    const useSandbox = await this.resolveSetupMode(project, appleToolchain);
+    try {
+      await this.executeSetup({
+        project,
+        cwd: worktreePath,
+        command: setup.command,
+        args: [...setup.args],
+        signal,
+        timeoutMs: INSTALL_TIMEOUT_MS,
+        useSandbox,
+      });
+    } catch (err) {
+      signal?.throwIfAborted();
+      throw new ProjectSetupError(
+        `Project setup command ${JSON.stringify(setup.command)} failed. Install the required tool on the Hoopedorc host or in ${project.config?.gateImage || DEFAULT_GATE_IMAGE}, then retry: ${(err as Error).message}`,
+      );
+    }
+    signal?.throwIfAborted();
+    writeFileSync(marker, `${fingerprint}\n`);
+    return `${setup.command} ${setup.args.join(" ")}`.trim();
+  }
+
+  /** Prepare reproducible Node dependencies plus the project's optional,
+   * structured non-Node setup command. Failures are hard, actionable setup
+   * failures: an unpublished/partial cache is never treated as usable. */
   private async ensureDeps(
     project: Project,
     worktreePath: string,
     signal?: AbortSignal,
   ): Promise<void> {
-    const primary = project.localPath;
-    if (!existsSync(join(worktreePath, "package.json"))) return; // not a node project
+    signal?.throwIfAborted();
+    if (containsAppleProject(worktreePath, project.config?.setupCommand?.command)) {
+      await this.resolveSetupMode(project, true);
+    }
+    const plan = inspectNodeDependencies(worktreePath);
+    if (plan) await this.ensureNodeDeps(project, worktreePath, plan, signal);
+    await this.ensureCustomSetup(project, worktreePath, signal);
+  }
 
+  /** Project-aware Setup & Health line. It resolves the same package manager,
+   * runtime, sandbox, and Apple-host policy used by real task preparation. */
+  async setupHealth(project: Project): Promise<{ ok: boolean; detail: string }> {
     try {
-      const lockName = LOCKFILES.find((f) => existsSync(join(worktreePath, f)));
-      const fingerprintFile = lockName ?? "package.json";
-      const want = createHash("sha1")
-        .update(readFileSync(join(worktreePath, fingerprintFile)))
-        .digest("hex");
-
-      const nm = join(primary, "node_modules");
-      const marker = join(nm, DEPS_MARKER);
-      const have = existsSync(marker)
-        ? readFileSync(marker, "utf-8").trim()
-        : null;
-
-      if (!existsSync(marker) || have !== want) {
-        copyFileSync(join(worktreePath, "package.json"), join(primary, "package.json"));
-        if (lockName) {
-          copyFileSync(join(worktreePath, lockName), join(primary, lockName));
-        }
-
-        // `npm ci` is faster + reproducible when a lockfile exists; fall back
-        // to `npm install` otherwise. Async (not execSync) so a multi-minute
-        // install doesn't block the server's event loop. 10-min cap so a hung
-        // install can't wedge the run.
-        const args =
-          lockName === "package-lock.json" ? ["ci"] : ["install"];
-        // F13-P1: postinstall hooks are repo code too — the sneakiest kind,
-        // since they run implicitly. Route through the same Docker sandbox
-        // as gate scripts when enabled; `resolveSandboxMode` throwing
-        // ("required" with no daemon) is caught by the outer try/catch below
-        // and treated the same as any other install failure — best effort,
-        // the actual gate run surfaces the real "no daemon" error loudly.
-        const sandbox = await resolveSandboxMode(this.settings?.sandboxGates);
-        if (sandbox.useSandbox) {
-          await sandboxedExecFile(project.config?.gateImage || DEFAULT_GATE_IMAGE, primary, "npm", args, {
-            timeout: DEPS_TIMEOUT_MS + SANDBOX_TIMEOUT_GRACE_MS,
-            maxBuffer: DEPS_MAX_BUFFER,
-            signal,
-          });
-        } else {
-          await execManagedProcess("npm", args, {
-            cwd: primary,
-            signal,
-            timeoutMs: DEPS_TIMEOUT_MS,
-            maxOutputBytes: DEPS_MAX_BUFFER,
-            env: sanitizedEnv({ PWD: primary }),
-          });
-        }
-        // A package.json with no dependencies leaves npm creating no
-        // node_modules at all — make the dir so the marker (and the symlink
-        // target) exist, and so we don't reinstall on every task forever.
-        mkdirSync(nm, { recursive: true });
-        writeFileSync(marker, want);
+      if (!existsSync(project.localPath)) {
+        throw new ProjectSetupError(`local clone not found at ${project.localPath}`);
       }
-
-      // Symlink the worktree's node_modules at the shared install. Skip if the
-      // checkout somehow already has a real one.
-      const link = join(worktreePath, "node_modules");
-      if (existsSync(nm) && !existsSync(link)) {
-        symlinkSync(nm, link, "dir");
+      const details: string[] = [];
+      const setup = project.config?.setupCommand;
+      const apple = containsAppleProject(project.localPath, setup?.command);
+      if (apple) {
+        await this.resolveSetupMode(project, true);
+        details.push("Apple/Xcode project — macOS host toolchain");
       }
+      const plan = inspectNodeDependencies(project.localPath);
+      if (plan) {
+        const useSandbox = await this.resolveSetupMode(project);
+        const runtime = await this.nodeRuntime(project, project.localPath, useSandbox);
+        const version = await this.managerVersion(
+          project,
+          project.localPath,
+          plan.manager,
+          useSandbox,
+        );
+        details.push(`${plan.manager}@${version} via ${plan.lockfile} (${runtime.nodeVersion} ${runtime.platform}/${runtime.arch})`);
+      }
+      if (setup) {
+        const useSandbox = await this.resolveSetupMode(project, apple);
+        if (useSandbox) {
+          try {
+            await this.executeSetup({
+              project,
+              cwd: project.localPath,
+              command: "sh",
+              args: ["-c", 'command -v "$1" >/dev/null 2>&1', "hoopedorc", setup.command],
+              timeoutMs: PROBE_TIMEOUT_MS,
+              useSandbox: true,
+            });
+          } catch {
+            throw new ProjectSetupError(
+              `setup command ${JSON.stringify(setup.command)} was not found in Docker image ${project.config?.gateImage || DEFAULT_GATE_IMAGE}; install it in that image or change the project image`,
+            );
+          }
+        } else if (!executableOnHost(setup.command, project.localPath)) {
+          throw new ProjectSetupError(
+            `setup command ${JSON.stringify(setup.command)} was not found on the host PATH; install it or configure a gate image that contains it`,
+          );
+        }
+        details.push(
+          `custom: ${setup.command} ${setup.args.join(" ")} (${useSandbox ? `docker ${project.config?.gateImage || DEFAULT_GATE_IMAGE}` : "host"})`.trim(),
+        );
+      }
+      return {
+        ok: true,
+        detail: details.length > 0 ? details.join("; ") : "no Node lockfile or custom setup command — nothing to prepare",
+      };
     } catch (err) {
-      if (signal?.aborted) throw err;
-      // Best effort — if install/symlink fails, the gate will surface the
-      // missing-deps error on this task rather than silently wedging the run.
+      return { ok: false, detail: (err as Error).message };
     }
   }
 
@@ -567,12 +1236,10 @@ export class WorktreeManagerImpl implements WorktreeManager {
       // for a rename, "old -> new" — left as-is, good enough for a
       // diagnostic message).
       const output = await git(["status", "--porcelain"], project.localPath);
-      const ignored = new Set<string>([...LOCKFILES, "package.json"]);
       return output
         .split("\n")
         .map((l) => l.slice(3).trim())
-        .filter(Boolean)
-        .filter((f) => !ignored.has(f));
+        .filter(Boolean);
     } catch {
       return [];
     }

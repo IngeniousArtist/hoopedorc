@@ -5,6 +5,8 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -258,6 +260,27 @@ test("F13-P1: sandboxGates=auto with Docker available dispatches gate scripts th
     DEFAULT_GATE_IMAGE,
     "defaults to DEFAULT_GATE_IMAGE when project.config.gateImage is unset",
   );
+});
+
+test("B38: sandbox gates preserve a legacy external node_modules symlink read-only", async () => {
+  const dir = tmpRepo({ build: 'node -e "process.exit(0)"' });
+  const cacheNodeModules = join(mkdtempSync(join(tmpdir(), "hoopedorc-deps-cache-")), "node_modules");
+  mkdirSync(cacheNodeModules);
+  symlinkSync(cacheNodeModules, join(dir, "node_modules"), "dir");
+  const mounts: string[][] = [];
+  const fakeSandbox: SandboxDeps = {
+    resolveMode: async () => ({ useSandbox: true, detail: "docker (auto)" }),
+    exec: async (_image, _cwd, _cmd, _args, options) => {
+      mounts.push(options?.readOnlyMounts ?? []);
+      return { stdout: "ok", stderr: "" };
+    },
+  };
+  const runner = new GateRunnerImpl(worktrees, { sandboxGates: "auto" }, fakeSandbox);
+  const result = await runner.run(project(), task(dir));
+  assert.equal(result.build, true);
+  assert.ok(mounts.length > 0);
+  const resolvedCache = realpathSync(cacheNodeModules);
+  assert.ok(mounts.every((paths) => paths.includes(resolvedCache)));
 });
 
 test("F13-P1: sandboxGates=auto with no Docker daemon falls back to real host execution", async () => {

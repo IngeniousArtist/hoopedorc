@@ -1,5 +1,5 @@
 import type { MergePolicy, ProjectConfig } from "@orc/types";
-import { useState } from "react";
+import { useId, useState } from "react";
 
 /** Form-friendly mirror of ProjectConfig (F9) — every field is a string/bool
  *  so it can sit in plain <input>s; converted to/from ProjectConfig at the
@@ -7,6 +7,9 @@ import { useState } from "react";
 export interface ProjectConfigForm {
   mergePolicy: MergePolicy | "";
   maxAttempts: string;
+  setupCommand: string;
+  /** B38: one literal argv entry per line; never shell-split. */
+  setupArgs: string;
   typecheckScript: string;
   typecheckSkip: boolean;
   lintScript: string;
@@ -34,6 +37,8 @@ export interface ProjectConfigForm {
 export const EMPTY_PROJECT_CONFIG_FORM: ProjectConfigForm = {
   mergePolicy: "",
   maxAttempts: "",
+  setupCommand: "",
+  setupArgs: "",
   typecheckScript: "",
   typecheckSkip: false,
   lintScript: "",
@@ -61,6 +66,8 @@ export function projectConfigToForm(config: ProjectConfig | undefined): ProjectC
   return {
     mergePolicy: config.mergePolicy ?? "",
     maxAttempts: config.maxAttempts != null ? String(config.maxAttempts) : "",
+    setupCommand: config.setupCommand?.command ?? "",
+    setupArgs: config.setupCommand?.args.join("\n") ?? "",
     typecheckScript: typeof g.typecheckScript === "string" ? g.typecheckScript : "",
     typecheckSkip: g.typecheckScript === false,
     lintScript: typeof g.lintScript === "string" ? g.lintScript : "",
@@ -91,6 +98,15 @@ export function projectConfigFromForm(form: ProjectConfigForm): ProjectConfig | 
   if (form.maxAttempts.trim()) {
     const n = parseInt(form.maxAttempts, 10);
     if (Number.isFinite(n)) config.maxAttempts = n;
+  }
+  if (form.setupCommand.trim()) {
+    config.setupCommand = {
+      command: form.setupCommand.trim(),
+      args: form.setupArgs
+        .split("\n")
+        .map((arg) => arg.replace(/\r$/, ""))
+        .filter((arg) => arg.length > 0),
+    };
   }
 
   const gates: NonNullable<ProjectConfig["gates"]> = {};
@@ -163,6 +179,9 @@ export function projectConfigFromForm(form: ProjectConfigForm): ProjectConfig | 
  * either fully blank (no schedule intended — fine) or fully complete.
  */
 export function projectConfigFormError(form: ProjectConfigForm): string | null {
+  if (!form.setupCommand.trim() && form.setupArgs.trim()) {
+    return "Project setup arguments need a setup command.";
+  }
   const hasIntent =
     form.scheduleEnabled ||
     form.scheduleHour.trim() !== "" ||
@@ -187,7 +206,7 @@ const MERGE_POLICIES: { value: MergePolicy; label: string }[] = [
 ];
 
 const inputCls =
-  "w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200";
+  "w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 focus-visible:border-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40";
 
 function GateRow({
   label,
@@ -234,29 +253,34 @@ export function ProjectConfigFields({
   onChange: (form: ProjectConfigForm) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const setupCommandId = useId();
+  const setupArgsId = useId();
+  const setupErrorId = useId();
   const set = <K extends keyof ProjectConfigForm>(key: K, value: ProjectConfigForm[K]) =>
     onChange({ ...form, [key]: value });
-  const scheduleError = projectConfigFormError(form);
+  const configError = projectConfigFormError(form);
+  const setupError = !form.setupCommand.trim() && form.setupArgs.trim() ? configError : null;
+  const scheduleError = setupError ? null : configError;
 
   return (
     <div className="rounded border border-neutral-800">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center justify-between px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800/50"
+        className="flex min-h-10 w-full items-center justify-between px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
       >
-        <span>Advanced (gates, retries, merge policy)</span>
+        <span>Advanced (setup, gates, retries, merge policy)</span>
         <span>{open ? "▲" : "▼"}</span>
       </button>
       {open && (
         <div className="space-y-3 border-t border-neutral-800 px-3 py-3 text-xs">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-neutral-400">Merge policy override</label>
               <select
                 value={form.mergePolicy}
                 onChange={(e) => set("mergePolicy", e.target.value as MergePolicy | "")}
-                className={inputCls}
+                className={`${inputCls} min-h-10`}
               >
                 <option value="">Use global setting</option>
                 {MERGE_POLICIES.map((p) => (
@@ -328,6 +352,51 @@ export function ProjectConfigFields({
               className={inputCls}
             />
           </div>
+
+          <fieldset className="space-y-2 rounded border border-neutral-800 p-2">
+            <legend className="px-1 text-neutral-400">Project setup</legend>
+            <div>
+              <label htmlFor={setupCommandId} className="mb-1 block text-neutral-400">
+                Command (optional)
+              </label>
+              <input
+                id={setupCommandId}
+                type="text"
+                value={form.setupCommand}
+                onChange={(e) => set("setupCommand", e.target.value)}
+                placeholder="e.g. python3, cargo, pod, swift, dotnet"
+                autoComplete="off"
+                spellCheck={false}
+                aria-invalid={setupError ? "true" : undefined}
+                aria-describedby={setupError ? setupErrorId : undefined}
+                className={`${inputCls} min-h-10`}
+              />
+            </div>
+            <div>
+              <label htmlFor={setupArgsId} className="mb-1 block text-neutral-400">
+                Setup arguments — one literal argument per line
+              </label>
+              <textarea
+                id={setupArgsId}
+                value={form.setupArgs}
+                onChange={(e) => set("setupArgs", e.target.value)}
+                placeholder={"-m\nvenv\n.venv"}
+                rows={3}
+                spellCheck={false}
+                className={`${inputCls} resize-y font-mono`}
+              />
+            </div>
+            <p className="text-[10px] text-neutral-500">
+              Runs directly without a shell, with the gate sandbox policy,
+              a 10-minute timeout, and task cancellation. Commit the stack's
+              lockfile and keep the command idempotent.
+            </p>
+            {setupError && (
+              <p id={setupErrorId} className="text-[10px] text-amber-400">
+                {setupError}
+              </p>
+            )}
+          </fieldset>
 
           <div>
             <label className="mb-1 block text-neutral-400">

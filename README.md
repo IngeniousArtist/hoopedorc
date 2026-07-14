@@ -167,13 +167,15 @@ Secrets (the Telegram bot token, the API token itself) are stored in the local
 SQLite DB and redacted (`"__SET__"` sentinel) on every read from the settings API
 — they never round-trip back to the browser.
 
-**Gate scripts and dependency installs** — the riskiest repo-owned code,
-including `postinstall` hooks — run inside a disposable Docker container by
+**Gate scripts, dependency installs, and project setup** — the riskiest
+repo-owned code, including `postinstall` hooks — run inside a disposable Docker container by
 default whenever a daemon is reachable (`Settings.sandboxGates`: `auto` by
 default, `required` to refuse host fallback; see the user guide's
 [Gate sandbox](docs/USER_GUIDE.md#gate-sandbox) section). The container sees
-one task's worktree plus a read-only view of the shared dependency install —
-not your home directory, not the orchestrator's DB, not your CLI credentials.
+one task's worktree—not your home directory, the orchestrator's DB, sibling
+worktrees, or your CLI credentials. Node dependencies are selected from the
+repo's declared package manager/lockfile, published atomically to an immutable
+fingerprinted cache outside the clone, and materialized separately per task.
 
 **Spawned agents** still run directly on the host with the same user's stored
 CLI auth (`claude`, `opencode`, `codex`) — don't run untrusted repos through it.

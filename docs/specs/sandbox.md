@@ -4,7 +4,8 @@
 `Settings.sandboxGates` ("off"/"auto"/"required"), `ProjectConfig.gateImage`,
 and `packages/engine/src/sandbox.ts` (`detectDocker`, `resolveSandboxMode`,
 `sandboxedExecFile`). `GateRunnerImpl`'s gate scripts/testCommand and
-`WorktreeManagerImpl.ensureDeps`'s `npm ci|install` route through it; the
+`WorktreeManagerImpl.ensureDeps` reproducible npm/pnpm/Yarn/Bun install and
+structured `ProjectConfig.setupCommand` route through it; the
 *author agent* still runs on the host exactly as this doc describes below —
 phases 2/3 (below) remain unbuilt. Re-confirm against the code before
 extending it, the same way every item in `docs/PRODUCTIZATION_PLAN.md` gets a
@@ -111,21 +112,20 @@ Today (`packages/engine/src/worktree-manager.ts`), each task gets:
   nesting would make coding agents resolve the wrong project root by
   walking up to the nearest `.git`, a historic bug documented in
   `docs/USER_GUIDE.md`'s troubleshooting table).
-- A symlinked `node_modules` (see `DEPS_MARKER`/`GIT_EXCLUDE_ENTRIES` in
-  `worktree-manager.ts`) so `npm ci`/`install` isn't repeated per task, with
-  a `.git/info/exclude` entry so it's never accidentally `git add -A`'d into
-  the task's own commit.
+- A B38 dependency materialization produced from an immutable fingerprinted
+  sibling cache. The fingerprint covers all workspace manifests, lockfile,
+  package-manager/version, Node version, OS, and architecture. Per-key locks
+  prevent duplicate installs; atomic rename publishes generated artifacts
+  only after success; `.git/info/exclude` keeps those artifacts out of commits.
 
-For a sandboxed run, the natural mapping is: **bind-mount exactly that one
+For a sandboxed run, the implemented mapping is: **bind-mount exactly that one
 worktree directory** (`task.worktreePath`) into the container at a fixed
-path (e.g. `/workspace`), read-write, and nothing else from the host
-filesystem. The symlinked `node_modules` needs a decision at implementation
-time: either resolve the symlink and copy/bind the real `node_modules` in
-too (simplest, costs disk/time per sandbox instance), or keep the shared
-symlink target bind-mounted read-only alongside the worktree (cheaper, but
-means the sandbox can see a directory shared across every task's sandbox
-instance — acceptable, since `node_modules` isn't secret, just don't extend
-the same reasoning to anything else outside the worktree).
+path (`/work`), read-write, and nothing else from the host filesystem. B38
+removed the normal shared dependency symlink: every worktree gets its own
+materialized `node_modules` or Yarn Plug'n'Play artifacts, so they are already
+inside that one mount. `GateRunnerImpl` still resolves and read-only-mounts an
+external `node_modules` target when it encounters a legacy/user-provided
+symlink, preserving compatibility without making that the normal cache model.
 
 The primary clone directory (`project.localPath` itself) and every
 *other* task's worktree must **not** be reachable from inside the sandbox —
@@ -218,7 +218,8 @@ write access to build/test output directories).
 ## Phased rollout
 
 1. **Gates-only sandbox — ✅ shipped (F13-P1).** `GateRunnerImpl.runScript`/
-   `runCommand` and `WorktreeManagerImpl.ensureDeps`'s `npm ci|install`
+   `runCommand`, `WorktreeManagerImpl.ensureDeps`'s frozen package-manager
+   install, and structured custom setup
    optionally execute inside a container instead of directly on the host,
    gated by `Settings.sandboxGates` ("off"/"auto"/"required", not the
    `SANDBOX=container` env var originally sketched here).

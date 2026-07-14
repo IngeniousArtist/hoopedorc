@@ -125,12 +125,10 @@ export interface SandboxExecOptions {
   signal?: AbortSignal;
   /**
    * Additional read-only bind mounts, each mounted at the SAME absolute path
-   * inside the container as on the host. Needed when the primary mount
-   * contains an absolute-path symlink pointing outside itself — e.g. a
-   * task worktree's symlinked `node_modules`, which points at the shared
-   * install in the project's primary clone (see worktree-manager.ts) and
-   * would otherwise dangle once the container's mount namespace no longer
-   * has that host path reachable at all.
+   * inside the container as on the host. B38 dependencies normally live in
+   * the worktree itself; this compatibility escape hatch is needed only when
+   * the primary mount contains a legacy/user-provided symlink whose target is
+   * outside it and would otherwise dangle in the container mount namespace.
    */
   readOnlyMounts?: string[];
 }

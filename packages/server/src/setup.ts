@@ -2,10 +2,11 @@ import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { makeAdapter, sanitizedEnv } from "@orc/adapters";
-import { DEFAULT_GATE_IMAGE, resolveSandboxMode } from "@orc/engine";
+import { DEFAULT_GATE_IMAGE, resolveSandboxMode, WorktreeManagerImpl } from "@orc/engine";
 import type {
   ModelRosterResponse,
   ModelTestResult,
+  Project,
   Settings,
   SetupCheck,
   SetupHealthResponse,
@@ -53,10 +54,14 @@ async function check(
  *    configured to use it — a claude/opencode-only setup shouldn't show a red
  *    X for a CLI it never calls.
  */
-export async function runSetupChecks(settings: Settings): Promise<SetupHealthResponse> {
+export async function runSetupChecks(
+  settings: Settings,
+  projects: Project[] = [],
+): Promise<SetupHealthResponse> {
   const codexConfigured = settings.models.some((m) => m.runner === "codex");
   const agentEnv = sanitizedEnv();
-  const checks = await Promise.all([
+  const projectChecks = await projectSetupChecks(settings, projects);
+  const checks = await Promise.all<SetupCheck>([
     check("GitHub CLI (gh)", "gh", ["auth", "status"], (s) => {
       const acct = s.match(/Logged in to [^\s]+ account (\S+)/);
       return acct ? `logged in as ${acct[1]}` : firstLine(s);
@@ -91,7 +96,25 @@ export async function runSetupChecks(settings: Settings): Promise<SetupHealthRes
       : Promise.resolve({ name: "Codex CLI (codex)", ok: true, detail: "not configured" }),
     gateSandboxCheck(settings),
   ]);
+  checks.push(...projectChecks);
   return { checks, allOk: checks.every((c) => c.ok) };
+}
+
+export async function projectSetupChecks(
+  settings: Pick<Settings, "sandboxGates">,
+  projects: Project[],
+): Promise<SetupCheck[]> {
+  const projectSetup = new WorktreeManagerImpl(settings);
+  return Promise.all(
+    projects.map(async (project): Promise<SetupCheck> => {
+      const result = await projectSetup.setupHealth(project);
+      return {
+        name: `Project setup — ${project.name}`,
+        ok: result.ok,
+        detail: result.detail.slice(0, 500),
+      };
+    }),
+  );
 }
 
 /**

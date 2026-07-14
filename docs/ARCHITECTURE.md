@@ -44,12 +44,16 @@ together at the edge (Round 2 integration). `web` talks only to the HTTP/WS API.
                                                     └──────────────────┘
 ```
 
-Gate scripts and dependency installs run through `@orc/engine`'s Docker
-sandbox (`sandbox.ts`) when a daemon is reachable — a disposable
-`docker run --rm` per command, mounting only the task's worktree (rw) and
-the shared dependency install (ro), with an allowlist env built from
-scratch. Agents themselves still run on the host (sandbox phases 2–3 are
-future work; see `docs/specs/sandbox.md`).
+Gate scripts, dependency installs, and structured project setup run through
+`@orc/engine`'s Docker sandbox (`sandbox.ts`) when a daemon is reachable — a
+disposable `docker run --rm` per command, mounting only the task's worktree
+(rw), with an allowlist env built from scratch. B38 selects npm/pnpm/Yarn/Bun
+reproducibly, installs into an isolated staging snapshot, and atomically
+publishes only generated dependency artifacts to a fingerprinted sibling
+cache. Each worktree receives an independent materialization, so neither the
+primary clone nor sibling tasks share mutable `node_modules`. Agents themselves
+still run on the host (sandbox phases 2–3 are future work; see
+`docs/specs/sandbox.md`).
 
 Every author, validator, documenter, and planner CLI receives the same
 `sanitizedEnv()` boundary: an explicit runtime/config allowlist containing the

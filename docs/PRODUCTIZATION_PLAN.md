@@ -1685,7 +1685,7 @@ target rules.
 | S10 — CLI credential/environment boundary | done | [#143](https://github.com/IngeniousArtist/hoopedorc/pull/143) |
 | B37 — enabled models, live settings, and complete validation | done | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
 | F48 — per-model effort setting across all model stages | done | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
-| B38 — portable dependency setup and atomic caching | pending | — |
+| B38 — portable dependency setup and atomic caching | in progress | — |
 | B39 — planning and git durability | pending | — |
 | B40 — complete model-invocation accounting | pending | — |
 | B41 — graceful shutdown and runtime recovery | pending | — |

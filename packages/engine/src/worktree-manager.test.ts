@@ -5,7 +5,11 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
   renameSync,
+  rmSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -13,16 +17,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
-import type { Project, Task } from "@orc/types";
+import type { Project, ProjectConfig, Task } from "@orc/types";
 import { detectDestructiveChanges } from "./orchestrator.js";
-import { WorktreeManagerImpl } from "./worktree-manager.js";
+import {
+  frozenInstallArgs,
+  inspectNodeDependencies,
+  nodeDependencyFingerprint,
+  type NodePackageManager,
+  type SetupProcessRequest,
+  WorktreeManagerImpl,
+} from "./worktree-manager.js";
 
 const pexecFile = promisify(execFile);
 async function git(args: string[], cwd: string): Promise<void> {
   await pexecFile("git", args, { cwd });
 }
 
-function project(localPath: string): Project {
+function project(localPath: string, config?: ProjectConfig): Project {
   return {
     id: "p1",
     name: "p",
@@ -30,6 +41,7 @@ function project(localPath: string): Project {
     defaultBranch: "main",
     localPath,
     status: "running",
+    config,
     createdAt: "",
     updatedAt: "",
   };
@@ -37,6 +49,91 @@ function project(localPath: string): Project {
 
 function tmpDir(name: string): string {
   return mkdtempSync(join(tmpdir(), `hoopedorc-${name}-`));
+}
+
+type TestWorktreeManager = {
+  ensureDeps: (project: Project, worktreePath: string, signal?: AbortSignal) => Promise<void>;
+  setupHealth: (project: Project) => Promise<{ ok: boolean; detail: string }>;
+};
+
+interface FakeSetupOptions {
+  versions?: Partial<Record<NodePackageManager, string>>;
+  runtime?: { nodeVersion: string; platform: string; arch: string };
+  onInstall?: (request: SetupProcessRequest) => Promise<void>;
+  onCustom?: (request: SetupProcessRequest) => Promise<void>;
+  hostPlatform?: NodeJS.Platform;
+  createNodeModules?: boolean;
+}
+
+function fakeManager(cache: string, options: FakeSetupOptions = {}) {
+  const calls: SetupProcessRequest[] = [];
+  let installCount = 0;
+  const versions = {
+    npm: "10.9.0",
+    pnpm: "9.15.0",
+    yarn: "4.6.0",
+    bun: "1.2.0",
+    ...options.versions,
+  };
+  const runtime = options.runtime ?? {
+    nodeVersion: "v22.14.0",
+    platform: "linux",
+    arch: "x64",
+  };
+  const execute = async (request: SetupProcessRequest) => {
+    calls.push(request);
+    if (request.command === "node" && request.args[0] === "-p") {
+      return { stdout: JSON.stringify(runtime), stderr: "" };
+    }
+    if (
+      ["npm", "pnpm", "yarn", "bun"].includes(request.command) &&
+      request.args.length === 1 &&
+      request.args[0] === "--version"
+    ) {
+      const version = versions[request.command as NodePackageManager];
+      if (!version) throw new Error(`${request.command}: command not found`);
+      return { stdout: `${version}\n`, stderr: "" };
+    }
+    if (["npm", "pnpm", "yarn", "bun"].includes(request.command)) {
+      installCount += 1;
+      if (options.onInstall) await options.onInstall(request);
+      if (options.createNodeModules !== false) {
+        mkdirSync(join(request.cwd, "node_modules"), { recursive: true });
+      }
+      return { stdout: "installed\n", stderr: "" };
+    }
+    if (options.onCustom) await options.onCustom(request);
+    return { stdout: "setup complete\n", stderr: "" };
+  };
+  const manager = new WorktreeManagerImpl(
+    { sandboxGates: "off" },
+    {
+      cacheRoot: () => cache,
+      execute,
+      resolveMode: async () => ({ useSandbox: false, detail: "test host" }),
+      hostPlatform: options.hostPlatform,
+    },
+  ) as unknown as TestWorktreeManager;
+  return { manager, calls, get installCount() { return installCount; } };
+}
+
+function writeNodeProject(
+  dir: string,
+  manager: NodePackageManager,
+  lockContent = "lock-v1",
+  packageManager?: string,
+): void {
+  writeFileSync(
+    join(dir, "package.json"),
+    JSON.stringify({ name: "fixture", version: "1.0.0", ...(packageManager ? { packageManager } : {}) }),
+  );
+  const lockfile = {
+    npm: "package-lock.json",
+    pnpm: "pnpm-lock.yaml",
+    yarn: "yarn.lock",
+    bun: "bun.lock",
+  }[manager];
+  writeFileSync(join(dir, lockfile), lockContent);
 }
 
 function worktreeTask(path: string): Task {
@@ -59,85 +156,361 @@ function worktreeTask(path: string): Task {
   };
 }
 
-test("B29: ensureDeps fingerprints the worktree's manifest, not the primary clone's stale one", async () => {
+test("B38: packageManager wins, each supported manager uses a frozen install, and ambiguous locks fail", () => {
+  const cases: Array<[NodePackageManager, string | undefined, string, string[]]> = [
+    ["npm", undefined, "package-lock.json", ["ci"]],
+    ["pnpm", "pnpm@9.15.0", "pnpm-lock.yaml", ["install", "--frozen-lockfile"]],
+    ["yarn", "yarn@4.6.0", "yarn.lock", ["install", "--immutable"]],
+    ["bun", "bun@1.2.0", "bun.lock", ["install", "--frozen-lockfile"]],
+  ];
+  for (const [manager, declared, lockfile, args] of cases) {
+    const dir = tmpDir(`select-${manager}`);
+    writeNodeProject(dir, manager, "lock", declared);
+    if (manager === "pnpm") writeFileSync(join(dir, "package-lock.json"), "ignored by packageManager");
+    const plan = inspectNodeDependencies(dir);
+    assert.equal(plan?.manager, manager);
+    assert.equal(plan?.lockfile, lockfile);
+    assert.deepEqual(frozenInstallArgs(manager, manager === "yarn" ? "4.6.0" : "1.0.0"), args);
+  }
+  assert.deepEqual(frozenInstallArgs("yarn", "1.22.22"), ["install", "--frozen-lockfile"]);
+
+  const ambiguous = tmpDir("ambiguous-locks");
+  writeNodeProject(ambiguous, "npm");
+  writeFileSync(join(ambiguous, "yarn.lock"), "lock");
+  assert.throws(
+    () => inspectNodeDependencies(ambiguous),
+    /Ambiguous Node lockfiles.*packageManager/i,
+  );
+});
+
+test("B38/B29: worktree inputs produce immutable caches without touching primary manifests", async () => {
   const primary = tmpDir("wt-primary");
   const worktree1 = tmpDir("wt-1");
   const worktree2 = tmpDir("wt-2");
+  const cache = tmpDir("deps-cache");
 
-  // Primary's own on-disk package.json is never touched by this class after
-  // this point — simulating the real bug, where nothing keeps the primary
-  // clone's working tree in sync with origin after a merge.
-  writeFileSync(join(primary, "package.json"), JSON.stringify({ name: "x", version: "1.0.0" }));
+  const primaryPackage = JSON.stringify({ name: "primary-must-stay-unchanged", version: "1.0.0" });
+  writeFileSync(join(primary, "package.json"), primaryPackage);
+  writeNodeProject(worktree1, "npm", "lock-v1");
+  writeNodeProject(worktree2, "npm", "lock-v2");
 
-  // Worktree 1: a fresh checkout identical to primary's current (pre-merge) state.
-  writeFileSync(join(worktree1, "package.json"), JSON.stringify({ name: "x", version: "1.0.0" }));
+  const fake = fakeManager(cache);
+  await fake.manager.ensureDeps(project(primary), worktree1);
+  await fake.manager.ensureDeps(project(primary), worktree2);
 
-  const runner = new WorktreeManagerImpl({ sandboxGates: "off" });
-  await (runner as unknown as { ensureDeps: (p: Project, w: string) => Promise<void> }).ensureDeps(
-    project(primary),
-    worktree1,
-  );
+  assert.equal(fake.installCount, 2, "different worktree lockfiles publish different caches");
+  assert.notEqual(realpathSync(join(worktree1, "node_modules")), realpathSync(join(worktree2, "node_modules")));
+  assert.equal(readFileSync(join(primary, "package.json"), "utf8"), primaryPackage);
+  assert.equal(existsSync(join(primary, "node_modules")), false);
+});
 
-  const marker = join(primary, "node_modules", ".hoopedorc-deps-hash");
-  assert.ok(existsSync(marker), "first ensureDeps call installs and writes the marker");
-  const firstHash = readFileSync(marker, "utf-8").trim();
+test("B38: concurrent identical fingerprints install once and materialize both worktrees", async () => {
+  const primary = tmpDir("wt-primary");
+  const worktree1 = tmpDir("wt-1");
+  const worktree2 = tmpDir("wt-2");
+  const cache = tmpDir("deps-cache");
+  writeNodeProject(worktree1, "npm");
+  writeNodeProject(worktree2, "npm");
 
-  // Worktree 2: simulates a second task's fresh checkout after a merge changed
-  // package.json on origin's default branch. Primary's own package.json is
-  // deliberately left as-is here too — under the old (buggy) fingerprint
-  // source, this second call would see no change at all and skip reinstall.
-  writeFileSync(
-    join(worktree2, "package.json"),
-    JSON.stringify({ name: "x", version: "1.0.0", description: "scaffold task added real scripts" }),
-  );
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let started!: () => void;
+  const didStart = new Promise<void>((resolve) => { started = resolve; });
+  const fake = fakeManager(cache, {
+    onInstall: async () => {
+      started();
+      await gate;
+    },
+  });
+  const first = fake.manager.ensureDeps(project(primary), worktree1);
+  await didStart;
+  const second = fake.manager.ensureDeps(project(primary), worktree2);
+  release();
+  await Promise.all([first, second]);
 
-  await (runner as unknown as { ensureDeps: (p: Project, w: string) => Promise<void> }).ensureDeps(
-    project(primary),
-    worktree2,
-  );
-
-  const secondHash = readFileSync(marker, "utf-8").trim();
+  assert.equal(fake.installCount, 1);
   assert.notEqual(
-    secondHash,
-    firstHash,
-    "the changed worktree manifest must produce a different fingerprint and trigger a reinstall",
+    realpathSync(join(worktree1, "node_modules")),
+    realpathSync(join(worktree2, "node_modules")),
+    "each worktree gets an independent materialization of the immutable cache",
   );
-  assert.deepEqual(
-    JSON.parse(readFileSync(join(primary, "package.json"), "utf-8")),
-    JSON.parse(readFileSync(join(worktree2, "package.json"), "utf-8")),
-    "primary's package.json must be brought up to date with the worktree that triggered the reinstall",
+  const published = readdirSync(cache).filter((name) => !name.startsWith(".tmp-"));
+  assert.equal(published.length, 1);
+});
+
+test("B38: different fingerprints install concurrently instead of sharing a global lock", async () => {
+  const primary = tmpDir("different-primary");
+  const firstWorktree = tmpDir("different-1");
+  const secondWorktree = tmpDir("different-2");
+  const cache = tmpDir("different-cache");
+  writeNodeProject(firstWorktree, "npm", "lock-a");
+  writeNodeProject(secondWorktree, "npm", "lock-b");
+
+  let active = 0;
+  let maxActive = 0;
+  let bothStarted!: () => void;
+  const gate = new Promise<void>((resolve) => { bothStarted = resolve; });
+  const fake = fakeManager(cache, {
+    onInstall: async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      if (active === 2) bothStarted();
+      await gate;
+      active -= 1;
+    },
+  });
+
+  await Promise.all([
+    fake.manager.ensureDeps(project(primary), firstWorktree),
+    fake.manager.ensureDeps(project(primary), secondWorktree),
+  ]);
+  assert.equal(fake.installCount, 2);
+  assert.equal(maxActive, 2);
+});
+
+test("B38: selected package managers reach the executor with exact reproducible arguments", async () => {
+  const cases: Array<[NodePackageManager, string, string[]]> = [
+    ["npm", "npm@10.9.0", ["ci"]],
+    ["pnpm", "pnpm@9.15.0", ["install", "--frozen-lockfile"]],
+    ["yarn", "yarn@4.6.0", ["install", "--immutable"]],
+    ["bun", "bun@1.2.0", ["install", "--frozen-lockfile"]],
+  ];
+  for (const [manager, declared, expectedArgs] of cases) {
+    const primary = tmpDir(`exec-primary-${manager}`);
+    const worktree = tmpDir(`exec-worktree-${manager}`);
+    const cache = tmpDir(`exec-cache-${manager}`);
+    writeNodeProject(worktree, manager, "lock", declared);
+    const fake = fakeManager(cache);
+    await fake.manager.ensureDeps(project(primary), worktree);
+    const install = fake.calls.find(
+      (call) => call.command === manager && call.args[0] !== "--version",
+    );
+    assert.deepEqual(install?.args, expectedArgs, manager);
+    assert.equal(install?.timeoutMs, 10 * 60 * 1000);
+  }
+});
+
+test("B38: the real npm-ci path publishes and materializes an empty dependency graph", async () => {
+  const primary = tmpDir("real-npm-primary");
+  const worktree = tmpDir("real-npm-worktree");
+  const cache = `${primary}-hoopedorc-deps`;
+  const pkg = { name: "real-npm-fixture", version: "1.0.0" };
+  writeFileSync(join(worktree, "package.json"), JSON.stringify(pkg));
+  writeFileSync(
+    join(worktree, "package-lock.json"),
+    JSON.stringify({ name: pkg.name, version: pkg.version, lockfileVersion: 3, requires: true, packages: { "": pkg } }),
+  );
+  const manager = new WorktreeManagerImpl({ sandboxGates: "off" }) as unknown as TestWorktreeManager;
+  try {
+    await manager.ensureDeps(project(primary), worktree);
+    assert.equal(existsSync(join(worktree, "node_modules")), true);
+    const entries = readdirSync(cache).filter((name) => /^[a-f0-9]{64}$/.test(name));
+    assert.equal(entries.length, 1);
+    assert.equal(existsSync(join(cache, entries[0]!, ".hoopedorc-deps.json")), true);
+  } finally {
+    rmSync(cache, { recursive: true, force: true });
+  }
+});
+
+test("B38: a failed install publishes no cache and reports an actionable retry", async () => {
+  const primary = tmpDir("failed-primary");
+  const worktree = tmpDir("failed-worktree");
+  const cache = tmpDir("failed-cache");
+  writeNodeProject(worktree, "npm");
+  const fake = fakeManager(cache, {
+    onInstall: async () => { throw new Error("registry unavailable"); },
+  });
+  await assert.rejects(
+    fake.manager.ensureDeps(project(primary), worktree),
+    /npm frozen install failed.*no dependency cache was published.*registry unavailable/i,
+  );
+  assert.deepEqual(readdirSync(cache), []);
+  assert.equal(existsSync(join(worktree, "node_modules")), false);
+});
+
+test("B38: a missing selected binary is actionable in setup and Setup health", async () => {
+  const primary = tmpDir("missing-primary");
+  const worktree = tmpDir("missing-worktree");
+  const cache = tmpDir("missing-cache");
+  writeNodeProject(worktree, "pnpm", "lock", "pnpm@9.15.0");
+  writeNodeProject(primary, "pnpm", "lock", "pnpm@9.15.0");
+  const fake = fakeManager(cache, { versions: { pnpm: undefined } });
+  await assert.rejects(
+    fake.manager.ensureDeps(project(primary), worktree),
+    /selects pnpm.*binary is unavailable.*Install pnpm/i,
+  );
+  const health = await fake.manager.setupHealth(project(primary));
+  assert.equal(health.ok, false);
+  assert.match(health.detail, /selects pnpm.*host PATH.*Install pnpm/i);
+});
+
+test("B38: monorepo manifests and runtime OS/architecture are part of the cache key", () => {
+  const root = tmpDir("monorepo-key");
+  writeNodeProject(root, "npm");
+  mkdirSync(join(root, "packages", "app"), { recursive: true });
+  const nested = join(root, "packages", "app", "package.json");
+  writeFileSync(nested, JSON.stringify({ name: "app", version: "1.0.0" }));
+  const plan = inspectNodeDependencies(root);
+  assert.ok(plan);
+  assert.ok(plan.inputs.some((path) => path.endsWith(join("packages", "app", "package.json"))));
+  const linuxX64 = { nodeVersion: "v22.14.0", platform: "linux", arch: "x64" };
+  const first = nodeDependencyFingerprint(root, plan, "10.9.0", linuxX64);
+  writeFileSync(nested, JSON.stringify({ name: "app", version: "2.0.0" }));
+  const manifestChanged = nodeDependencyFingerprint(
+    root,
+    inspectNodeDependencies(root)!,
+    "10.9.0",
+    linuxX64,
+  );
+  const darwin = nodeDependencyFingerprint(
+    root,
+    inspectNodeDependencies(root)!,
+    "10.9.0",
+    { ...linuxX64, platform: "darwin" },
+  );
+  const arm64 = nodeDependencyFingerprint(
+    root,
+    inspectNodeDependencies(root)!,
+    "10.9.0",
+    { ...linuxX64, arch: "arm64" },
+  );
+  assert.notEqual(first, manifestChanged);
+  assert.notEqual(manifestChanged, darwin);
+  assert.notEqual(manifestChanged, arm64);
+});
+
+test("B38: materialized monorepo workspace links resolve to each live worktree", async () => {
+  const primary = tmpDir("workspace-primary");
+  const worktree = tmpDir("workspace-worktree");
+  const cache = tmpDir("workspace-cache");
+  writeNodeProject(worktree, "npm");
+  writeFileSync(
+    join(worktree, "package.json"),
+    JSON.stringify({ name: "root", private: true, workspaces: ["packages/*"] }),
+  );
+  mkdirSync(join(worktree, "packages", "app"), { recursive: true });
+  writeFileSync(join(worktree, "packages", "app", "package.json"), JSON.stringify({ name: "app" }));
+  mkdirSync(join(worktree, "packages", "app", "node_modules", "stale"), {
+    recursive: true,
+  });
+  writeFileSync(
+    join(worktree, "packages", "app", "node_modules", "stale", "index.js"),
+    "stale\n",
+  );
+  const fake = fakeManager(cache, {
+    onInstall: async (request) => {
+      assert.equal(
+        existsSync(join(request.cwd, "packages", "app", "node_modules", "stale")),
+        false,
+        "materialized workspace dependencies must not seed a new frozen install",
+      );
+      mkdirSync(join(request.cwd, "node_modules"), { recursive: true });
+      symlinkSync("../packages/app", join(request.cwd, "node_modules", "app"), "dir");
+      mkdirSync(join(request.cwd, "packages", "app", "node_modules", "leaf"), {
+        recursive: true,
+      });
+      writeFileSync(
+        join(request.cwd, "packages", "app", "node_modules", "leaf", "index.js"),
+        "module.exports = 'workspace dependency';\n",
+      );
+    },
+  });
+  await fake.manager.ensureDeps(project(primary), worktree);
+  assert.equal(
+    realpathSync(join(worktree, "node_modules", "app")),
+    realpathSync(join(worktree, "packages", "app")),
+  );
+  assert.equal(
+    readFileSync(join(worktree, "packages", "app", "node_modules", "leaf", "index.js"), "utf8"),
+    "module.exports = 'workspace dependency';\n",
   );
 });
 
-test("B29: an unchanged worktree manifest across two worktrees does not force a reinstall", async (t) => {
-  const primary = tmpDir("wt-primary");
-  const worktree1 = tmpDir("wt-1");
-  const worktree2 = tmpDir("wt-2");
+test("B38: Yarn Plug'n'Play artifacts are cached and materialized without node_modules", async () => {
+  const primary = tmpDir("pnp-primary");
+  const worktree = tmpDir("pnp-worktree");
+  const cache = tmpDir("pnp-cache");
+  writeNodeProject(worktree, "yarn", "lock", "yarn@4.6.0");
+  const fake = fakeManager(cache, {
+    createNodeModules: false,
+    onInstall: async (request) => {
+      writeFileSync(join(request.cwd, ".pnp.cjs"), "module.exports = {};\n");
+      mkdirSync(join(request.cwd, ".yarn", "cache"), { recursive: true });
+      writeFileSync(join(request.cwd, ".yarn", "cache", "fixture.zip"), "archive");
+    },
+  });
+  await fake.manager.ensureDeps(project(primary), worktree);
+  assert.equal(existsSync(join(worktree, "node_modules")), false);
+  assert.equal(readFileSync(join(worktree, ".pnp.cjs"), "utf8"), "module.exports = {};\n");
+  assert.equal(readFileSync(join(worktree, ".yarn", "cache", "fixture.zip"), "utf8"), "archive");
+});
 
-  writeFileSync(join(primary, "package.json"), JSON.stringify({ name: "x", version: "1.0.0" }));
-  writeFileSync(join(worktree1, "package.json"), JSON.stringify({ name: "x", version: "1.0.0" }));
-  writeFileSync(join(worktree2, "package.json"), JSON.stringify({ name: "x", version: "1.0.0" }));
-
-  const runner = new WorktreeManagerImpl({ sandboxGates: "off" }) as unknown as {
-    ensureDeps: (p: Project, w: string) => Promise<void>;
+test("B38: structured custom setup preserves argv, is idempotent, and publishes its marker after success", async () => {
+  const primary = tmpDir("custom-primary");
+  const worktree = tmpDir("custom-worktree");
+  const cache = tmpDir("custom-cache");
+  writeFileSync(join(worktree, "pyproject.toml"), "[project]\nname='fixture'\n");
+  const config: ProjectConfig = {
+    setupCommand: { command: "python3", args: ["-m", "venv", "path with spaces/.venv"] },
   };
-  const marker = join(primary, "node_modules", ".hoopedorc-deps-hash");
-
-  await t.test("first call installs", async () => {
-    await runner.ensureDeps(project(primary), worktree1);
-    assert.ok(existsSync(marker));
+  let customRuns = 0;
+  const fake = fakeManager(cache, {
+    onCustom: async () => { customRuns += 1; },
   });
+  await fake.manager.ensureDeps(project(primary, config), worktree);
+  await fake.manager.ensureDeps(project(primary, config), worktree);
 
-  const firstHash = readFileSync(marker, "utf-8").trim();
-
-  await t.test("second call, unchanged manifest, reuses the marker", async () => {
-    await runner.ensureDeps(project(primary), worktree2);
-    const secondHash = readFileSync(marker, "utf-8").trim();
-    assert.equal(secondHash, firstHash, "identical manifests across worktrees must reuse the existing marker, not reinstall");
-  });
+  const custom = fake.calls.find((call) => call.command === "python3");
+  assert.deepEqual(custom?.args, ["-m", "venv", "path with spaces/.venv"]);
+  assert.equal(custom?.timeoutMs, 10 * 60 * 1000);
+  assert.equal(customRuns, 1);
+  assert.ok(readFileSync(join(worktree, ".hoopedorc-setup-hash"), "utf8").trim());
 });
 
-test("B33: primaryDirtyFiles reports real git dirt, excluding package.json/lockfiles", async () => {
+test("B38: custom setup cancellation aborts promptly without publishing a success marker", async () => {
+  const primary = tmpDir("cancel-primary");
+  const worktree = tmpDir("cancel-worktree");
+  const cache = tmpDir("cancel-cache");
+  const config: ProjectConfig = {
+    setupCommand: { command: "special-sdk", args: ["prepare"] },
+  };
+  let started!: () => void;
+  const didStart = new Promise<void>((resolve) => { started = resolve; });
+  const fake = fakeManager(cache, {
+    onCustom: (request) => new Promise<void>((_resolve, reject) => {
+      started();
+      request.signal?.addEventListener(
+        "abort",
+        () => reject(new DOMException("The operation was aborted", "AbortError")),
+        { once: true },
+      );
+    }),
+  });
+  const controller = new AbortController();
+  const running = fake.manager.ensureDeps(project(primary, config), worktree, controller.signal);
+  await didStart;
+  controller.abort();
+  await assert.rejects(running, { name: "AbortError" });
+  assert.equal(existsSync(join(worktree, ".hoopedorc-setup-hash")), false);
+});
+
+test("B38: an Apple setup cannot pretend to run on a Linux/EC2 host", async () => {
+  const primary = tmpDir("apple-primary");
+  const worktree = tmpDir("apple-worktree");
+  const cache = tmpDir("apple-cache");
+  mkdirSync(join(worktree, "App.xcodeproj"));
+  const config: ProjectConfig = {
+    setupCommand: { command: "xcodebuild", args: ["-resolvePackageDependencies"] },
+  };
+  const fake = fakeManager(cache, { hostPlatform: "linux" });
+  await assert.rejects(
+    fake.manager.ensureDeps(project(primary, config), worktree),
+    /requires an Apple\/Xcode toolchain.*macOS Hoopedorc instance.*linux/i,
+  );
+  assert.equal(fake.calls.length, 0);
+});
+
+test("B38/B33: primaryDirtyFiles reports manifest dirt now that setup never writes the primary clone", async () => {
   const primary = tmpDir("wt-primary-dirty");
   await git(["init", "-q"], primary);
   writeFileSync(join(primary, "package.json"), JSON.stringify({ name: "x" }));
@@ -150,20 +523,19 @@ test("B33: primaryDirtyFiles reports real git dirt, excluding package.json/lockf
   // Clean working tree: nothing to report.
   assert.deepEqual(await runner.primaryDirtyFiles(project(primary)), []);
 
-  // B29's manifest copy legitimately dirties package.json/lockfiles before
-  // an install — those must never be reported as a sign something's wrong.
+  // B38 removed the manifest copy, so package metadata dirt is now evidence
+  // that an agent wrote into the wrong checkout and must be reported.
   writeFileSync(join(primary, "package.json"), JSON.stringify({ name: "x", version: "2.0.0" }));
   writeFileSync(join(primary, "package-lock.json"), "{}");
-  assert.deepEqual(
-    await runner.primaryDirtyFiles(project(primary)),
-    [],
-    "package.json/lockfile dirt alone must not be reported",
-  );
+  assert.deepEqual((await runner.primaryDirtyFiles(project(primary))).sort(), [
+    "package-lock.json",
+    "package.json",
+  ]);
 
   // A file an agent should never have touched here — this IS the signal.
   writeFileSync(join(primary, "src-oops.ts"), "// written to the wrong place\n");
   const dirty = await runner.primaryDirtyFiles(project(primary));
-  assert.deepEqual(dirty, ["src-oops.ts"], "an unrelated dirty file must be named, package.json still excluded");
+  assert.deepEqual(dirty.sort(), ["package-lock.json", "package.json", "src-oops.ts"]);
 });
 
 test("S9: typed diff acquisition scans destructive lines beyond the old 40K cap", async () => {
