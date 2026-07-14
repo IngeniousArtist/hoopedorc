@@ -500,6 +500,18 @@ export interface Settings {
     newDependencies: boolean;
     authOrSecrets: boolean;
     outOfScopeEdits: boolean;
+    /**
+     * S8: whether mass deletions, destructive DB/data operations, or other
+     * changes matching the engine's detectDestructiveChanges patterns force
+     * human approval. Defaults to true and — unlike the other
+     * riskyChangeRules flags — is enforced in EVERY merge policy, including
+     * fully_autonomous: a destructive change is never silently auto-merged
+     * regardless of how permissive the operator's policy is. Optional (not
+     * a plain boolean) because settings persisted before this field existed
+     * lack the key entirely; `!== false` at the enforcement site treats
+     * that absence as enabled, the safe reading.
+     */
+    destructiveChanges?: boolean;
   };
   /**
    * When false (default), a gate result where typecheck/lint/build/tests all

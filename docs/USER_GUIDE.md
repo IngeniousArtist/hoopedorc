@@ -131,10 +131,26 @@ going on a always-on box.
   touches: DB/schema files, `package.json` (new dependencies), anything
   that looks like auth/secrets/tokens, or files outside the task's declared
   scope. Toggle these independently in Settings → Merge Policy.
+- **Destructive-change rail (non-bypassable).** Mass file deletions,
+  deleted migration/schema/`.env`/CI/lockfile files, destructive SQL
+  (`DROP TABLE`/`DROP DATABASE`/`TRUNCATE`, a `DELETE` with no `WHERE`, an
+  empty-filter `deleteMany()`), or an `rm -rf` targeting somewhere outside
+  the repo/tmp always force your approval before merging — **even under
+  `fully_autonomous`**. Unlike the other risky-change rules, this one isn't
+  something merge policy can bypass; it's the floor. The validator model is
+  separately instructed to escalate (never approve) anything in this same
+  category it spots in the diff, and every author prompt carries a fixed
+  safety instruction not to delete unrelated files or write destructive
+  migrations/data-wipes unless the task explicitly requires it. Toggle it
+  off in Settings → Merge Policy → Risky Change Rules → "Destructive
+  changes" if you genuinely want to disable the mechanical check (the
+  validator's own judgment and the author's prompt instruction still apply
+  either way).
 - **Merge policy** (global in Settings, optionally overridden per-project):
   `hard_gate_flag_risky` (default — auto-merge unless something above
-  trips), `fully_autonomous` (never asks), or `always_ask` (every merge
-  needs a human tap, even a clean one).
+  trips), `fully_autonomous` (never asks except for a destructive-change
+  trip, which always asks regardless), or `always_ask` (every merge needs
+  a human tap, even a clean one).
 - **GitHub checks gate (opt-in, per-project).** If the target repo has its
   own CI, enable **"Wait for the PR's own GitHub checks"** in the project's
   Advanced settings — the auto-merge then also waits for the PR's GitHub

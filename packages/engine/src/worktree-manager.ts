@@ -25,6 +25,10 @@ import {
 const pexecFile = promisify(execFile);
 const DEPS_TIMEOUT_MS = 10 * 60 * 1000;
 const DEPS_MAX_BUFFER = 32 * 1024 * 1024;
+// S8: same cap validator.ts's own (separate) diff fetch uses — bounds the
+// text detectDestructiveChanges scans without needing the whole diff for a
+// huge change.
+const MAX_DIFF_CHARS = 40_000;
 
 // Argument arrays only, never a shell — otherwise project.defaultBranch and
 // task.branch (both derived from HTTP-supplied fields) could smuggle shell
@@ -339,5 +343,52 @@ export class WorktreeManagerImpl implements WorktreeManager {
     }
 
     return [...revertModified, ...revertUntracked];
+  }
+
+  async changedFilesWithStatus(
+    project: Project,
+    task: Task,
+  ): Promise<{ path: string; status: string }[]> {
+    const worktreePath = task.worktreePath;
+    if (!worktreePath) return [];
+    try {
+      // Same three-dot reasoning as changedFiles: only this branch's own
+      // changes, not files that advanced on main since the worktree was
+      // created.
+      const output = await git(
+        ["diff", "--name-status", `origin/${project.defaultBranch}...HEAD`],
+        worktreePath,
+      );
+      return output
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((line) => {
+          // Plain add/modify/delete: "M\tpath". Renames/copies carry a
+          // similarity score and TWO paths: "R100\told\tnew" — the path
+          // that matters here is where the file ended up, not where it
+          // came from.
+          const parts = line.split("\t");
+          return { status: parts[0] ?? "", path: parts[parts.length - 1] ?? "" };
+        });
+    } catch {
+      return [];
+    }
+  }
+
+  async diffText(project: Project, task: Task): Promise<string> {
+    const worktreePath = task.worktreePath;
+    if (!worktreePath) return "";
+    try {
+      const output = await git(
+        ["diff", `origin/${project.defaultBranch}...HEAD`],
+        worktreePath,
+      );
+      return output.length > MAX_DIFF_CHARS
+        ? output.slice(0, MAX_DIFF_CHARS) + "\n... (diff truncated)"
+        : output;
+    } catch {
+      return "";
+    }
   }
 }

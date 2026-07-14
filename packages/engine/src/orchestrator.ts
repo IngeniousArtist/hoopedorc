@@ -23,6 +23,7 @@ import {
   buildAgentsMdBlock,
   buildEngineeringStandardsBlock,
   buildSkillsBlock,
+  SAFETY_GUARDRAILS_BLOCK,
 } from "./guidelines.js";
 import { SelfReviewError } from "./validator.js";
 import type { EngineEvents, Scheduler, SchedulerDeps } from "./index.js";
@@ -84,6 +85,99 @@ const RISKY_AUTH_OR_SECRET_FILE =
  *  substring match) — exported for unit tests. */
 export function isAuthOrSecretFile(path: string): boolean {
   return RISKY_AUTH_OR_SECRET_FILE.test(path);
+}
+
+const SCHEMA_FILE = /(^|\/)(migrations?\/|db\/schema)|(^|\/)prisma\/schema\.prisma$|\.sql$/i;
+const SENSITIVE_FILE =
+  /(^|\/)\.env(\.|$)|(^|\/)\.github\/workflows\/|(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/i;
+const DESTRUCTIVE_SQL = /\b(DROP\s+TABLE|DROP\s+DATABASE|TRUNCATE)\b/i;
+const DELETE_FROM = /\bDELETE\s+FROM\s+\S+/i;
+const WHERE_CLAUSE = /\bWHERE\b/i;
+const EMPTY_DELETE_MANY = /\.deleteMany\s*\(\s*\)/;
+// Requires an -r and an -f (in either order, with anything else mixed in)
+// after a single dash — matches -rf/-fr/-Rf/-frx, not plain -r or -f alone.
+const RM_RF = /\brm\s+-[a-zA-Z]*[rR][a-zA-Z]*[fF][a-zA-Z]*\s+(\S+)|\brm\s+-[a-zA-Z]*[fF][a-zA-Z]*[rR][a-zA-Z]*\s+(\S+)/;
+
+/** True if an `rm -rf`-style target looks like it reaches outside the repo
+ *  checkout or a scratch/tmp directory — a bare relative path (`dist`,
+ *  `./build`, `node_modules`) is normal build-script cleanup and NOT risky;
+ *  an absolute path outside /tmp, a `~`-relative path, `..` traversal, or a
+ *  `$VAR`-expanded path could resolve to anything. */
+function looksLikeRiskyRmTarget(target: string): boolean {
+  if (target.startsWith("/tmp") || target.startsWith("/var/tmp")) return false;
+  if (target.startsWith("/")) return true;
+  return target.startsWith("~") || target.includes("..") || target.startsWith("$");
+}
+
+/**
+ * S8: scans a task's changed files (with git status) and diff text for
+ * changes risky enough that NO merge policy — not even fully_autonomous —
+ * should auto-merge without a human looking first. Returns human-readable
+ * reasons; empty means clean. Exported for unit tests. This list WILL grow
+ * — keep every new pattern here, in one place, with its own test.
+ */
+export function detectDestructiveChanges(
+  files: { path: string; status: string }[],
+  diffText: string,
+): string[] {
+  const reasons: string[] = [];
+  const deleted = files.filter((f) => f.status === "D").map((f) => f.path);
+
+  if (deleted.length > 10) {
+    reasons.push(`${deleted.length} files deleted — looks like a mass deletion`);
+  } else if (files.length > 3 && deleted.length / files.length > 0.5) {
+    reasons.push(`${deleted.length}/${files.length} changed files were deleted — more than half`);
+  }
+
+  // Every changed file under some top-level directory was deleted (e.g. an
+  // `rm -rf src/`) — catches a directory wipe even in a small repo where the
+  // absolute-count/share thresholds above wouldn't trip.
+  const topDirs = new Map<string, { total: number; deleted: number }>();
+  for (const f of files) {
+    const slash = f.path.indexOf("/");
+    if (slash === -1) continue; // a root-level file isn't "a directory"
+    const top = f.path.slice(0, slash);
+    const entry = topDirs.get(top) ?? { total: 0, deleted: 0 };
+    entry.total++;
+    if (f.status === "D") entry.deleted++;
+    topDirs.set(top, entry);
+  }
+  for (const [dir, { total, deleted: delCount }] of topDirs) {
+    if (total >= 2 && total === delCount) {
+      reasons.push(`every changed file under "${dir}/" was deleted (${delCount} files)`);
+    }
+  }
+
+  const deletedSchema = deleted.filter((p) => SCHEMA_FILE.test(p));
+  if (deletedSchema.length > 0) {
+    reasons.push(`deleted migration/schema file(s): ${deletedSchema.join(", ")}`);
+  }
+
+  const deletedSensitive = deleted.filter((p) => SENSITIVE_FILE.test(p));
+  if (deletedSensitive.length > 0) {
+    reasons.push(`deleted sensitive file(s): ${deletedSensitive.join(", ")}`);
+  }
+
+  // Only lines the diff ADDS (a leading `+`, not the `+++` file header) —
+  // a destructive statement being REMOVED is the opposite of risky.
+  const addedLines = diffText.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+  for (const line of addedLines) {
+    if (DESTRUCTIVE_SQL.test(line)) {
+      reasons.push(`added a destructive SQL statement: ${line.trim().slice(0, 200)}`);
+    } else if (DELETE_FROM.test(line) && !WHERE_CLAUSE.test(line)) {
+      reasons.push(`added a DELETE with no WHERE clause: ${line.trim().slice(0, 200)}`);
+    } else if (EMPTY_DELETE_MANY.test(line)) {
+      reasons.push(`added an empty-filter deleteMany(): ${line.trim().slice(0, 200)}`);
+    }
+
+    const rm = line.match(RM_RF);
+    const target = rm?.[1] ?? rm?.[2];
+    if (target && looksLikeRiskyRmTarget(target)) {
+      reasons.push(`added an rm -rf targeting a path outside the repo/tmp: ${line.trim().slice(0, 200)}`);
+    }
+  }
+
+  return reasons;
 }
 
 /** F30: the only paths the per-task documenter is allowed to touch. F38 adds
@@ -1471,7 +1565,7 @@ export class Orchestrator implements Scheduler {
       }
     }
 
-    const canMerge = await this.canAutoMerge(project, task, finalGate);
+    const { canMerge, riskyReasons } = await this.canAutoMerge(project, task, finalGate);
     if (canMerge) {
       await this.deps.git.mergePr(project, task.prNumber!);
       await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
@@ -1479,6 +1573,12 @@ export class Orchestrator implements Scheduler {
       task.statusReason = `Merged PR #${task.prNumber} after ${task.attempts} attempt${task.attempts === 1 ? "" : "s"} — gates and validator passed`;
       this.emit("info", "engine", `Merged: ${task.title}`, task.id);
     } else {
+      // S8: a destructive-change trip carries specific reasons — surface
+      // them verbatim in the approval message instead of the generic
+      // "risky changes detected" copy every other risky-rule trip still
+      // uses (those already log their own specific reason; this message
+      // being generic for them is unchanged from before S8).
+      const isDestructive = riskyReasons.length > 0;
       this.emit(
         "warn",
         "engine",
@@ -1488,18 +1588,24 @@ export class Orchestrator implements Scheduler {
       const choice = await this.deps.events.requestApproval({
         taskId: task.id,
         title: `Risky changes in ${task.title}`,
-        message: `Out-of-scope edits or risky changes detected. Approve merge?`,
+        message: isDestructive
+          ? `Destructive change detected — this requires approval regardless of merge policy:\n${riskyReasons.map((r) => `- ${r}`).join("\n")}`
+          : `Out-of-scope edits or risky changes detected. Approve merge?`,
         options: ["approve_merge", "reject"],
       });
       if (choice === "approve_merge") {
         await this.deps.git.mergePr(project, task.prNumber!);
         await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
         task.status = "done";
-        task.statusReason = `Merged PR #${task.prNumber} after you approved a risky/out-of-scope change`;
+        task.statusReason = isDestructive
+          ? `Merged PR #${task.prNumber} after you approved a flagged destructive change (${riskyReasons[0]})`
+          : `Merged PR #${task.prNumber} after you approved a risky/out-of-scope change`;
         this.emit("info", "engine", `Merged: ${task.title}`, task.id);
       } else {
         task.status = "failed";
-        task.statusReason = "Flagged as risky (out-of-scope edits or a risky change class) and you rejected the merge";
+        task.statusReason = isDestructive
+          ? `Flagged as a destructive change (${riskyReasons[0]}) and you rejected the merge`
+          : "Flagged as risky (out-of-scope edits or a risky change class) and you rejected the merge";
         this.emit("warn", "engine", `Rejected: ${task.title}`, task.id);
       }
     }
@@ -1900,6 +2006,7 @@ export class Orchestrator implements Scheduler {
       task.role === "frontend",
       task.role === "docs",
     );
+    prompt += SAFETY_GUARDRAILS_BLOCK;
     prompt += buildSkillsBlock(project.config?.skillHints);
     if (task.worktreePath) prompt += buildAgentsMdBlock(task.worktreePath);
 
@@ -1937,21 +2044,55 @@ export class Orchestrator implements Scheduler {
     return failures.join("\n");
   }
 
+  /**
+   * Returns `canMerge: false` with populated `riskyReasons` whenever a
+   * destructive change was detected — that's the ONLY case with reasons
+   * attached; every other risky-rule trip returns `riskyReasons: []` and
+   * relies on its own `this.emit` warn log for detail (unchanged from
+   * before S8). `riskyReasons` exists so the human-facing approval message
+   * in `resolveMergeOutcome` can name exactly what tripped, verbatim.
+   */
   private async canAutoMerge(
     project: Project,
     task: Task,
     gate: GateResult,
-  ): Promise<boolean> {
+  ): Promise<{ canMerge: boolean; riskyReasons: string[] }> {
+    const { riskyChangeRules } = this.deps.settings;
+
+    // S8: runs BEFORE any merge-policy branch below, including
+    // fully_autonomous's "always merge" — a destructive change forces
+    // human review in EVERY policy, not just the default one. That's the
+    // whole point: non-bypassable. `!== false` (not a plain truthy check)
+    // so settings persisted before this field existed — which lack the key
+    // entirely — default to enabled, the safe reading of "absent".
+    if (riskyChangeRules.destructiveChanges !== false) {
+      const [filesWithStatus, diff] = await Promise.all([
+        this.deps.worktrees.changedFilesWithStatus(project, task),
+        this.deps.worktrees.diffText(project, task),
+      ]);
+      const reasons = detectDestructiveChanges(filesWithStatus, diff);
+      if (reasons.length > 0) {
+        this.emit(
+          "warn",
+          "engine",
+          `Risky: destructive change detected — ${reasons.join("; ")}`,
+          task.id,
+        );
+        return { canMerge: false, riskyReasons: reasons };
+      }
+    }
+
     // F9: a project can override the global merge policy (e.g. "always_ask"
     // for a sensitive repo, or "fully_autonomous" for a low-stakes one).
     const mergePolicy = project.config?.mergePolicy ?? this.deps.settings.mergePolicy;
-    const { riskyChangeRules } = this.deps.settings;
 
-    if (mergePolicy === "fully_autonomous") return true;
-    if (mergePolicy === "always_ask") return false;
+    if (mergePolicy === "fully_autonomous") return { canMerge: true, riskyReasons: [] };
+    if (mergePolicy === "always_ask") return { canMerge: false, riskyReasons: [] };
 
     // hard_gate_flag_risky: auto-merge unless a risky-change rule trips.
-    if (riskyChangeRules.outOfScopeEdits && !gate.inScope) return false;
+    if (riskyChangeRules.outOfScopeEdits && !gate.inScope) {
+      return { canMerge: false, riskyReasons: [] };
+    }
 
     if (gate.vacuous && !this.deps.settings.allowVacuousGates) {
       this.emit(
@@ -1960,29 +2101,29 @@ export class Orchestrator implements Scheduler {
         "Risky: no objective gates ran (repo has no typecheck/lint/build/test scripts)",
         task.id,
       );
-      return false;
+      return { canMerge: false, riskyReasons: [] };
     }
 
     const files = await this.deps.worktrees.changedFiles(project, task);
     if (riskyChangeRules.dbSchema && files.some((f) => /\.sql$|migrations?\//i.test(f))) {
       this.emit("warn", "engine", "Risky: DB/schema change detected", task.id);
-      return false;
+      return { canMerge: false, riskyReasons: [] };
     }
     if (
       riskyChangeRules.newDependencies &&
       files.some((f) => /(^|\/)package\.json$/.test(f))
     ) {
       this.emit("warn", "engine", "Risky: dependency change detected", task.id);
-      return false;
+      return { canMerge: false, riskyReasons: [] };
     }
     if (
       riskyChangeRules.authOrSecrets &&
       files.some((f) => isAuthOrSecretFile(f))
     ) {
       this.emit("warn", "engine", "Risky: auth/secret change detected", task.id);
-      return false;
+      return { canMerge: false, riskyReasons: [] };
     }
 
-    return true;
+    return { canMerge: true, riskyReasons: [] };
   }
 }

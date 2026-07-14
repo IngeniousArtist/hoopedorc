@@ -5,7 +5,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { AgentAdapter, AgentRunResult } from "@orc/adapters";
 import type { GateResult, MergeDecision, Project, Run, Settings, Task } from "@orc/types";
-import { Orchestrator, buildFallbackChain, isAuthOrSecretFile, scopesOverlap } from "./orchestrator.js";
+import {
+  Orchestrator,
+  buildFallbackChain,
+  detectDestructiveChanges,
+  isAuthOrSecretFile,
+  scopesOverlap,
+} from "./orchestrator.js";
 import type { GitService, SchedulerDeps, WorktreeManager } from "./index.js";
 
 function settings(): Settings {
@@ -71,6 +77,12 @@ function fakeDeps(
       async changedFiles() { return changed; },
       async changedFilesInScope() { return true; },
       async revertOutOfScope() { return []; },
+      // S8: defaults to plain modifications (never deletions), so
+      // detectDestructiveChanges finds nothing and every pre-existing
+      // merge-path test's behavior is unaffected by canAutoMerge now
+      // always consulting these two.
+      async changedFilesWithStatus() { return changed.map((f) => ({ path: f, status: "M" })); },
+      async diffText() { return ""; },
       ...worktreesOver,
     },
     git: {
@@ -1965,6 +1977,229 @@ test("buildFallbackChain: explicit routing.fallbacks wins over difficulty tiers,
     buildFallbackChain("deepseek-flash", "medium", settings().routing),
     ["deepseek-flash", "deepseek-pro"],
   );
+});
+
+test("detectDestructiveChanges: a clean diff (plain modifications) has no reasons", () => {
+  const files = [
+    { path: "src/foo.ts", status: "M" },
+    { path: "src/bar.ts", status: "A" },
+  ];
+  const diff = "+const x = 1;\n-const y = 2;\n";
+  assert.deepEqual(detectDestructiveChanges(files, diff), []);
+});
+
+test("detectDestructiveChanges: more than 10 deletions trips mass-deletion", () => {
+  const files = Array.from({ length: 11 }, (_, i) => ({ path: `src/f${i}.ts`, status: "D" }));
+  const reasons = detectDestructiveChanges(files, "");
+  assert.ok(reasons.some((r) => /mass deletion/.test(r)));
+});
+
+test("detectDestructiveChanges: deletions over half of >3 changed files trips, under half does not", () => {
+  const riskyFiles = [
+    { path: "a.ts", status: "D" },
+    { path: "b.ts", status: "D" },
+    { path: "c.ts", status: "D" },
+    { path: "d.ts", status: "M" },
+  ];
+  assert.ok(
+    detectDestructiveChanges(riskyFiles, "").some((r) => /more than half/.test(r)),
+  );
+
+  const safeFiles = [
+    { path: "a.ts", status: "D" },
+    { path: "b.ts", status: "M" },
+    { path: "c.ts", status: "M" },
+    { path: "d.ts", status: "M" },
+    { path: "e.ts", status: "A" },
+  ];
+  assert.deepEqual(detectDestructiveChanges(safeFiles, ""), []);
+});
+
+test("detectDestructiveChanges: every changed file under a top-level directory deleted trips; a partial wipe does not", () => {
+  const wiped = [
+    { path: "src/a.ts", status: "D" },
+    { path: "src/b.ts", status: "D" },
+  ];
+  assert.ok(
+    detectDestructiveChanges(wiped, "").some((r) => /every changed file under "src\/" was deleted/.test(r)),
+  );
+
+  const partial = [
+    { path: "src/a.ts", status: "D" },
+    { path: "src/b.ts", status: "M" },
+  ];
+  assert.deepEqual(detectDestructiveChanges(partial, ""), []);
+});
+
+test("detectDestructiveChanges: deleting a migration/schema file trips; modifying one does not", () => {
+  const deletedMigration = [{ path: "migrations/001_init.sql", status: "D" }];
+  assert.ok(
+    detectDestructiveChanges(deletedMigration, "").some((r) => /migration\/schema/.test(r)),
+  );
+  const deletedSchema = [{ path: "prisma/schema.prisma", status: "D" }];
+  assert.ok(
+    detectDestructiveChanges(deletedSchema, "").some((r) => /migration\/schema/.test(r)),
+  );
+
+  const modifiedMigration = [{ path: "migrations/001_init.sql", status: "M" }];
+  assert.deepEqual(detectDestructiveChanges(modifiedMigration, ""), []);
+});
+
+test("detectDestructiveChanges: deleting .env/CI workflow/lockfile trips; modifying does not", () => {
+  const deletedEnv = [{ path: ".env.production", status: "D" }];
+  assert.ok(detectDestructiveChanges(deletedEnv, "").some((r) => /sensitive file/.test(r)));
+
+  const deletedCi = [{ path: ".github/workflows/ci.yml", status: "D" }];
+  assert.ok(detectDestructiveChanges(deletedCi, "").some((r) => /sensitive file/.test(r)));
+
+  const deletedLock = [{ path: "package-lock.json", status: "D" }];
+  assert.ok(detectDestructiveChanges(deletedLock, "").some((r) => /sensitive file/.test(r)));
+
+  const modifiedEnv = [{ path: ".env.production", status: "M" }];
+  assert.deepEqual(detectDestructiveChanges(modifiedEnv, ""), []);
+});
+
+test("detectDestructiveChanges: added destructive SQL trips; removed destructive SQL does not", () => {
+  const dropTable = detectDestructiveChanges([], "+DROP TABLE users;\n");
+  assert.ok(dropTable.some((r) => /destructive SQL/.test(r)));
+
+  const dropDb = detectDestructiveChanges([], "+  DROP DATABASE prod;\n");
+  assert.ok(dropDb.some((r) => /destructive SQL/.test(r)));
+
+  const truncate = detectDestructiveChanges([], "+TRUNCATE accounts;\n");
+  assert.ok(truncate.some((r) => /destructive SQL/.test(r)));
+
+  // A line being REMOVED (a leading '-') is the opposite of risky.
+  const removed = detectDestructiveChanges([], "-DROP TABLE users;\n");
+  assert.deepEqual(removed, []);
+});
+
+test("detectDestructiveChanges: DELETE FROM with no WHERE trips; the same query WITH a WHERE does not", () => {
+  const noWhere = detectDestructiveChanges([], "+DELETE FROM users;\n");
+  assert.ok(noWhere.some((r) => /DELETE with no WHERE/.test(r)));
+
+  // Exact near-miss from the plan's own acceptance criteria.
+  const withWhere = detectDestructiveChanges([], "+DELETE FROM x WHERE id = ?\n");
+  assert.deepEqual(withWhere, []);
+});
+
+test("detectDestructiveChanges: empty-filter deleteMany() trips; a filtered one does not", () => {
+  const empty = detectDestructiveChanges([], "+await db.user.deleteMany();\n");
+  assert.ok(empty.some((r) => /empty-filter deleteMany/.test(r)));
+
+  const filtered = detectDestructiveChanges([], "+await db.user.deleteMany({ where: { id } });\n");
+  assert.deepEqual(filtered, []);
+});
+
+test("detectDestructiveChanges: rm -rf on a non-local/non-tmp path trips; a local relative path does not", () => {
+  const home = detectDestructiveChanges([], "+rm -rf /home/user/important\n");
+  assert.ok(home.some((r) => /rm -rf/.test(r)));
+
+  const tilde = detectDestructiveChanges([], "+rm -rf ~/data\n");
+  assert.ok(tilde.some((r) => /rm -rf/.test(r)));
+
+  const traversal = detectDestructiveChanges([], "+rm -rf ../../../etc\n");
+  assert.ok(traversal.some((r) => /rm -rf/.test(r)));
+
+  // Ordinary build-script cleanup — a bare relative path — is normal, not risky.
+  const localDist = detectDestructiveChanges([], "+rm -rf dist\n");
+  assert.deepEqual(localDist, []);
+  const localRelative = detectDestructiveChanges([], "+rm -rf ./node_modules\n");
+  assert.deepEqual(localRelative, []);
+  const tmp = detectDestructiveChanges([], "+rm -rf /tmp/build-cache\n");
+  assert.deepEqual(tmp, []);
+});
+
+test("S8: canAutoMerge holds a destructive change for approval even under fully_autonomous; a clean diff still auto-merges", async () => {
+  const merged: number[] = [];
+  let asked = false;
+  const deps = fakeDeps(
+    {
+      settings: { ...settings(), mergePolicy: "fully_autonomous" },
+      worktrees: {
+        async changedFilesWithStatus() {
+          return [{ path: "migrations/001_init.sql", status: "D" }];
+        },
+        async diffText() {
+          return "+DROP TABLE users;\n";
+        },
+      },
+      events: {
+        onLog() {}, onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        async requestApproval(args) {
+          asked = true;
+          assert.match(args.message, /Destructive change detected/);
+          assert.match(args.message, /migration\/schema/);
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+  assert.equal(asked, true, "fully_autonomous must NOT skip the destructive-change check");
+  assert.equal(merged.length, 0);
+  assert.equal(t1.status, "failed");
+  assert.ok(t1.statusReason && /destructive change/.test(t1.statusReason));
+});
+
+test("S8: canAutoMerge auto-merges a clean change under fully_autonomous exactly as before", async () => {
+  const merged: number[] = [];
+  const deps = fakeDeps(
+    { settings: { ...settings(), mergePolicy: "fully_autonomous" } },
+    merged,
+  );
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+  assert.equal(t1.status, "done");
+  assert.equal(merged.length, 1);
+});
+
+test("S8: riskyChangeRules.destructiveChanges: false restores today's fully_autonomous behavior for a destructive diff", async () => {
+  const merged: number[] = [];
+  const deps = fakeDeps(
+    {
+      settings: {
+        ...settings(),
+        mergePolicy: "fully_autonomous",
+        riskyChangeRules: { ...settings().riskyChangeRules, destructiveChanges: false },
+      },
+      worktrees: {
+        async changedFilesWithStatus() {
+          return [{ path: "migrations/001_init.sql", status: "D" }];
+        },
+        async diffText() {
+          return "+DROP TABLE users;\n";
+        },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+  assert.equal(t1.status, "done", "disabling the rule restores the pre-S8 auto-merge behavior");
+  assert.equal(merged.length, 1);
+});
+
+test("S8: the author prompt includes the fixed safety guardrails block", async () => {
+  const capturedPrompts: string[] = [];
+  const capturingAdapter: AgentAdapter = {
+    runner: "opencode",
+    async run(opts): Promise<AgentRunResult> {
+      capturedPrompts.push(opts.prompt);
+      return {
+        ok: true, exitReason: "completed", costUsd: 0.01, tokensIn: 1, tokensOut: 1,
+        summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+      };
+    },
+  };
+  const t1 = task("t1");
+  await new Orchestrator(fakeDeps({ adapterFor: () => capturingAdapter }, [])).start(PROJECT, [t1]);
+  assert.equal(capturedPrompts.length, 1);
+  assert.match(capturedPrompts[0]!, /## Safety/);
+  assert.match(capturedPrompts[0]!, /Never delete files or directories unrelated to this task/);
+  assert.match(capturedPrompts[0]!, /Never touch credentials, secrets, or auth\/authorization checks/);
 });
 
 test("a terminally-failed task gets its remote branch/PR cleaned up; a merged one does not (gh already did it)", async () => {
