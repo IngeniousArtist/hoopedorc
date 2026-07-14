@@ -35,6 +35,8 @@ import * as repo from "./db/repo";
 import { WsHub } from "./ws-hub";
 import { EngineRunner } from "./engine-runner";
 import {
+  plannerModelLabel,
+  resolvePlannerModel,
   runPlanner,
   runPlannerChat,
   runPlannerDeconstruct,
@@ -248,49 +250,6 @@ async function resolvePlannerCwd(project: Project): Promise<string> {
   } catch {
     return tmpdir();
   }
-}
-
-/**
- * F37: resolve a planning tier to a `PlannerModel` — which CLI + model id
- * `planner.ts` should actually shell out to, instead of hardcoding `claude`.
- * Everything comes from the dashboard's routing: `chat` turns use
- * Settings → Routing → Planner; the one high-leverage `deconstruct` call
- * uses Settings → Routing → Deconstructor, which falls back to the planner
- * when unset (the default — one model does both). The resolved config's
- * `claudeModel`/`codexModel` field is the model id, with `ENV.plannerModel`
- * only as a fallback when `claudeModel` is unset. opencode-runner planners
- * throw — conversational planning quality is the point of the two
- * subscription CLIs, not something to silently degrade; callers turn this
- * into an explicit 400.
- */
-function resolvePlannerModel(
-  settings: SettingsType,
-  tier: "chat" | "deconstruct",
-): PlannerModel {
-  const routedId =
-    tier === "deconstruct"
-      ? (settings.routing.deconstructor ?? settings.routing.planner)
-      : settings.routing.planner;
-  const cfg = settings.models.find((m) => m.id === routedId);
-  if (cfg?.runner === "codex") return { runner: "codex", model: cfg.codexModel };
-  if (cfg?.runner === "opencode") {
-    const field = tier === "deconstruct" && settings.routing.deconstructor
-      ? "Deconstructor"
-      : "Planner";
-    throw new Error(
-      `planner model "${cfg.displayName}" uses the opencode runner, which isn't supported for ` +
-        `planning — route Settings → Routing → ${field} to a claude-code or codex model instead`,
-    );
-  }
-  return { runner: "claude-code", model: cfg?.claudeModel ?? ENV.plannerModel };
-}
-
-/** Display label for the plan-session markdown's "Planner model:" line —
- *  unchanged from before F37 for the claude-code path (just `pm.model`, the
- *  existing alias string), qualified with "codex:" so a codex-routed planner
- *  doesn't render as a bare, ambiguous model id. */
-function plannerModelLabel(pm: PlannerModel): string {
-  return pm.runner === "codex" ? `codex:${pm.model ?? "default"}` : (pm.model ?? "claude");
 }
 
 /**

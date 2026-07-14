@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { extractJsonObject, flattenRawTasks, parsePlanOutput } from "./planner.js";
+import { ENV, defaultSettings } from "./config.js";
+import {
+  extractJsonObject,
+  flattenRawTasks,
+  parsePlanOutput,
+  plannerModelLabel,
+  resolvePlannerModel,
+} from "./planner.js";
 
 // B31: the owner's exact failure shape — pure JSON whose "prd" string
 // contains a fenced snippet mentioning a file path. The old unanchored,
@@ -206,4 +213,83 @@ test("parsePlanOutput surfaces warnings via the onWarn callback", () => {
   parsePlanOutput(text, "proj", "", (msg) => warnings.push(msg));
   assert.equal(warnings.length, 1);
   assert.match(warnings[0]!, /dropped 1 task/);
+});
+
+// F45: opencode-runner models are now fully supported for planning, not
+// just claude-code/codex — resolvePlannerModel used to throw outright for
+// any opencode-runner routing target.
+test("resolvePlannerModel: an opencode-runner model resolves for both the chat and deconstruct tiers", () => {
+  const settings = defaultSettings();
+  // deepseek-pro ships as an opencode-runner model with opencodeModel set.
+  settings.routing.planner = "deepseek-pro";
+  delete settings.routing.deconstructor; // falls back to the planner
+
+  const chat = resolvePlannerModel(settings, "chat");
+  assert.equal(chat.runner, "opencode");
+  assert.equal(chat.model, "deepseek/deepseek-v4-pro");
+  assert.equal(chat.opencodeBaseUrl, ENV.opencodeBaseUrl);
+
+  const deconstruct = resolvePlannerModel(settings, "deconstruct");
+  assert.equal(deconstruct.runner, "opencode");
+  assert.equal(deconstruct.model, "deepseek/deepseek-v4-pro");
+});
+
+test("resolvePlannerModel: deconstructor can independently route to a different opencode model than the planner", () => {
+  const settings = defaultSettings();
+  settings.routing.planner = "claude";
+  settings.routing.deconstructor = "deepseek-pro";
+
+  const chat = resolvePlannerModel(settings, "chat");
+  assert.equal(chat.runner, "claude-code");
+
+  const deconstruct = resolvePlannerModel(settings, "deconstruct");
+  assert.equal(deconstruct.runner, "opencode");
+  assert.equal(deconstruct.model, "deepseek/deepseek-v4-pro");
+});
+
+test("resolvePlannerModel: an opencode-runner model with no opencodeModel configured still throws (400)", () => {
+  const settings = defaultSettings();
+  settings.models.push({
+    id: "broken-opencode",
+    displayName: "Broken",
+    runner: "opencode",
+    // opencodeModel deliberately omitted.
+    roles: [],
+    enabled: true,
+    maxConcurrent: 1,
+  });
+  settings.routing.planner = "broken-opencode";
+
+  assert.throws(() => resolvePlannerModel(settings, "chat"), /has no opencodeModel configured/);
+  assert.throws(() => resolvePlannerModel(settings, "deconstruct"), /has no opencodeModel configured/);
+});
+
+test("resolvePlannerModel: codex and claude-code routing are unaffected by the opencode support", () => {
+  const settings = defaultSettings();
+  settings.models.push({
+    id: "codex-model",
+    displayName: "Codex",
+    runner: "codex",
+    codexModel: "gpt-5.2-codex",
+    roles: [],
+    enabled: true,
+    maxConcurrent: 1,
+  });
+  settings.routing.planner = "codex-model";
+  const codex = resolvePlannerModel(settings, "chat");
+  assert.deepEqual(codex, { runner: "codex", model: "gpt-5.2-codex" });
+
+  settings.routing.planner = "claude";
+  const claude = resolvePlannerModel(settings, "chat");
+  assert.equal(claude.runner, "claude-code");
+});
+
+test("plannerModelLabel: labels each runner distinctly", () => {
+  assert.equal(plannerModelLabel({ runner: "claude-code", model: "sonnet" }), "sonnet");
+  assert.equal(plannerModelLabel({ runner: "claude-code" }), "claude");
+  assert.equal(plannerModelLabel({ runner: "codex", model: "gpt-5.2-codex" }), "codex:gpt-5.2-codex");
+  assert.equal(
+    plannerModelLabel({ runner: "opencode", model: "deepseek/deepseek-v4-pro" }),
+    "opencode:deepseek/deepseek-v4-pro",
+  );
 });
