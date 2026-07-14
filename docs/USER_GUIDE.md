@@ -436,7 +436,9 @@ It shows up in the Plan tab as an editable text box next to the PRD —
 review and adjust it before you approve, the same as you'd tweak a task's
 scope or acceptance criteria. Once you commit the plan, it's written to
 the repo root as a real, permanent file (not something Hoopedorc manages
-afterward) — from then on it's just a normal committed file: agents,
+afterward). PRD, AGENTS.md, and the conditional CLAUDE.md pointer are
+committed and pushed together before any task becomes runnable. From then
+on AGENTS.md is just a normal committed file: agents,
 teammates, and later documentation tasks (F30's per-task documenter is
 allowed to touch it when a change actually alters the project's structure)
 can all read and edit it like any other file in the repo.
@@ -452,6 +454,15 @@ a hand-maintained one, Hoopedorc leaves it alone. The author prompt also
 gets a one-line nudge to read `AGENTS.md` when the task's worktree has one,
 as a belt-and-suspenders reminder for whichever runner needs prompting to
 actually look at it.
+
+If repository or archive persistence fails, the Plan tab keeps the exact
+edited PRD, task table, conversation, and AGENTS.md for **Commit plan** to
+retry. The project remains `planning`, and web, scheduled, and Telegram Start
+requests are refused until the retry durably pushes the context. A push that
+failed after creating the local commit is safe to retry: Hoopedorc pushes that
+existing no-diff commit rather than duplicating it or the task rows. The
+returned error names the failed stage (for example `fetch`, `commit`, `push`,
+or `archive`).
 
 ## Backups & data
 

@@ -73,6 +73,16 @@ pricing. Defaults, migrations, HTTP/Telegram writes, repository reads, and
 runtime access all share the same normalizer, so an active scheduler never sees
 a shape that the API would reject.
 
+Plan approval crosses an explicit Git/SQLite durability boundary. The submitted
+draft is retained in SQLite under `planning` while one serialized primary-clone
+operation writes and pushes PRD/AGENTS/CLAUDE together. The session archive is
+finalized next; task creation, PRD publication, scratch clearing, and the
+`planned` transition then happen in one SQLite transaction. Start is rejected
+throughout `planning`, including after a partial failure, so a task worktree can
+never branch before its planning context is present on the remote default
+branch. A retry always pushes a prior local no-diff commit before finalizing DB
+state.
+
 ## Why this split
 - **One language (TS)** so the parallel agents share `@orc/types` and can't drift.
 - **OpenCode as the single gateway** for all API-billed models — one CLI

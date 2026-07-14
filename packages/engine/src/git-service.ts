@@ -5,7 +5,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { abortableDelay, execManagedProcess } from "@orc/adapters";
 import type { Project, RollbackJob, Task } from "@orc/types";
 import type { GitService } from "./index.js";
@@ -93,6 +93,82 @@ async function withRepoLock<T>(
   });
 }
 
+export type GitOperationStage =
+  | "inspect"
+  | "fetch"
+  | "checkout"
+  | "merge"
+  | "write"
+  | "stage"
+  | "commit"
+  | "push"
+  | "cleanup";
+
+function processErrorDetail(err: unknown): string {
+  const processError = err as { stderr?: string; stdout?: string; message?: string };
+  return (
+    processError.stderr?.trim() ||
+    processError.stdout?.trim() ||
+    processError.message ||
+    String(err)
+  );
+}
+
+/** B39: infrastructure failures remain machine-identifiable while retaining
+ * the underlying Git/OS detail needed for an operator to fix them. */
+export class GitOperationError extends Error {
+  override name = "GitOperationError";
+
+  constructor(
+    readonly stage: GitOperationStage,
+    message: string,
+    readonly originalError?: unknown,
+  ) {
+    super(
+      `${stage}: ${message}${originalError ? ` (${processErrorDetail(originalError)})` : ""}`,
+    );
+  }
+}
+
+export interface RepositoryFileWrite {
+  path: string;
+  content: string;
+  /** Preserve a hand-maintained file (used for CLAUDE.md). */
+  ifMissing?: boolean;
+}
+
+type ResolvedRepositoryFile = RepositoryFileWrite & {
+  full: string;
+  relative: string;
+};
+
+function safeRepositoryPath(
+  root: string,
+  candidate: string,
+): { full: string; relative: string } {
+  if (!candidate || candidate.includes("\0") || isAbsolute(candidate)) {
+    throw new GitOperationError(
+      "write",
+      `invalid repository-relative path ${JSON.stringify(candidate)}`,
+    );
+  }
+  const full = resolve(root, candidate);
+  const rel = relative(root, full);
+  if (
+    !rel ||
+    rel === ".." ||
+    rel.startsWith(`..${sep}`) ||
+    isAbsolute(rel) ||
+    rel.split(sep).includes(".git")
+  ) {
+    throw new GitOperationError(
+      "write",
+      `path escapes the repository: ${JSON.stringify(candidate)}`,
+    );
+  }
+  return { full, relative: rel.split(sep).join("/") };
+}
+
 export class GitServiceImpl implements GitService {
   async ensureClone(project: Project, signal?: AbortSignal): Promise<void> {
     await withRepoLock(project.localPath, async () => {
@@ -109,17 +185,147 @@ export class GitServiceImpl implements GitService {
   }
 
   async commitAll(worktreePath: string, message: string, signal?: AbortSignal): Promise<void> {
-    await git(["add", "-A"], worktreePath, signal);
+    try {
+      await git(["add", "-A"], worktreePath, signal);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      throw new GitOperationError("stage", "could not stage task changes", err);
+    }
+    let status: string;
+    try {
+      status = await git(["status", "--porcelain=v1"], worktreePath, signal);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      throw new GitOperationError("inspect", "could not verify whether the task has changes", err);
+    }
+    if (!status.trim()) return;
     try {
       await git(["commit", "-m", message], worktreePath, signal);
     } catch (err) {
       if (signal?.aborted) throw err;
-      /* nothing to commit — that's ok */
+      throw new GitOperationError("commit", "task commit failed", err);
     }
   }
 
+  /** B39: write one planning artifact set as one commit, then push it before
+   * the server may create tasks or clear its retryable planning scratch. The
+   * push always runs—even after a no-diff retry—so a prior locally committed
+   * but unpushed attempt can recover without creating a duplicate commit. */
+  async commitFiles(
+    project: Project,
+    files: RepositoryFileWrite[],
+    message: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (files.length === 0) {
+      throw new GitOperationError("write", "at least one repository file is required");
+    }
+    const resolved: ResolvedRepositoryFile[] = files.map((file) => ({
+      ...file,
+      ...safeRepositoryPath(project.localPath, file.path),
+    }));
+    const unique = new Set(resolved.map((file) => file.relative));
+    if (unique.size !== resolved.length) {
+      throw new GitOperationError("write", "planning artifact paths must be unique");
+    }
+
+    try {
+      await this.ensureClone(project, signal);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      if (err instanceof GitOperationError) throw err;
+      throw new GitOperationError("fetch", "could not prepare the project clone", err);
+    }
+
+    await withRepoLock(project.localPath, async () => {
+      let managed = await this.managedRepositoryFiles(
+        resolved,
+        project.localPath,
+        signal,
+      );
+      await this.assertOnlyExpectedPrimaryChanges(
+        project.localPath,
+        new Set(resolved.map((file) => file.relative)),
+        signal,
+      );
+      await this.syncPrimaryForPersistence(project, signal);
+      // Origin may have added a conditional file since the previous attempt.
+      managed = await this.managedRepositoryFiles(
+        resolved,
+        project.localPath,
+        signal,
+      );
+      await this.assertOnlyExpectedPrimaryChanges(
+        project.localPath,
+        new Set(resolved.map((file) => file.relative)),
+        signal,
+      );
+
+      try {
+        for (const file of managed) {
+          mkdirSync(dirname(file.full), { recursive: true });
+          writeFileSync(
+            file.full,
+            file.content.endsWith("\n") ? file.content : `${file.content}\n`,
+            "utf8",
+          );
+        }
+      } catch (err) {
+        throw new GitOperationError("write", "could not write planning artifacts", err);
+      }
+
+      const paths = managed.map((file) => file.relative);
+      try {
+        await git(["add", "--", ...paths], project.localPath, signal);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new GitOperationError("stage", "could not stage planning artifacts", err);
+      }
+
+      let staged: string;
+      try {
+        staged = await git(
+          ["diff", "--cached", "--name-only", "--", ...paths],
+          project.localPath,
+          signal,
+        );
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new GitOperationError(
+          "inspect",
+          "could not verify staged planning artifacts",
+          err,
+        );
+      }
+      if (staged.trim()) {
+        try {
+          await git(
+            ["commit", "-m", message, "--", ...paths],
+            project.localPath,
+            signal,
+          );
+        } catch (err) {
+          if (signal?.aborted) throw err;
+          throw new GitOperationError("commit", "planning artifact commit failed", err);
+        }
+      }
+
+      try {
+        await git(["push", "origin", project.defaultBranch], project.localPath, signal);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new GitOperationError("push", "planning artifact push failed", err);
+      }
+    }, signal);
+  }
+
   async push(worktreePath: string, branch: string, signal?: AbortSignal): Promise<void> {
-    await git(["push", "origin", branch], worktreePath, signal);
+    try {
+      await git(["push", "origin", branch], worktreePath, signal);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      throw new GitOperationError("push", `could not push ${branch}`, err);
+    }
   }
 
   async openPr(project: Project, task: Task, signal?: AbortSignal): Promise<number> {
@@ -160,6 +366,7 @@ export class GitServiceImpl implements GitService {
     // Restart idempotency: a process can die after GitHub merged the PR but
     // before the durable caller records completion. Treat that state as done
     // instead of trying to merge the already-merged PR again.
+    let alreadyMerged = false;
     try {
       const state = (
         await gh(
@@ -178,17 +385,14 @@ export class GitServiceImpl implements GitService {
           signal,
         )
       ).trim();
-      if (state === "MERGED") {
-        await withRepoLock(
-          project.localPath,
-          () => this.syncPrimary(project, signal).catch(() => {}),
-          signal,
-        );
-        return;
-      }
+      alreadyMerged = state === "MERGED";
     } catch (err) {
       if (signal?.aborted) throw err;
       // A transient state lookup must not prevent the normal merge path.
+    }
+    if (alreadyMerged) {
+      await this.syncPrimaryAfterMerge(project, prNumber);
+      return;
     }
 
     // GitHub computes a PR's mergeability asynchronously; for the first few
@@ -222,17 +426,10 @@ export class GitServiceImpl implements GitService {
     }
     if (lastErr) throw lastErr;
 
-    // Fast-forward the primary clone's default branch so it never drifts from
-    // origin. Serialized per-repo (concurrent merges would collide on the
-    // shared working tree's index.lock). Best effort — worktree creation
-    // re-fetches from origin anyway.
-    await withRepoLock(project.localPath, async () => {
-      try {
-        await this.syncPrimary(project, signal);
-      } catch {
-        /* best effort */
-      }
-    }, signal);
+    // The GitHub merge is already durable. Refresh the primary clone, but do
+    // not turn a remotely completed task into a failure if this housekeeping
+    // step fails; later strict primary-clone writes fetch again.
+    await this.syncPrimaryAfterMerge(project, prNumber);
   }
 
   async appendChangelogEntry(
@@ -249,80 +446,47 @@ export class GitServiceImpl implements GitService {
       `${oneLineSummary} — PR #${prNumber}\n`;
 
     await withRepoLock(project.localPath, async () => {
+      await this.syncPrimary(project, signal);
+
+      let lines: string[];
       try {
-        await this.syncPrimary(project, signal);
+        lines = readFileSync(path, "utf-8").split("\n");
+      } catch {
+        lines = ["# Changelog", "", "Auto-generated as tasks merge.", ""];
+      }
 
-        let lines: string[];
-        try {
-          lines = readFileSync(path, "utf-8").split("\n");
-        } catch {
-          lines = ["# Changelog", "", "Auto-generated as tasks merge.", ""];
-        }
-
-        // Group entries under a date heading; append under today's heading if
-        // it exists, otherwise insert a new heading+entry after the title.
+      // Group entries under a date heading; append under today's heading if
+      // it exists, otherwise insert a new heading+entry after the title.
+      const entryLine = entry.trimEnd();
+      if (!lines.includes(entryLine)) {
         const heading = `## ${date}`;
         const headingIdx = lines.indexOf(heading);
         if (headingIdx !== -1) {
-          lines.splice(headingIdx + 1, 0, entry.trimEnd());
+          lines.splice(headingIdx + 1, 0, entryLine);
         } else {
-          const titleIdx = lines.findIndex((l) => l.startsWith("# "));
+          const titleIdx = lines.findIndex((line) => line.startsWith("# "));
           const insertAt = titleIdx === -1 ? 0 : titleIdx + 1;
-          lines.splice(insertAt, 0, "", heading, entry.trimEnd());
+          lines.splice(insertAt, 0, "", heading, entryLine);
         }
+      }
 
-        writeFileSync(path, lines.join("\n"), "utf-8");
-        await git(["add", "CHANGELOG.md"], project.localPath, signal);
+      writeFileSync(path, lines.join("\n"), "utf-8");
+      await git(["add", "CHANGELOG.md"], project.localPath, signal);
+      const staged = await git(
+        ["diff", "--cached", "--name-only", "--", "CHANGELOG.md"],
+        project.localPath,
+        signal,
+      );
+      if (staged.trim()) {
         await git(
-          ["commit", "-m", `docs: changelog — ${task.title}`],
+          ["commit", "-m", `docs: changelog — ${task.title}`, "--", "CHANGELOG.md"],
           project.localPath,
           signal,
         );
-        await git(["push", "origin", project.defaultBranch], project.localPath, signal);
-      } catch (err) {
-        if (signal?.aborted) throw err;
-        /* best effort — a changelog gap is cosmetic, never block the merge */
       }
+      // Retry-safe after an ambiguous/failed prior push.
+      await git(["push", "origin", project.defaultBranch], project.localPath, signal);
     }, signal);
-  }
-
-  /**
-   * Write a file into the primary clone and push it straight to the default
-   * branch. Used to persist docs/PRD.md at plan-commit time so the PRD lives
-   * in the repo (durable, visible, readable by the in-repo planner next time).
-   * Best-effort: a push failure never blocks the commit flow.
-   */
-  async commitFile(
-    project: Project,
-    relPath: string,
-    content: string,
-    message: string,
-  ): Promise<void> {
-    await this.ensureClone(project);
-    await withRepoLock(project.localPath, async () => {
-      try {
-        await this.syncPrimary(project);
-
-        const full = join(project.localPath, relPath);
-        mkdirSync(dirname(full), { recursive: true });
-        writeFileSync(
-          full,
-          content.endsWith("\n") ? content : content + "\n",
-          "utf-8",
-        );
-
-        await git(["add", relPath], project.localPath);
-        // No-op commit (content unchanged) exits non-zero — tolerate it.
-        try {
-          await git(["commit", "-m", message], project.localPath);
-        } catch {
-          return;
-        }
-        await git(["push", "origin", project.defaultBranch], project.localPath);
-      } catch {
-        /* best effort — PRD also persists in the DB */
-      }
-    });
   }
 
   async syncBranchWithMain(
@@ -336,7 +500,11 @@ export class GitServiceImpl implements GitService {
       await git(["fetch", "origin", project.defaultBranch], wt, signal);
     } catch (err) {
       if (signal?.aborted) throw err;
-      return "clean"; // can't fetch — let the merge attempt proceed as-is
+      throw new GitOperationError(
+        "fetch",
+        `could not fetch ${project.defaultBranch} before merging the task PR`,
+        err,
+      );
     }
     try {
       // 3-way merge of latest main into the branch. Exits 0 on a clean merge
@@ -348,14 +516,32 @@ export class GitServiceImpl implements GitService {
       );
     } catch (err) {
       if (signal?.aborted) throw err;
-      // Genuine conflict — leave a clean tree and report it. The orchestrator
-      // requeues the task for a fresh attempt against the now-current main.
+      // Only an actual unmerged path is a content conflict. Identity, hook,
+      // permission, index-lock, and other merge failures are infrastructure
+      // errors and must not masquerade as a clean/retryable conflict.
+      let conflicts = "";
       try {
-        await git(["merge", "--abort"], wt, signal);
-      } catch {
-        /* nothing to abort */
+        conflicts = await git(["diff", "--name-only", "--diff-filter=U"], wt, signal);
+      } catch (inspectError) {
+        throw new GitOperationError(
+          "inspect",
+          "could not inspect a failed branch sync",
+          inspectError,
+        );
       }
-      return "conflict";
+      if (conflicts.trim()) {
+        try {
+          await git(["merge", "--abort"], wt, signal);
+        } catch {
+          /* best-effort cleanup; the reported conflict remains the cause */
+        }
+        return "conflict";
+      }
+      throw new GitOperationError(
+        "merge",
+        "task branch sync failed without a content conflict",
+        err,
+      );
     }
     // Push the (possibly merge-commit-bearing) branch so the PR is current.
     // No-op if the merge changed nothing.
@@ -363,7 +549,7 @@ export class GitServiceImpl implements GitService {
       await git(["push", "origin", task.branch], wt, signal);
     } catch (err) {
       if (signal?.aborted) throw err;
-      /* best effort — mergePr re-checks mergeability regardless */
+      throw new GitOperationError("push", "could not push the synchronized task branch", err);
     }
     return "clean";
   }
@@ -424,16 +610,165 @@ export class GitServiceImpl implements GitService {
     }
   }
 
+  private async managedRepositoryFiles(
+    files: ResolvedRepositoryFile[],
+    root: string,
+    signal?: AbortSignal,
+  ): Promise<ResolvedRepositoryFile[]> {
+    const managed: ResolvedRepositoryFile[] = [];
+    for (const file of files) {
+      if (!file.ifMissing || !existsSync(file.full)) {
+        managed.push(file);
+        continue;
+      }
+      try {
+        const trackedAtHead = await git(
+          ["ls-tree", "-r", "--name-only", "HEAD", "--", file.relative],
+          root,
+          signal,
+        );
+        // A tracked file belongs to the repository owner and is preserved.
+        if (trackedAtHead.split("\n").includes(file.relative)) continue;
+
+        // An untracked file may be B39 output left after a stage/commit
+        // failure, but it may equally be an owner's not-yet-committed file.
+        // Retry only our exact content; preserve every other hand-maintained
+        // file instead of overwriting or accidentally committing it.
+        const desired = file.content.endsWith("\n") ? file.content : `${file.content}\n`;
+        if (readFileSync(file.full, "utf8") === desired) managed.push(file);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new GitOperationError(
+          "inspect",
+          `could not inspect conditional planning file ${file.relative}`,
+          err,
+        );
+      }
+    }
+    return managed;
+  }
+
+  private async assertOnlyExpectedPrimaryChanges(
+    root: string,
+    expected: Set<string>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    try {
+      const [unstaged, staged, untracked] = await Promise.all([
+        git(["diff", "--name-only"], root, signal),
+        git(["diff", "--cached", "--name-only"], root, signal),
+        git(["ls-files", "--others", "--exclude-standard"], root, signal),
+      ]);
+      const dirty = [...new Set(
+        `${unstaged}\n${staged}\n${untracked}`
+          .split("\n")
+          .map((path) => path.trim())
+          .filter(Boolean),
+      )];
+      const unexpected = dirty.filter((path) => !expected.has(path));
+      if (unexpected.length > 0) {
+        throw new GitOperationError(
+          "inspect",
+          `primary clone has unrelated changes; commit or remove them before retrying: ${unexpected.join(", ")}`,
+        );
+      }
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      if (err instanceof GitOperationError) throw err;
+      throw new GitOperationError("inspect", "could not verify primary-clone cleanliness", err);
+    }
+  }
+
+  /** Planning retries may find a clean local commit whose prior push failed.
+   * Fast-forward when possible; if origin advanced independently, rebase that
+   * local planning commit so a retry can still publish without duplicating it. */
+  private async syncPrimaryForPersistence(
+    project: Project,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    try {
+      await git(["fetch", "origin", project.defaultBranch], project.localPath, signal);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      throw new GitOperationError("fetch", `could not fetch ${project.defaultBranch}`, err);
+    }
+    try {
+      await git(["checkout", project.defaultBranch], project.localPath, signal);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      throw new GitOperationError("checkout", `could not check out ${project.defaultBranch}`, err);
+    }
+    try {
+      await git(
+        ["merge", "--ff-only", `origin/${project.defaultBranch}`],
+        project.localPath,
+        signal,
+      );
+      return;
+    } catch (mergeError) {
+      if (signal?.aborted) throw mergeError;
+      try {
+        await git(
+          ["rebase", `origin/${project.defaultBranch}`],
+          project.localPath,
+          signal,
+        );
+        return;
+      } catch (rebaseError) {
+        if (signal?.aborted) throw rebaseError;
+        await git(["rebase", "--abort"], project.localPath).catch(() => {});
+        throw new GitOperationError(
+          "merge",
+          `could not reconcile local planning state with origin/${project.defaultBranch}`,
+          rebaseError ?? mergeError,
+        );
+      }
+    }
+  }
+
   /** Fetch + checkout + ff-merge the primary clone to origin's default branch.
    *  Caller must hold the repo lock. */
   private async syncPrimary(project: Project, signal?: AbortSignal): Promise<void> {
-    await git(["fetch", "origin", project.defaultBranch], project.localPath, signal);
-    await git(["checkout", project.defaultBranch], project.localPath, signal);
-    await git(
-      ["merge", "--ff-only", `origin/${project.defaultBranch}`],
-      project.localPath,
-      signal,
-    );
+    try {
+      await git(["fetch", "origin", project.defaultBranch], project.localPath, signal);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      throw new GitOperationError("fetch", `could not fetch ${project.defaultBranch}`, err);
+    }
+    try {
+      await git(["checkout", project.defaultBranch], project.localPath, signal);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      throw new GitOperationError("checkout", `could not check out ${project.defaultBranch}`, err);
+    }
+    try {
+      await git(
+        ["merge", "--ff-only", `origin/${project.defaultBranch}`],
+        project.localPath,
+        signal,
+      );
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      throw new GitOperationError(
+        "merge",
+        `could not fast-forward ${project.defaultBranch}`,
+        err,
+      );
+    }
+  }
+
+  private async syncPrimaryAfterMerge(
+    project: Project,
+    prNumber: number,
+  ): Promise<void> {
+    try {
+      await withRepoLock(project.localPath, () => this.syncPrimary(project));
+    } catch (err) {
+      const detail = err instanceof Error ? `: ${err.message}` : "";
+      console.warn(
+        `[hoopedorc] PR #${prNumber} merged, but the primary clone refresh failed${detail}`,
+      );
+    }
   }
 
   /**
@@ -477,6 +812,7 @@ export class GitServiceImpl implements GitService {
   }
 
   async cleanupTaskBranch(project: Project, task: Task): Promise<void> {
+    const failures: string[] = [];
     // Closing the PR first gets the explanatory comment onto it; deleting
     // the head branch alone would auto-close the PR but silently.
     if (task.prNumber != null) {
@@ -491,8 +827,11 @@ export class GitServiceImpl implements GitService {
           `Closed by Hoopedorc: task failed. ${task.statusReason ?? ""}`.trim(),
           "--delete-branch",
         ]);
-      } catch {
-        /* already closed/merged, or transient API error — best effort */
+      } catch (err) {
+        const detail = processErrorDetail(err);
+        if (!/not open|already (?:closed|merged)/i.test(detail)) {
+          failures.push(`close PR #${task.prNumber}: ${detail}`);
+        }
       }
     }
     // Belt and suspenders: a branch can exist with no PR (push succeeded but
@@ -500,9 +839,15 @@ export class GitServiceImpl implements GitService {
     if (task.branch) {
       try {
         await git(["push", "origin", "--delete", task.branch], project.localPath);
-      } catch {
-        /* branch already gone — the common case */
+      } catch (err) {
+        const detail = processErrorDetail(err);
+        if (!/remote ref does not exist|unable to delete/i.test(detail)) {
+          failures.push(`delete ${task.branch}: ${detail}`);
+        }
       }
+    }
+    if (failures.length > 0) {
+      throw new GitOperationError("cleanup", failures.join("; "));
     }
   }
 

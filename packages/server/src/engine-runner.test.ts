@@ -95,6 +95,15 @@ function activeRuntime(engine: EngineRunner, projectId: string): { settled: Prom
   ).runtimes.get(projectId)!;
 }
 
+test("B39: EngineRunner blocks every Start path while planning persistence is pending", async () => {
+  const db = setup();
+  const engine = new EngineRunner(db, new WsHub());
+  const pending = project(db, "planning-pending", { status: "planning" });
+
+  await assert.rejects(engine.start(pending), /planning artifacts are not durable yet/i);
+  assert.equal(engine.hasActivity(pending.id), false);
+});
+
 const ROLLBACK_GATE: GateResult = {
   typecheck: true,
   lint: true,

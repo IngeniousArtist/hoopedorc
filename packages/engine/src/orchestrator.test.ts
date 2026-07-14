@@ -2728,3 +2728,60 @@ test("a terminally-failed task gets its remote branch/PR cleaned up; a merged on
   assert.ok(good.statusReason && /Merged PR #/.test(good.statusReason), `got: ${good.statusReason}`);
   assert.deepEqual(cleaned2, [], "merged task's branch is gh pr merge --delete-branch's job");
 });
+
+test("B39: optional cleanup and changelog failures stay non-blocking but emit warnings", async () => {
+  const logs: { level: string; message: string }[] = [];
+  const events = {
+    onLog(entry: { level: string; message: string }) {
+      logs.push({ level: entry.level, message: entry.message });
+    },
+    onTaskUpdated() {},
+    onRunUpdated() {},
+    onMergeDecision() {},
+    async requestApproval() { return "reject"; },
+  };
+  const failedGate: GateResult = {
+    ...GOOD_GATE,
+    tests: false,
+    details: { tests: "failed" },
+  };
+  const failed = task("cleanup-failure", [], { maxAttempts: 1 });
+  await new Orchestrator(
+    fakeDeps(
+      {
+        events,
+        gates: { async run() { return failedGate; } },
+        git: { async cleanupTaskBranch() { throw new Error("remote unavailable"); } },
+      },
+      [],
+    ),
+  ).start(PROJECT, [failed]);
+  assert.equal(failed.status, "failed");
+  assert.ok(
+    logs.some(
+      (entry) =>
+        entry.level === "warn" &&
+        /Optional failed-branch cleanup failed.*remote unavailable/.test(entry.message),
+    ),
+  );
+
+  const merged: number[] = [];
+  const successful = task("changelog-failure");
+  await new Orchestrator(
+    fakeDeps(
+      {
+        events,
+        git: { async appendChangelogEntry() { throw new Error("changelog push failed"); } },
+      },
+      merged,
+    ),
+  ).start(PROJECT, [successful]);
+  assert.equal(successful.status, "done");
+  assert.ok(
+    logs.some(
+      (entry) =>
+        entry.level === "warn" &&
+        /Optional changelog publication failed.*changelog push failed/.test(entry.message),
+    ),
+  );
+});

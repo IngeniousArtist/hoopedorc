@@ -5,6 +5,18 @@ All notable changes to Hoopedorc are recorded here. Format loosely follows
 
 ## Unreleased
 
+### B39 — planning and Git durability
+
+- Plan commit now saves the exact edited draft first, then awaits one atomic
+  PRD/AGENTS/CLAUDE commit and push plus the readable session archive before
+  creating task rows, clearing scratch, or marking the project planned.
+- A delayed or failed plan commit leaves the project in retryable `planning`
+  state and blocks every Start path. Failed pushes can retry an already-local
+  no-diff commit without duplicating tasks or repository commits.
+- Git commit/fetch/merge/push failures now retain typed stages. Only a verified
+  clean tree is a commit no-op; optional changelog/worktree/branch cleanup stays
+  non-blocking but emits an operator-visible warning when it fails.
+
 ### B38 — portable dependency setup and atomic caching
 
 - Node projects now select npm, pnpm, Yarn, or Bun from `packageManager`
