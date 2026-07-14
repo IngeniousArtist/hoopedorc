@@ -296,8 +296,22 @@ export interface SchedulerDeps {
   decModelActive?: (modelId: ModelId) => void;
 }
 
+export interface OrchestratorStartOptions {
+  /**
+   * B34: dynamic dispatch filter used by EngineRunner's one per-project
+   * runtime. A manual-only runtime admits persisted priority requests; if
+   * Start promotes that runtime to autonomous mode, the closure immediately
+   * begins admitting every ready task without creating another Orchestrator.
+   */
+  shouldDispatch?: (task: Task) => boolean;
+}
+
 export interface Scheduler {
-  start(project: Project, tasks: Task[]): Promise<void>;
+  start(
+    project: Project,
+    tasks: Task[],
+    opts?: OrchestratorStartOptions,
+  ): Promise<void>;
   /** `{ drain: true }` (F3) lets already-active tasks finish instead of
    *  aborting them immediately. */
   pause(project: Project, opts?: { drain?: boolean }): Promise<void>;

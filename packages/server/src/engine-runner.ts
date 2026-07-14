@@ -7,7 +7,7 @@ import {
   type SchedulerDeps,
 } from "@orc/engine";
 import { makeAdapter, type AgentAdapter } from "@orc/adapters";
-import type { ModelId, Project, RunSummaryDetail } from "@orc/types";
+import type { ModelId, Project, RunSummaryDetail, Task } from "@orc/types";
 import { ENV, defaultSettings } from "./config";
 import type { Db } from "./db/index";
 import * as repo from "./db/repo";
@@ -62,6 +62,33 @@ export function formatRunSummaryMessage(
   return lines.join("\n");
 }
 
+export type ProjectRuntimeState =
+  | "starting"
+  | "running"
+  | "draining"
+  | "stopping";
+
+interface ProjectRuntime {
+  readonly generation: number;
+  readonly orchestrator: Orchestrator;
+  state: ProjectRuntimeState;
+  /** Set when this runtime is autonomous from creation or is promoted from
+   * a manual-priority runtime by Start. Absent means only persisted manual
+   * requests are eligible for dispatch. */
+  autonomousStartedAt?: string;
+  settled: Promise<void>;
+}
+
+export interface EngineRunnerOptions {
+  /** Test seam for deterministic lifecycle/race tests. */
+  orchestratorFactory?: (project: Project) => Orchestrator;
+  /** Test seam that avoids a real clone while retaining the production order. */
+  ensureClone?: (project: Project) => Promise<void>;
+  /** B34 only bounds the HTTP wait; the runtime remains registered until it
+   * really settles. B35 makes every subprocess honor that deadline promptly. */
+  stopSettleTimeoutMs?: number;
+}
+
 /**
  * Bridges the engine to the server: builds SchedulerDeps whose events persist to
  * SQLite and broadcast over the WebSocket, runs the Orchestrator in the
@@ -69,26 +96,11 @@ export function formatRunSummaryMessage(
  * or Telegram.
  */
 export class EngineRunner {
-  private readonly orchestrators = new Map<string, Orchestrator>();
-  /**
-   * Tracks in-flight manual dispatches (dispatchOne/runTask), keyed by
-   * projectId -> taskId -> the one-off Orchestrator running it. Each of
-   * these spins up its own Orchestrator with an empty `activeTaskIds`,
-   * sharing none of the autonomous loop's in-flight state — without this map
-   * neither `start()` nor `stopTask()` can see them at all: `start()` would
-   * boot the autonomous loop right on top of a manual dispatch (orphan
-   * recovery would requeue the "in_progress" task with no active run in ITS
-   * memory -> two agents on the same branch/worktree), and `stopTask()`
-   * could never reach a manually-dispatched task's process. (Note: unlike
-   * `activeTaskIds`, per-model concurrency accounting IS shared across every
-   * Orchestrator this class builds — see `modelActiveCount` below. B19:
-   * manual dispatch's own `runTask` path bypasses the dispatch-loop's
-   * maxConcurrent CHECK entirely — a human's explicit dispatch is never
-   * capacity-blocked — but it DOES increment/decrement the same shared
-   * count around the run, so the autonomous loop and other projects can see
-   * it and won't pile maxConcurrent MORE copies of the model on top of it.)
-   */
-  private readonly manualRuns = new Map<string, Map<string, Orchestrator>>();
+  /** B34: the sole execution owner for each project. Manual priority and
+   * autonomous work share this runtime/orchestrator instead of maintaining
+   * competing maps with incompatible scope/concurrency state. */
+  private readonly runtimes = new Map<string, ProjectRuntime>();
+  private nextRuntimeGeneration = 1;
   private readonly pendingApprovals = new Map<string, (choice: string) => void>();
   /** Optional second channel (Telegram). Set after construction. */
   private notifier?: ServerNotifier;
@@ -123,6 +135,7 @@ export class EngineRunner {
   constructor(
     private readonly db: Db,
     private readonly hub: WsHub,
+    private readonly options: EngineRunnerOptions = {},
   ) {}
 
   private enqueueLog(e: Parameters<typeof repo.createLog>[1]): void {
@@ -204,26 +217,30 @@ export class EngineRunner {
   }
 
   isRunning(projectId: string): boolean {
-    return this.orchestrators.has(projectId);
+    return this.runtimes.get(projectId)?.autonomousStartedAt !== undefined;
   }
 
-  /** True while a manually-dispatched task is in flight for this project —
-   *  callers must refuse to start the autonomous loop until it clears. */
+  /** Any starting/running/draining/stopping activity, regardless of whether
+   * it was initiated by Start or a manual-priority request. Deletion and
+   * replacement operations must use this stronger predicate. */
+  hasActivity(projectId: string): boolean {
+    return this.runtimes.has(projectId);
+  }
+
+  getActivityState(projectId: string): ProjectRuntimeState | undefined {
+    return this.runtimes.get(projectId)?.state;
+  }
+
+  /** Compatibility/query helper: true for a manual-only runtime. Once Start
+   * promotes it, it is the same runtime but no longer manual-only. */
   hasManualRun(projectId: string): boolean {
-    return (this.manualRuns.get(projectId)?.size ?? 0) > 0;
+    const runtime = this.runtimes.get(projectId);
+    return Boolean(runtime && runtime.autonomousStartedAt === undefined);
   }
 
-  /**
-   * Request that an active task stop. Checks the autonomous-loop orchestrator
-   * first, then falls back to a manually-dispatched task's own one-off
-   * orchestrator via manualRuns. Returns true if a live orchestrator actually
-   * found and aborted the task.
-   */
+  /** Request that the project's owning runtime stop one active task. */
   stopTask(projectId: string, taskId: string): boolean {
-    const orch = this.orchestrators.get(projectId);
-    if (orch?.stopTask(taskId)) return true;
-    const manual = this.manualRuns.get(projectId)?.get(taskId);
-    return manual?.stopTask(taskId) ?? false;
+    return this.runtimes.get(projectId)?.orchestrator.stopTask(taskId) ?? false;
   }
 
   /** Resolve a human approval requested via events.requestApproval. */
@@ -236,13 +253,16 @@ export class EngineRunner {
   }
 
   private buildOrchestrator(project: Project): Orchestrator {
+    if (this.options.orchestratorFactory) {
+      return this.options.orchestratorFactory(project);
+    }
     const settings = repo.getSettings(this.db);
     if (!settings) throw new Error("settings not found");
 
     // F44: dedupe model-trouble web notifications per (task, event type) for
-    // THIS run — a fresh, empty Set every call, since both start() and
-    // dispatchOne() build a brand-new Orchestrator (and this closure) each
-    // time, so it never needs an explicit per-run reset.
+    // this runtime. Manual priority and autonomous work share the same
+    // Orchestrator, so one noisy task cannot bypass the dedupe by changing how
+    // it was dispatched.
     const modelTroubleNotified = new Set<string>();
 
     const adapterFor = (modelId: ModelId): AgentAdapter => {
@@ -322,6 +342,7 @@ export class EngineRunner {
             branch: t.branch,
             worktreePath: t.worktreePath,
             prNumber: t.prNumber,
+            dispatchRequestedAt: t.dispatchRequestedAt,
             statusReason: t.statusReason,
           });
           this.hub.broadcast({
@@ -387,8 +408,23 @@ export class EngineRunner {
           const manual = manualCostUsd(cfg, r.tokensIn, r.tokensOut, r.tokensCached ?? 0);
           if (manual != null) r = { ...r, costUsd: manual };
 
-          if (repo.getRun(this.db, r.id)) repo.updateRun(this.db, r.id, r);
-          else repo.createRun(this.db, r);
+          const existingRun = repo.getRun(this.db, r.id);
+          if (existingRun?.status === "stopped" && r.status !== "running") {
+            // The Stop route owns the terminal run status. Preserve it when
+            // the aborted adapter reports its final result a moment later,
+            // while still retaining the final usage/cost counters.
+            repo.updateRun(this.db, r.id, {
+              costUsd: r.costUsd,
+              tokensIn: r.tokensIn,
+              tokensOut: r.tokensOut,
+              tokensCached: r.tokensCached ?? 0,
+            });
+            r = repo.getRun(this.db, r.id) ?? existingRun;
+          } else if (existingRun) {
+            repo.updateRun(this.db, r.id, r);
+          } else {
+            repo.createRun(this.db, r);
+          }
           if (r.exitReason === "rate_limited") {
             this.coolingDown.set(r.model, Date.now() + EngineRunner.COOLDOWN_MS);
             this.logError(
@@ -531,87 +567,131 @@ export class EngineRunner {
     this.hub.broadcast({ type: "log", payload: log });
   }
 
-  /** Run the whole project DAG autonomously in the background. */
-  async start(project: Project): Promise<void> {
-    if (this.orchestrators.has(project.id)) return;
-    if (this.hasManualRun(project.id)) {
-      throw new Error(
-        "a task is being dispatched manually — wait for it to finish (or stop it) before starting the autonomous run",
+  private ensureClone(project: Project): Promise<void> {
+    if (this.options.ensureClone) return this.options.ensureClone(project);
+    return new GitServiceImpl().ensureClone(project);
+  }
+
+  /** Create and register the one runtime that owns this project. The runtime
+   * is installed before any async work begins, closing the check-then-create
+   * race between Start, manual Dispatch, and Stop. */
+  private createRuntime(project: Project, autonomous: boolean): ProjectRuntime {
+    const runtime: ProjectRuntime = {
+      generation: this.nextRuntimeGeneration++,
+      orchestrator: this.buildOrchestrator(project),
+      state: "starting",
+      autonomousStartedAt: autonomous ? new Date().toISOString() : undefined,
+      settled: Promise.resolve(),
+    };
+    this.runtimes.set(project.id, runtime);
+    runtime.settled = this.runRuntime(project, runtime);
+    return runtime;
+  }
+
+  private async runRuntime(
+    project: Project,
+    runtime: ProjectRuntime,
+  ): Promise<void> {
+    try {
+      await this.ensureClone(project);
+      // A hard Stop that arrived while clone/setup was starting owns the
+      // outcome. Do not reset Orchestrator.paused by entering start().
+      if (runtime.state === "stopping") return;
+      runtime.state = "running";
+      const tasks = repo.getTasks(this.db, project.id);
+      await runtime.orchestrator.start(project, tasks, {
+        shouldDispatch: (task) =>
+          runtime.autonomousStartedAt !== undefined ||
+          task.dispatchRequestedAt !== undefined,
+      });
+    } catch (err) {
+      this.logError(
+        project.id,
+        `Orchestrator crashed: ${err instanceof Error ? err.message : String(err)}`,
       );
-    }
-    const orch = this.buildOrchestrator(project);
-    this.orchestrators.set(project.id, orch);
-    const runStartedAt = new Date().toISOString();
-
-    void (async () => {
-      try {
-        const git = new GitServiceImpl();
-        await git.ensureClone(project);
-        const tasks = repo.getTasks(this.db, project.id);
-        await orch.start(project, tasks);
-      } catch (err) {
-        this.logError(
-          project.id,
-          `Orchestrator crashed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      } finally {
-        this.orchestrators.delete(project.id);
-        this.flushLogs(); // write out any buffered tail logs from this run
-
-        // Reflect what actually happened, not "completed" by default. The
-        // orchestrator's run loop also exits when it simply runs out of
-        // dispatchable work (e.g. every remaining task is blocked on a failed
-        // dependency, or budget-capped) — that is NOT the same as every task
-        // having finished successfully, and calling it "completed" hid a
-        // stuck board behind a status that looked fine.
-        const finalTasks = repo.getTasks(this.db, project.id);
-        const allDone = finalTasks.every((t) => t.status === "done");
-        const stillPending = finalTasks.some(
-          (t) =>
-            t.status === "backlog" ||
-            t.status === "ready" ||
-            t.status === "in_progress" ||
-            t.status === "in_review",
-        );
-        const anyFailed = finalTasks.some((t) => t.status === "failed");
-        const finalStatus = allDone
-          ? "completed"
-          : stillPending
-            ? "paused" // resumable: hit a budget cap or every ready task is blocked
-            : anyFailed
-              ? "failed"
-              : "completed";
-
-        repo.updateProject(this.db, project.id, { status: finalStatus });
-        if (finalStatus !== "completed") {
-          const blocked = finalTasks.filter((t) => t.status !== "done");
-          const message =
-            `Run ended (${finalStatus}) with ${blocked.length} task(s) not done: ` +
-            blocked.map((t) => `${t.title} [${t.status}]`).join(", ");
-          this.logError(project.id, message);
-          // F44: web notification parity — same message the log line
-          // already carries, now also visible in the bell (previously only
-          // a log line + the Telegram end-of-run digest).
-          const notif = repo.createNotification(this.db, {
-            projectId: project.id,
-            severity: "warn",
-            title: `Run ended: ${finalStatus}`,
-            message,
-            requiresApproval: false,
-          });
-          this.hub.broadcast({ type: "notification", payload: notif });
-        }
-
-        const fresh = repo.getProject(this.db, project.id);
-        if (fresh) this.hub.broadcast({ type: "project.updated", payload: fresh });
-
-        // F8: the "get updates" feature for away-from-keyboard autonomy — a
-        // report card for this specific start-to-finish cycle (not the
-        // project's lifetime totals), persisted so AuditView can show past
-        // runs and pushed as a real digest instead of one terse line.
-        this.pushRunSummary(project, runStartedAt, finalStatus);
+    } finally {
+      // Identity check is essential: an old generation must never unregister
+      // or finalize over a newer runtime created after it settled.
+      const ownsProject = this.runtimes.get(project.id) === runtime;
+      if (ownsProject) {
+        this.runtimes.delete(project.id);
       }
-    })();
+      this.flushLogs();
+      if (ownsProject && runtime.autonomousStartedAt) {
+        try {
+          this.finishAutonomousRun(project, runtime.autonomousStartedAt);
+        } catch (err) {
+          this.logError(
+            project.id,
+            `Failed to finalize run: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+  }
+
+  /** Run the whole project DAG autonomously in the background. If a manual-
+   * priority runtime already owns the project, promote that exact runtime;
+   * never create a competing Orchestrator. */
+  async start(project: Project): Promise<void> {
+    const existing = this.runtimes.get(project.id);
+    if (existing) {
+      if (existing.state === "stopping" || existing.state === "draining") {
+        throw new Error(
+          `project execution is ${existing.state} — wait for it to settle before starting again`,
+        );
+      }
+      existing.autonomousStartedAt ??= new Date().toISOString();
+      return;
+    }
+    this.createRuntime(project, true);
+  }
+
+  private finishAutonomousRun(
+    project: Project,
+    runStartedAt: string,
+  ): void {
+    // Reflect what actually happened, not "completed" by default. The
+    // orchestrator can exit with resumable work after a budget/dependency
+    // block or a hard pause.
+    const finalTasks = repo.getTasks(this.db, project.id);
+    const allDone = finalTasks.every((t) => t.status === "done");
+    const stillPending = finalTasks.some(
+      (t) =>
+        t.status === "backlog" ||
+        t.status === "ready" ||
+        t.status === "in_progress" ||
+        t.status === "in_review",
+    );
+    const anyFailed = finalTasks.some((t) => t.status === "failed");
+    const finalStatus = allDone
+      ? "completed"
+      : stillPending
+        ? "paused"
+        : anyFailed
+          ? "failed"
+          : "completed";
+
+    repo.updateProject(this.db, project.id, { status: finalStatus });
+    if (finalStatus !== "completed") {
+      const blocked = finalTasks.filter((t) => t.status !== "done");
+      const message =
+        `Run ended (${finalStatus}) with ${blocked.length} task(s) not done: ` +
+        blocked.map((t) => `${t.title} [${t.status}]`).join(", ");
+      this.logError(project.id, message);
+      const notif = repo.createNotification(this.db, {
+        projectId: project.id,
+        severity: "warn",
+        title: `Run ended: ${finalStatus}`,
+        message,
+        requiresApproval: false,
+      });
+      this.hub.broadcast({ type: "notification", payload: notif });
+    }
+
+    const fresh = repo.getProject(this.db, project.id);
+    if (fresh) this.hub.broadcast({ type: "project.updated", payload: fresh });
+    this.pushRunSummary(project, runStartedAt, finalStatus);
   }
 
   /** Builds and persists this run's report card (F8), then pushes it to
@@ -686,69 +766,106 @@ export class EngineRunner {
     this.notifier?.info(formatRunSummaryMessage(project.name, summary));
   }
 
-  /** Run a single task through the full pipeline (manual dispatch). */
-  async dispatchOne(project: Project, taskId: string): Promise<void> {
-    const orch = this.buildOrchestrator(project);
-
-    let projectRuns = this.manualRuns.get(project.id);
-    if (!projectRuns) {
-      projectRuns = new Map();
-      this.manualRuns.set(project.id, projectRuns);
+  /** Persist and prioritize a task through the project's one scheduler. */
+  async dispatchOne(project: Project, taskId: string): Promise<Task> {
+    const task = repo.getTask(this.db, taskId);
+    if (!task) throw new Error(`task ${taskId} not found`);
+    if (task.status !== "ready" && task.status !== "backlog") {
+      throw new Error(`task is ${task.status}, not dispatchable`);
     }
-    projectRuns.set(taskId, orch);
 
-    void (async () => {
-      try {
-        const git = new GitServiceImpl();
-        await git.ensureClone(project);
-        const task = repo.getTask(this.db, taskId);
-        if (!task) throw new Error(`task ${taskId} not found`);
-        await orch.runTask(project, task);
-      } catch (err) {
-        this.logError(
-          project.id,
-          `Dispatch of ${taskId} crashed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      } finally {
-        const runs = this.manualRuns.get(project.id);
-        runs?.delete(taskId);
-        if (runs && runs.size === 0) this.manualRuns.delete(project.id);
-      }
-    })();
+    const queued = repo.updateTask(this.db, taskId, {
+      dispatchRequestedAt:
+        task.dispatchRequestedAt ?? new Date().toISOString(),
+    })!;
+    this.hub.broadcast({ type: "task.updated", payload: queued });
+
+    const existing = this.runtimes.get(project.id);
+    if (!existing) {
+      this.createRuntime(project, false);
+      return queued;
+    }
+
+    // Reconciliation normally sees the persisted request on the next pass.
+    // Also check after this exact generation settles to close the narrow race
+    // where the scheduler has decided to exit but its Promise has not yet
+    // unregistered the runtime.
+    void existing.settled.then(
+      () => this.resumeQueued(project),
+      () => this.resumeQueued(project),
+    );
+    return queued;
+  }
+
+  /** Recreate a manual-only runtime for durable requests after process boot or
+   * after an older runtime settles. Returns true only when one was started. */
+  resumeQueued(project: Project): boolean {
+    if (this.runtimes.has(project.id)) return false;
+    const hasQueued = repo
+      .getTasks(this.db, project.id)
+      .some(
+        (task) =>
+          task.dispatchRequestedAt !== undefined &&
+          (task.status === "ready" || task.status === "backlog"),
+      );
+    if (!hasQueued) return false;
+    this.createRuntime(project, false);
+    return true;
+  }
+
+  private async waitForSettlement(runtime: ProjectRuntime): Promise<boolean> {
+    const timeoutMs = this.options.stopSettleTimeoutMs ?? 10_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        runtime.settled.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async pause(project: Project, opts: { drain?: boolean } = {}): Promise<void> {
-    const orch = this.orchestrators.get(project.id);
-    if (!orch) return;
-    await orch.pause(project, opts);
-    // Hard stop: pause() already aborted/requeued everything and start()'s
-    // loop has already exited by the time this returns, so it's safe to drop
-    // the registration now. Drain: start()'s background loop (below) is
-    // still running, waiting for active tasks to finish — its own `finally`
-    // deletes this entry once that's genuinely done. Deleting it here too
-    // would let a second Start race in while tasks are still draining.
-    if (!opts.drain) {
-      this.orchestrators.delete(project.id);
+    const runtime = this.runtimes.get(project.id);
+    if (!runtime) return;
+
+    // Draining before start/clone has reached the scheduler has no active
+    // work to preserve, so treat it as a hard stop. Otherwise drain remains
+    // non-blocking while the registered runtime owns its finishing tasks.
+    const drain = opts.drain === true && runtime.state !== "starting";
+    runtime.state = drain ? "draining" : "stopping";
+    await runtime.orchestrator.pause(project, { drain });
+    if (drain) return;
+
+    // A project-level hard Stop also cancels queued-but-not-started manual
+    // requests. Active requests were already cleared at actual dispatch.
+    for (const task of repo.clearDispatchRequests(this.db, project.id)) {
+      this.hub.broadcast({ type: "task.updated", payload: task });
+    }
+
+    const settled = await this.waitForSettlement(runtime);
+    if (!settled) {
+      this.logError(
+        project.id,
+        `Stop requested, but runtime generation ${runtime.generation} is still settling; new starts and deletion remain blocked`,
+      );
     }
   }
 
   /**
    * F23: the global "Stop all" panic button — hard-aborts every currently
-   * running project, both the autonomous loop (via pause({drain:false}),
-   * the same path the per-project Stop now button uses) *and* any
-   * manually-dispatched task in flight for it (B19: `manualRuns` is a
-   * separate execution path pause() alone never touches — a plain
-   * pause-everything here would silently leave a manual dispatch running).
+   * running project. B34's one runtime already owns autonomous and manual-
+   * priority work, so one hard pause reaches every active task.
    * Returns the ids of projects that actually had something to stop.
    */
   async stopAll(projects: Project[]): Promise<string[]> {
     const stopped: string[] = [];
     for (const project of projects) {
-      const wasRunning = this.isRunning(project.id);
-      const manualTaskIds = [...(this.manualRuns.get(project.id)?.keys() ?? [])];
-      if (!wasRunning && manualTaskIds.length === 0) continue;
-      if (wasRunning) await this.pause(project, { drain: false });
-      for (const taskId of manualTaskIds) this.stopTask(project.id, taskId);
+      if (!this.hasActivity(project.id)) continue;
+      await this.pause(project, { drain: false });
       stopped.push(project.id);
     }
     return stopped;

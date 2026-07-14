@@ -138,6 +138,13 @@ export interface Task {
   attempts: number;
   maxAttempts: number;
   /**
+   * B34: a persisted request to prioritize this task through the project's
+   * one shared scheduler. It is cleared only when the scheduler actually
+   * dispatches the task, so a queued manual request survives a restart and
+   * never needs a competing one-off Orchestrator.
+   */
+  dispatchRequestedAt?: string;
+  /**
    * One human-readable line explaining the task's latest terminal outcome —
    * "Merged PR #4" / "Gates kept failing after 3 attempts: tests" / "Stopped
    * by user". Set by the orchestrator at every done/failed/blocked

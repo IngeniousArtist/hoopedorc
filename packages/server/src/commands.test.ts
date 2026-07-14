@@ -108,24 +108,24 @@ test("findTaskByIdPrefix: an ambiguous prefix lists every candidate instead of g
   assert.match(error, /abc222/);
 });
 
-test("retryTask: a task not in a retryable status is rejected without touching the engine", () => {
+test("retryTask: a task not in a retryable status is rejected without touching the engine", async () => {
   const db = setup();
   const hub = new WsHub();
   const engine = new EngineRunner(db, hub);
   project(db, "p1");
   task(db, "t1", "p1", "in_progress");
 
-  const result = retryTask(db, engine, () => {}, "t1", "telegram");
+  const result = await retryTask(db, engine, () => {}, "t1", "telegram");
   assert.equal(result.ok, false);
   assert.match(!result.ok ? result.error : "", /only failed\/changes_requested\/blocked can be retried/);
 });
 
-test("retryTask: an unknown task id is rejected", () => {
+test("retryTask: an unknown task id is rejected", async () => {
   const db = setup();
   const hub = new WsHub();
   const engine = new EngineRunner(db, hub);
 
-  const result = retryTask(db, engine, () => {}, "nope", "telegram");
+  const result = await retryTask(db, engine, () => {}, "nope", "telegram");
   assert.equal(result.ok, false);
   assert.match(!result.ok ? result.error : "", /task not found/);
 });

@@ -27,7 +27,12 @@ import {
   WORKING_DIRECTORY_BLOCK,
 } from "./guidelines.js";
 import { SelfReviewError } from "./validator.js";
-import type { EngineEvents, Scheduler, SchedulerDeps } from "./index.js";
+import type {
+  EngineEvents,
+  OrchestratorStartOptions,
+  Scheduler,
+  SchedulerDeps,
+} from "./index.js";
 
 /**
  * Reduce a glob pattern to its static (non-wildcard) prefix, trailing slash
@@ -50,13 +55,14 @@ export function staticScopePrefix(pattern: string): string {
  * Returns true if the two scope-path arrays share at least one overlapping
  * file or directory prefix. Used to detect when concurrent tasks would write
  * to the same files and need to be serialized.
- * Empty arrays mean "no restriction" and are treated as non-overlapping so
- * unrestricted tasks don't block each other unnecessarily. An empty static
+ * Empty arrays mean "no restriction" and therefore overlap everything: a
+ * task allowed to write anywhere cannot safely run beside another writer.
+ * An empty static
  * prefix on either side (e.g. from `**\/*`) means that side can't rule out
  * any file, so it overlaps with everything.
  */
 export function scopesOverlap(a: string[], b: string[]): boolean {
-  if (a.length === 0 || b.length === 0) return false;
+  if (a.length === 0 || b.length === 0) return true;
   for (const pa of a) {
     const na = staticScopePrefix(pa);
     for (const pb of b) {
@@ -267,6 +273,10 @@ export function buildFallbackChain(
 export class Orchestrator implements Scheduler {
   private paused = false;
   private readonly activeTaskIds = new Set<string>();
+  /** Actual task promises, not just ids. B34 uses these to keep start() from
+   * resolving (and EngineRunner from unregistering the runtime) while an
+   * aborted pipeline is still unwinding through a later stage/finally. */
+  private readonly activeTaskPromises = new Map<string, Promise<void>>();
   private readonly taskAbortControllers = new Map<string, AbortController>();
   /**
    * F12: falls back to a per-instance count only when `deps` doesn't supply
@@ -458,7 +468,11 @@ export class Orchestrator implements Scheduler {
     });
   }
 
-  async start(project: Project, tasks: Task[]): Promise<void> {
+  async start(
+    project: Project,
+    tasks: Task[],
+    opts: OrchestratorStartOptions = {},
+  ): Promise<void> {
     this.paused = false;
     this.draining = false;
     this.projectId = project.id;
@@ -498,9 +512,13 @@ export class Orchestrator implements Scheduler {
               task.id,
             );
             this.activeTaskIds.add(task.id);
-            this.recoverPendingApproval(project, task, decision).finally(() => {
+            const recovery = this.recoverPendingApproval(project, task, decision);
+            this.activeTaskPromises.set(task.id, recovery);
+            const clearRecovery = () => {
               this.activeTaskIds.delete(task.id);
-            });
+              this.activeTaskPromises.delete(task.id);
+            };
+            void recovery.then(clearRecovery, clearRecovery);
             continue;
           }
         }
@@ -546,7 +564,21 @@ export class Orchestrator implements Scheduler {
       // means `dispatched` stays 0 every pass below, which the existing
       // "nothing dispatched" branches already turn into a 250ms poll while
       // active tasks remain, then a break once the last one finishes.
-      const ready = this.draining || pendingApproval ? [] : this.readyTasks(tasks);
+      const ready = this.draining || pendingApproval
+        ? []
+        : this.readyTasks(tasks)
+            .filter((task) => opts.shouldDispatch?.(task) ?? true)
+            .sort((a, b) => {
+              // Manual requests are priority work even after a manual runtime
+              // is promoted to autonomous mode. Oldest request wins; the sort
+              // is stable for ordinary autonomous tasks.
+              if (a.dispatchRequestedAt && b.dispatchRequestedAt) {
+                return a.dispatchRequestedAt.localeCompare(b.dispatchRequestedAt);
+              }
+              if (a.dispatchRequestedAt) return -1;
+              if (b.dispatchRequestedAt) return 1;
+              return 0;
+            });
 
       // A pendingApproval hold must never look like "nothing left to do" —
       // it can be genuinely true even with activeTaskIds empty (e.g. the
@@ -562,7 +594,11 @@ export class Orchestrator implements Scheduler {
       // overlapping tasks considered in the SAME pass over `ready` can't
       // both slip through — the second must see the first's scope even
       // though this array started the pass before either was active.
-      const activeScopePaths = [...this.activeTaskIds].flatMap(
+      // Keep each task's scope array separate. Flattening loses the
+      // distinction between "there are no active tasks" and "an active task
+      // has an empty (unrestricted) scope" — B34 deliberately treats the
+      // latter as overlapping everything.
+      const activeTaskScopes = [...this.activeTaskIds].map(
         (id) => this.currentTasks.find((t) => t.id === id)?.scopePaths ?? [],
       );
 
@@ -595,7 +631,7 @@ export class Orchestrator implements Scheduler {
         // Scope-overlap serialization: hold this task back if any active task
         // writes to the same files. It will be dispatched once the conflicting
         // task merges and the loop iterates again.
-        if (scopesOverlap(task.scopePaths, activeScopePaths)) {
+        if (activeTaskScopes.some((scope) => scopesOverlap(task.scopePaths, scope))) {
           this.emit(
             "info",
             "engine",
@@ -729,17 +765,25 @@ export class Orchestrator implements Scheduler {
         this.incModel(dispatchModel);
         this.runningModel.set(task.id, dispatchModel);
         this.activeTaskIds.add(task.id);
-        activeScopePaths.push(...task.scopePaths);
+        activeTaskScopes.push(task.scopePaths);
         dispatched++;
 
-        this.executeTask(project, task, dispatchModel).finally(() => {
+        // The persisted request is queue state, not run state. Clear it only
+        // now that all dependency/scope/cap/budget guards have passed and the
+        // task is genuinely being dispatched.
+        task.dispatchRequestedAt = undefined;
+        const execution = this.executeTask(project, task, dispatchModel);
+        this.activeTaskPromises.set(task.id, execution);
+        const clearExecution = () => {
           // Decrement whichever model the task was last running on (fallback
           // escalation may have switched it further from dispatchModel).
           const ran = this.runningModel.get(task.id) ?? dispatchModel;
           this.decModel(ran);
           this.runningModel.delete(task.id);
           this.activeTaskIds.delete(task.id);
-        });
+          this.activeTaskPromises.delete(task.id);
+        };
+        void execution.then(clearExecution, clearExecution);
       }
 
       // B32: fire the one-time "run is waiting on a model's cooldown/quota
@@ -784,6 +828,13 @@ export class Orchestrator implements Scheduler {
       await new Promise((r) => setImmediate(r));
     }
 
+    // Hard pause changes the loop condition immediately, but task pipelines
+    // can still be unwinding. Do not let the owning runtime settle until every
+    // promise present at this boundary has actually finished.
+    if (this.activeTaskPromises.size > 0) {
+      await Promise.allSettled([...this.activeTaskPromises.values()]);
+    }
+
     this.emit("info", "engine", "Orchestrator finished", "");
   }
 
@@ -816,8 +867,6 @@ export class Orchestrator implements Scheduler {
         /* ignore */
       }
     }
-    this.taskAbortControllers.clear();
-
     for (const task of this.currentTasks) {
       if (
         (task.status === "in_progress" || task.status === "in_review") &&
@@ -915,8 +964,10 @@ export class Orchestrator implements Scheduler {
     // without the capacity check that start() applies before dispatching.
     this.incModel(task.assignedModel);
     this.runningModel.set(task.id, task.assignedModel);
+    const execution = this.executeTask(project, task);
+    this.activeTaskPromises.set(task.id, execution);
     try {
-      await this.executeTask(project, task);
+      await execution;
     } finally {
       // Mirrors start()'s per-task dispatch-finally exactly: decrement
       // whichever model the task was last running on, since fallback
@@ -925,6 +976,7 @@ export class Orchestrator implements Scheduler {
       this.decModel(ran);
       this.runningModel.delete(task.id);
       this.activeTaskIds.delete(task.id);
+      this.activeTaskPromises.delete(task.id);
     }
   }
 
@@ -1518,6 +1570,7 @@ export class Orchestrator implements Scheduler {
     // non-overlapping changes; a genuine conflict is recoverable by retrying
     // against the now-current main, so requeue rather than fail outright.
     const sync = await this.deps.git.syncBranchWithMain(project, task);
+    if (this.bailIfStopRequested(task)) return;
     if (sync === "conflict") {
       const n = (this.mergeConflicts.get(task.id) ?? 0) + 1;
       this.mergeConflicts.set(task.id, n);
@@ -1599,6 +1652,7 @@ export class Orchestrator implements Scheduler {
           message: `${reason}. Approve merge anyway?`,
           options: ["approve_merge", "reject"],
         });
+        if (this.bailIfStopRequested(task)) return;
         if (choice === "approve_merge") {
           await this.deps.git.mergePr(project, task.prNumber!);
           await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
@@ -1616,6 +1670,7 @@ export class Orchestrator implements Scheduler {
     }
 
     const { canMerge, riskyReasons } = await this.canAutoMerge(project, task, finalGate);
+    if (this.bailIfStopRequested(task)) return;
     if (canMerge) {
       await this.deps.git.mergePr(project, task.prNumber!);
       await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);
@@ -1643,6 +1698,7 @@ export class Orchestrator implements Scheduler {
           : `Out-of-scope edits or risky changes detected. Approve merge?`,
         options: ["approve_merge", "reject"],
       });
+      if (this.bailIfStopRequested(task)) return;
       if (choice === "approve_merge") {
         await this.deps.git.mergePr(project, task.prNumber!);
         await this.deps.git.appendChangelogEntry(project, task, task.prNumber!);

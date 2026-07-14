@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   pr_number           INTEGER,
   attempts            INTEGER NOT NULL DEFAULT 0,
   max_attempts        INTEGER NOT NULL DEFAULT 3,
+  dispatch_requested_at TEXT,  -- B34: persisted manual-priority queue request
   status_reason       TEXT,    -- one-line human-readable terminal outcome
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL

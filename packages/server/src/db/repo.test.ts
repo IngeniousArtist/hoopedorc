@@ -193,3 +193,62 @@ test("getPlanningSession: agentsMd is undefined when never set", () => {
   const session = repo.getPlanningSession(db, "proj-1");
   assert.equal(session.agentsMd, undefined);
 });
+
+// ── B34: durable priority dispatch + race-safe Stop transitions ──
+
+function seedTask(
+  db: ReturnType<typeof initDb>,
+  id: string,
+  status: "ready" | "backlog" | "in_progress" | "done" | "failed",
+  dispatchRequestedAt?: string,
+) {
+  return repo.createTask(db, {
+    id,
+    projectId: "proj-1",
+    title: id,
+    description: "",
+    difficulty: "medium",
+    status,
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: [],
+    attempts: 0,
+    maxAttempts: 3,
+    dispatchRequestedAt,
+  });
+}
+
+test("dispatchRequestedAt round-trips and project Stop clears queued requests", () => {
+  const db = setup();
+  const requestedAt = "2026-07-14T00:00:00.000Z";
+  seedTask(db, "queued-1", "ready", requestedAt);
+  seedTask(db, "queued-2", "ready", requestedAt);
+
+  assert.equal(repo.getTask(db, "queued-1")!.dispatchRequestedAt, requestedAt);
+  const cleared = repo.clearDispatchRequests(db, "proj-1");
+  assert.deepEqual(cleared.map((task) => task.id).sort(), ["queued-1", "queued-2"]);
+  assert.equal(repo.getTask(db, "queued-1")!.dispatchRequestedAt, undefined);
+  assert.equal(repo.getTask(db, "queued-2")!.dispatchRequestedAt, undefined);
+});
+
+test("markTaskStoppedIfActive blocks active work but never rewrites a terminal task", () => {
+  const db = setup();
+  seedTask(db, "active", "in_progress");
+  seedTask(db, "finished", "done");
+  seedTask(db, "failed", "failed");
+  seedTask(db, "waiting", "backlog");
+
+  const active = repo.markTaskStoppedIfActive(db, "active");
+  assert.equal(active.changed, true);
+  assert.equal(active.task!.status, "blocked");
+  assert.equal(active.task!.statusReason, "Stopped by user");
+
+  const finished = repo.markTaskStoppedIfActive(db, "finished");
+  assert.equal(finished.changed, false);
+  assert.equal(finished.task!.status, "done");
+  assert.equal(repo.markTaskStoppedIfActive(db, "failed").changed, false);
+  assert.equal(repo.getTask(db, "failed")!.status, "failed");
+  assert.equal(repo.markTaskStoppedIfActive(db, "waiting").changed, false);
+  assert.equal(repo.getTask(db, "waiting")!.status, "backlog");
+});

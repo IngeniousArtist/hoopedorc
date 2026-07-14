@@ -992,6 +992,12 @@ test("isAuthOrSecretFile matches path segments, not substrings", () => {
 
 test("scopesOverlap normalizes glob patterns to their static prefix instead of comparing them literally", () => {
   assert.equal(
+    scopesOverlap([], ["src/**"]),
+    true,
+    "an empty scope is unrestricted and must overlap every scoped task",
+  );
+  assert.equal(scopesOverlap([], []), true, "two unrestricted tasks overlap");
+  assert.equal(
     scopesOverlap(["**/*"], ["docs/**"]),
     true,
     "an unscoped **/* pattern can't rule out anything",
@@ -1008,7 +1014,7 @@ test("scopesOverlap normalizes glob patterns to their static prefix instead of c
   );
 });
 
-test("two independent tasks both scoped **/* run serially, not concurrently", async () => {
+test("two independent tasks with empty scopes run serially, not concurrently", async () => {
   const merged: number[] = [];
   let concurrentAuthors = 0;
   let maxConcurrentAuthors = 0;
@@ -1037,8 +1043,8 @@ test("two independent tasks both scoped **/* run serially, not concurrently", as
   // Same model (maxConcurrent: 2 in the test settings) and no dependsOn
   // between them — only scope-overlap serialization should stop them
   // running at the same time.
-  const t1 = task("t1", [], { scopePaths: ["**/*"] });
-  const t2 = task("t2", [], { scopePaths: ["**/*"] });
+  const t1 = task("t1", [], { scopePaths: [] });
+  const t2 = task("t2", [], { scopePaths: [] });
   await new Orchestrator(deps).start(PROJECT, [t1, t2]);
 
   assert.equal(t1.status, "done");
@@ -1046,8 +1052,74 @@ test("two independent tasks both scoped **/* run serially, not concurrently", as
   assert.equal(
     maxConcurrentAuthors,
     1,
-    "two **/* -scoped tasks must never author concurrently",
+    "two unrestricted tasks must never author concurrently",
   );
+});
+
+test("manual-only scheduling runs requested work and leaves ordinary ready tasks untouched", async () => {
+  const merged: number[] = [];
+  const requested = task("requested", [], {
+    scopePaths: ["src/requested/**"],
+    dispatchRequestedAt: "2026-07-14T00:00:00.000Z",
+  });
+  const ordinary = task("ordinary", [], { scopePaths: ["src/ordinary/**"] });
+
+  await new Orchestrator(fakeDeps({}, merged)).start(
+    PROJECT,
+    [requested, ordinary],
+    { shouldDispatch: (candidate) => candidate.dispatchRequestedAt !== undefined },
+  );
+
+  assert.equal(requested.status, "done");
+  assert.equal(requested.dispatchRequestedAt, undefined);
+  assert.equal(ordinary.status, "ready");
+  assert.equal(merged.length, 1);
+});
+
+test("manual-only queued tasks share normal scope serialization and disjoint concurrency", async () => {
+  const merged: number[] = [];
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  let concurrentA = 0;
+  let maxConcurrentA = 0;
+  const deps = fakeDeps(
+    {
+      adapterFor: () => ({
+        runner: "opencode",
+        async run(opts): Promise<AgentRunResult> {
+          const isA = opts.cwd.endsWith("a1") || opts.cwd.endsWith("a2");
+          concurrent++;
+          if (isA) concurrentA++;
+          maxConcurrent = Math.max(maxConcurrent, concurrent);
+          maxConcurrentA = Math.max(maxConcurrentA, concurrentA);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          concurrent--;
+          if (isA) concurrentA--;
+          return {
+            ok: true,
+            exitReason: "completed",
+            costUsd: 0.01,
+            tokensIn: 1,
+            tokensOut: 1,
+            summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+          };
+        },
+      }),
+    },
+    merged,
+  );
+  const requestedAt = "2026-07-14T00:00:00.000Z";
+  const a1 = task("a1", [], { scopePaths: ["src/a/**"], dispatchRequestedAt: requestedAt });
+  const a2 = task("a2", [], { scopePaths: ["src/a/**"], dispatchRequestedAt: requestedAt });
+  const b = task("b", [], { scopePaths: ["src/b/**"], dispatchRequestedAt: requestedAt });
+
+  await new Orchestrator(deps).start(PROJECT, [a1, a2, b], {
+    shouldDispatch: (candidate) => candidate.dispatchRequestedAt !== undefined,
+  });
+
+  assert.equal(maxConcurrent, 2, "disjoint manual requests may run together");
+  assert.equal(maxConcurrentA, 1, "overlapping manual requests must serialize");
+  assert.equal(merged.length, 3);
 });
 
 test("F31: buildAuthorPrompt includes guidelines — ux only for a frontend-role task", async () => {

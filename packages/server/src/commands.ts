@@ -48,13 +48,13 @@ export async function stopAllProjects(
  * Telegram `/retry` command. Mirrors the HTTP route's own status codes as a
  * `status` field so an HTTP caller can still respond with the right one.
  */
-export function retryTask(
+export async function retryTask(
   db: Db,
   engine: EngineRunner,
   broadcast: (e: ServerEvent) => void,
   id: string,
   actor: "human" | "telegram",
-): { ok: true; task: Task } | { ok: false; status: number; error: string } {
+): Promise<{ ok: true; task: Task } | { ok: false; status: number; error: string }> {
   const task = repo.getTask(db, id);
   if (!task) return { ok: false, status: 404, error: "task not found" };
 
@@ -64,14 +64,6 @@ export function retryTask(
       ok: false,
       status: 409,
       error: `task is ${task.status}; only ${retryable.join("/")} can be retried`,
-    };
-  }
-
-  if (engine.isRunning(task.projectId)) {
-    return {
-      ok: false,
-      status: 409,
-      error: "project is running autonomously — pause it before retrying a task manually",
     };
   }
 
@@ -91,14 +83,15 @@ export function retryTask(
     db,
     id,
     {
-      status: "in_progress",
-      attempts: 1,
+      status: "backlog",
+      attempts: 0,
       prNumber: null,
       branch: null,
       worktreePath: null,
+      dispatchRequestedAt: null,
+      statusReason: null,
     } as Record<string, unknown> as Parameters<typeof repo.updateTask>[2],
   );
-  const updatedTask = repo.getTask(db, id)!;
   repo.createAuditEntry(db, {
     projectId: task.projectId,
     taskId: id,
@@ -106,11 +99,19 @@ export function retryTask(
     actor,
     summary: `Retried "${task.title}"`,
   });
-  broadcast({ type: "task.updated", payload: updatedTask });
+  const resetTask = repo.getTask(db, id)!;
+  broadcast({ type: "task.updated", payload: resetTask });
 
   const project = repo.getProject(db, task.projectId)!;
-  void engine.dispatchOne(project, id);
-  return { ok: true, task: updatedTask };
+  try {
+    return { ok: true, task: await engine.dispatchOne(project, id) };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 409,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 /**

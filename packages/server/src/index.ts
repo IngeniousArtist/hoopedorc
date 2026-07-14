@@ -926,10 +926,10 @@ async function main() {
         const project = repo.getProject(db, id);
         if (!project) return `No project ${id}`;
         if (cmd === "start") {
+          await engine.start(project);
           repo.updateProject(db, id, { status: "running" });
           const running = repo.getProject(db, id)!;
           broadcast({ type: "project.updated", payload: running });
-          await engine.start(running);
           return `Started ${project.name}`;
         }
         await engine.pause(project);
@@ -964,9 +964,9 @@ async function main() {
       }
       case "stopall": {
         const projects = repo.getProjects(db);
-        const running = projects.filter((p) => p.status === "running");
-        if (running.length === 0) return "Nothing is running.";
-        const activeTasks = running.reduce(
+        const active = projects.filter((p) => engine.hasActivity(p.id));
+        if (active.length === 0) return "Nothing is running.";
+        const activeTasks = active.reduce(
           (sum, p) =>
             sum +
             repo
@@ -975,9 +975,9 @@ async function main() {
           0,
         );
         telegram?.confirmStopAll(
-          `⚠️ This will stop ${running.length} running project${running.length === 1 ? "" : "s"} ` +
+          `⚠️ This will stop ${active.length} active project${active.length === 1 ? "" : "s"} ` +
             `(${activeTasks} active task${activeTasks === 1 ? "" : "s"}): ` +
-            `${running.map((p) => p.name).join(", ")}.`,
+            `${active.map((p) => p.name).join(", ")}.`,
         );
         return ""; // confirmStopAll already sent its own message with the Yes/No keyboard
       }
@@ -986,7 +986,7 @@ async function main() {
         if (!prefix) return "Usage: /retry <taskId-or-prefix>";
         const found = findTaskByIdPrefix(db, prefix);
         if (!found.ok) return found.error;
-        const result = retryTask(db, engine, broadcast, found.task.id, "telegram");
+        const result = await retryTask(db, engine, broadcast, found.task.id, "telegram");
         return result.ok ? `Retrying "${result.task.title}".` : `Could not retry: ${result.error}`;
       }
       case "digest": {
@@ -1236,10 +1236,10 @@ async function main() {
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    if (engine.isRunning(id)) {
+    if (engine.hasActivity(id)) {
       return reply
         .code(409)
-        .send({ error: "project is running — pause it before deleting" });
+        .send({ error: "project execution is active or still stopping — wait for it to settle before deleting" });
     }
 
     // Best-effort cleanup of the local clone + any leftover task worktrees
@@ -1691,19 +1691,9 @@ async function main() {
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
 
-    // Checked (and engine.start() may still throw the same race) before any
-    // DB write: a manually-dispatched task shares no in-flight state with the
-    // autonomous loop, so starting it on top would let orphan recovery
-    // requeue the "in_progress" task with no active run in the loop's own
-    // memory — two agents on the same branch/worktree.
-    if (engine.hasManualRun(id)) {
-      return reply.code(409).send({
-        error: "a task is being dispatched manually — wait for it to finish (or stop it) before starting the autonomous run",
-      });
-    }
-
     try {
-      // Run the whole DAG autonomously in the background.
+      // Promote an existing manual-priority runtime or start the DAG. Either
+      // way, one Orchestrator remains the sole owner of this project.
       await engine.start(project);
     } catch (err) {
       return reply.code(409).send({
@@ -1916,17 +1906,6 @@ async function main() {
       return reply.code(409).send({ error: `task is ${task.status}, not dispatchable` });
     }
 
-    // dispatchOne spins up its own Orchestrator instance with empty
-    // activeTaskIds/modelActiveCount, sharing none of the autonomous run's
-    // in-flight state. Running both at once would let a manually-dispatched
-    // task bypass scope-overlap serialization and per-model concurrency caps
-    // the autonomous loop is enforcing — pause it first.
-    if (engine.isRunning(task.projectId)) {
-      return reply.code(409).send({
-        error: "project is running autonomously — pause it before dispatching a task manually",
-      });
-    }
-
     const settings = repo.getSettings(db);
     if (!settings) return reply.code(500).send({ error: "settings not found" });
 
@@ -1936,24 +1915,16 @@ async function main() {
       return reply.code(403).send({ error: `budget cap: ${budgetMsg}` });
     }
 
-    // Don't persist a run row here — the engine emits the authoritative one
-    // itself (status "running", real startedAt) the moment it starts the
-    // author, via SchedulerDeps.events.onRunUpdated; the client picks it up
-    // over WS a moment later. A pre-created row here would just be a second,
-    // never-updated orphan with no real startedAt.
-    repo.updateTask(db, id, {
-      status: "in_progress",
-      attempts: task.attempts + 1,
-    });
-
-    const updatedTask = repo.getTask(db, id)!;
-    broadcast({ type: "task.updated", payload: updatedTask });
-
-    // Execute this single task through the engine in the background.
+    // Persist a priority request. Status/attempts change only when the shared
+    // scheduler genuinely dispatches the task and emits its run event.
     const project = repo.getProject(db, task.projectId)!;
-    void engine.dispatchOne(project, task.id);
-
-    return { task: updatedTask };
+    try {
+      return { task: await engine.dispatchOne(project, task.id) };
+    } catch (err) {
+      return reply.code(409).send({
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   app.post("/api/tasks/:id/stop", async (req, reply) => {
@@ -1961,14 +1932,19 @@ async function main() {
     const task = repo.getTask(db, id);
     if (!task) return reply.code(404).send({ error: "task not found" });
 
-    // Reach into the actual running process first — this is what makes Stop
-    // real instead of just rewriting DB rows the orchestrator overwrites
-    // again once the agent finishes anyway. The DB writes below still run
-    // unconditionally as the fallback for when nothing was actually active
-    // (already terminal, or a race where it finished between the check and
-    // here) — they're idempotent with what the orchestrator itself now does
-    // when it notices the stop request at its next stage boundary.
+    // Stop is an active-process operation, not a generic status editor.
     const stoppedLive = engine.stopTask(task.projectId, id);
+    if (!stoppedLive) {
+      return reply.code(409).send({ error: "task has no active execution to stop" });
+    }
+
+    // The WHERE status guard makes a terminal engine update win if it commits
+    // first. Never turn a task that actually completed into "blocked".
+    const stopOutcome = repo.markTaskStoppedIfActive(db, id);
+    const updatedTask = stopOutcome.task ?? task;
+    if (!stopOutcome.changed) {
+      return { task: updatedTask };
+    }
 
     const runs = repo.getRuns(db, id);
     const activeRun = runs.find((r) => r.status === "running");
@@ -1985,8 +1961,6 @@ async function main() {
       });
     }
 
-    repo.updateTask(db, id, { status: "blocked" });
-    const updatedTask = repo.getTask(db, id)!;
     broadcast({ type: "task.updated", payload: updatedTask });
 
     repo.createAuditEntry(db, {
@@ -1994,9 +1968,7 @@ async function main() {
       taskId: id,
       kind: "stopped",
       actor: "human",
-      summary: stoppedLive
-        ? `Stopped "${task.title}" — agent process aborted`
-        : `Stopped "${task.title}" — no active run found, marked blocked`,
+      summary: `Stopped "${task.title}" — agent process aborted`,
     });
 
     return { task: updatedTask };
@@ -2042,7 +2014,7 @@ async function main() {
     // prior failed attempt's prNumber/branch/worktreePath are cleared there
     // so the new attempt's freshly-branched worktree can push to the same
     // branch name without a non-fast-forward rejection.
-    const result = retryTask(db, engine, broadcast, id, "human");
+    const result = await retryTask(db, engine, broadcast, id, "human");
     if (!result.ok) return reply.code(result.status).send({ error: result.error });
     return { task: result.task };
   });
@@ -2541,6 +2513,11 @@ async function main() {
             `failed to resume ${p.id}: ${err instanceof Error ? err.message : String(err)}`,
           );
         });
+      }
+    }
+    for (const p of repo.getProjects(db)) {
+      if (engine.resumeQueued(p)) {
+        app.log.info(`resuming queued task dispatches for ${p.name} (${p.id})`);
       }
     }
   }

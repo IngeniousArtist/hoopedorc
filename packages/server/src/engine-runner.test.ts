@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Orchestrator, SchedulerDeps } from "@orc/engine";
-import type { Project } from "@orc/types";
+import type { Orchestrator, OrchestratorStartOptions, SchedulerDeps } from "@orc/engine";
+import type { Project, Task } from "@orc/types";
 import { defaultSettings } from "./config.js";
 import { initDb } from "./db/index.js";
 import * as repo from "./db/repo.js";
@@ -24,6 +24,67 @@ function project(db: ReturnType<typeof initDb>, id: string, over: Partial<Projec
     status: "created",
     ...over,
   });
+}
+
+function seedTask(
+  db: ReturnType<typeof initDb>,
+  projectId: string,
+  id: string,
+  over: Partial<Task> = {},
+): Task {
+  return repo.createTask(db, {
+    id,
+    projectId,
+    title: id,
+    description: "",
+    difficulty: "medium",
+    status: "ready",
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: [],
+    attempts: 0,
+    maxAttempts: 3,
+    ...over,
+  });
+}
+
+function controlledOrchestrator() {
+  let resolveStart!: () => void;
+  const startGate = new Promise<void>((resolve) => {
+    resolveStart = resolve;
+  });
+  const state: {
+    startCalls: number;
+    pauseCalls: { drain?: boolean }[];
+    startOptions?: OrchestratorStartOptions;
+  } = { startCalls: 0, pauseCalls: [] };
+  const orchestrator = {
+    start(
+      _project: Project,
+      _tasks: Task[],
+      options: OrchestratorStartOptions,
+    ): Promise<void> {
+      state.startCalls++;
+      state.startOptions = options;
+      return startGate;
+    },
+    async pause(_project: Project, options: { drain?: boolean } = {}): Promise<void> {
+      state.pauseCalls.push(options);
+    },
+    stopTask(): boolean {
+      return false;
+    },
+  } as unknown as Orchestrator;
+  return { orchestrator, state, resolveStart };
+}
+
+async function waitFor(check: () => boolean): Promise<void> {
+  for (let i = 0; i < 100; i++) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  assert.fail("timed out waiting for condition");
 }
 
 /** F44: reaches the same private buildOrchestrator() method + its
@@ -159,4 +220,193 @@ test("F44: a run ending non-completed creates a web notification carrying the sa
     (b) => (b as { type: string }).type === "notification",
   );
   assert.ok(notifBroadcasts.length >= 1);
+});
+
+test("B34: repeated manual dispatches share one project runtime and one scheduler predicate", async () => {
+  const db = setup();
+  const hub = new WsHub();
+  const proj = project(db, "p1");
+  seedTask(db, proj.id, "t1");
+  seedTask(db, proj.id, "t2");
+  const ordinary = seedTask(db, proj.id, "ordinary");
+  const controlled = controlledOrchestrator();
+  let factoryCalls = 0;
+  const engine = new EngineRunner(db, hub, {
+    ensureClone: async () => {},
+    orchestratorFactory: () => {
+      factoryCalls++;
+      return controlled.orchestrator;
+    },
+  });
+
+  const first = await engine.dispatchOne(proj, "t1");
+  await waitFor(() => controlled.state.startCalls === 1);
+  const second = await engine.dispatchOne(proj, "t2");
+
+  assert.ok(first.dispatchRequestedAt);
+  assert.ok(second.dispatchRequestedAt);
+  assert.equal(factoryCalls, 1);
+  assert.equal(engine.hasActivity(proj.id), true);
+  assert.equal(controlled.state.startOptions!.shouldDispatch!(repo.getTask(db, "t1")!), true);
+  assert.equal(controlled.state.startOptions!.shouldDispatch!(ordinary), false);
+
+  repo.clearDispatchRequests(db, proj.id);
+  controlled.resolveStart();
+  await waitFor(() => !engine.hasActivity(proj.id));
+});
+
+test("B34: Start promotes a manual runtime instead of constructing a competing Orchestrator", async () => {
+  const db = setup();
+  const hub = new WsHub();
+  const proj = project(db, "p1");
+  seedTask(db, proj.id, "manual");
+  const ordinary = seedTask(db, proj.id, "ordinary");
+  const controlled = controlledOrchestrator();
+  let factoryCalls = 0;
+  const engine = new EngineRunner(db, hub, {
+    ensureClone: async () => {},
+    orchestratorFactory: () => {
+      factoryCalls++;
+      return controlled.orchestrator;
+    },
+  });
+
+  await engine.dispatchOne(proj, "manual");
+  await waitFor(() => controlled.state.startCalls === 1);
+  await engine.start(proj);
+
+  assert.equal(factoryCalls, 1);
+  assert.equal(engine.isRunning(proj.id), true);
+  assert.equal(controlled.state.startOptions!.shouldDispatch!(ordinary), true);
+
+  repo.clearDispatchRequests(db, proj.id);
+  controlled.resolveStart();
+  await waitFor(() => !engine.hasActivity(proj.id));
+});
+
+test("B34: hard Stop keeps ownership registered until the exact runtime settles", async () => {
+  const db = setup();
+  const hub = new WsHub();
+  const proj = project(db, "p1");
+  seedTask(db, proj.id, "t1");
+  const controlled = controlledOrchestrator();
+  const engine = new EngineRunner(db, hub, {
+    ensureClone: async () => {},
+    orchestratorFactory: () => controlled.orchestrator,
+    stopSettleTimeoutMs: 5,
+  });
+
+  await engine.start(proj);
+  await waitFor(() => controlled.state.startCalls === 1);
+  await engine.pause(proj, { drain: false });
+
+  assert.equal(controlled.state.pauseCalls.length, 1);
+  assert.equal(engine.hasActivity(proj.id), true);
+  await assert.rejects(engine.start(proj), /stopping/);
+
+  controlled.resolveStart();
+  await waitFor(() => !engine.hasActivity(proj.id));
+});
+
+test("B34: persisted manual requests resume after process restart", async () => {
+  const db = setup();
+  const hub = new WsHub();
+  const proj = project(db, "p1");
+  seedTask(db, proj.id, "queued", {
+    dispatchRequestedAt: "2026-07-14T00:00:00.000Z",
+  });
+  const controlled = controlledOrchestrator();
+  const engine = new EngineRunner(db, hub, {
+    ensureClone: async () => {},
+    orchestratorFactory: () => controlled.orchestrator,
+  });
+
+  assert.equal(engine.resumeQueued(proj), true);
+  assert.equal(engine.resumeQueued(proj), false, "the registered runtime keeps sole ownership");
+  await waitFor(() => controlled.state.startCalls === 1);
+
+  repo.clearDispatchRequests(db, proj.id);
+  controlled.resolveStart();
+  await waitFor(() => !engine.hasActivity(proj.id));
+});
+
+test("B34: an old runtime finally cannot unregister a newer generation", async () => {
+  const db = setup();
+  const hub = new WsHub();
+  const proj = project(db, "p1");
+  seedTask(db, proj.id, "t1");
+  const oldControl = controlledOrchestrator();
+  const newControl = controlledOrchestrator();
+  const controls = [oldControl, newControl];
+  let factoryIndex = 0;
+  const engine = new EngineRunner(db, hub, {
+    ensureClone: async () => {},
+    orchestratorFactory: () => controls[factoryIndex++]!.orchestrator,
+  });
+
+  await engine.start(proj);
+  await waitFor(() => oldControl.state.startCalls === 1);
+  const runtimes = (
+    engine as unknown as { runtimes: Map<string, { settled: Promise<void> }> }
+  ).runtimes;
+  const oldRuntime = runtimes.get(proj.id)!;
+
+  // Simulate the historical race's stale cleanup boundary directly: a newer
+  // generation owns the key by the time the old Promise reaches finally.
+  runtimes.delete(proj.id);
+  await engine.start(proj);
+  await waitFor(() => newControl.state.startCalls === 1);
+  const newRuntime = runtimes.get(proj.id)!;
+
+  oldControl.resolveStart();
+  await oldRuntime.settled;
+  assert.equal(runtimes.get(proj.id), newRuntime);
+  assert.equal(repo.getProject(db, proj.id)!.status, "created", "stale finalization is ignored too");
+
+  newControl.resolveStart();
+  await newRuntime.settled;
+  assert.equal(engine.hasActivity(proj.id), false);
+});
+
+test("B34: a late adapter result cannot overwrite a run already marked stopped", () => {
+  const db = setup();
+  const hub = new WsHub();
+  const engine = new EngineRunner(db, hub);
+  const proj = project(db, "p1");
+  seedTask(db, proj.id, "t1", { status: "in_progress", attempts: 1 });
+  repo.createRun(db, {
+    id: "run-t1-1",
+    projectId: proj.id,
+    taskId: "t1",
+    model: "deepseek-flash",
+    attempt: 1,
+    status: "stopped",
+    startedAt: "2026-07-14T00:00:00.000Z",
+    endedAt: "2026-07-14T00:01:00.000Z",
+    exitReason: "killed",
+    costUsd: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+  });
+
+  buildDeps(engine, proj).events.onRunUpdated({
+    id: "run-t1-1",
+    projectId: proj.id,
+    taskId: "t1",
+    model: "deepseek-flash",
+    attempt: 1,
+    status: "failed",
+    startedAt: "2026-07-14T00:00:00.000Z",
+    endedAt: "2026-07-14T00:01:01.000Z",
+    exitReason: "killed",
+    costUsd: 0.01,
+    tokensIn: 10,
+    tokensOut: 5,
+  });
+
+  const saved = repo.getRun(db, "run-t1-1")!;
+  assert.equal(saved.status, "stopped");
+  assert.equal(saved.exitReason, "killed");
+  assert.equal(saved.costUsd, 0.01);
+  assert.equal(saved.tokensIn, 10);
 });

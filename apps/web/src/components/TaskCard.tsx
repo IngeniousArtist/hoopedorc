@@ -113,6 +113,14 @@ export function TaskCard({
       )}
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
+        {task.dispatchRequestedAt && (
+          <span
+            className="rounded bg-blue-900/50 px-1.5 py-0.5 text-blue-300"
+            title="Priority dispatch requested; waiting for dependencies or scheduler capacity"
+          >
+            queued
+          </span>
+        )}
         <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
           {models.find((m) => m.id === task.assignedModel)?.displayName ??
             task.assignedModel}

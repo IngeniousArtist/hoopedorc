@@ -229,6 +229,9 @@ function mapTask(row: Record<string, unknown>): Task {
     prNumber: row.pr_number != null ? Number(row.pr_number) : undefined,
     attempts: Number(row.attempts),
     maxAttempts: Number(row.max_attempts),
+    dispatchRequestedAt: row.dispatch_requested_at
+      ? asStr(row.dispatch_requested_at)
+      : undefined,
     statusReason: row.status_reason ? asStr(row.status_reason) : undefined,
     createdAt: asStr(row.created_at),
     updatedAt: asStr(row.updated_at),
@@ -255,8 +258,8 @@ export function createTask(
 ): Task {
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO tasks (id, project_id, title, description, difficulty, status, depends_on, acceptance_criteria, assigned_model, role, scope_paths, attempts, max_attempts, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO tasks (id, project_id, title, description, difficulty, status, depends_on, acceptance_criteria, assigned_model, role, scope_paths, attempts, max_attempts, dispatch_requested_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     t.id,
     t.projectId,
@@ -271,6 +274,7 @@ export function createTask(
     JSON.stringify(t.scopePaths),
     t.attempts,
     t.maxAttempts,
+    t.dispatchRequestedAt ?? null,
     now,
     now,
   );
@@ -298,6 +302,7 @@ export function updateTask(
     prNumber: "pr_number",
     attempts: "attempts",
     maxAttempts: "max_attempts",
+    dispatchRequestedAt: "dispatch_requested_at",
     statusReason: "status_reason",
   };
   const jsonCols = new Set(["dependsOn", "acceptanceCriteria", "scopePaths"]);
@@ -319,6 +324,43 @@ export function updateTask(
   vals.push(id);
   db.prepare(`UPDATE tasks SET ${set.join(", ")} WHERE id = ?`).run(...vals);
   return getTask(db, id);
+}
+
+/** Cancel every queued manual-priority request that has not started yet. */
+export function clearDispatchRequests(db: Db, projectId: string): Task[] {
+  const requested = db
+    .prepare(
+      "SELECT id FROM tasks WHERE project_id = ? AND dispatch_requested_at IS NOT NULL",
+    )
+    .all(projectId) as { id: string }[];
+  if (requested.length === 0) return [];
+
+  db.prepare(
+    "UPDATE tasks SET dispatch_requested_at = NULL, updated_at = ? WHERE project_id = ? AND dispatch_requested_at IS NOT NULL",
+  ).run(new Date().toISOString(), projectId);
+  return requested.flatMap(({ id }) => {
+    const task = getTask(db, id);
+    return task ? [task] : [];
+  });
+}
+
+/**
+ * Apply the user's Stop outcome only while the task is still active. A
+ * terminal engine update that commits first wins and is never rewritten.
+ */
+export function markTaskStoppedIfActive(
+  db: Db,
+  id: string,
+  reason = "Stopped by user",
+): { changed: boolean; task: Task | null } {
+  const result = db
+    .prepare(
+      `UPDATE tasks
+       SET status = 'blocked', status_reason = ?, dispatch_requested_at = NULL, updated_at = ?
+       WHERE id = ? AND status IN ('in_progress', 'in_review')`,
+    )
+    .run(reason, new Date().toISOString(), id);
+  return { changed: result.changes > 0, task: getTask(db, id) };
 }
 
 // ── Runs ──
@@ -362,9 +404,23 @@ export function createRun(
 ): Run {
   const id = r.id ?? crypto.randomUUID();
   db.prepare(
-    `INSERT INTO runs (id, project_id, task_id, model, attempt, status, started_at, cost_usd, tokens_in, tokens_out, tokens_cached)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, r.projectId, r.taskId, r.model, r.attempt, r.status, r.startedAt, r.costUsd, r.tokensIn, r.tokensOut, r.tokensCached ?? 0);
+    `INSERT INTO runs (id, project_id, task_id, model, attempt, status, started_at, ended_at, exit_reason, cost_usd, tokens_in, tokens_out, tokens_cached)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    r.projectId,
+    r.taskId,
+    r.model,
+    r.attempt,
+    r.status,
+    r.startedAt,
+    r.endedAt ?? null,
+    r.exitReason ?? null,
+    r.costUsd,
+    r.tokensIn,
+    r.tokensOut,
+    r.tokensCached ?? 0,
+  );
   return getRun(db, id)!;
 }
 
