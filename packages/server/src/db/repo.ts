@@ -8,6 +8,7 @@ import type {
   PlanChatMessage,
   Project,
   ProjectConfig,
+  RollbackJob,
   Run,
   Settings,
   Task,
@@ -140,6 +141,7 @@ export function deleteProject(db: Db, id: string): void {
     db.prepare("DELETE FROM costs WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM notifications WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM audit_log WHERE project_id = ?").run(projectId);
+    db.prepare("DELETE FROM rollback_jobs WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM tasks WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
   });
@@ -361,6 +363,153 @@ export function markTaskStoppedIfActive(
     )
     .run(reason, new Date().toISOString(), id);
   return { changed: result.changes > 0, task: getTask(db, id) };
+}
+
+// ── Rollback jobs ──
+
+const TERMINAL_ROLLBACK_STATUSES = [
+  "completed",
+  "rejected",
+  "conflicted",
+  "failed",
+] as const;
+
+function mapRollbackJob(row: Record<string, unknown>): RollbackJob {
+  return {
+    id: asStr(row.id),
+    projectId: asStr(row.project_id),
+    taskId: asStr(row.task_id),
+    sourcePrNumber: Number(row.source_pr_number),
+    sourceCommit: row.source_commit ? asStr(row.source_commit) : undefined,
+    sourceParentCount:
+      row.source_parent_count != null
+        ? Number(row.source_parent_count)
+        : undefined,
+    branch: asStr(row.branch),
+    worktreePath: asStr(row.worktree_path),
+    rollbackPrNumber:
+      row.rollback_pr_number != null
+        ? Number(row.rollback_pr_number)
+        : undefined,
+    status: asStr(row.status) as RollbackJob["status"],
+    statusReason: row.status_reason ? asStr(row.status_reason) : undefined,
+    gate: row.gate ? json<RollbackJob["gate"]>(row.gate) : undefined,
+    decision: row.decision
+      ? json<RollbackJob["decision"]>(row.decision)
+      : undefined,
+    approvalNotificationId: row.approval_notification_id
+      ? asStr(row.approval_notification_id)
+      : undefined,
+    approvalChoice: row.approval_choice
+      ? asStr(row.approval_choice)
+      : undefined,
+    createdAt: asStr(row.created_at),
+    updatedAt: asStr(row.updated_at),
+  };
+}
+
+export function getRollbackJob(db: Db, id: string): RollbackJob | null {
+  const row = db.prepare("SELECT * FROM rollback_jobs WHERE id = ?").get(id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? mapRollbackJob(row) : null;
+}
+
+export function getRollbackJobForTask(
+  db: Db,
+  taskId: string,
+  sourcePrNumber: number,
+): RollbackJob | null {
+  const row = db
+    .prepare(
+      "SELECT * FROM rollback_jobs WHERE task_id = ? AND source_pr_number = ?",
+    )
+    .get(taskId, sourcePrNumber) as Record<string, unknown> | undefined;
+  return row ? mapRollbackJob(row) : null;
+}
+
+/** INSERT OR IGNORE makes duplicate rollback clicks atomic and idempotent. */
+export function createOrGetRollbackJob(
+  db: Db,
+  job: Omit<RollbackJob, "createdAt" | "updatedAt">,
+): RollbackJob {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT OR IGNORE INTO rollback_jobs
+       (id, project_id, task_id, source_pr_number, source_commit,
+        source_parent_count, branch, worktree_path, rollback_pr_number, status,
+        status_reason, gate, decision, approval_notification_id,
+        approval_choice, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    job.id,
+    job.projectId,
+    job.taskId,
+    job.sourcePrNumber,
+    job.sourceCommit ?? null,
+    job.sourceParentCount ?? null,
+    job.branch,
+    job.worktreePath,
+    job.rollbackPrNumber ?? null,
+    job.status,
+    job.statusReason ?? null,
+    job.gate ? JSON.stringify(job.gate) : null,
+    job.decision ? JSON.stringify(job.decision) : null,
+    job.approvalNotificationId ?? null,
+    job.approvalChoice ?? null,
+    now,
+    now,
+  );
+  return getRollbackJobForTask(db, job.taskId, job.sourcePrNumber)!;
+}
+
+export function updateRollbackJob(
+  db: Db,
+  id: string,
+  updates: Partial<RollbackJob>,
+): RollbackJob | null {
+  const set = ["updated_at = ?"];
+  const values: unknown[] = [new Date().toISOString()];
+  const columns: Record<string, string> = {
+    sourceCommit: "source_commit",
+    sourceParentCount: "source_parent_count",
+    branch: "branch",
+    worktreePath: "worktree_path",
+    rollbackPrNumber: "rollback_pr_number",
+    status: "status",
+    statusReason: "status_reason",
+    approvalNotificationId: "approval_notification_id",
+    approvalChoice: "approval_choice",
+  };
+  for (const [key, column] of Object.entries(columns)) {
+    if (key in updates) {
+      set.push(`${column} = ?`);
+      values.push((updates as Record<string, unknown>)[key] ?? null);
+    }
+  }
+  for (const key of ["gate", "decision"] as const) {
+    if (key in updates) {
+      set.push(`${key} = ?`);
+      const value = updates[key];
+      values.push(value == null ? null : JSON.stringify(value));
+    }
+  }
+  values.push(id);
+  db.prepare(`UPDATE rollback_jobs SET ${set.join(", ")} WHERE id = ?`).run(
+    ...values,
+  );
+  return getRollbackJob(db, id);
+}
+
+export function getRecoverableRollbackJobs(db: Db): RollbackJob[] {
+  const placeholders = TERMINAL_ROLLBACK_STATUSES.map(() => "?").join(", ");
+  return (
+    db
+      .prepare(
+        `SELECT * FROM rollback_jobs WHERE status NOT IN (${placeholders}) ORDER BY created_at ASC`,
+      )
+      .all(...TERMINAL_ROLLBACK_STATUSES) as Record<string, unknown>[]
+  ).map(mapRollbackJob);
 }
 
 // ── Runs ──

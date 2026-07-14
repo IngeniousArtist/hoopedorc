@@ -78,6 +78,7 @@ function fakeDeps(
     worktrees: {
       async create(_p, t) { return { branch: `orc/${t.id}`, path: `/tmp/${t.id}` }; },
       async remove() {},
+      async prepareForGates() {},
       async changedFiles() { return changed; },
       async changedFilesInScope() { return true; },
       async revertOutOfScope() { return []; },
@@ -101,7 +102,12 @@ function fakeDeps(
       async ensureClone() {}, async commitAll() {}, async push() {},
       async openPr() { return 1; },
       async mergePr(_p, n) { merged.push(n); },
-      async revertMerge() {},
+      async resolvePrMergeCommit() { return "0".repeat(40); },
+      async prepareRollback() {
+        return { sourceCommit: "0".repeat(40), sourceParentCount: 1 };
+      },
+      async openRollbackPr() { return 2; },
+      async closeRollbackPr() {},
       async appendChangelogEntry() {},
       async syncBranchWithMain() { return "clean" as const; },
       async waitForChecks() { return "none" as const; },

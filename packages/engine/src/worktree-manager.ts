@@ -333,6 +333,16 @@ export class WorktreeManagerImpl implements WorktreeManager {
     }
   }
 
+  async prepareForGates(
+    project: Project,
+    task: Task,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (!task.worktreePath) throw new Error("no worktree path set");
+    await this.ensureGitExclude(task.worktreePath, signal);
+    await this.ensureDeps(project, task.worktreePath, signal);
+  }
+
   async changedFiles(project: Project, task: Task): Promise<string[]> {
     const worktreePath = task.worktreePath;
     if (!worktreePath) return [];

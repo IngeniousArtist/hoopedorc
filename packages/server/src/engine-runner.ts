@@ -2,12 +2,24 @@ import {
   GateRunnerImpl,
   GitServiceImpl,
   Orchestrator,
+  RollbackConflictError,
   ValidatorImpl,
   WorktreeManagerImpl,
+  type GateRunner,
+  type GitService,
   type SchedulerDeps,
+  type Validator,
+  type WorktreeManager,
 } from "@orc/engine";
 import { makeAdapter, type AgentAdapter } from "@orc/adapters";
-import type { ModelId, Project, RunSummaryDetail, Task } from "@orc/types";
+import type {
+  ModelId,
+  Project,
+  RollbackJob,
+  RunSummaryDetail,
+  Settings,
+  Task,
+} from "@orc/types";
 import { ENV, defaultSettings } from "./config";
 import type { Db } from "./db/index";
 import * as repo from "./db/repo";
@@ -87,6 +99,16 @@ export interface EngineRunnerOptions {
   /** B34 only bounds the HTTP wait; the runtime remains registered until it
    * really settles. B35 makes every subprocess honor that deadline promptly. */
   stopSettleTimeoutMs?: number;
+  /** Test seam for the persisted rollback state machine. */
+  rollbackDepsFactory?: (project: Project) => RollbackExecutionDeps;
+}
+
+export interface RollbackExecutionDeps {
+  settings: Settings;
+  git: GitService;
+  worktrees: WorktreeManager;
+  gates: GateRunner;
+  validator: Validator;
 }
 
 /**
@@ -102,6 +124,8 @@ export class EngineRunner {
   private readonly runtimes = new Map<string, ProjectRuntime>();
   private nextRuntimeGeneration = 1;
   private readonly pendingApprovals = new Map<string, (choice: string) => void>();
+  private readonly rollbackRuns = new Map<string, Promise<void>>();
+  private readonly rollbackByProject = new Map<string, string>();
   /** Optional second channel (Telegram). Set after construction. */
   private notifier?: ServerNotifier;
 
@@ -224,7 +248,7 @@ export class EngineRunner {
    * it was initiated by Start or a manual-priority request. Deletion and
    * replacement operations must use this stronger predicate. */
   hasActivity(projectId: string): boolean {
-    return this.runtimes.has(projectId);
+    return this.runtimes.has(projectId) || this.rollbackByProject.has(projectId);
   }
 
   getActivityState(projectId: string): ProjectRuntimeState | undefined {
@@ -554,6 +578,129 @@ export class EngineRunner {
     return new Orchestrator(deps);
   }
 
+  private buildRollbackDeps(project: Project): RollbackExecutionDeps {
+    if (this.options.rollbackDepsFactory) {
+      return this.options.rollbackDepsFactory(project);
+    }
+    const settings = repo.getSettings(this.db);
+    if (!settings) throw new Error("settings not found");
+    const adapterFor = (modelId: ModelId): AgentAdapter => {
+      const config = settings.models.find((model) => model.id === modelId);
+      if (!config) throw new Error(`no ModelConfig for ${modelId}`);
+      return makeAdapter(config, ENV.opencodeBaseUrl);
+    };
+    const worktrees = new WorktreeManagerImpl(settings);
+    const git = new GitServiceImpl();
+    return {
+      settings,
+      git,
+      worktrees,
+      gates: new GateRunnerImpl(worktrees, settings),
+      validator: new ValidatorImpl(
+        adapterFor,
+        settings,
+        (model, taskId, costUsd, tokensIn, tokensOut, tokensCached = 0) => {
+          const config = settings.models.find((candidate) => candidate.id === model);
+          const finalCost =
+            manualCostUsd(config, tokensIn, tokensOut, tokensCached) ?? costUsd;
+          if (finalCost <= 0) return;
+          const cost = repo.createCost(this.db, {
+            projectId: project.id,
+            model,
+            taskId,
+            costUsd: finalCost,
+            tokensIn,
+            tokensOut,
+            tokensCached,
+            ts: new Date().toISOString(),
+          });
+          this.hub.broadcast({ type: "cost.updated", payload: cost });
+          this.checkAndPushBudgetAlerts(project.id);
+        },
+      ),
+    };
+  }
+
+  private updateRollback(
+    id: string,
+    updates: Partial<RollbackJob>,
+  ): RollbackJob {
+    const updated = repo.updateRollbackJob(this.db, id, updates);
+    if (!updated) throw new Error(`rollback job ${id} disappeared`);
+    this.hub.broadcast({ type: "rollback.updated", payload: updated });
+    return updated;
+  }
+
+  private rollbackTask(task: Task, job: RollbackJob): Task {
+    return {
+      ...task,
+      title: `Rollback PR #${job.sourcePrNumber}: ${task.title}`,
+      description:
+        `Mechanically revert the commit merged by PR #${job.sourcePrNumber}. ` +
+        "Do not introduce unrelated changes.",
+      status: "in_review",
+      acceptanceCriteria: [
+        `The changes from PR #${job.sourcePrNumber} are reverted without unrelated edits.`,
+        "All applicable repository gates pass.",
+      ],
+      scopePaths: ["**/*"],
+      branch: job.branch,
+      worktreePath: job.worktreePath,
+      prNumber: job.rollbackPrNumber,
+      attempts: 1,
+      maxAttempts: 1,
+    };
+  }
+
+  private requestRollbackApproval(
+    project: Project,
+    task: Task,
+    job: RollbackJob,
+  ): Promise<string> {
+    const prUrl = `${project.repoUrl}/pull/${job.rollbackPrNumber}`;
+    const reasons = job.decision?.reasons ?? [];
+    const checkDetail = job.statusReason ? `\n\n${job.statusReason}` : "";
+    const notif = repo.createNotification(this.db, {
+      projectId: project.id,
+      taskId: task.id,
+      severity: "action_required",
+      title: `Approve rollback of PR #${job.sourcePrNumber}`,
+      message:
+        `Rollback PR #${job.rollbackPrNumber} passed local gates and was independently reviewed. ` +
+        `Merge it to revert PR #${job.sourcePrNumber}?${checkDetail}`,
+      requiresApproval: true,
+      options: ["approve_merge", "reject"],
+      context: { prUrl, reasons },
+    });
+    this.updateRollback(job.id, {
+      approvalNotificationId: notif.id,
+      approvalChoice: undefined,
+    });
+    repo.createAuditEntry(this.db, {
+      projectId: project.id,
+      taskId: task.id,
+      kind: "approval_requested",
+      actor: "engine",
+      summary: notif.title,
+      detail: {
+        rollbackJobId: job.id,
+        rollbackPrNumber: job.rollbackPrNumber,
+        sourcePrNumber: job.sourcePrNumber,
+        reasons,
+      },
+    });
+    this.hub.broadcast({ type: "notification", payload: notif });
+    this.notifier?.approvalRequested(notif, { prUrl, reasons });
+    return new Promise<string>((resolve) => {
+      this.pendingApprovals.set(notif.id, (choice) => {
+        // Persist before resolving the waiter. A crash immediately after the
+        // HTTP/Telegram response can then resume the chosen path on boot.
+        this.updateRollback(job.id, { approvalChoice: choice });
+        resolve(choice);
+      });
+    });
+  }
+
   private logError(projectId: string, message: string): void {
     const log = repo.createLog(this.db, {
       projectId,
@@ -634,6 +781,9 @@ export class EngineRunner {
    * priority runtime already owns the project, promote that exact runtime;
    * never create a competing Orchestrator. */
   async start(project: Project): Promise<void> {
+    if (this.rollbackByProject.has(project.id)) {
+      throw new Error("a rollback is active for this project");
+    }
     const existing = this.runtimes.get(project.id);
     if (existing) {
       if (existing.state === "stopping" || existing.state === "draining") {
@@ -768,6 +918,9 @@ export class EngineRunner {
 
   /** Persist and prioritize a task through the project's one scheduler. */
   async dispatchOne(project: Project, taskId: string): Promise<Task> {
+    if (this.rollbackByProject.has(project.id)) {
+      throw new Error("a rollback is active for this project");
+    }
     const task = repo.getTask(this.db, taskId);
     if (!task) throw new Error(`task ${taskId} not found`);
     if (task.status !== "ready" && task.status !== "backlog") {
@@ -800,7 +953,9 @@ export class EngineRunner {
   /** Recreate a manual-only runtime for durable requests after process boot or
    * after an older runtime settles. Returns true only when one was started. */
   resumeQueued(project: Project): boolean {
-    if (this.runtimes.has(project.id)) return false;
+    if (this.runtimes.has(project.id) || this.rollbackByProject.has(project.id)) {
+      return false;
+    }
     const hasQueued = repo
       .getTasks(this.db, project.id)
       .some(
@@ -811,6 +966,378 @@ export class EngineRunner {
     if (!hasQueued) return false;
     this.createRuntime(project, false);
     return true;
+  }
+
+  private startRollbackJob(
+    project: Project,
+    task: Task,
+    job: RollbackJob,
+  ): void {
+    if (this.rollbackRuns.has(job.id)) return;
+    const otherJob = this.rollbackByProject.get(project.id);
+    if (otherJob && otherJob !== job.id) {
+      throw new Error(`project already has active rollback job ${otherJob}`);
+    }
+    if (this.runtimes.has(project.id)) {
+      throw new Error("project execution is active; stop it before rolling back");
+    }
+
+    this.rollbackByProject.set(project.id, job.id);
+    const run = this.runRollbackJob(project, task, job).finally(() => {
+      this.rollbackRuns.delete(job.id);
+      if (this.rollbackByProject.get(project.id) === job.id) {
+        this.rollbackByProject.delete(project.id);
+      }
+    });
+    this.rollbackRuns.set(job.id, run);
+    void run;
+  }
+
+  private async runRollbackJob(
+    project: Project,
+    sourceTask: Task,
+    initialJob: RollbackJob,
+  ): Promise<void> {
+    const deps = this.buildRollbackDeps(project);
+    let job = repo.getRollbackJob(this.db, initialJob.id) ?? initialJob;
+    const refresh = (): RollbackJob =>
+      repo.getRollbackJob(this.db, job.id) ?? job;
+    const audit = (
+      kind: string,
+      summary: string,
+      detail: Record<string, unknown> = {},
+    ): void => {
+      repo.createAuditEntry(this.db, {
+        projectId: project.id,
+        taskId: sourceTask.id,
+        kind,
+        actor: "engine",
+        summary,
+        detail: { rollbackJobId: job.id, ...detail },
+      });
+    };
+    const cleanupWorktree = async (): Promise<void> => {
+      const task = this.rollbackTask(sourceTask, refresh());
+      await deps.worktrees.remove(project, task).catch(() => {});
+    };
+    let preparedWorktree = false;
+
+    try {
+      await deps.git.ensureClone(project);
+
+      if (job.status === "requested" || job.status === "preparing") {
+        job = this.updateRollback(job.id, {
+          status: "preparing",
+          statusReason: "Preparing an isolated rollback worktree",
+        });
+        const prepared = await deps.git.prepareRollback(project, job);
+        await deps.worktrees.prepareForGates(
+          project,
+          this.rollbackTask(sourceTask, job),
+        );
+        preparedWorktree = true;
+        job = this.updateRollback(job.id, {
+          sourceCommit: prepared.sourceCommit,
+          sourceParentCount: prepared.sourceParentCount,
+          status: "gating",
+          statusReason:
+            prepared.sourceParentCount === 1
+              ? "Prepared a plain revert for the squash commit"
+              : `Prepared a mainline revert for a ${prepared.sourceParentCount}-parent merge commit`,
+        });
+        audit("rollback_prepared", job.statusReason ?? "Rollback prepared", {
+          sourcePrNumber: job.sourcePrNumber,
+          sourceCommit: prepared.sourceCommit,
+          sourceParentCount: prepared.sourceParentCount,
+        });
+      }
+
+      if (
+        !preparedWorktree &&
+        (job.status === "gating" ||
+          job.status === "validating" ||
+          job.status === "pushing")
+      ) {
+        await deps.git.prepareRollback(project, job);
+        await deps.worktrees.prepareForGates(
+          project,
+          this.rollbackTask(sourceTask, job),
+        );
+      }
+
+      if (job.status === "gating") {
+        const rollbackTask = this.rollbackTask(sourceTask, job);
+        const gate = await deps.gates.run(project, rollbackTask);
+        const cleanup = await deps.worktrees.restoreToHead(rollbackTask);
+        if (!cleanup.ok) {
+          gate.tests = false;
+          gate.details.tests =
+            `${gate.details.tests ?? ""}\nCould not restore rollback worktree after gates: ` +
+            `${cleanup.error ?? "unknown git error"}`;
+        }
+        const passed =
+          gate.typecheck &&
+          gate.lint &&
+          gate.build &&
+          gate.tests &&
+          gate.noConflicts;
+        if (!passed) {
+          job = this.updateRollback(job.id, {
+            gate,
+            status: "failed",
+            statusReason: "Rollback failed its repository gates",
+          });
+          audit("rollback_failed", job.statusReason ?? "Rollback gates failed", { gate });
+          await cleanupWorktree();
+          return;
+        }
+        job = this.updateRollback(job.id, {
+          gate,
+          status: "validating",
+          statusReason: gate.vacuous
+            ? "No objective scripts were available; independent review is required"
+            : "Repository gates passed",
+        });
+      }
+
+      if (job.status === "validating") {
+        const rollbackTask = this.rollbackTask(sourceTask, job);
+        const decision = await deps.validator.review(
+          project,
+          rollbackTask,
+          job.gate!,
+          "hoopedorc-mechanical-rollback",
+          (line) =>
+            this.enqueueLog({
+              projectId: project.id,
+              runId: `rollback-${job.id}`,
+              taskId: sourceTask.id,
+              ts: new Date().toISOString(),
+              level: "info",
+              source: "validator",
+              message: line,
+            }),
+        );
+        job = this.updateRollback(job.id, {
+          decision,
+          status: "pushing",
+          statusReason: `Independent validator verdict: ${decision.verdict}`,
+        });
+        repo.createMergeDecision(this.db, decision);
+        audit(
+          "rollback_validation",
+          `${decision.verdict} (confidence ${decision.confidence.toFixed(2)})`,
+          { reasons: decision.reasons, gate: decision.gate },
+        );
+        this.hub.broadcast({ type: "merge.decision", payload: decision });
+      }
+
+      if (job.status === "pushing") {
+        await deps.git.push(job.worktreePath, job.branch);
+        const rollbackTask = this.rollbackTask(sourceTask, job);
+        const prNumber =
+          job.rollbackPrNumber ??
+          (await deps.git.openRollbackPr(project, rollbackTask, job));
+        job = this.updateRollback(job.id, {
+          rollbackPrNumber: prNumber,
+          status: "checking",
+          statusReason: "Rollback PR opened; checking repository CI",
+        });
+        audit("rollback_pr_opened", `Opened rollback PR #${prNumber}`, {
+          rollbackPrNumber: prNumber,
+          sourcePrNumber: job.sourcePrNumber,
+        });
+
+      }
+
+      if (job.status === "checking") {
+        let statusReason = "Rollback PR is waiting for mandatory human approval";
+        if (project.config?.requireGithubChecks) {
+          const checks = await deps.git.waitForChecks(
+            project,
+            job.rollbackPrNumber!,
+            (project.config.githubChecksTimeoutMin ?? 15) * 60_000,
+          );
+          if (checks === "failed" || checks === "timeout") {
+            statusReason = `GitHub checks ${checks}; explicit approval is required to proceed`;
+          }
+        }
+        job = this.updateRollback(job.id, {
+          status: "awaiting_approval",
+          statusReason,
+        });
+      }
+
+      if (job.status === "awaiting_approval") {
+        const choice =
+          job.approvalChoice ??
+          (await this.requestRollbackApproval(project, sourceTask, job));
+        job = refresh();
+        job = this.updateRollback(job.id, {
+          status: choice === "approve_merge" ? "merging" : "rejecting",
+          statusReason:
+            choice === "approve_merge"
+              ? "Human approved the rollback PR"
+              : "Human rejected the rollback PR; closing it",
+        });
+      }
+
+      if (job.status === "rejecting") {
+        await deps.git.closeRollbackPr(
+          project,
+          job,
+          `Closed by Hoopedorc: rollback of PR #${job.sourcePrNumber} was rejected.`,
+        );
+        job = this.updateRollback(job.id, {
+          status: "rejected",
+          statusReason: `Rollback PR #${job.rollbackPrNumber} was rejected and closed`,
+        });
+        audit("rollback_rejected", job.statusReason ?? "Rollback rejected", {
+          rollbackPrNumber: job.rollbackPrNumber,
+          sourcePrNumber: job.sourcePrNumber,
+        });
+        await cleanupWorktree();
+        return;
+      }
+
+      if (job.status === "merging") {
+        await deps.git.prepareRollback(project, job);
+        const rollbackTask = this.rollbackTask(sourceTask, job);
+        const sync = await deps.git.syncBranchWithMain(project, rollbackTask);
+        if (sync === "conflict") {
+          throw new RollbackConflictError(
+            `Rollback PR #${job.rollbackPrNumber} now conflicts with ${project.defaultBranch}`,
+          );
+        }
+        if (project.config?.requireGithubChecks) {
+          const checks = await deps.git.waitForChecks(
+            project,
+            job.rollbackPrNumber!,
+            (project.config.githubChecksTimeoutMin ?? 15) * 60_000,
+          );
+          if (checks === "failed" || checks === "timeout") {
+            job = this.updateRollback(job.id, {
+              status: "awaiting_approval",
+              approvalChoice: undefined,
+              statusReason: `GitHub checks ${checks} after the branch refresh; approval is required again`,
+            });
+            const choice = await this.requestRollbackApproval(
+              project,
+              sourceTask,
+              job,
+            );
+            job = refresh();
+            if (choice !== "approve_merge") {
+              job = this.updateRollback(job.id, {
+                status: "rejecting",
+                statusReason: "Human rejected the refreshed rollback PR",
+              });
+              await deps.git.closeRollbackPr(
+                project,
+                job,
+                `Closed by Hoopedorc: refreshed rollback of PR #${job.sourcePrNumber} was rejected.`,
+              );
+              job = this.updateRollback(job.id, {
+                status: "rejected",
+                statusReason: `Rollback PR #${job.rollbackPrNumber} was rejected and closed`,
+              });
+              audit("rollback_rejected", job.statusReason ?? "Rollback rejected");
+              await cleanupWorktree();
+              return;
+            }
+            job = this.updateRollback(job.id, {
+              status: "merging",
+              statusReason: "Human approved the refreshed rollback PR",
+            });
+          }
+        }
+
+        await deps.git.mergePr(project, job.rollbackPrNumber!);
+        job = this.updateRollback(job.id, {
+          status: "completed",
+          statusReason: `Merged rollback PR #${job.rollbackPrNumber}; PR #${job.sourcePrNumber} is reverted`,
+        });
+        const updatedTask = repo.updateTask(this.db, sourceTask.id, {
+          status: "blocked",
+          statusReason: job.statusReason,
+        });
+        if (updatedTask) {
+          this.hub.broadcast({ type: "task.updated", payload: updatedTask });
+        }
+        audit("rollback", job.statusReason ?? "Rollback completed", {
+          sourcePrNumber: job.sourcePrNumber,
+          rollbackPrNumber: job.rollbackPrNumber,
+          sourceCommit: job.sourceCommit,
+        });
+        const notif = repo.createNotification(this.db, {
+          projectId: project.id,
+          taskId: sourceTask.id,
+          severity: "info",
+          title: `Rollback completed: PR #${job.sourcePrNumber}`,
+          message: job.statusReason ?? "Rollback completed",
+          requiresApproval: false,
+          context: {
+            prUrl: `${project.repoUrl}/pull/${job.rollbackPrNumber}`,
+            reasons: job.decision?.reasons,
+          },
+        });
+        this.hub.broadcast({ type: "notification", payload: notif });
+        this.notifier?.info(job.statusReason ?? "Rollback completed");
+        await cleanupWorktree();
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      job = refresh();
+      const failedStage = job.status;
+      if (err instanceof RollbackConflictError) {
+        if (job.rollbackPrNumber != null) {
+          await deps.git
+            .closeRollbackPr(project, job, `Closed by Hoopedorc: ${message}`)
+            .catch(() => {});
+        }
+        job = this.updateRollback(job.id, {
+          status: "conflicted",
+          statusReason: message,
+        });
+        audit("rollback_conflicted", message);
+        await cleanupWorktree();
+      } else if (
+        job.status === "pushing" ||
+        job.status === "rejecting" ||
+        job.status === "merging"
+      ) {
+        // These stages are idempotent and externally stateful. Keep the
+        // checkpoint recoverable so a duplicate click or restart retries it.
+        this.updateRollback(job.id, { statusReason: message });
+        audit("rollback_retryable_error", message, { stage: failedStage });
+      } else {
+        job = this.updateRollback(job.id, {
+          status: "failed",
+          statusReason: message,
+        });
+        audit("rollback_failed", message, { stage: failedStage });
+        await cleanupWorktree();
+      }
+      this.logError(project.id, `Rollback ${job.id}: ${message}`);
+    }
+  }
+
+  /** Re-arm every nonterminal rollback after process restart. */
+  resumeRollbacks(): number {
+    let resumed = 0;
+    for (const job of repo.getRecoverableRollbackJobs(this.db)) {
+      const project = repo.getProject(this.db, job.projectId);
+      const task = repo.getTask(this.db, job.taskId);
+      if (!project || !task || this.rollbackRuns.has(job.id)) continue;
+      try {
+        this.startRollbackJob(project, task, job);
+        resumed++;
+      } catch {
+        // A normal project runtime already owns the repo; its completion or
+        // the next boot/click can retry the persisted rollback.
+      }
+    }
+    return resumed;
   }
 
   private async waitForSettlement(runtime: ProjectRuntime): Promise<boolean> {
@@ -871,10 +1398,53 @@ export class EngineRunner {
     return stopped;
   }
 
-  /** Revert a merged PR on the project's default branch (one-click rollback). */
-  async rollback(project: Project, prNumber: number): Promise<void> {
-    const git = new GitServiceImpl();
-    await git.ensureClone(project);
-    await git.revertMerge(project, prNumber);
+  /** Persist and start a gated rollback PR. Duplicate calls return one job. */
+  async rollback(project: Project, task: Task): Promise<RollbackJob> {
+    if (task.prNumber == null) {
+      throw new Error("task has no merged PR to roll back");
+    }
+    const existing = repo.getRollbackJobForTask(
+      this.db,
+      task.id,
+      task.prNumber,
+    );
+    if (existing) {
+      if (
+        !["completed", "rejected", "conflicted", "failed"].includes(
+          existing.status,
+        )
+      ) {
+        this.startRollbackJob(project, task, existing);
+      }
+      return repo.getRollbackJob(this.db, existing.id) ?? existing;
+    }
+    if (task.status !== "done") {
+      throw new Error(`task is ${task.status}, not a completed task`);
+    }
+    if (this.hasActivity(project.id)) {
+      throw new Error("project execution is active; stop it before rolling back");
+    }
+
+    const id = crypto.randomUUID();
+    const job = repo.createOrGetRollbackJob(this.db, {
+      id,
+      projectId: project.id,
+      taskId: task.id,
+      sourcePrNumber: task.prNumber,
+      branch: `orc/rollback-${id}`,
+      worktreePath: `${project.localPath}-rollback-${id}`,
+      status: "requested",
+    });
+    this.hub.broadcast({ type: "rollback.updated", payload: job });
+    repo.createAuditEntry(this.db, {
+      projectId: project.id,
+      taskId: task.id,
+      kind: "rollback_requested",
+      actor: "human",
+      summary: `Requested rollback of PR #${task.prNumber} for "${task.title}"`,
+      detail: { rollbackJobId: job.id, sourcePrNumber: task.prNumber },
+    });
+    this.startRollbackJob(project, task, job);
+    return job;
   }
 }

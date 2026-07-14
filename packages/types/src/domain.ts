@@ -370,6 +370,42 @@ export interface MergeDecision {
   ts: string;
 }
 
+export type RollbackStatus =
+  | "requested"
+  | "preparing"
+  | "gating"
+  | "validating"
+  | "pushing"
+  | "checking"
+  | "awaiting_approval"
+  | "rejecting"
+  | "merging"
+  | "completed"
+  | "rejected"
+  | "conflicted"
+  | "failed";
+
+/** Durable state for one rollback of a task's merged PR. */
+export interface RollbackJob {
+  id: string;
+  projectId: string;
+  taskId: string;
+  sourcePrNumber: number;
+  sourceCommit?: string;
+  sourceParentCount?: number;
+  branch: string;
+  worktreePath: string;
+  rollbackPrNumber?: number;
+  status: RollbackStatus;
+  statusReason?: string;
+  gate?: GateResult;
+  decision?: MergeDecision;
+  approvalNotificationId?: string;
+  approvalChoice?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type NotificationSeverity = "info" | "warn" | "action_required";
 
 /**

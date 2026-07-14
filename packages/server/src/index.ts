@@ -2015,7 +2015,7 @@ async function main() {
     return { task: updatedTask };
   });
 
-  // Revert a task's merged PR (one-click rollback).
+  // Start or resume a task's gated, human-approved rollback PR.
   app.post("/api/tasks/:id/rollback", async (req, reply) => {
     const { id } = req.params as RouteParams;
     const task = repo.getTask(db, id);
@@ -2027,25 +2027,23 @@ async function main() {
     if (!project) return reply.code(404).send({ error: "project not found" });
 
     try {
-      await engine.rollback(project, task.prNumber);
+      const rollback = await engine.rollback(project, task);
+      return reply.code(202).send({ task, rollback });
     } catch (err) {
-      return reply.code(502).send({
-        error: `rollback failed: ${err instanceof Error ? err.message : String(err)}`,
+      return reply.code(409).send({
+        error: `rollback could not start: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
+  });
 
-    repo.updateTask(db, id, { status: "blocked" });
-    repo.createAuditEntry(db, {
-      projectId: project.id,
-      taskId: id,
-      kind: "rollback",
-      actor: "human",
-      summary: `Reverted PR #${task.prNumber} for "${task.title}"`,
-      detail: { prNumber: task.prNumber },
-    });
-    const updated = repo.getTask(db, id)!;
-    broadcast({ type: "task.updated", payload: updated });
-    return { task: updated };
+  app.get("/api/tasks/:id/rollback", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const task = repo.getTask(db, id);
+    if (!task) return reply.code(404).send({ error: "task not found" });
+    if (!task.prNumber) return { rollback: null };
+    return {
+      rollback: repo.getRollbackJobForTask(db, task.id, task.prNumber),
+    };
   });
 
   // Retry a failed/blocked task from scratch (resets attempts, re-dispatches).
@@ -2546,8 +2544,12 @@ async function main() {
   // "running"; the orchestrator's orphan recovery requeues whatever task was
   // mid-flight, so this picks up cleanly. Skipped in mock mode (no real engine).
   if (!ENV.mock) {
+    const resumedRollbacks = engine.resumeRollbacks();
+    if (resumedRollbacks > 0) {
+      app.log.info(`resuming ${resumedRollbacks} rollback job(s) after restart`);
+    }
     for (const p of repo.getProjects(db)) {
-      if (p.status === "running" && !engine.isRunning(p.id)) {
+      if (p.status === "running" && !engine.hasActivity(p.id)) {
         app.log.info(`resuming project ${p.name} (${p.id}) after restart`);
         void engine.start(p).catch((err) => {
           app.log.error(

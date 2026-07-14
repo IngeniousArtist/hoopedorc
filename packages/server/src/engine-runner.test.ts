@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Orchestrator, OrchestratorStartOptions, SchedulerDeps } from "@orc/engine";
-import type { Project, Task } from "@orc/types";
+import type { GateResult, Project, RollbackJob, Task } from "@orc/types";
 import { defaultSettings } from "./config.js";
 import { initDb } from "./db/index.js";
 import * as repo from "./db/repo.js";
-import { EngineRunner } from "./engine-runner.js";
+import {
+  EngineRunner,
+  type RollbackExecutionDeps,
+} from "./engine-runner.js";
 import { WsHub } from "./ws-hub.js";
 
 function setup() {
@@ -32,7 +35,7 @@ function seedTask(
   id: string,
   over: Partial<Task> = {},
 ): Task {
-  return repo.createTask(db, {
+  const created = repo.createTask(db, {
     id,
     projectId,
     title: id,
@@ -47,6 +50,7 @@ function seedTask(
     maxAttempts: 3,
     ...over,
   });
+  return repo.updateTask(db, created.id, over) ?? created;
 }
 
 function controlledOrchestrator() {
@@ -88,6 +92,103 @@ function activeRuntime(engine: EngineRunner, projectId: string): { settled: Prom
   return (
     engine as unknown as { runtimes: Map<string, { settled: Promise<void> }> }
   ).runtimes.get(projectId)!;
+}
+
+const ROLLBACK_GATE: GateResult = {
+  typecheck: true,
+  lint: true,
+  build: true,
+  tests: true,
+  noConflicts: true,
+  inScope: true,
+  details: {},
+};
+
+async function waitForRollback(
+  db: ReturnType<typeof initDb>,
+  id: string,
+  predicate: (job: RollbackJob) => boolean,
+): Promise<RollbackJob> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const job = repo.getRollbackJob(db, id);
+    if (job && predicate(job)) return job;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error(`rollback ${id} did not reach the expected state`);
+}
+
+function fakeRollbackDeps(settings = defaultSettings()): {
+  deps: RollbackExecutionDeps;
+  calls: {
+    prepare: number;
+    push: number;
+    open: number;
+    close: number;
+    merge: number;
+    remove: number;
+  };
+} {
+  const calls = { prepare: 0, push: 0, open: 0, close: 0, merge: 0, remove: 0 };
+  const deps: RollbackExecutionDeps = {
+    settings,
+    git: {
+      async ensureClone() {},
+      async commitAll() {},
+      async push() { calls.push++; },
+      async openPr() { return 1; },
+      async mergePr() { calls.merge++; },
+      async resolvePrMergeCommit() { return "a".repeat(40); },
+      async prepareRollback() {
+        calls.prepare++;
+        return { sourceCommit: "a".repeat(40), sourceParentCount: 1 };
+      },
+      async openRollbackPr() { calls.open++; return 88; },
+      async closeRollbackPr() { calls.close++; },
+      async appendChangelogEntry() {},
+      async syncBranchWithMain() { return "clean"; },
+      async waitForChecks() { return "none"; },
+      async cleanupTaskBranch() {},
+    },
+    worktrees: {
+      async create() { return { branch: "", path: "" }; },
+      async remove() { calls.remove++; },
+      async prepareForGates() {},
+      async changedFiles() { return []; },
+      async changedFilesInScope() { return true; },
+      async revertOutOfScope() { return []; },
+      async changedFilesWithStatus() {
+        return { ok: true, value: [], byteCount: 0, truncated: false };
+      },
+      async diffText() {
+        return { ok: true, value: "", byteCount: 0, truncated: false };
+      },
+      async worktreeChanges() {
+        return { ok: true, value: [], byteCount: 0, truncated: false };
+      },
+      async restoreToHead() {
+        return { ok: true, value: undefined, byteCount: 0, truncated: false };
+      },
+      async primaryDirtyFiles() { return []; },
+    },
+    gates: { async run() { return { ...ROLLBACK_GATE, details: {} }; } },
+    validator: {
+      async review(project, task, gate) {
+        return {
+          id: crypto.randomUUID(),
+          projectId: project.id,
+          taskId: task.id,
+          runId: `rollback-${task.id}`,
+          validatorModel: "claude",
+          verdict: "approve",
+          reasons: ["rollback is scoped"],
+          confidence: 0.95,
+          gate,
+          ts: new Date().toISOString(),
+        };
+      },
+    },
+  };
+  return { deps, calls };
 }
 
 /** F44: reaches the same private buildOrchestrator() method + its
@@ -420,4 +521,142 @@ test("B34: a late adapter result cannot overwrite a run already marked stopped",
   assert.equal(saved.exitReason, "killed");
   assert.equal(saved.costUsd, 0.01);
   assert.equal(saved.tokensIn, 10);
+});
+
+test("B36: duplicate rollback clicks share one job and approval merges exactly once", async () => {
+  const db = setup();
+  const hub = new WsHub();
+  const proj = project(db, "rollback-approve");
+  const task = seedTask(db, proj.id, "task", {
+    status: "done",
+    prNumber: 7,
+  });
+  const fake = fakeRollbackDeps();
+  const engine = new EngineRunner(db, hub, {
+    rollbackDepsFactory: () => fake.deps,
+  });
+
+  const first = await engine.rollback(proj, task);
+  const duplicate = await engine.rollback(proj, task);
+  assert.equal(duplicate.id, first.id);
+  const awaiting = await waitForRollback(
+    db,
+    first.id,
+    (job) => job.status === "awaiting_approval" && !!job.approvalNotificationId,
+  );
+  assert.equal(fake.calls.prepare, 1);
+  assert.equal(fake.calls.push, 1);
+  assert.equal(fake.calls.open, 1);
+
+  assert.equal(
+    engine.resolveApproval(awaiting.approvalNotificationId!, "approve_merge"),
+    true,
+  );
+  repo.respondToNotification(
+    db,
+    awaiting.approvalNotificationId!,
+    "approve_merge",
+  );
+  const completed = await waitForRollback(
+    db,
+    first.id,
+    (job) => job.status === "completed",
+  );
+
+  assert.equal(fake.calls.merge, 1);
+  assert.equal(completed.rollbackPrNumber, 88);
+  assert.equal(repo.getTask(db, task.id)!.status, "blocked");
+  assert.match(repo.getTask(db, task.id)!.statusReason ?? "", /PR #7 is reverted/);
+});
+
+test("B36: a new rollback is rejected unless the source task completed", async () => {
+  const db = setup();
+  const proj = project(db, "rollback-status");
+  const task = seedTask(db, proj.id, "task", {
+    status: "in_review",
+    prNumber: 8,
+  });
+  const engine = new EngineRunner(db, new WsHub(), {
+    rollbackDepsFactory: () => fakeRollbackDeps().deps,
+  });
+
+  await assert.rejects(
+    () => engine.rollback(proj, task),
+    /not a completed task/,
+  );
+  assert.equal(repo.getRollbackJobForTask(db, task.id, 8), null);
+});
+
+test("B36: rejecting mandatory approval closes the rollback PR without changing the task", async () => {
+  const db = setup();
+  const proj = project(db, "rollback-reject");
+  const task = seedTask(db, proj.id, "task", {
+    status: "done",
+    prNumber: 9,
+  });
+  const fake = fakeRollbackDeps();
+  const engine = new EngineRunner(db, new WsHub(), {
+    rollbackDepsFactory: () => fake.deps,
+  });
+
+  const started = await engine.rollback(proj, task);
+  const awaiting = await waitForRollback(
+    db,
+    started.id,
+    (job) => job.status === "awaiting_approval" && !!job.approvalNotificationId,
+  );
+  engine.resolveApproval(awaiting.approvalNotificationId!, "reject");
+  repo.respondToNotification(db, awaiting.approvalNotificationId!, "reject");
+  await waitForRollback(db, started.id, (job) => job.status === "rejected");
+
+  assert.equal(fake.calls.close, 1);
+  assert.equal(fake.calls.merge, 0);
+  assert.equal(repo.getTask(db, task.id)!.status, "done");
+});
+
+test("B36: restart recovery re-arms approval without preparing a second revert", async () => {
+  const db = setup();
+  const proj = project(db, "rollback-restart");
+  const task = seedTask(db, proj.id, "task", {
+    status: "done",
+    prNumber: 12,
+  });
+  const fake = fakeRollbackDeps();
+  const firstEngine = new EngineRunner(db, new WsHub(), {
+    rollbackDepsFactory: () => fake.deps,
+  });
+  const started = await firstEngine.rollback(proj, task);
+  const firstApproval = await waitForRollback(
+    db,
+    started.id,
+    (job) => job.status === "awaiting_approval" && !!job.approvalNotificationId,
+  );
+  repo.expireStaleApprovals(db);
+
+  const resumedEngine = new EngineRunner(db, new WsHub(), {
+    rollbackDepsFactory: () => fake.deps,
+  });
+  assert.equal(resumedEngine.resumeRollbacks(), 1);
+  const secondApproval = await waitForRollback(
+    db,
+    started.id,
+    (job) =>
+      job.status === "awaiting_approval" &&
+      !!job.approvalNotificationId &&
+      job.approvalNotificationId !== firstApproval.approvalNotificationId,
+  );
+  assert.equal(fake.calls.prepare, 1, "recovery must reuse the prepared revert");
+  assert.equal(fake.calls.open, 1, "recovery must reuse the open rollback PR");
+
+  resumedEngine.resolveApproval(
+    secondApproval.approvalNotificationId!,
+    "approve_merge",
+  );
+  repo.respondToNotification(
+    db,
+    secondApproval.approvalNotificationId!,
+    "approve_merge",
+  );
+  await waitForRollback(db, started.id, (job) => job.status === "completed");
+  assert.equal(fake.calls.merge, 1);
 });

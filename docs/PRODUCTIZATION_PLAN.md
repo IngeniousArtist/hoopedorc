@@ -1680,8 +1680,8 @@ target rules.
 |---|---|---|
 | B34 — execution ownership + unified manual queue | done | [#139](https://github.com/IngeniousArtist/hoopedorc/pull/139) |
 | B35 — managed subprocess lifecycle and cancellation | done | [#140](https://github.com/IngeniousArtist/hoopedorc/pull/140) |
-| S9 — fail-closed gates, destructive rail, and worktree hygiene | pending | — |
-| B36 — rollback through a gated, human-approved PR | pending | — |
+| S9 — fail-closed gates, destructive rail, and worktree hygiene | done | [#141](https://github.com/IngeniousArtist/hoopedorc/pull/141) |
+| B36 — rollback through a gated, human-approved PR | done | [#142](https://github.com/IngeniousArtist/hoopedorc/pull/142) |
 | S10 — CLI credential/environment boundary | pending | — |
 | B37 — enabled models, live settings, and complete validation | pending | — |
 | F48 — per-model effort setting across all model stages | pending | — |
@@ -5710,6 +5710,24 @@ leaves an auditable closed/abandoned rollback job.
 **Acceptance:** local real-git tests cover a squash commit, a two-parent merge,
 conflict, duplicate click/idempotency, restart recovery, reject, and approve.
 The remote default branch must never receive a direct rollback push.
+
+**B36 — done (PR [#142](https://github.com/IngeniousArtist/hoopedorc/pull/142)).**
+Rollback is now a durable state machine keyed uniquely by task and source PR.
+It prepares an idempotent revert in a deterministic isolated worktree, selects
+plain revert versus mainline-parent revert from the source commit's real parent
+count, runs repository gates and an independent validator, opens a rollback PR,
+and waits for mandatory human approval. Rejection closes the PR and preserves an
+auditable terminal job; restart recovery resumes the recorded stage without
+creating a second revert. The task changes to blocked only after the rollback PR
+actually merges. The Board shows live rollback state and the rollback PR link.
+
+Real local bare-remote tests prove single-parent squash, two-parent merge,
+conflict cleanup, stable repeat preparation, and an unchanged remote default
+branch. Server tests prove atomic duplicate requests, approve, reject,
+non-completed-task rejection, and approval re-arm after restart without a second
+prepare or PR. `npm run typecheck`, `npm run build`, 8 adapter tests, 131 engine
+tests, and 107 server tests pass. No authenticated model run was started; Fable
+review remains the independent post-merge check required for this wave.
 
 ### S10. CLI credential and child-environment boundary — HIGH
 

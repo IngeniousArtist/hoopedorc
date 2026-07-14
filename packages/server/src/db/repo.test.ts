@@ -18,6 +18,24 @@ function setup() {
   return db;
 }
 
+function seedRollbackTask(db: ReturnType<typeof initDb>) {
+  return repo.createTask(db, {
+    id: "task-rollback",
+    projectId: "proj-1",
+    title: "Merged task",
+    description: "",
+    difficulty: "medium",
+    status: "done",
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: [],
+    prNumber: 7,
+    attempts: 1,
+    maxAttempts: 3,
+  });
+}
+
 /** Creates a real notification via the public API, then backdates its
  *  created_at directly — createNotification always stamps "now", and these
  *  tests need explicit control over age. */
@@ -162,6 +180,50 @@ test("getNotifications: works with no projectId (global) too", () => {
   });
   const result = repo.getNotifications(db);
   assert.equal(result.some((n) => n.id === "pending-1"), true);
+});
+
+test("B36: rollback jobs round-trip and duplicate task/PR requests are idempotent", () => {
+  const db = setup();
+  seedRollbackTask(db);
+  const first = repo.createOrGetRollbackJob(db, {
+    id: "rollback-1",
+    projectId: "proj-1",
+    taskId: "task-rollback",
+    sourcePrNumber: 7,
+    branch: "orc/rollback-1",
+    worktreePath: "/tmp/rollback-1",
+    status: "requested",
+  });
+  const duplicate = repo.createOrGetRollbackJob(db, {
+    id: "rollback-2",
+    projectId: "proj-1",
+    taskId: "task-rollback",
+    sourcePrNumber: 7,
+    branch: "orc/rollback-2",
+    worktreePath: "/tmp/rollback-2",
+    status: "requested",
+  });
+
+  assert.equal(duplicate.id, first.id);
+  assert.equal(duplicate.branch, "orc/rollback-1");
+  const awaiting = repo.updateRollbackJob(db, first.id, {
+    sourceCommit: "a".repeat(40),
+    sourceParentCount: 1,
+    rollbackPrNumber: 11,
+    status: "awaiting_approval",
+    approvalNotificationId: "notification-1",
+    approvalChoice: "approve_merge",
+  })!;
+  assert.equal(awaiting.sourceCommit, "a".repeat(40));
+  assert.equal(awaiting.rollbackPrNumber, 11);
+  assert.equal(awaiting.approvalChoice, "approve_merge");
+  assert.deepEqual(
+    repo.getRecoverableRollbackJobs(db).map((job) => job.id),
+    [first.id],
+  );
+
+  repo.updateRollbackJob(db, first.id, { status: "completed" });
+  assert.deepEqual(repo.getRecoverableRollbackJobs(db), []);
 });
 
 // ── F38: AGENTS.md planning-session persistence ──

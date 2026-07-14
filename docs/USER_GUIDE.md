@@ -110,7 +110,8 @@ going on a always-on box.
    for the recommended remote setup (see below).
 7. When a task finishes, its PR is already merged (or waiting on you, per
    the above). You can **Retry** a failed task, **Rollback** a merged one
-   (reverts the merge commit), or **Stop** a task that's still running.
+   through a separately gated rollback PR, or **Stop** a task that's still
+   running.
 
 ## The safety model
 
@@ -171,9 +172,12 @@ going on a always-on box.
   (skips dispatching, retries once the window rolls) instead of burning
   attempts on rate-limit failures. This complements the automatic cooldown
   that already kicks in *after* a rate-limited failure.
-- **Rollback.** Any merged task has a one-click Rollback (reverts the merge
-  commit on `main` via `git revert`) if something merged that shouldn't
-  have.
+- **Rollback.** Any merged task has a one-click Rollback if something merged
+  that shouldn't have. Hoopedorc creates an isolated revert branch, runs the
+  applicable repository gates and an independent validator, opens a rollback
+  PR, and requires your explicit approval before merging it. It never pushes a
+  rollback directly to the default branch, and the persisted job resumes safely
+  after a server restart.
 - **Gate sandbox (Docker, opt-in via `Settings.sandboxGates`).** Gate
   scripts (typecheck/lint/build/test/`testCommand`) and the dependency
   install (`npm ci`/`install`) can run inside a disposable Docker container
