@@ -24,6 +24,7 @@ import {
   buildEngineeringStandardsBlock,
   buildSkillsBlock,
   SAFETY_GUARDRAILS_BLOCK,
+  WORKING_DIRECTORY_BLOCK,
 } from "./guidelines.js";
 import { SelfReviewError } from "./validator.js";
 import type { EngineEvents, Scheduler, SchedulerDeps } from "./index.js";
@@ -1124,18 +1125,39 @@ export class Orchestrator implements Scheduler {
         // fallback chain — rather than failing outright on the first miss.
         const changed = await this.deps.worktrees.changedFiles(project, task);
         if (changed.length === 0) {
+          // B33: diagnose WHERE the agent actually wrote, instead of just
+          // reporting that the worktree is empty. If the primary clone is
+          // dirty (excluding package.json/lockfiles, which B29's manifest
+          // copy legitimately dirties before an install), that's a strong
+          // signal the agent wrote there instead of its own worktree —
+          // name it explicitly rather than leaving "ran out of steps" as
+          // the only explanation. Report-only: never resets the primary
+          // clone here (syncPrimary elsewhere self-heals; racing it would
+          // be worse than leaving the dirt for the next diagnosis).
+          const primaryDirty = await this.deps.worktrees.primaryDirtyFiles(project);
+          const wroteToWrongPlace = primaryDirty.length > 0;
           this.emit(
             "error",
             "engine",
-            `Author produced no changes in the worktree (${path}). ` +
-              `Nothing to commit/PR — check that the agent wrote into the worktree, not elsewhere.`,
+            wroteToWrongPlace
+              ? `Author produced no changes in the worktree (${path}) — but the agent ` +
+                `appears to have written into the primary clone at ${project.localPath} instead: ` +
+                `${primaryDirty.join(", ")}.`
+              : `Author produced no changes in the worktree (${path}). ` +
+                `Nothing to commit/PR — check that the agent wrote into the worktree, not elsewhere.`,
             task.id,
           );
-          fixInstructions =
-            "Your previous attempt made no file changes (likely ran out of " +
-            "steps before writing anything, or wrote outside the worktree). " +
-            "This attempt must actually create/modify the files this task " +
-            "requires — verify with `git status` before finishing.";
+          fixInstructions = wroteToWrongPlace
+            ? `Your previous attempt wrote to the WRONG directory — changes landed in the ` +
+              `primary clone (${primaryDirty.join(", ")}) instead of your actual working ` +
+              `directory. You are always started in a dedicated git worktree for this task; ` +
+              "never `cd` out of it or write with an absolute path elsewhere. This attempt " +
+              "must make its changes in the current working directory — verify with " +
+              "`git status` before finishing."
+            : "Your previous attempt made no file changes (likely ran out of " +
+              "steps before writing anything, or wrote outside the worktree). " +
+              "This attempt must actually create/modify the files this task " +
+              "requires — verify with `git status` before finishing.";
 
           if (task.attempts < task.maxAttempts) continue;
 
@@ -1168,7 +1190,9 @@ export class Orchestrator implements Scheduler {
             "No fallback model left after no changes were produced",
           );
           task.status = "failed";
-          task.statusReason = `Every attempt produced no file changes (models ran out of steps or wrote outside the worktree; last tried: ${currentModel})`;
+          task.statusReason = wroteToWrongPlace
+            ? `Every attempt wrote to the primary clone instead of its worktree (${primaryDirty.join(", ")}) — no fallback model left (last tried: ${currentModel})`
+            : `Every attempt produced no file changes (models ran out of steps or wrote outside the worktree; last tried: ${currentModel})`;
           this.deps.events.onTaskUpdated(task);
           return;
         }
@@ -1996,6 +2020,7 @@ export class Orchestrator implements Scheduler {
     let prompt = `## Task: ${task.title}\n\n${task.description}\n\n`;
     prompt +=
       `## Acceptance Criteria\n${task.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}\n\n`;
+    prompt += WORKING_DIRECTORY_BLOCK;
     prompt +=
       `## Allowed Files\n${task.scopePaths.map((s) => `- ${s}`).join("\n") || "(no restrictions)"}\n` +
       `Stay within these paths. If completing the task genuinely requires touching another file ` +

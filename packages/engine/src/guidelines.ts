@@ -34,6 +34,23 @@ export const SAFETY_GUARDRAILS_BLOCK = `
 `;
 
 /**
+ * B33: tells the author it's in a dedicated git worktree, not a shared
+ * directory. Root cause: an "Author produced no changes in the worktree"
+ * failure was previously undiagnosable — it could mean a weak model ran
+ * out of steps, or the agent genuinely wrote somewhere else (this fixed a
+ * real instance of the latter for opencode's `--attach` path — see
+ * `OpenCodeAdapter`). This prompt line doesn't fix that class of bug on
+ * its own, but gives every model the context to avoid writing outside its
+ * assigned directory in the first place.
+ */
+export const WORKING_DIRECTORY_BLOCK = `
+## Working Directory
+Implement all changes in the current working directory — it is a dedicated git worktree for
+this task. Never \`cd\` elsewhere or write files using an absolute path outside it. Before
+finishing, run \`git status\` and confirm the files you created/modified actually appear.
+`;
+
+/**
  * F31: renders Settings.guidelines (plus F29's fixed docs guidelines) into
  * a "## Engineering standards" prompt block — coding + security always
  * included, ux only when `includeUx` (the task looks UI-flavored:
