@@ -4920,6 +4920,45 @@ during the waiting state exits promptly. Live: set a tiny quota
 (`maxRuns: 1`, `windowHours: 0.05` ≈ 3 min) on a model, start a
 two-task project, confirm the run survives the window and finishes.
 
+**B32 — done (PR [#127](https://github.com/IngeniousArtist/hoopedorc/pull/127)).**
+`resolveDispatchModel` (orchestrator.ts) walks the fallback chain when
+the assigned model is cooldown/quota-blocked and returns the first
+candidate that's configured, not budget/cooldown/quota-blocked, and
+under its own `maxConcurrent`; `executeTask` gained an optional
+`startModel` parameter so the in-run escalation chain continues from
+the dispatched model's chain position instead of restarting at index 0.
+`blockedByTimeBounded` (new per-pass flag mirroring `blockedByCapacity`)
+keeps the dispatch loop polling instead of winding down when a ready
+task's WHOLE chain is time-bounded blocked; fires one
+`onModelTrouble("quota_wait")` per stall (new event value, threaded
+through `EngineEvents` and `telegram.ts`'s `ModelTroubleNotification`).
+Budget deliberately excluded as a trigger (only checked per-candidate),
+matching the fix spec exactly. Verified: 93/93 engine tests (5 new/
+updated in `orchestrator.test.ts` covering all four acceptance cases
+(a)-(d) — (b)'s "cooldown expiring mid-test" used a mutable flag flipped
+mid-test rather than a real 3-minute wait, functionally identical),
+83/83 server, 4/4 adapters, typecheck + build green. **A genuine hang
+was caught and fixed during this PR**: the first draft of the
+no-fallback-available test used a cooldown mock that never cleared,
+which combined with the fix's own new behavior (wait indefinitely for a
+real clearing signal, correctly) caused `start()` to poll forever and
+hang the test suite — live proof the fix actually changes "give up" to
+"wait" as intended; fixed by having those two tests stop the run via
+`pause()` after observing the blocked state, since an artificial block
+that never lifts has no real-world analog (a real cooldown/quota always
+clears). **Known minor limitation, documented in code**:
+`quotaWaitNotified`'s reset is scoped to "no task hit the no-fallback
+branch this pass" rather than tracked per-task/per-reason — in a rare
+multi-task interleaving, a genuinely new stall could theoretically be
+suppressed if an older notification never got the chance to reset; the
+run itself still stays alive and dispatches correctly regardless, so
+this could only cost an extra/missing Telegram ping, never
+correctness. **Still owed**: the live acceptance check (a tiny
+`maxRuns: 1`/`windowHours: 0.05` quota on a real two-task project,
+confirming the run survives the window) — needs the owner's real EC2
+box with real model credentials to exercise honestly; the engine tests
+prove the same logic with a mocked clock/mock quota check instead.
+
 ### B33. "Author produced no changes" — diagnose where the agent wrote + prompt hardening — MEDIUM
 
 **Where:** `packages/engine/src/orchestrator.ts` (`buildAuthorPrompt`,
