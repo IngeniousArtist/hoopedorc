@@ -1776,7 +1776,10 @@ export class Orchestrator implements Scheduler {
     prompt +=
       `## Acceptance Criteria\n${task.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}\n\n`;
     prompt +=
-      `## Allowed Files\n${task.scopePaths.map((s) => `- ${s}`).join("\n") || "(no restrictions)"}\n`;
+      `## Allowed Files\n${task.scopePaths.map((s) => `- ${s}`).join("\n") || "(no restrictions)"}\n` +
+      `Stay within these paths. If completing the task genuinely requires touching another file ` +
+      `(e.g. wiring an entry point), keep that edit minimal — files outside this list are flagged ` +
+      `for human review and can hold up the merge.\n`;
     prompt += buildEngineeringStandardsBlock(
       this.deps.settings.guidelines,
       task.role === "frontend",

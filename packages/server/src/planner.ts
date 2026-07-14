@@ -64,6 +64,11 @@ const DECONSTRUCT_SHAPE = `Respond with ONLY a JSON object, no markdown fences, 
     }
   ]
 }
+The task list is FLAT — never nest a "subtasks" or "children" array inside a task, and never emit
+fields beyond the ones shown above. Aim for 3-12 tasks; each one should be an independently
+mergeable, PR-sized unit of work. If a piece of work is too big for one task, split it into
+multiple sequential tasks connected via dependsOn rather than nesting.
+
 Rules for each task:
 - difficulty: "easy" | "medium" | "hard" — this directly selects which model authors the
   task, so calibrate it honestly rather than defaulting everything to "medium":
@@ -86,7 +91,13 @@ Rules for each task:
   documentation (e.g. a specific API reference doc).
 - acceptanceCriteria: concrete, checkable statements
 - dependsOn: indices of earlier tasks that must finish first
-- scopePaths: glob(s) the task is allowed to modify
+- scopePaths: glob(s) the task is allowed to modify. Cover EVERY file the task may plausibly
+  touch, including shared wiring — package.json (and its lockfile) whenever the task adds a
+  dependency or script, the entry-point file (index.html, src/main.tsx, the app router) whenever
+  the task wires in a new module or page, and relevant tool config files when the task configures
+  tooling. Prefer directory-level globs (e.g. "src/components/**") over lists of individual
+  files. When in doubt, widen the scope — an over-narrow scope makes ordinary work look like a
+  scope violation and forces a needless human review.
 
 agentsMd: real AGENTS.md content for the coding agents that will implement these tasks —
 committed to the repo root and read natively by Codex/opencode (Claude Code reads it via a
@@ -489,20 +500,217 @@ function runPlannerJson(
     : runClaudeJson(prompt, cwd, plannerModel.model);
 }
 
-function extractJsonObject(text: string): string {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced && fenced[1]) return fenced[1].trim();
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start !== -1 && end > start) return text.slice(start, end + 1);
-  return text;
+/**
+ * B31: extract the JSON object from a planner response. The claude path has
+ * no `--output-schema` enforcement, so the model's response is either pure
+ * JSON or JSON wrapped in a single outer markdown fence — but a real plan's
+ * "prd"/"agentsMd"/description STRINGS routinely contain their own code
+ * fences (a fenced file tree, an install command, `prisma/schema.prisma`
+ * mentioned in a snippet). The previous regex
+ * (`/\`\`\`(?:json)?\s*([\s\S]*?)\`\`\`/`) was unanchored and non-greedy, so
+ * on a pure-JSON response it latched onto the FIRST pair of fences it found
+ * — which live inside a string value, not around the whole response — and
+ * "extracted" the garbage between them (a fenced snippet fragment), which
+ * then failed `JSON.parse` with a confusing "Unexpected token" error. Fixed
+ * by only treating fences as a whole-response wrapper (anchored at both
+ * ends) and preferring brace-slicing whenever the response already looks
+ * like bare JSON.
+ */
+export function extractJsonObject(text: string): string {
+  const trimmed = text.trim();
+  // Already looks like bare JSON — never consult the fence regex, since any
+  // fence living inside a string value would otherwise be mismatched as a
+  // wrapper (the original bug).
+  if (trimmed.startsWith("{")) {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    return start !== -1 && end > start ? trimmed.slice(start, end + 1) : trimmed;
+  }
+  // Only matches a fence that wraps the ENTIRE response (anchored + greedy),
+  // so an inner fence inside a string value can never match here either.
+  const wrapped = trimmed.match(/^```(?:json)?\s*([\s\S]*)```\s*$/);
+  if (wrapped && wrapped[1]) return wrapped[1].trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start !== -1 && end > start) return trimmed.slice(start, end + 1);
+  return trimmed;
+}
+
+/**
+ * B31 layer 2: models routinely emit raw newlines/tabs inside JSON string
+ * values (a multi-line "prd"/"description" field) — invalid JSON, since a
+ * literal control character inside a string must be escaped. Walks the text
+ * tracking in-string state (respecting `\"` escapes) and escapes any raw
+ * \n/\r/\t found INSIDE a string literal only; everything outside strings
+ * (including already-valid escapes) passes through unchanged.
+ */
+function repairJsonControlChars(text: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (const ch of text) {
+    if (!inString) {
+      if (ch === '"') inString = true;
+      out += ch;
+      continue;
+    }
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = false;
+      out += ch;
+      continue;
+    }
+    if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "\t") out += "\\t";
+    else out += ch;
+  }
+  return out;
+}
+
+/** B31: parse the planner's JSON, retrying once with control-char repair
+ *  before giving up — the single most common way a model produces
+ *  otherwise-well-formed-looking JSON that still fails to parse. On total
+ *  failure, throws the ORIGINAL error (more useful for diagnosis than the
+ *  repair pass's own, usually-confusing, secondary failure). */
+function parseJsonWithRepair(text: string): unknown {
+  const extracted = extractJsonObject(text);
+  try {
+    return JSON.parse(extracted);
+  } catch (err) {
+    try {
+      return JSON.parse(repairJsonControlChars(extracted));
+    } catch {
+      throw err;
+    }
+  }
+}
+
+/**
+ * B31 layer 3: the final fallback when parsing (or F46's post-parse
+ * validation below) still fails after the repair pass — one re-ask of the
+ * SAME planner model, given the parse error and a snippet of its own
+ * invalid output, asking for a clean re-emit. Exactly one retry: a model
+ * that can't produce valid JSON twice in a row won't on a third try either,
+ * and every retry spends real money.
+ */
+function buildJsonRepairRetryPrompt(err: unknown, invalidText: string): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const snippet = invalidText.slice(0, 500);
+  return `Your previous response could not be parsed as valid JSON: ${message}
+
+Here is the start of what you sent (truncated):
+---
+${snippet}
+---
+
+Respond again with ONLY the complete, valid JSON object described earlier — no markdown fences,
+no commentary, no truncation, and no code fences anywhere inside string values (write multi-line
+content as \\n-escaped text instead). Re-emit the ENTIRE object.`;
 }
 
 const DIFFICULTIES = new Set<Difficulty>(["easy", "medium", "hard"]);
+const MAX_PLANNED_TASKS = 30;
 
-/** Parse a raw planner JSON string into a normalized PlanOutput. */
-function parsePlanOutput(text: string, projectName: string, goal = ""): PlanOutput {
-  const parsed = JSON.parse(extractJsonObject(text)) as {
+/**
+ * F46: recursively-nested output flattened to one level. Any task carrying a
+ * `subtasks`/`children` array has those entries spliced in immediately after
+ * it, each pointed at the parent via `dependsOn` (overriding whatever
+ * dependsOn the child itself claimed — the parent relationship is the
+ * trustworthy one here). Only one level is flattened; a child's own nested
+ * subtasks (vanishingly rare in practice) are dropped along with the other
+ * unrecognized fields. Non-object entries are dropped outright. Top-level
+ * tasks' own `dependsOn` values are remapped through the index shift the
+ * splicing introduces, so a later top-level task that depended on an
+ * earlier one still points at the right task after flattening.
+ */
+export function flattenRawTasks(raw: unknown[]): Record<string, unknown>[] {
+  const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+
+  const topLevel = raw.filter(isPlainObject);
+
+  // originalTopLevelIndex -> its new index in the flattened output, so a
+  // sibling's dependsOn (which only ever references OTHER top-level tasks)
+  // can be corrected for the children spliced in ahead of it.
+  const remap: number[] = [];
+  let cursor = 0;
+  for (const entry of topLevel) {
+    remap.push(cursor);
+    const nested = Array.isArray(entry.subtasks)
+      ? entry.subtasks
+      : Array.isArray(entry.children)
+        ? entry.children
+        : [];
+    cursor += 1 + nested.filter(isPlainObject).length;
+  }
+
+  const flat: Record<string, unknown>[] = [];
+  for (const entry of topLevel) {
+    const { subtasks, children, dependsOn, ...parentFields } = entry;
+    const remappedDependsOn = Array.isArray(dependsOn)
+      ? dependsOn
+          .map((n) => (typeof n === "number" ? remap[n] : undefined))
+          .filter((n): n is number => typeof n === "number")
+      : dependsOn;
+    const parentIndex = flat.length;
+    flat.push({ ...parentFields, dependsOn: remappedDependsOn });
+
+    const nested = Array.isArray(subtasks) ? subtasks : Array.isArray(children) ? children : [];
+    for (const child of nested.filter(isPlainObject)) {
+      const { subtasks: _cs, children: _cc, dependsOn: _cd, ...childFields } = child;
+      flat.push({ ...childFields, dependsOn: [parentIndex] });
+    }
+  }
+  return flat;
+}
+
+function isEmptyTaskLike(t: Record<string, unknown>): boolean {
+  const title = typeof t.title === "string" ? t.title.trim() : "";
+  const description = typeof t.description === "string" ? t.description.trim() : "";
+  return title === "" && description === "";
+}
+
+function defaultAcceptanceCriterion(description: string): string {
+  const firstLine = description.split("\n")[0]?.trim();
+  return firstLine || "The implementation matches the task description.";
+}
+
+/** F46: suffix " (2)", " (3)", … onto later occurrences of a duplicate
+ *  title — a model occasionally repeats a title verbatim across tasks,
+ *  which reads confusingly on the Board. Mutates in place. */
+function dedupeTaskTitles(tasks: PlannedTask[]): void {
+  const counts = new Map<string, number>();
+  for (const t of tasks) {
+    const base = t.title;
+    const n = (counts.get(base) ?? 0) + 1;
+    counts.set(base, n);
+    if (n > 1) t.title = `${base} (${n})`;
+  }
+}
+
+/** Parse a raw planner JSON string into a normalized PlanOutput. F46 hardens
+ *  this against a model emitting nested subtasks, empty tasks, an
+ *  unreasonably long list, or duplicate titles — defensive parsing for
+ *  paths (claude, and F45's opencode) with no native output-schema
+ *  enforcement. `onWarn` is optional and defaults to a no-op; callers with a
+ *  logger (index.ts) pass one so drops/caps aren't silent. */
+export function parsePlanOutput(
+  text: string,
+  projectName: string,
+  goal = "",
+  onWarn: (msg: string) => void = () => {},
+): PlanOutput {
+  const parsed = parseJsonWithRepair(text) as {
     prd?: string;
     agentsMd?: string;
     tasks?: unknown[];
@@ -512,25 +720,45 @@ function parsePlanOutput(text: string, projectName: string, goal = ""): PlanOutp
     throw new Error("planner returned no tasks");
   }
 
-  const tasks: PlannedTask[] = parsed.tasks.map((raw, i) => {
-    const t = raw as Record<string, unknown>;
+  const flattened = flattenRawTasks(parsed.tasks);
+  let candidates = flattened.filter((t) => !isEmptyTaskLike(t));
+  const droppedEmpty = flattened.length - candidates.length;
+  if (droppedEmpty > 0) {
+    onWarn(`planner: dropped ${droppedEmpty} task(s) with no title or description`);
+  }
+
+  if (candidates.length === 0) {
+    throw new Error("planner returned no valid tasks after validation");
+  }
+
+  if (candidates.length > MAX_PLANNED_TASKS) {
+    onWarn(`planner: capped ${candidates.length} tasks down to ${MAX_PLANNED_TASKS}`);
+    candidates = candidates.slice(0, MAX_PLANNED_TASKS);
+  }
+
+  const tasks: PlannedTask[] = candidates.map((raw, i) => {
+    const t = raw;
     const difficulty = DIFFICULTIES.has(t.difficulty as Difficulty)
       ? (t.difficulty as Difficulty)
       : "medium";
+    const description = String(t.description ?? "");
     return {
       title: String(t.title ?? `Task ${i + 1}`),
-      description: String(t.description ?? ""),
+      description,
       difficulty,
       role: typeof t.role === "string" ? (t.role as Role) : undefined,
-      acceptanceCriteria: Array.isArray(t.acceptanceCriteria)
-        ? t.acceptanceCriteria.map(String)
-        : [],
+      acceptanceCriteria:
+        Array.isArray(t.acceptanceCriteria) && t.acceptanceCriteria.length > 0
+          ? t.acceptanceCriteria.map(String)
+          : [defaultAcceptanceCriterion(description)],
       dependsOn: Array.isArray(t.dependsOn)
         ? t.dependsOn.map(Number).filter((n) => Number.isInteger(n) && n < i)
         : [],
       scopePaths: Array.isArray(t.scopePaths) ? t.scopePaths.map(String) : ["**/*"],
     };
   });
+
+  dedupeTaskTitles(tasks);
 
   return {
     prdMarkdown: String(parsed.prd ?? `# ${projectName}\n\n${goal}`),
@@ -539,16 +767,33 @@ function parsePlanOutput(text: string, projectName: string, goal = ""): PlanOutp
   };
 }
 
-/** Single-shot planner: goal -> PRD + DAG. Used by the legacy /plan endpoint. */
+/** Single-shot planner: goal -> PRD + DAG. Used by the legacy /plan endpoint.
+ *  `onWarn` surfaces F46 drop/cap warnings; defaults to a no-op. */
 export async function runPlanner(
   goal: string,
   projectName: string,
   cwd: string,
   plannerModel: PlannerModel,
+  onWarn: (msg: string) => void = () => {},
 ): Promise<PlanOutput> {
   const schema = plannerModel.runner === "codex" ? DECONSTRUCT_JSON_SCHEMA : undefined;
-  const { text } = await runPlannerJson(buildPrompt(goal, projectName), cwd, plannerModel, schema);
-  return parsePlanOutput(text, projectName, goal);
+  const prompt = buildPrompt(goal, projectName);
+  const { text } = await runPlannerJson(prompt, cwd, plannerModel, schema);
+  try {
+    return parsePlanOutput(text, projectName, goal, onWarn);
+  } catch (err) {
+    // B31 layer 3: one re-ask retry before giving up.
+    onWarn(
+      `planner: output failed to parse (${err instanceof Error ? err.message : String(err)}) — retrying once`,
+    );
+    const retry = await runPlannerJson(
+      buildJsonRepairRetryPrompt(err, text),
+      cwd,
+      plannerModel,
+      schema,
+    );
+    return parsePlanOutput(retry.text, projectName, goal, onWarn);
+  }
 }
 
 /** One conversational planning turn (the planner model, claude or codex). Returns reply text + cost. */
@@ -568,7 +813,9 @@ export async function runPlannerChat(
   return { reply: text.trim(), costUsd };
 }
 
-/** Deconstruct an agreed conversation into a strict task DAG (same planner model as chat). */
+/** Deconstruct an agreed conversation into a strict task DAG (same planner
+ *  model as chat). `onWarn` surfaces F46 drop/cap warnings and B31's retry
+ *  notice; defaults to a no-op. */
 export async function runPlannerDeconstruct(
   messages: PlanChatMessage[],
   projectName: string,
@@ -576,13 +823,28 @@ export async function runPlannerDeconstruct(
   plannerModel: PlannerModel,
   priorContext?: string,
   attachments?: string[],
+  onWarn: (msg: string) => void = () => {},
 ): Promise<{ output: PlanOutput; costUsd: number }> {
   const schema = plannerModel.runner === "codex" ? DECONSTRUCT_JSON_SCHEMA : undefined;
-  const { text, costUsd } = await runPlannerJson(
-    buildDeconstructPrompt(messages, projectName, priorContext, attachments),
-    cwd,
-    plannerModel,
-    schema,
-  );
-  return { output: parsePlanOutput(text, projectName), costUsd };
+  const prompt = buildDeconstructPrompt(messages, projectName, priorContext, attachments);
+  const { text, costUsd } = await runPlannerJson(prompt, cwd, plannerModel, schema);
+  try {
+    return { output: parsePlanOutput(text, projectName, "", onWarn), costUsd };
+  } catch (err) {
+    // B31 layer 3: one re-ask retry before giving up — cost accumulates
+    // across both calls so recordPlanningCost sees the true total spend.
+    onWarn(
+      `planner: deconstruct output failed to parse (${err instanceof Error ? err.message : String(err)}) — retrying once`,
+    );
+    const retry = await runPlannerJson(
+      buildJsonRepairRetryPrompt(err, text),
+      cwd,
+      plannerModel,
+      schema,
+    );
+    return {
+      output: parsePlanOutput(retry.text, projectName, "", onWarn),
+      costUsd: costUsd + retry.costUsd,
+    };
+  }
 }
