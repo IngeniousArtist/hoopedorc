@@ -280,17 +280,20 @@ name the field that needs correction.
 ## Telegram commands
 
 Beyond approve/reject buttons and the status digest, the bot understands a
-small command set (chat-id restricted, same as everything else Telegram —
-see "The safety model" above). Send `/help` any time for the live list.
+small command set. Commands and callbacks require both the configured private
+chat and the matching Telegram user id; group forwards and another user's
+button tap cannot drive the engine. Send `/help` any time for the live list.
+BotFather's command menu is registered automatically. `/status` and `/projects`
+also include compact Start/Pause/Status buttons.
 
 | Command | Does |
 |---|---|
 | `/status` | Every project's status and done/failed task counts. |
 | `/cost` | Spend this month, total and per project. |
-| `/projects` | Project ids (for the commands below that need one). |
-| `/start <projectId>` | Start a project's autonomous run. |
-| `/pause <projectId>` | Pause a project (finishes active tasks first). |
-| `/autonomous [on\|off]` | View, or flip, the merge policy between `fully_autonomous` (nothing ever asks) and `hard_gate_flag_risky` (the default — risky changes still ask). Bare `/autonomous` reports the current policy without changing it. |
+| `/projects` | Project names/ids plus inline controls. |
+| `/start <project-name-or-id-prefix>` | Start a project. A unique name or id prefix is enough. |
+| `/pause <project-name-or-id-prefix>` | Pause a project (finishes active tasks first). |
+| `/autonomous [on\|off]` | View, or flip, the merge policy. Even when on, the non-bypassable destructive-change rail and validator escalations still require a human. |
 | `/pending` | Re-sends every still-open approval with its buttons — recovers a push you missed or dismissed. |
 | `/stopall` | Stops every running project. Two-step on purpose (the highest-blast-radius command here): replies with a Yes/No confirmation naming how many projects/tasks it'll hit; nothing stops until you tap Yes. |
 | `/retry <taskId-or-prefix>` | Retries a `failed`/`changes_requested`/`blocked` task. A short unique prefix of the id works — no need to type the full id on a phone keyboard; an ambiguous prefix lists every match instead of guessing. |
@@ -298,11 +301,17 @@ see "The safety model" above). Send `/help` any time for the live list.
 | `/health` | One line per model: cooldown state, subscription-quota window usage, and the last "Test models" result. |
 
 `/autonomous` and `/digest` change the same `Settings` fields the web UI's
-Settings page does, so either surface reflects the other's changes. Flipping
-to `/autonomous on` means **no approval prompts at all** until you turn it
-back off — including for risky changes (DB migrations, new dependencies,
-auth/secret files, out-of-scope edits) — so treat it as a deliberate,
-temporary "trust everything" mode, not a default to leave on.
+Settings page does, so either surface reflects the other's changes. Autonomous
+mode removes ordinary merge prompts after successful gates/validation; it never
+bypasses destructive-change holds or a validator's explicit escalation.
+
+Telegram requests have deadlines and bounded retry (including Bot API
+`retry_after`), and long replies are split below Telegram's message limit.
+Settings and Setup & Health show delivery state, last success, and the last safe
+error. If an approval still cannot be delivered after Markdown fallback and
+transport retries, the web Notifications bell gets a warning while the approval
+remains actionable there. `/pending` and bot restart/configuration re-send every
+still-live approval.
 
 ## Project dependency setup
 
@@ -796,7 +805,7 @@ A few things follow from that split:
 | Every task in a brand-new project auto-merges with basically no verification | The repo has no `test`/`build`/`lint`/`typecheck` scripts yet, so every gate "passes" by doing nothing (vacuous). | This should already escalate to your approval by default — check `Settings.allowVacuousGates` isn't turned on. Longer-term, the planner's first scaffold task is supposed to set up real scripts; if it didn't, add them yourself or via a follow-up task. |
 | A "hard" difficulty task always fails validation with a self-review error | The author and validator models are configured to be the same model for that difficulty tier — the validator refuses to review its own work. | Settings → Routing: make sure `validatorByDifficulty` never matches `byDifficulty`/`byRole` for the same tier. |
 | Pressing Stop doesn't seem to do anything | You're on a very old build — this was a real bug (B1), fixed early in the productization pass: Stop now actually aborts the live process and can't be overtaken by an in-flight auto-merge. | Update to a current build. |
-| Approvals never reach Telegram | No bot token/chat id set, or the token has a Markdown metacharacter issue (also fixed — messages are plain text now). | Settings → Telegram: use the **Send test message** button to confirm delivery before relying on it live. |
+| Approvals never reach Telegram | No bot token/chat id, network/429 trouble, or a Bot API formatting rejection. | Settings → Telegram: check Delivery/last error and use **Send test message**. Failed approval delivery also creates a web notification; decide there or run `/pending` after fixing Telegram. |
 | The server won't start after setting `HOST=0.0.0.0` | No `API_TOKEN` set and `ALLOW_UNAUTHENTICATED` isn't `1` — this is an intentional refusal, not a bug. | Set `API_TOKEN` (see Remote setup above), or explicitly opt into `ALLOW_UNAUTHENTICATED=1` if you really mean to. |
 | The web UI shows nothing / a blank board in "real" (non-mock) mode | No project selected yet, or you're pointed at `MOCK=1` data. | Use the project picker in the nav; confirm `MOCK` isn't set in your `.env`/environment. |
 | Full-app Docker: `claude` fails to authenticate inside the container | Claude Code's login on macOS lives in the system Keychain, which a Linux container can't reach; Hoopedorc also does not forward provider-key environment variables. | Use the supported native install under the same OS user that authenticated the CLIs. Docker remains reference-only; the gate-only Docker sandbox does not run model CLIs. |

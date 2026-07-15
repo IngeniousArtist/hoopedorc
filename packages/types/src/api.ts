@@ -53,6 +53,14 @@ export interface HealthResponse {
       required: boolean;
       detail: string;
     };
+    telegram: {
+      enabled: boolean;
+      running: boolean;
+      state: "disabled" | "starting" | "healthy" | "degraded" | "stopped";
+      lastSuccessAt?: string;
+      lastError?: string;
+      lastErrorAt?: string;
+    };
   };
 }
 

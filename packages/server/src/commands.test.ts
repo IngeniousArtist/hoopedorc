@@ -5,7 +5,17 @@ import { initDb } from "./db/index.js";
 import * as repo from "./db/repo.js";
 import { EngineRunner } from "./engine-runner.js";
 import { WsHub } from "./ws-hub.js";
-import { findTaskByIdPrefix, retryTask, setMergePolicy, stopAllProjects } from "./commands.js";
+import {
+  findProjectByPrefix,
+  findTaskByIdPrefix,
+  notifyTelegramApprovalFailure,
+  pauseProject,
+  resendPendingApprovals,
+  retryTask,
+  setMergePolicy,
+  startProject,
+  stopAllProjects,
+} from "./commands.js";
 
 function setup() {
   const db = initDb(":memory:");
@@ -115,6 +125,102 @@ test("findTaskByIdPrefix: an ambiguous prefix lists every candidate instead of g
   assert.match(error, /Ambiguous/);
   assert.match(error, /abc111/);
   assert.match(error, /abc222/);
+});
+
+test("F49: project resolver accepts unique name/id prefixes and rejects ambiguity", () => {
+  const db = setup();
+  project(db, "alpha-one");
+  project(db, "alpha-two");
+  repo.updateProject(db, "alpha-one", { name: "Payments API" });
+  repo.updateProject(db, "alpha-two", { name: "Payments Web" });
+
+  const exactName = findProjectByPrefix(db, "payments api");
+  assert.equal(exactName.ok && exactName.project.id, "alpha-one");
+  const idPrefix = findProjectByPrefix(db, "alpha-t");
+  assert.equal(idPrefix.ok && idPrefix.project.id, "alpha-two");
+  const ambiguous = findProjectByPrefix(db, "pay");
+  assert.equal(ambiguous.ok, false);
+  assert.match(ambiguous.ok ? "" : ambiguous.error, /Payments API/);
+  assert.match(ambiguous.ok ? "" : ambiguous.error, /Payments Web/);
+});
+
+test("F49: HTTP and Telegram can share the same Start/Pause runtime actions", async () => {
+  const db = setup();
+  project(db, "p1");
+  const calls: string[] = [];
+  const fakeEngine = {
+    start: async () => { calls.push("start"); },
+    pause: async () => { calls.push("pause"); },
+  } as unknown as EngineRunner;
+  const broadcasts: unknown[] = [];
+
+  const started = await startProject(db, fakeEngine, (event) => broadcasts.push(event), "p1");
+  assert.equal(started.ok && started.project.status, "running");
+  const paused = await pauseProject(db, fakeEngine, (event) => broadcasts.push(event), "p1");
+  assert.equal(paused.ok && paused.project.status, "paused");
+  assert.deepEqual(calls, ["start", "pause"]);
+  assert.equal(broadcasts.length, 2);
+});
+
+test("F49: restart recovery re-sends only still-pending approvals", () => {
+  const db = setup();
+  project(db, "p1");
+  repo.createNotification(db, {
+    id: "pending",
+    projectId: "p1",
+    severity: "action_required",
+    title: "Pending",
+    message: "Needs a decision",
+    requiresApproval: true,
+    context: { prUrl: "https://github.com/x/y/pull/1" },
+  });
+  repo.createNotification(db, {
+    id: "resolved",
+    projectId: "p1",
+    severity: "action_required",
+    title: "Resolved",
+    message: "Already decided",
+    requiresApproval: true,
+  });
+  repo.respondToNotification(db, "resolved", "approve");
+  const sent: string[] = [];
+  const count = resendPendingApprovals(db, {
+    approvalRequested: (notification) => sent.push(notification.id),
+  });
+  assert.equal(count, 1);
+  assert.deepEqual(sent, ["pending"]);
+});
+
+test("F49: failed approval delivery creates one web warning and keeps approval pending", () => {
+  const db = setup();
+  project(db, "p1");
+  repo.createNotification(db, {
+    id: "approval",
+    projectId: "p1",
+    severity: "action_required",
+    title: "Approval",
+    message: "Needs a decision",
+    requiresApproval: true,
+  });
+  const broadcasts: unknown[] = [];
+  assert.equal(
+    notifyTelegramApprovalFailure(
+      db,
+      (event) => broadcasts.push(event),
+      "approval",
+      "network timeout",
+    ),
+    true,
+  );
+  assert.equal(
+    notifyTelegramApprovalFailure(db, () => {}, "approval", "again"),
+    false,
+  );
+  assert.equal(repo.getNotification(db, "approval")?.respondedWith, undefined);
+  const warning = repo.getNotification(db, "telegram-delivery:approval");
+  assert.equal(warning?.severity, "warn");
+  assert.match(warning?.message ?? "", /network timeout/);
+  assert.equal(broadcasts.length, 1);
 });
 
 test("retryTask: a task not in a retryable status is rejected without touching the engine", async () => {
