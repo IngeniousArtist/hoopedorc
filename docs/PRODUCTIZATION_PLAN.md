@@ -1688,7 +1688,7 @@ target rules.
 | B38 — portable dependency setup and atomic caching | ✅ done, Fable-validated 2026-07-15 | [#145](https://github.com/IngeniousArtist/hoopedorc/pull/145) |
 | B39 — planning and git durability | ✅ done, Fable-validated 2026-07-15 | [#146](https://github.com/IngeniousArtist/hoopedorc/pull/146) |
 | B40 — complete model-invocation accounting | ✅ done, awaiting Fable validation | [#148](https://github.com/IngeniousArtist/hoopedorc/pull/148) |
-| B41 — graceful shutdown and runtime recovery | pending | — |
+| B41 — graceful shutdown and runtime recovery | ✅ done, awaiting Fable validation | [#149](https://github.com/IngeniousArtist/hoopedorc/pull/149) |
 | F49 — Telegram reliability and phone-control hardening | pending | — |
 | T2 — frontend unit/E2E test foundation | pending | — |
 | U19 — full responsive UX pass | pending | — |
@@ -6017,6 +6017,31 @@ degraded dependency state through health without leaking secrets.
 uncaught exception, assert no managed child survives, DB/audit state is durable,
 and verify systemd-compatible exit codes. Tests cover cooldown restart and Docker
 unavailable → available → unavailable transitions.
+
+**Acceptance evidence (2026-07-15, PR [#149](https://github.com/IngeniousArtist/hoopedorc/pull/149)):** signal and fatal-error paths now share one
+idempotent coordinator that closes admission before its first await, stops all
+project and rollback runtimes in parallel under one 15-second deadline, aborts
+request-scoped planner/model/setup work, flushes logs, writes shutdown audit
+state, closes Telegram/WebSockets/HTTP, checkpoints SQLite, and closes the DB
+before exiting. Signals exit zero; uncaught exceptions and unhandled rejections
+perform the same cleanup and exit nonzero. The systemd unit gives this path 25
+seconds and retains a control-group kill fallback. Rate-limit cooldowns now live
+in SQLite, while Docker detection has a 30-second TTL and invalidates immediately
+after failed Docker execution. The credential-free health contract and Setup UI
+report lifecycle and required/optional Docker degradation.
+
+Child-process integration tests sent real SIGTERM and threw a real uncaught
+exception around a SIGTERM-resistant managed child, then proved the process tree
+was gone, the project was paused, the shutdown audit survived reopening SQLite,
+and exit codes were 0/1 respectively. Restart, total-deadline, rollback abort,
+setup/model request cancellation, cooldown persistence, Docker
+unavailable → available → unavailable, and safe health-payload tests also pass.
+Full workspace typecheck and production build passed, as did `git diff --check`,
+159/159 engine tests, 145/145 server tests, and 12/12 adapter tests. The Setup
+runtime card was browser-checked at 375, 768, and 1280 CSS pixels with no console
+errors; it remains inside the 375px viewport, while U19 retains ownership of the
+already-recorded narrow top-navigation overflow. Fable review remains the
+independent post-merge validation.
 
 ### F49. Telegram reliability and phone-control hardening
 
