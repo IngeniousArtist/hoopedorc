@@ -104,7 +104,7 @@ export function ModelsEditor({
 
   return (
     <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-medium text-neutral-300">Models</h3>
         <button
           onClick={add}
@@ -122,6 +122,7 @@ export function ModelsEditor({
           >
             <div className="flex items-center gap-2">
               <input
+                aria-label={`Model ${idx + 1} display name`}
                 value={m.displayName}
                 onChange={(e) => patch(idx, { displayName: e.target.value })}
                 className={inputCls + " flex-1 font-medium"}
@@ -135,6 +136,7 @@ export function ModelsEditor({
                 enabled
               </label>
               <button
+                aria-label={`Remove ${m.displayName}`}
                 onClick={() => remove(idx)}
                 className="rounded border border-red-900 px-2 py-1 text-[11px] text-red-400 hover:bg-red-950/50"
               >
@@ -148,6 +150,7 @@ export function ModelsEditor({
                   ID
                 </label>
                 <input
+                  aria-label={`${m.displayName} ID`}
                   value={m.id}
                   onChange={(e) => patch(idx, { id: e.target.value })}
                   className={inputCls + " font-mono"}
@@ -158,6 +161,7 @@ export function ModelsEditor({
                   Runner
                 </label>
                 <select
+                  aria-label={`${m.displayName} runner`}
                   value={m.runner}
                   onChange={(e) =>
                     patch(idx, {
@@ -184,6 +188,7 @@ export function ModelsEditor({
                 </label>
                 {m.runner === "opencode" ? (
                   <input
+                    aria-label={`${m.displayName} reasoning effort`}
                     value={m.effort ?? ""}
                     onChange={(e) => patch(idx, { effort: e.target.value || undefined })}
                     placeholder="CLI default (or provider variant)"
@@ -192,6 +197,7 @@ export function ModelsEditor({
                   />
                 ) : (
                   <select
+                    aria-label={`${m.displayName} reasoning effort`}
                     value={m.effort ?? ""}
                     onChange={(e) => patch(idx, { effort: e.target.value || undefined })}
                     className={inputCls}
@@ -222,6 +228,7 @@ export function ModelsEditor({
                 </label>
                 {m.runner === "claude-code" ? (
                   <input
+                    aria-label={`${m.displayName} Claude model`}
                     value={m.claudeModel ?? ""}
                     onChange={(e) =>
                       patch(idx, { claudeModel: e.target.value || undefined })
@@ -231,6 +238,7 @@ export function ModelsEditor({
                   />
                 ) : m.runner === "codex" ? (
                   <input
+                    aria-label={`${m.displayName} Codex model`}
                     value={m.codexModel ?? ""}
                     onChange={(e) =>
                       patch(idx, { codexModel: e.target.value || undefined })
@@ -240,6 +248,7 @@ export function ModelsEditor({
                   />
                 ) : (
                   <input
+                    aria-label={`${m.displayName} OpenCode model`}
                     value={m.opencodeModel ?? ""}
                     onChange={(e) =>
                       patch(idx, { opencodeModel: e.target.value || undefined })
@@ -256,6 +265,7 @@ export function ModelsEditor({
                   Max concurrent
                 </label>
                 <input
+                  aria-label={`${m.displayName} maximum concurrent calls`}
                   type="number"
                   min={1}
                   value={m.maxConcurrent}
@@ -272,6 +282,7 @@ export function ModelsEditor({
                   Monthly budget $ (optional)
                 </label>
                 <input
+                  aria-label={`${m.displayName} monthly budget in USD`}
                   type="number"
                   min={0}
                   step={0.5}
@@ -306,6 +317,7 @@ export function ModelsEditor({
                 ).map(([field, placeholder]) => (
                   <input
                     key={field}
+                    aria-label={`${m.displayName} ${placeholder}`}
                     type="number"
                     min={0}
                     step={0.01}
@@ -332,6 +344,7 @@ export function ModelsEditor({
               </label>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <input
+                  aria-label={`${m.displayName} quota window in hours`}
                   type="number"
                   min={1}
                   value={m.quota?.windowHours ?? ""}
@@ -345,6 +358,7 @@ export function ModelsEditor({
                   className={inputCls}
                 />
                 <input
+                  aria-label={`${m.displayName} quota maximum calls`}
                   type="number"
                   min={0}
                   disabled={!m.quota?.windowHours}
@@ -362,6 +376,7 @@ export function ModelsEditor({
                   className={`${inputCls} disabled:opacity-40`}
                 />
                 <input
+                  aria-label={`${m.displayName} quota maximum cost in USD`}
                   type="number"
                   min={0}
                   step={0.5}

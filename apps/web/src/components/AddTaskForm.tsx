@@ -80,10 +80,11 @@ export function AddTaskForm({
       {error && <div className="text-xs text-red-400">{error}</div>}
 
       <div>
-        <label className="mb-1 block text-[10px] uppercase text-neutral-400">
+        <label htmlFor="task-title" className="mb-1 block text-[10px] uppercase text-neutral-400">
           Title *
         </label>
         <input
+          id="task-title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Add a settings toggle for X"
@@ -92,10 +93,11 @@ export function AddTaskForm({
       </div>
 
       <div>
-        <label className="mb-1 block text-[10px] uppercase text-neutral-400">
+        <label htmlFor="task-description" className="mb-1 block text-[10px] uppercase text-neutral-400">
           Description
         </label>
         <textarea
+          id="task-description"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           rows={2}
@@ -103,12 +105,13 @@ export function AddTaskForm({
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>
-          <label className="mb-1 block text-[10px] uppercase text-neutral-400">
+          <label htmlFor="task-difficulty" className="mb-1 block text-[10px] uppercase text-neutral-400">
             Difficulty
           </label>
           <select
+            id="task-difficulty"
             value={difficulty}
             onChange={(e) => setDifficulty(e.target.value as Difficulty)}
             className={inputCls}
@@ -121,10 +124,11 @@ export function AddTaskForm({
           </select>
         </div>
         <div>
-          <label className="mb-1 block text-[10px] uppercase text-neutral-400">
+          <label htmlFor="task-scope" className="mb-1 block text-[10px] uppercase text-neutral-400">
             Scope paths (comma-separated)
           </label>
           <input
+            id="task-scope"
             value={scopePaths}
             onChange={(e) => setScopePaths(e.target.value)}
             placeholder="src/**/*.ts (default: **/*)"
@@ -135,9 +139,9 @@ export function AddTaskForm({
 
       {tasks.length > 0 && (
         <div>
-          <label className="mb-1 block text-[10px] uppercase text-neutral-400">
+          <div className="mb-1 text-[10px] uppercase text-neutral-400">
             Depends on (optional)
-          </label>
+          </div>
           <div className="flex flex-wrap gap-2">
             {tasks.map((t) => (
               <label
@@ -157,6 +161,7 @@ export function AddTaskForm({
       )}
 
       <button
+        type="button"
         onClick={create}
         disabled={!title.trim() || creating}
         className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"

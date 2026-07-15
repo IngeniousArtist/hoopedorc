@@ -233,7 +233,14 @@ export function PlanView({
 
   // Scroll chat to bottom on new messages
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const chat = chatEndRef.current?.parentElement;
+    if (!chat) return;
+    chat.scrollTo({
+      top: chat.scrollHeight,
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+    });
   }, [messages, chatting]);
 
   // Auto-save draft tasks whenever they change (debounced)
@@ -408,12 +415,12 @@ export function PlanView({
 
   return (
     <div className="max-w-4xl space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">
+      <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
           Plan — {project.name}
           <span
             className={
-              "ml-3 rounded px-2 py-0.5 text-[11px] " +
+              "rounded px-2 py-0.5 text-[11px] " +
               (project.status === "planned"
                 ? "bg-blue-900/60 text-blue-200"
                 : project.status === "running"
@@ -437,7 +444,7 @@ export function PlanView({
 
       {/* ── Committed banner ── */}
       {committed && (
-        <div className="flex items-center justify-between rounded-lg border border-green-800 bg-green-950/20 p-4">
+        <div className="flex flex-col items-start gap-3 rounded-lg border border-green-800 bg-green-950/20 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-medium text-green-300">
               {committed.tasks.length} tasks created
@@ -517,6 +524,7 @@ export function PlanView({
                 >
                   📎 {a.name}
                   <button
+                    aria-label={`Remove attachment ${a.name}`}
                     onClick={() => removeAttachment(a.name)}
                     title="Remove attachment"
                     className="text-neutral-500 hover:text-red-400"
@@ -544,6 +552,7 @@ export function PlanView({
                 onChange={(e) => handleAttachFiles(e.target.files)}
               />
               <button
+                aria-label="Attach planning files"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={uploading}
                 title="Attach images, PDFs, or reference files for the planner to read"
@@ -552,6 +561,7 @@ export function PlanView({
                 {uploading ? "…" : "📎"}
               </button>
               <textarea
+                aria-label="Planning message"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -626,6 +636,7 @@ export function PlanView({
                 AGENTS.md (click to expand — edit before approving)
               </summary>
               <textarea
+                aria-label="AGENTS.md draft"
                 value={agentsMd}
                 onChange={(e) => setAgentsMd(e.target.value)}
                 rows={16}
@@ -635,7 +646,7 @@ export function PlanView({
           )}
 
           <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-            <div className="mb-3 flex items-center justify-between">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-sm font-medium text-neutral-300">
                 Tasks ({tasks.length}) — edit before approving
               </h3>
@@ -658,13 +669,15 @@ export function PlanView({
                       {idx + 1}
                     </span>
                     <input
+                      aria-label={`Task ${idx + 1} title`}
                       value={t.title}
                       onChange={(e) =>
                         patchTask(t.key, { title: e.target.value })
                       }
-                      className="flex-1 rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-sm text-neutral-200"
+                      className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-sm text-neutral-200"
                     />
                     <button
+                      aria-label={`Move ${t.title || `task ${idx + 1}`} up`}
                       onClick={() => moveTask(idx, -1)}
                       disabled={idx === 0}
                       className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-400 hover:bg-neutral-800 disabled:opacity-30"
@@ -672,6 +685,7 @@ export function PlanView({
                       ↑
                     </button>
                     <button
+                      aria-label={`Move ${t.title || `task ${idx + 1}`} down`}
                       onClick={() => moveTask(idx, 1)}
                       disabled={idx === tasks.length - 1}
                       className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-400 hover:bg-neutral-800 disabled:opacity-30"
@@ -679,6 +693,7 @@ export function PlanView({
                       ↓
                     </button>
                     <button
+                      aria-label={`Remove ${t.title || `task ${idx + 1}`}`}
                       onClick={() => removeTask(t.key)}
                       className="rounded border border-red-900 px-2 py-1 text-[11px] text-red-400 hover:bg-red-950/50"
                     >
@@ -687,6 +702,7 @@ export function PlanView({
                   </div>
 
                   <textarea
+                    aria-label={`Description for ${t.title || `task ${idx + 1}`}`}
                     value={t.description}
                     onChange={(e) =>
                       patchTask(t.key, { description: e.target.value })
@@ -702,6 +718,7 @@ export function PlanView({
                         Difficulty
                       </label>
                       <select
+                        aria-label={`Difficulty for ${t.title || `task ${idx + 1}`}`}
                         value={t.difficulty}
                         onChange={(e) =>
                           patchTask(t.key, {
@@ -722,6 +739,7 @@ export function PlanView({
                         Assigned model
                       </label>
                       <ModelSelect
+                        ariaLabel={`Assigned model for ${t.title || "task"}`}
                         value={t.assignedModel}
                         models={models}
                         onChange={(m) =>
@@ -729,11 +747,12 @@ export function PlanView({
                         }
                       />
                     </div>
-                    <div className="col-span-2">
+                    <div className="sm:col-span-2">
                       <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                         Scope paths (comma-separated globs)
                       </label>
                       <input
+                        aria-label={`Scope paths for ${t.title || `task ${idx + 1}`}`}
                         value={t.scopePaths.join(", ")}
                         onChange={(e) =>
                           patchTask(t.key, {
@@ -745,11 +764,12 @@ export function PlanView({
                         className={inputCls}
                       />
                     </div>
-                    <div className="col-span-2">
+                    <div className="sm:col-span-2">
                       <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                         Acceptance criteria (one per line)
                       </label>
                       <textarea
+                        aria-label={`Acceptance criteria for ${t.title || `task ${idx + 1}`}`}
                         value={t.acceptanceCriteria.join("\n")}
                         onChange={(e) =>
                           patchTask(t.key, {
@@ -760,7 +780,7 @@ export function PlanView({
                         className="w-full resize-none rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-300"
                       />
                     </div>
-                    <div className="col-span-2">
+                    <div className="sm:col-span-2">
                       <label className="mb-1 block text-[10px] uppercase text-neutral-400">
                         Depends on
                       </label>

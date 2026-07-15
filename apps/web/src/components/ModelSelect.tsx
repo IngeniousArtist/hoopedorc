@@ -8,6 +8,7 @@ export function ModelSelect({
   emptyLabel = "—",
   disabled = false,
   disabledReason,
+  ariaLabel,
 }: {
   value: ModelId | undefined;
   models: ModelConfig[];
@@ -16,6 +17,7 @@ export function ModelSelect({
   emptyLabel?: string;
   disabled?: boolean;
   disabledReason?: string;
+  ariaLabel: string;
 }) {
   const enabled = models.filter((m) => m.enabled);
   const selected = value ? models.find((m) => m.id === value) : undefined;
@@ -24,6 +26,7 @@ export function ModelSelect({
   return (
     <div>
       <select
+        aria-label={ariaLabel}
         value={value ?? ""}
         disabled={disabled}
         onChange={(e) => {

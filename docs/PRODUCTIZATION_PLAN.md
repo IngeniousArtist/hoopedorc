@@ -1691,7 +1691,7 @@ target rules.
 | B41 — graceful shutdown and runtime recovery | ✅ done, awaiting Fable validation | [#149](https://github.com/IngeniousArtist/hoopedorc/pull/149) |
 | F49 — Telegram reliability and phone-control hardening | ✅ implementation done, live private-chat smoke + Fable validation pending | [#150](https://github.com/IngeniousArtist/hoopedorc/pull/150) |
 | T2 — frontend unit/E2E test foundation | ✅ implementation done, awaiting Fable validation | [#151](https://github.com/IngeniousArtist/hoopedorc/pull/151) |
-| U19 — full responsive UX pass | pending | — |
+| U19 — full responsive UX pass | ✅ implementation done, real-phone smoke + Fable validation pending | PR pending |
 
 The owner approved this wave on 2026-07-14. Implementation proceeds in
 the dependency order specified in Part 10 below, with Fable independently
@@ -6131,6 +6131,30 @@ Setup, Stop/retry, and deletion at every target viewport. Screenshots and DOM
 overflow assertions show no overlaps, clipped controls, unreadable text, or sticky
 footer occlusion. A real phone smoke test over the owner's Tailscale route closes
 the item.
+
+**Implementation evidence (2026-07-15):** U19 now applies phone-only 40px touch
+targets while preserving desktop density, collapses fixed form/action columns,
+keeps project identity separate from destructive controls, and adds notch/home-
+indicator safe-area offsets to navigation, the task drawer, Settings' sticky save
+bar, and toasts. Every repeated model/routing/project field has a programmatic
+name, keyboard focus remains visible, reduced-motion preferences disable status
+animation, and route changes return to the top without Plan's chat auto-scroll
+moving the whole document. The task drawer's recovery action also moved to
+Overview, so a task that fails before opening a PR is no longer stranded without
+Retry.
+
+Playwright now runs a 360/390/768/1280/1440 matrix against the real mock API. It
+captures 60 viewport screenshots and applies element-level document-overflow,
+fixed/sticky-surface bounds, route-scroll, and phone touch-target assertions. At
+each width it loads Board, Plan, Costs, Audit, Notifications, Projects, Settings,
+Setup, and New Project, then exercises Add Task, the task drawer, Stop + retry,
+approval, an injected editable planning draft, model-effort editing/save, setup
+re-entry, and confirmed project deletion. The final browser run passes 14/14 in
+19.7s. The complete regression gate passes: typecheck, build, lint, 159 engine,
+159 server, 12 adapter, 14 web unit tests, and 14 Playwright tests. The owner's
+real-device smoke over the deployed Tailscale route remains intentionally open;
+desktop Chromium emulation is evidence for the implementation, not a substitute
+for that final device/network check.
 
 ### Phase 15 PR order
 

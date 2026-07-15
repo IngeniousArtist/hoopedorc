@@ -114,10 +114,10 @@ export function ProjectsView({
                 : "border-neutral-800")
             }
           >
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <button
                 onClick={() => onSelect(p.id)}
-                className="min-w-0 flex-1 text-left"
+                className="w-full min-w-0 text-left sm:flex-1"
               >
                 <div className="text-sm font-medium text-neutral-100">
                   {p.name}
@@ -134,14 +134,15 @@ export function ProjectsView({
                   {p.localPath}
                 </div>
               </button>
-              <span
-                className={
-                  "rounded px-2 py-0.5 text-[11px] " +
-                  (STATUS_COLOR[p.status] ?? "bg-neutral-700 text-neutral-200")
-                }
-              >
-                {p.status}
-              </span>
+              <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
+                <span
+                  className={
+                    "rounded px-2 py-0.5 text-[11px] " +
+                    (STATUS_COLOR[p.status] ?? "bg-neutral-700 text-neutral-200")
+                  }
+                >
+                  {p.status}
+                </span>
               {p.budgetUsd != null && (
                 <span className="text-[11px] text-neutral-400">
                   budget ${p.budgetUsd}
@@ -194,7 +195,7 @@ export function ProjectsView({
               )}
 
               {confirmId === p.id ? (
-                <div className="flex items-center gap-2">
+                <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
                   <span className="text-[11px] text-red-400">
                     Delete + remove local clone?
                   </span>
@@ -226,6 +227,7 @@ export function ProjectsView({
                   Delete
                 </button>
               )}
+              </div>
             </div>
           </div>
           );

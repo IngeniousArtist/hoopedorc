@@ -103,7 +103,7 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
   return (
     <div className="mb-4 rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3">
       <div className="flex flex-wrap items-center gap-3">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-neutral-100">
             {project.name}
           </div>
@@ -131,7 +131,7 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
           </span>
         )}
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto">
           {running ? (
             <>
               <button
@@ -165,16 +165,16 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
 
       {!compact && (
         <>
-          <div className="mt-2 flex items-center gap-2 text-[11px] text-neutral-400">
-            <span>Budget $</span>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-neutral-400">
+            <label htmlFor="project-budget-editor">Budget $</label>
             <input
-              type="number"
-              min={0}
-              step={0.5}
+              id="project-budget-editor"
+              type="text"
+              inputMode="decimal"
               value={budget}
               onChange={(e) => setBudget(e.target.value)}
               placeholder="none"
-              className="w-24 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-200"
+              className="w-28 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-200"
             />
             <button
               onClick={saveBudget}
