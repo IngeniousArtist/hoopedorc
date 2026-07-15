@@ -84,12 +84,13 @@ export function NewProject({
       )}
 
       <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <div className="grid grid-cols-2 gap-4">
-          <div className="col-span-2">
-            <label className="mb-1 block text-xs text-neutral-400">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="sm:col-span-2">
+            <label htmlFor="project-name" className="mb-1 block text-xs text-neutral-400">
               Project name *
             </label>
             <input
+              id="project-name"
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -98,10 +99,12 @@ export function NewProject({
             />
           </div>
 
-          <div className="col-span-2 flex gap-4 text-xs">
+          <div className="flex flex-col gap-2 text-xs sm:col-span-2 sm:flex-row sm:gap-4">
             <label className="flex items-center gap-2">
               <input
                 type="radio"
+                name="repository-mode"
+                value="create"
                 checked={createRepo}
                 onChange={() => setCreateRepo(true)}
               />
@@ -110,6 +113,8 @@ export function NewProject({
             <label className="flex items-center gap-2">
               <input
                 type="radio"
+                name="repository-mode"
+                value="existing"
                 checked={!createRepo}
                 onChange={() => setCreateRepo(false)}
               />
@@ -118,11 +123,12 @@ export function NewProject({
           </div>
 
           {createRepo ? (
-            <div className="col-span-2">
-              <label className="mb-1 block text-xs text-neutral-400">
+            <div className="sm:col-span-2">
+              <label htmlFor="repo-name" className="mb-1 block text-xs text-neutral-400">
                 Repo name (defaults to a slug of the project name)
               </label>
               <input
+                id="repo-name"
                 type="text"
                 value={repoName}
                 onChange={(e) => setRepoName(e.target.value)}
@@ -131,11 +137,12 @@ export function NewProject({
               />
             </div>
           ) : (
-            <div className="col-span-2">
-              <label className="mb-1 block text-xs text-neutral-400">
+            <div className="sm:col-span-2">
+              <label htmlFor="repo-url" className="mb-1 block text-xs text-neutral-400">
                 Repo URL *
               </label>
               <input
+                id="repo-url"
                 type="text"
                 value={repoUrl}
                 onChange={(e) => setRepoUrl(e.target.value)}
@@ -145,11 +152,12 @@ export function NewProject({
             </div>
           )}
 
-          <div className="col-span-2">
-            <label className="mb-1 block text-xs text-neutral-400">
+          <div className="sm:col-span-2">
+            <label htmlFor="local-directory" className="mb-1 block text-xs text-neutral-400">
               Local directory (optional)
             </label>
             <input
+              id="local-directory"
               type="text"
               value={localPath}
               onChange={(e) => setLocalPath(e.target.value)}
@@ -159,10 +167,11 @@ export function NewProject({
           </div>
 
           <div>
-            <label className="mb-1 block text-xs text-neutral-400">
+            <label htmlFor="default-branch" className="mb-1 block text-xs text-neutral-400">
               Default branch
             </label>
             <input
+              id="default-branch"
               type="text"
               value={defaultBranch}
               onChange={(e) => setDefaultBranch(e.target.value)}
@@ -171,11 +180,13 @@ export function NewProject({
           </div>
 
           <div>
-            <label className="mb-1 block text-xs text-neutral-400">
+            <label htmlFor="project-budget" className="mb-1 block text-xs text-neutral-400">
               Budget (USD, optional)
             </label>
             <input
-              type="number"
+              id="project-budget"
+              type="text"
+              inputMode="decimal"
               value={budgetUsd}
               onChange={(e) => setBudgetUsd(e.target.value)}
               placeholder="e.g. 5"
@@ -187,6 +198,7 @@ export function NewProject({
         <ProjectConfigFields form={configForm} onChange={setConfigForm} />
 
         <button
+          type="button"
           onClick={createProject}
           disabled={!name || creating || (!createRepo && !repoUrl) || !!configError}
           title={configError ?? undefined}

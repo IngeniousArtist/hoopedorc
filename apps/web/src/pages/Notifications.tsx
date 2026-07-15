@@ -92,7 +92,7 @@ function NotificationCard({
       {n.requiresApproval &&
         n.options &&
         !n.respondedWith && (
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             {/* U15: this is the highest-stakes control in the app (it
                 authorizes a merge to main) — approve and reject previously
                 rendered as two identical solid-blue buttons, giving a

@@ -113,8 +113,8 @@ export function TaskDrawer({
     task.status === "blocked";
 
   return (
-    <div className="fixed bottom-0 right-0 top-0 z-50 flex w-full flex-col border-l border-neutral-700 bg-neutral-900 shadow-2xl sm:w-[420px]">
-      <div className="flex items-center justify-between border-b border-neutral-700 px-4 py-3">
+    <div className="fixed bottom-0 right-0 top-0 z-50 flex w-full flex-col border-l border-neutral-700 bg-neutral-900 pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] shadow-2xl sm:w-[420px]">
+      <div className="flex min-h-12 items-center justify-between border-b border-neutral-700 px-4 py-2">
         <div
           className="min-w-0 flex-1 truncate text-sm font-medium text-neutral-200"
           title={task.title}
@@ -123,7 +123,7 @@ export function TaskDrawer({
         </div>
         <button
           onClick={onClose}
-          className="ml-2 rounded p-1 text-neutral-400 hover:text-neutral-200"
+          className="ml-2 min-h-10 min-w-10 rounded p-1 text-neutral-400 hover:text-neutral-200"
           aria-label="Close task drawer"
         >
           {"✕"}
@@ -150,6 +150,23 @@ export function TaskDrawer({
       <div className="flex-1 overflow-y-auto">
         {tab === "overview" && (
           <div className="space-y-4 p-4 text-xs">
+            {canRetry && (
+              <div className="flex flex-wrap items-center gap-2 rounded border border-blue-900/60 bg-blue-950/20 p-3">
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-blue-200">Recovery available</div>
+                  <p className="mt-0.5 text-[11px] text-neutral-400">
+                    Requeue this task with priority, even if it failed before opening a PR.
+                  </p>
+                </div>
+                <button
+                  onClick={onRetry}
+                  disabled={actionBusy}
+                  className="w-full rounded border border-blue-800 px-3 py-1.5 text-blue-300 hover:bg-blue-950/40 disabled:opacity-50 sm:w-auto"
+                >
+                  {actionBusy ? "Working…" : "↻ Retry task"}
+                </button>
+              </div>
+            )}
             {task.dispatchRequestedAt && (
               <div className="rounded border border-blue-900 bg-blue-950/30 px-3 py-2 text-blue-300">
                 Priority dispatch queued. It will start when dependencies and scheduler capacity allow.
@@ -227,6 +244,7 @@ export function TaskDrawer({
                 Model
               </div>
               <ModelSelect
+                ariaLabel="Assigned model"
                 value={task.assignedModel}
                 models={models}
                 onChange={(m) => {
@@ -378,15 +396,6 @@ export function TaskDrawer({
                   >
                     View diff
                   </button>
-                  {canRetry && (
-                    <button
-                      onClick={onRetry}
-                      disabled={actionBusy}
-                      className="rounded border border-blue-800 px-3 py-1.5 text-blue-300 hover:bg-blue-950/40 disabled:opacity-50"
-                    >
-                      {actionBusy ? "Working…" : "↻ Retry task"}
-                    </button>
-                  )}
                   {task.status === "done" && !rollbackJob && (
                     <button
                       onClick={onRollback}

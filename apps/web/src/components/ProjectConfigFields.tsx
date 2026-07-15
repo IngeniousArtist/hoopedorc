@@ -222,9 +222,10 @@ function GateRow({
   onSkip: (v: boolean) => void;
 }) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
       <span className="w-16 shrink-0 text-neutral-400">{label}</span>
       <input
+        aria-label={`${label} gate script`}
         type="text"
         value={script}
         disabled={skip}
@@ -278,6 +279,7 @@ export function ProjectConfigFields({
             <div>
               <label className="mb-1 block text-neutral-400">Merge policy override</label>
               <select
+                aria-label="Merge policy override"
                 value={form.mergePolicy}
                 onChange={(e) => set("mergePolicy", e.target.value as MergePolicy | "")}
                 className={`${inputCls} min-h-10`}
@@ -293,6 +295,7 @@ export function ProjectConfigFields({
             <div>
               <label className="mb-1 block text-neutral-400">Max attempts override</label>
               <input
+                aria-label="Maximum attempts override"
                 type="number"
                 min={1}
                 max={20}
@@ -345,6 +348,7 @@ export function ProjectConfigFields({
               Test command override (non-npm stacks, e.g. "pytest -q" or "cargo test")
             </label>
             <input
+              aria-label="Test command override"
               type="text"
               value={form.testCommand}
               onChange={(e) => set("testCommand", e.target.value)}
@@ -403,6 +407,7 @@ export function ProjectConfigFields({
               Gate sandbox image (Docker, only used when sandboxing is on)
             </label>
             <input
+              aria-label="Gate sandbox image"
               type="text"
               value={form.gateImage}
               onChange={(e) => set("gateImage", e.target.value)}
@@ -427,6 +432,7 @@ export function ProjectConfigFields({
             </label>
             {form.requireGithubChecks && (
               <input
+                aria-label="GitHub checks timeout in minutes"
                 type="number"
                 min={1}
                 max={120}
@@ -455,6 +461,7 @@ export function ProjectConfigFields({
               Skill hints for the author model — one per line, "skill name — when to use it"
             </label>
             <textarea
+              aria-label="Skill hints for the author model"
               value={form.skillHints}
               onChange={(e) => set("skillHints", e.target.value)}
               placeholder={
@@ -485,6 +492,7 @@ export function ProjectConfigFields({
             {form.scheduleEnabled && (
               <div className="mt-1 flex items-center gap-2">
                 <select
+                  aria-label="Schedule mode"
                   value={form.scheduleMode}
                   onChange={(e) =>
                     set("scheduleMode", e.target.value as "interval" | "daily")
@@ -497,6 +505,7 @@ export function ProjectConfigFields({
                 {form.scheduleMode === "daily" ? (
                   <>
                     <input
+                      aria-label="Daily schedule hour"
                       type="number"
                       min={0}
                       max={23}
@@ -506,6 +515,7 @@ export function ProjectConfigFields({
                       className={inputCls}
                     />
                     <input
+                      aria-label="Daily schedule minute"
                       type="number"
                       min={0}
                       max={59}
@@ -517,6 +527,7 @@ export function ProjectConfigFields({
                   </>
                 ) : (
                   <input
+                    aria-label="Schedule interval in hours"
                     type="number"
                     min={1}
                     max={720}

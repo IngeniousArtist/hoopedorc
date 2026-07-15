@@ -396,6 +396,7 @@ export function Settings({
           Merge Policy
         </h3>
         <select
+          aria-label="Merge policy"
           value={settings.mergePolicy}
           onChange={(e) =>
             updateMergePolicy(e.target.value as MergePolicy)
@@ -436,6 +437,7 @@ export function Settings({
           Gate Sandbox
         </h3>
         <select
+          aria-label="Gate sandbox mode"
           value={settings.sandboxGates ?? "auto"}
           onChange={(e) =>
             updateSandboxGates(e.target.value as SandboxGatesMode)
@@ -502,6 +504,7 @@ export function Settings({
               {label}
             </label>
             <textarea
+              aria-label={label}
               value={settings.guidelines?.[key] ?? ""}
               onChange={(e) => updateGuidelines(key, e.target.value)}
               rows={5}
@@ -520,6 +523,7 @@ export function Settings({
             Default projects directory
           </label>
           <input
+            aria-label="Default projects directory"
             type="text"
             value={settings.defaultProjectsDir ?? ""}
             onChange={(e) => updateDefaultProjectsDir(e.target.value)}
@@ -541,6 +545,7 @@ export function Settings({
             API token
           </label>
           <input
+            aria-label="API token"
             type="password"
             autoComplete="off"
             value={
@@ -576,6 +581,7 @@ export function Settings({
               Monthly budget (USD)
             </label>
             <input
+              aria-label="Global monthly budget in USD"
               type="number"
               value={
                 settings.globalMonthlyBudgetUsd ?? ""
@@ -590,6 +596,7 @@ export function Settings({
               Confidence threshold
             </label>
             <input
+              aria-label="Confidence threshold"
               type="number"
               min={0}
               max={1}
@@ -697,11 +704,12 @@ export function Settings({
         ) : null}
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div className="col-span-2">
+          <div className="sm:col-span-2">
             <label className="mb-1 block text-xs text-neutral-400">
               Bot token (from @BotFather)
             </label>
             <input
+              aria-label="Telegram bot token"
               type="password"
               autoComplete="off"
               value={
@@ -725,6 +733,7 @@ export function Settings({
           <div>
             <label className="mb-1 block text-xs text-neutral-400">Chat ID</label>
             <input
+              aria-label="Telegram chat ID"
               type="text"
               value={settings.telegram?.chatId ?? ""}
               onChange={(e) => updateTelegramField("chatId", e.target.value)}
@@ -763,6 +772,7 @@ export function Settings({
             Task-status digest
           </label>
           <select
+            aria-label="Telegram task-status digest"
             value={settings.telegram?.digest ?? "terminal"}
             onChange={(e) =>
               updateTelegramDigest(
@@ -797,6 +807,7 @@ export function Settings({
               Bot token env var
             </label>
             <input
+              aria-label="Telegram bot token environment variable"
               type="text"
               value={settings.telegram?.botTokenRef ?? ""}
               onChange={(e) => updateTelegramField("botTokenRef", e.target.value)}
@@ -813,7 +824,7 @@ export function Settings({
       {/* U4: sticky so the save control (and the dirty hint) stay visible
           while scrolling this long form, instead of only being reachable
           at the very bottom. */}
-      <div className="sticky bottom-0 z-10 flex items-center gap-3 border-t border-neutral-800 bg-neutral-950 py-3">
+      <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-3 border-t border-neutral-800 bg-neutral-950 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
         <button
           onClick={save}
           disabled={!dirty || saving}

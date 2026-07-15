@@ -38,6 +38,7 @@ export function RoutingEditor({
         <div>
           <label className="mb-1 block text-xs text-neutral-400">Planner</label>
           <ModelSelect
+            ariaLabel="Planner model"
             value={routing.planner}
             models={models}
             onChange={(m) => {
@@ -53,6 +54,7 @@ export function RoutingEditor({
             </span>
           </label>
           <ModelSelect
+            ariaLabel="Deconstructor model"
             value={routing.deconstructor}
             models={models}
             onChange={(m) => {
@@ -83,6 +85,7 @@ export function RoutingEditor({
                 {d}
               </label>
               <ModelSelect
+                ariaLabel={`Author model for ${d} tasks`}
                 value={routing.byDifficulty[d]}
                 models={models}
                 onChange={(m) => {
@@ -109,6 +112,7 @@ export function RoutingEditor({
                 {ROLE_LABELS[role]}
               </label>
               <ModelSelect
+                ariaLabel={`${ROLE_LABELS[role]} role override model`}
                 value={routing.byRole[role]}
                 models={models}
                 onChange={(m) => {
@@ -146,6 +150,7 @@ export function RoutingEditor({
                 Fallback {slot + 1}
               </label>
               <ModelSelect
+                ariaLabel={`Fallback model ${slot + 1}`}
                 value={routing.fallbacks?.[slot]}
                 models={models}
                 onChange={(m) => {
@@ -181,6 +186,7 @@ export function RoutingEditor({
                 {d}
               </label>
               <ModelSelect
+                ariaLabel={`Validator model for ${d} tasks`}
                 value={routing.validatorByDifficulty[d]}
                 models={models}
                 onChange={(m) => {

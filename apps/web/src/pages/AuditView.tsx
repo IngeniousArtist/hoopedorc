@@ -182,7 +182,7 @@ export function AuditView({ projectId }: { projectId: string }) {
               {KIND_ICON[e.kind] ?? "•"}
             </span>
             <div className="min-w-0 flex-1">
-              <div className="flex items-baseline justify-between gap-2">
+              <div className="flex flex-col items-start gap-1 sm:flex-row sm:items-baseline sm:justify-between">
                 <span className="text-sm text-neutral-200">{e.summary}</span>
                 <span className="shrink-0 font-mono text-[10px] text-neutral-400">
                   {new Date(e.ts).toLocaleString()}
@@ -193,7 +193,7 @@ export function AuditView({ projectId }: { projectId: string }) {
                   {entryDescription(e)}
                 </p>
               )}
-              <div className="mt-1 flex items-center gap-2 text-[11px] text-neutral-400">
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-neutral-400">
                 <span className="rounded bg-neutral-800 px-1.5 py-0.5">
                   {e.kind}
                 </span>

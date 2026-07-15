@@ -96,7 +96,7 @@ export function SetupView({
 
   return (
     <div className="max-w-2xl space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-lg font-semibold">
           Setup &amp; Health
           {runtimeHealth && (
@@ -105,11 +105,11 @@ export function SetupView({
             </span>
           )}
         </h2>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           {onRerunSetup && (
             <button
               onClick={onRerunSetup}
-              className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+              className="flex-1 rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800 sm:flex-none"
             >
               Re-run setup wizard
             </button>
@@ -117,7 +117,7 @@ export function SetupView({
           <button
             onClick={check}
             disabled={loading}
-            className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+            className="flex-1 rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50 sm:flex-none"
           >
             {loading ? "Checking…" : "Re-check"}
           </button>
@@ -224,7 +224,7 @@ export function SetupView({
 
       {/* Live model test */}
       <div className="space-y-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-sm font-medium text-neutral-300">
               Test each model
@@ -243,7 +243,7 @@ export function SetupView({
           <button
             onClick={testAllModels}
             disabled={testing}
-            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+            className="w-full rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50 sm:w-auto"
           >
             {testing ? "Testing… (up to a minute)" : "Test models"}
           </button>
@@ -287,7 +287,7 @@ export function SetupView({
 
       {/* Model health (F6) */}
       <div className="space-y-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-sm font-medium text-neutral-300">
               Model Health
@@ -300,7 +300,7 @@ export function SetupView({
           <button
             onClick={fetchModelHealth}
             disabled={healthLoading}
-            className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+            className="w-full rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800 disabled:opacity-50 sm:w-auto"
           >
             {healthLoading ? "…" : "Refresh"}
           </button>

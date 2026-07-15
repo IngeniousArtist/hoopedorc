@@ -49,7 +49,11 @@ export function TokenGate({
         <p className="mt-1 text-xs text-neutral-400">
           This server is configured with an API token. Enter it to continue.
         </p>
+        <label htmlFor="api-token-gate" className="mt-4 block text-xs text-neutral-300">
+          API token
+        </label>
         <input
+          id="api-token-gate"
           type="password"
           autoFocus
           value={value}
@@ -58,7 +62,7 @@ export function TokenGate({
             if (e.key === "Enter") submit();
           }}
           placeholder="API token"
-          className="mt-4 w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm text-neutral-200"
+          className="mt-1 w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm text-neutral-200"
         />
         {error && <div className="mt-2 text-xs text-red-400">{error}</div>}
         <button

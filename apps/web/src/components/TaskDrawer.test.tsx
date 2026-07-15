@@ -33,7 +33,6 @@ describe("task recovery controls", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "PR" }));
     await user.click(screen.getByRole("button", { name: "↻ Retry task" }));
     expect(onRetry).toHaveBeenCalledOnce();
   });

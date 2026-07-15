@@ -369,6 +369,13 @@ export function App() {
     (n) => n.requiresApproval && !n.respondedWith,
   ).length;
 
+  // U19: route changes are page changes, not in-page anchors. Without an
+  // explicit reset, a long Settings/Plan scroll position carries into the
+  // next view and can make it look as though the page opened halfway down.
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [page, selectedProjectId]);
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
       {tokenGateOpen && (
@@ -382,7 +389,7 @@ export function App() {
         content size, and overflow-x-auto children have no min size to hit).
         Two rows sidesteps that — the nav links always get the full row width.
       */}
-      <nav className="sticky top-0 z-40 border-b border-neutral-800 bg-neutral-900 px-3 py-2 sm:px-4">
+      <nav className="sticky top-0 z-40 border-b border-neutral-800 bg-neutral-900 px-3 pb-2 pt-[max(0.5rem,env(safe-area-inset-top))] sm:px-4">
         <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
           <span className="mr-auto text-sm font-semibold tracking-wide text-neutral-100">
             Hoopedorc

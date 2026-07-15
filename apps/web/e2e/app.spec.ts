@@ -1,31 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
-
-async function overflowDetails(page: Page) {
-  return page.evaluate(() => {
-    const viewportWidth = document.documentElement.clientWidth;
-    const offenders = [...document.querySelectorAll<HTMLElement>("body *")]
-      .filter((element) => !element.closest("[data-horizontal-scroll]"))
-      .map((element) => {
-        const rect = element.getBoundingClientRect();
-        return { tag: element.tagName, text: element.innerText.slice(0, 60), left: rect.left, right: rect.right };
-      })
-      .filter(({ left, right }) => left < -1 || right > viewportWidth + 1)
-      .slice(0, 10);
-    return {
-      viewportWidth,
-      documentWidth: document.documentElement.scrollWidth,
-      offenders,
-    };
-  });
-}
-
-async function expectNoDocumentOverflow(page: Page) {
-  const details = await overflowDetails(page);
-  expect(details.documentWidth, JSON.stringify(details, null, 2)).toBeLessThanOrEqual(
-    details.viewportWidth + 1,
-  );
-  expect(details.offenders, JSON.stringify(details, null, 2)).toEqual([]);
-}
+import { expect, test } from "@playwright/test";
+import { expectNoDocumentOverflow } from "./helpers";
 
 test.describe.serial("critical operator workflows", () => {
   test("global and project deep links stay mapped to the expected views", async ({ page }) => {

@@ -85,7 +85,7 @@ export function CostView({ projectId }: { projectId: string }) {
 
       {a.budgetUsd != null && (
         <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-          <div className="mb-2 flex items-center justify-between text-xs">
+          <div className="mb-2 flex flex-col items-start gap-1 text-xs sm:flex-row sm:items-center sm:justify-between">
             <span className="text-neutral-400">
               Budget {usd(a.totalUsd)} / {usd(a.budgetUsd)}
             </span>
@@ -117,7 +117,7 @@ export function CostView({ projectId }: { projectId: string }) {
       {/* Pre-run estimate */}
       {est && est.tasks.length > 0 && (
         <div className="rounded-lg border border-blue-900/60 bg-blue-950/20 p-4">
-          <div className="mb-2 flex items-center justify-between">
+          <div className="mb-2 flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:justify-between">
             <h3 className="text-sm font-medium text-blue-200">
               Pre-run estimate ({est.tasks.length} task
               {est.tasks.length === 1 ? "" : "s"} left)
@@ -143,7 +143,7 @@ export function CostView({ projectId }: { projectId: string }) {
             {est.tasks.map((t) => (
               <div
                 key={t.taskId}
-                className="flex items-center gap-2 text-[11px]"
+                className="grid grid-cols-1 gap-1 text-[11px] sm:flex sm:items-center sm:gap-2"
               >
                 <span className="flex-1 truncate text-neutral-300" title={t.title}>
                   {t.title}
@@ -151,7 +151,7 @@ export function CostView({ projectId }: { projectId: string }) {
                 <span className="text-neutral-400">
                   {t.model} → {t.validatorModel}
                 </span>
-                <span className="w-28 text-right font-mono text-neutral-200">
+                <span className="font-mono text-neutral-200 sm:w-28 sm:text-right">
                   {formatUsd(t.expectedUsd)}–{formatUsd(t.highUsd)}
                 </span>
                 {!t.hasHistory && (
@@ -204,14 +204,14 @@ export function CostView({ projectId }: { projectId: string }) {
           {a.byModel.map((m) => (
             <div
               key={m.model}
-              className="flex items-center gap-3 px-4 py-3 text-sm"
+              className="flex flex-wrap items-center gap-2 px-4 py-3 text-sm sm:gap-3"
             >
               <span className="text-neutral-300">{m.model}</span>
               <span className="text-[11px] text-neutral-400">
                 {m.runs} call{m.runs === 1 ? "" : "s"} ·{" "}
                 {fmtTokens(m.tokensIn)}/{fmtTokens(m.tokensOut)} tok
               </span>
-              <span className="ml-auto font-mono text-neutral-200">
+              <span className="w-full font-mono text-neutral-200 sm:ml-auto sm:w-auto">
                 {usd(m.costUsd)}
               </span>
             </div>
