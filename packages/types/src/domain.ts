@@ -344,6 +344,45 @@ export interface ProjectSchedule {
 
 export type RunStatus = "running" | "passed" | "failed" | "stopped";
 
+/** Every model-backed CLI call, including stages that do not produce a task
+ * run row. The invocation ledger is the authoritative source for quota and
+ * model analytics; `Run` remains the task-attempt compatibility view. */
+export type InvocationStage =
+  | "planner"
+  | "deconstructor"
+  | "author"
+  | "validator"
+  | "docs"
+  | "health";
+
+export type InvocationOutcome =
+  | "running"
+  | "completed"
+  | "failed"
+  | "stopped"
+  | "interrupted";
+
+export interface ModelInvocation {
+  id: string;
+  projectId?: string;
+  taskId?: string;
+  /** Compatibility correlation to `runs.id` for author/docs calls. */
+  runId?: string;
+  stage: InvocationStage;
+  model: ModelId;
+  /** `unknown` is reserved for rows backfilled from pre-ledger history. */
+  runner: RunnerKind | "unknown";
+  effort: string;
+  startedAt: string;
+  endedAt?: string;
+  outcome: InvocationOutcome;
+  exitReason?: string;
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+  tokensCached: number;
+}
+
 /** A single execution of one task by one model. */
 export interface Run {
   id: string;
@@ -495,6 +534,8 @@ export interface Notification {
 
 export interface CostRecord {
   id: string;
+  /** Links this compatibility cost row to its authoritative invocation. */
+  invocationId?: string;
   projectId: string;
   model: ModelId;
   taskId?: string;

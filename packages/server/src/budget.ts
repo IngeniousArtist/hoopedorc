@@ -51,7 +51,7 @@ export function checkBudget(
 
 /**
  * F16: returns a reason string if `model`'s configured subscription quota
- * (a rolling window of run-count and/or cost, e.g. Claude Pro's usage cap)
+ * (a rolling window of invocation-count and/or cost, e.g. Claude Pro's usage cap)
  * has been reached, or `null` if there's no quota configured or it's within
  * bounds. Cross-project by design — a subscription's window applies to the
  * model's API key/plan, not any one project (mirrors checkModelCooldown's
@@ -72,7 +72,7 @@ export function checkModelQuota(
   const { runs, costUsd } = repo.getModelUsageSince(db, model, sinceIso);
 
   if (quota.maxRuns != null && runs >= quota.maxRuns) {
-    return `Model ${model} quota reached: ${runs}/${quota.maxRuns} runs in the last ${quota.windowHours}h`;
+    return `Model ${model} quota reached: ${runs}/${quota.maxRuns} calls in the last ${quota.windowHours}h`;
   }
   if (quota.maxCostUsd != null && costUsd >= quota.maxCostUsd) {
     return `Model ${model} quota reached: $${costUsd.toFixed(2)}/$${quota.maxCostUsd.toFixed(2)} spent in the last ${quota.windowHours}h`;

@@ -533,6 +533,55 @@ test("B34: a late adapter result cannot overwrite a run already marked stopped",
   assert.equal(saved.tokensIn, 10);
 });
 
+test("B40: author fallbacks and docs runs become distinct correlated invocations", () => {
+  const db = setup();
+  const engine = new EngineRunner(db, new WsHub());
+  const proj = project(db, "ledger-runs");
+  const task = seedTask(db, proj.id, "task", { status: "in_progress", attempts: 1 });
+  const deps = buildDeps(engine, proj);
+
+  const emit = (
+    id: string,
+    model: string,
+    status: "running" | "passed",
+    attempt: number,
+  ) => deps.events.onRunUpdated({
+    id,
+    projectId: proj.id,
+    taskId: task.id,
+    model,
+    effort: "default",
+    attempt,
+    status,
+    startedAt: "2026-07-15T00:00:00.000Z",
+    endedAt: status === "passed" ? "2026-07-15T00:00:01.000Z" : undefined,
+    exitReason: status === "passed" ? "completed" : undefined,
+    costUsd: status === "passed" ? 0.01 : 0,
+    tokensIn: status === "passed" ? 10 : 0,
+    tokensOut: status === "passed" ? 2 : 0,
+  });
+
+  emit("run-task-1", "deepseek-flash", "running", 1);
+  emit("run-task-1", "deepseek-flash", "passed", 1);
+  emit("run-task-2", "deepseek-pro", "running", 2);
+  emit("run-task-2", "deepseek-pro", "passed", 2);
+  emit("run-task-docs", "grok", "running", 2);
+  emit("run-task-docs", "grok", "passed", 2);
+
+  const invocations = repo.getInvocations(db, { taskId: task.id });
+  assert.equal(invocations.length, 3);
+  assert.deepEqual(
+    invocations.map((invocation) => invocation.stage).sort(),
+    ["author", "author", "docs"],
+  );
+  assert.deepEqual(
+    new Set(invocations.map((invocation) => invocation.runId)),
+    new Set(["run-task-1", "run-task-2", "run-task-docs"]),
+  );
+  assert.ok(invocations.every((invocation) => invocation.outcome === "completed"));
+  assert.equal(repo.getCosts(db, proj.id).length, 3);
+});
+
 test("B37/F48: an already-built runtime reads live budgets, quotas, pricing, notification policy, and persists effort", () => {
   const db = setup();
   const hub = new WsHub();
@@ -597,7 +646,9 @@ test("B37/F48: an already-built runtime reads live budgets, quotas, pricing, not
   });
 
   assert.match(deps.checkBudget!("deepseek-flash")!, /Global monthly budget/);
-  assert.match(deps.checkModelQuota!("deepseek-flash")!, /1\/1 runs/);
+  // B40: the earlier unscoped cost row is a historical non-author model
+  // invocation too, so quota usage now truthfully includes both calls.
+  assert.match(deps.checkModelQuota!("deepseek-flash")!, /2\/1 calls/);
 
   deps.events.onRunUpdated({
     id: "priced-run",
@@ -615,7 +666,10 @@ test("B37/F48: an already-built runtime reads live budgets, quotas, pricing, not
   });
   assert.equal(repo.getRun(db, "priced-run")!.costUsd, 2);
   assert.equal(repo.getRun(db, "priced-run")!.effort, "high");
-  assert.equal(repo.getCosts(db, proj.id)[0]!.costUsd, 2);
+  assert.equal(
+    repo.getCosts(db, proj.id).find((cost) => cost.invocationId === "priced-run")?.costUsd,
+    2,
+  );
 
   deps.events.onTaskUpdated({ ...task, status: "in_progress" });
   assert.deepEqual(taskPushes, []);

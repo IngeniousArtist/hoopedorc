@@ -76,8 +76,9 @@ exhausting it in the first place.
 
 **Cost & subscription awareness**
 - Per-project and global monthly budget caps with 50%/80% soft warnings
-- Per-model subscription quotas (rolling window + max runs/spend) enforced
-  across all projects, with live window usage in the health panel;
+- Per-model subscription quotas (rolling window + max invocations/spend)
+  enforced across all projects and model-backed stages—even $0 subscription
+  calls—with live window usage in the health panel;
   rate-limit cooldowns; pre-run cost estimates
 - Rate-limited models wait-and-retry before falling back, with Telegram
   alerts on waits, fallback switches, and exhausted chains

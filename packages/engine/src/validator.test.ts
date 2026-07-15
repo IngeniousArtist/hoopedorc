@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { AgentAdapter, AgentRunResult } from "@orc/adapters";
-import type { GateResult, Project, Settings, Task } from "@orc/types";
+import type { GateResult, ModelInvocation, Project, Settings, Task } from "@orc/types";
 import { ValidatorImpl } from "./validator.js";
 
 const PROJECT: Project = {
@@ -198,6 +198,46 @@ test("S9: incomplete diff acquisition cannot be approved by the validator", asyn
   assert.match(decision.reasons[0]!, /could not acquire a complete diff/i);
   assert.match(prompts[0]!, /Diff acquisition is incomplete/);
   assert.match(prompts[0]!, /must escalate for human review/);
+});
+
+test("B40: validator emits one complete invocation lifecycle", async () => {
+  const events: ModelInvocation[] = [];
+  const settings = baseSettings();
+  settings.models[0]!.effort = "high";
+  const adapter: AgentAdapter = {
+    runner: "claude-code",
+    async run(): Promise<AgentRunResult> {
+      return {
+        ok: true,
+        exitReason: "completed",
+        costUsd: 0.2,
+        tokensIn: 11,
+        tokensOut: 5,
+        tokensCached: 3,
+        summary: JSON.stringify({ verdict: "approve", reasons: ["ok"], confidence: 0.9 }),
+      };
+    },
+  };
+  const validator = new ValidatorImpl(
+    () => adapter,
+    settings,
+    (event) => events.push(event),
+  );
+
+  await validator.review(PROJECT, task(), GATE, "deepseek-flash");
+
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.outcome, "running");
+  assert.equal(events[0]?.stage, "validator");
+  assert.equal(events[0]?.projectId, PROJECT.id);
+  assert.equal(events[0]?.taskId, "t1");
+  assert.equal(events[0]?.runner, "claude-code");
+  assert.equal(events[0]?.effort, "high");
+  assert.equal(events[1]?.id, events[0]?.id);
+  assert.equal(events[1]?.outcome, "completed");
+  assert.equal(events[1]?.costUsd, 0.2);
+  assert.equal(events[1]?.tokensIn, 11);
+  assert.equal(events[1]?.tokensCached, 3);
 });
 
 test("validator forwards AbortSignal to the reviewer and settles on abort", async () => {

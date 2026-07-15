@@ -64,6 +64,34 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id);
 
+-- B40: authoritative ledger for every model-backed CLI call. Unlike `runs`,
+-- this includes planning, deconstruction, validation, docs, and health calls.
+-- project/task are nullable because a setup health probe is installation-wide.
+CREATE TABLE IF NOT EXISTS model_invocations (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT,
+  task_id       TEXT,
+  run_id        TEXT,
+  stage         TEXT NOT NULL,
+  model         TEXT NOT NULL,
+  runner        TEXT NOT NULL,
+  effort        TEXT NOT NULL DEFAULT 'default',
+  started_at    TEXT NOT NULL,
+  ended_at      TEXT,
+  outcome       TEXT NOT NULL,
+  exit_reason   TEXT,
+  cost_usd      REAL NOT NULL DEFAULT 0,
+  tokens_in     INTEGER NOT NULL DEFAULT 0,
+  tokens_out    INTEGER NOT NULL DEFAULT 0,
+  tokens_cached INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_model_invocations_model_started
+  ON model_invocations(model, started_at);
+CREATE INDEX IF NOT EXISTS idx_model_invocations_project_started
+  ON model_invocations(project_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_model_invocations_task
+  ON model_invocations(task_id, started_at);
+
 CREATE TABLE IF NOT EXISTS logs (
   id         TEXT PRIMARY KEY,
   project_id TEXT NOT NULL DEFAULT '',
@@ -92,6 +120,7 @@ CREATE TABLE IF NOT EXISTS merge_decisions (
 
 CREATE TABLE IF NOT EXISTS costs (
   id         TEXT PRIMARY KEY,
+  invocation_id TEXT,
   project_id TEXT NOT NULL,
   model      TEXT NOT NULL,
   task_id    TEXT,
@@ -135,6 +164,7 @@ CREATE TABLE IF NOT EXISTS notifications (
 -- clicks, unlike the logs table B14 had to bound).
 CREATE TABLE IF NOT EXISTS model_checks (
   id           TEXT PRIMARY KEY,
+  invocation_id TEXT,
   model_id     TEXT NOT NULL,
   display_name TEXT NOT NULL,
   ok           INTEGER NOT NULL,

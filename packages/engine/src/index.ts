@@ -48,7 +48,7 @@ export type {
 } from "./git-service.js";
 export { GateRunnerImpl } from "./gate-runner.js";
 export { ValidatorImpl, SelfReviewError } from "./validator.js";
-export type { ValidatorCostSink } from "./validator.js";
+export type { ValidatorInvocationSink } from "./validator.js";
 export { Orchestrator } from "./orchestrator.js";
 export {
   DEFAULT_GATE_IMAGE,

@@ -3,6 +3,7 @@ import type {
   GateResult,
   MergeDecision,
   ModelId,
+  ModelInvocation,
   Project,
   Settings,
   Task,
@@ -37,23 +38,15 @@ If you find any of these and the task did NOT explicitly require it, use verdict
 /** Thrown when the configured validator would review its own author's work. */
 export class SelfReviewError extends Error {}
 
-/** Reports what a validation run cost so the caller can record it. */
-export type ValidatorCostSink = (
-  model: ModelId,
-  taskId: string,
-  costUsd: number,
-  tokensIn: number,
-  tokensOut: number,
-  tokensCached?: number,
-) => void;
+/** Reports the complete validator CLI lifecycle to the B40 ledger. */
+export type ValidatorInvocationSink = (event: ModelInvocation) => void;
 
 export class ValidatorImpl implements Validator {
   constructor(
     private readonly adapterFactory: (modelId: ModelId) => AgentAdapter,
     private readonly settingsSource: Settings | (() => Settings),
-    /** Optional: record validator spend (validation runs aren't author runs,
-     *  so they have no run row — without this their cost is untracked). */
-    private readonly onCost?: ValidatorCostSink,
+    /** Optional for embedders/tests; production persists every lifecycle. */
+    private readonly onInvocation?: ValidatorInvocationSink,
   ) {}
 
   private settings(): Settings {
@@ -99,28 +92,63 @@ export class ValidatorImpl implements Validator {
     const diff = await this.getDiff(project, cwd, signal);
     const adapter = this.adapterFactory(validatorModel);
     const prompt = this.buildReviewPrompt(task, gate, diff, attemptSettings);
-
-    const result = await adapter.run({
+    const invocationId = `validator-${task.id}-${randomUUID()}`;
+    const startedAt = new Date().toISOString();
+    const baseInvocation = {
+      id: invocationId,
+      projectId: project.id,
+      taskId: task.id,
+      stage: "validator" as const,
       model: validatorModel,
-      prompt,
-      cwd,
-      onLog,
-      signal,
+      runner: adapter.runner,
+      effort: validatorConfig.effort ?? "default",
+      startedAt,
+    };
+    this.onInvocation?.({
+      ...baseInvocation,
+      outcome: "running",
+      costUsd: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      tokensCached: 0,
     });
 
-    // Reported when there's anything to bill: a positive CLI-reported cost
-    // OR token counts that manual per-model pricing could turn into one (an
-    // opencode CLI with a stale/zero price still reports real tokens).
-    if (result.costUsd > 0 || result.tokensIn + result.tokensOut > 0) {
-      this.onCost?.(
-        validatorModel,
-        task.id,
-        result.costUsd,
-        result.tokensIn,
-        result.tokensOut,
-        result.tokensCached ?? 0,
-      );
+    let result;
+    try {
+      result = await adapter.run({
+        model: validatorModel,
+        prompt,
+        cwd,
+        onLog,
+        signal,
+      });
+    } catch (err) {
+      this.onInvocation?.({
+        ...baseInvocation,
+        endedAt: new Date().toISOString(),
+        outcome: signal?.aborted ? "stopped" : "failed",
+        exitReason: signal?.aborted ? "killed" : "error",
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        tokensCached: 0,
+      });
+      throw err;
     }
+    this.onInvocation?.({
+      ...baseInvocation,
+      endedAt: new Date().toISOString(),
+      outcome: result.ok
+        ? "completed"
+        : result.exitReason === "killed"
+          ? "stopped"
+          : "failed",
+      exitReason: result.exitReason,
+      costUsd: result.costUsd,
+      tokensIn: result.tokensIn,
+      tokensOut: result.tokensOut,
+      tokensCached: result.tokensCached ?? 0,
+    });
 
     const decision = this.parseDecision(
       result.summary ?? "",

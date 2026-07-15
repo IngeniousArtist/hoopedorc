@@ -6,8 +6,8 @@ it — all three modules depend on it.**
 
 ## Domain types (`@orc/types/domain.ts`)
 `ModelId`, `Role`, `RunnerKind`, `ModelConfig`, `Difficulty`, `TaskStatus`,
-`Task`, `Project`, `ProjectConfig`, `Run`, `LogEvent`, `GateResult`, `MergeDecision`,
-`Notification`, `CostRecord`, `RoutingPolicy`, `Settings`, and the
+`Task`, `Project`, `ProjectConfig`, `ModelInvocation`, `Run`, `LogEvent`,
+`GateResult`, `MergeDecision`, `Notification`, `CostRecord`, `RoutingPolicy`, `Settings`, and the
 `pickAssignedModel(routing, difficulty, role?)` helper. Read the file — it is the
 source of truth. `Settings.routing` is what the Settings UI exposes as per-job
 model selectors (planner, by-difficulty, by-role, validator).
@@ -84,6 +84,21 @@ through `--effort`; Codex accepts `low|medium|high|xhigh|max|ultra` through
 `--variant`. Unset means the CLI default. The same field applies in planning,
 deconstruction, authoring, validation, per-task documentation, and health
 tests. `Run.effort` records the resolved value (`"default"` when unset).
+
+`ModelInvocation` (B40) is the authoritative accounting row for every CLI
+model call. It records project/task/run correlation where applicable, stage
+(`planner`, `deconstructor`, `author`, `validator`, `docs`, or `health`),
+logical model, runner, effort, start/end, terminal outcome/exit reason, tokens,
+cached tokens, and cost. The row is written as `running` before the process is
+spawned and accepts one terminal transition; that transition and its legacy
+`CostRecord` projection share one SQLite transaction. `Run` remains the task-
+attempt/history and WebSocket compatibility view for author/docs calls, while
+`CostRecord.invocationId` links a positive project-cost projection back to the
+ledger. Startup marks a prior process's still-running rows `interrupted`, and
+the migration backfills historical runs, unlinked costs, and model checks.
+Rolling quotas, model health statistics, planning totals, budgets, and cost
+analytics read the ledger, so zero-dollar subscription calls and non-author
+stages consume run-count quota even when they add no visible dollar spend.
 
 Settings pass through one server-side normalizer on defaults, boot migration,
 repository reads/writes, HTTP updates, and Telegram command updates. It deep-

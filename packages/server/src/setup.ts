@@ -5,6 +5,7 @@ import { makeAdapter, sanitizedEnv } from "@orc/adapters";
 import { DEFAULT_GATE_IMAGE, resolveSandboxMode, WorktreeManagerImpl } from "@orc/engine";
 import type {
   ModelRosterResponse,
+  ModelInvocation,
   ModelTestResult,
   Project,
   Settings,
@@ -169,11 +170,28 @@ export async function getModelRoster(): Promise<ModelRosterResponse> {
 export async function testModels(
   settings: Settings,
   opencodeBaseUrl: string,
+  onInvocation?: (event: ModelInvocation) => void,
 ): Promise<TestModelsResponse> {
   const enabled = settings.models.filter((m) => m.enabled);
   const results: ModelTestResult[] = await Promise.all(
     enabled.map(async (cfg): Promise<ModelTestResult> => {
       const start = Date.now();
+      const baseInvocation = {
+        id: `health-${crypto.randomUUID()}`,
+        stage: "health" as const,
+        model: cfg.id,
+        runner: cfg.runner,
+        effort: cfg.effort ?? "default",
+        startedAt: new Date().toISOString(),
+      };
+      onInvocation?.({
+        ...baseInvocation,
+        outcome: "running",
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        tokensCached: 0,
+      });
       try {
         const adapter = makeAdapter(cfg, opencodeBaseUrl);
         const res = await adapter.run({
@@ -186,10 +204,25 @@ export async function testModels(
           cwd: tmpdir(),
           onLog: () => {},
         });
+        onInvocation?.({
+          ...baseInvocation,
+          endedAt: new Date().toISOString(),
+          outcome: res.ok
+            ? "completed"
+            : res.exitReason === "killed"
+              ? "stopped"
+              : "failed",
+          exitReason: res.exitReason,
+          costUsd: res.costUsd,
+          tokensIn: res.tokensIn,
+          tokensOut: res.tokensOut,
+          tokensCached: res.tokensCached ?? 0,
+        });
         const reply = (res.summary ?? "").trim().slice(0, 200);
         return {
           id: cfg.id,
           displayName: cfg.displayName,
+          invocationId: baseInvocation.id,
           effort: cfg.effort ?? "default",
           ok: res.ok,
           costUsd: res.costUsd,
@@ -198,9 +231,20 @@ export async function testModels(
           error: res.ok ? undefined : (res.summary || "no output").slice(0, 200),
         };
       } catch (err) {
+        onInvocation?.({
+          ...baseInvocation,
+          endedAt: new Date().toISOString(),
+          outcome: "failed",
+          exitReason: "error",
+          costUsd: 0,
+          tokensIn: 0,
+          tokensOut: 0,
+          tokensCached: 0,
+        });
         return {
           id: cfg.id,
           displayName: cfg.displayName,
+          invocationId: baseInvocation.id,
           effort: cfg.effort ?? "default",
           ok: false,
           costUsd: 0,
