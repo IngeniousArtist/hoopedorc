@@ -1689,7 +1689,7 @@ target rules.
 | B39 — planning and git durability | ✅ done, Fable-validated 2026-07-15 | [#146](https://github.com/IngeniousArtist/hoopedorc/pull/146) |
 | B40 — complete model-invocation accounting | ✅ done, awaiting Fable validation | [#148](https://github.com/IngeniousArtist/hoopedorc/pull/148) |
 | B41 — graceful shutdown and runtime recovery | ✅ done, awaiting Fable validation | [#149](https://github.com/IngeniousArtist/hoopedorc/pull/149) |
-| F49 — Telegram reliability and phone-control hardening | pending | — |
+| F49 — Telegram reliability and phone-control hardening | ✅ implementation done, live private-chat smoke + Fable validation pending | [#150](https://github.com/IngeniousArtist/hoopedorc/pull/150) |
 | T2 — frontend unit/E2E test foundation | pending | — |
 | U19 — full responsive UX pass | pending | — |
 
@@ -1721,8 +1721,9 @@ raising typed errors instead of swallowing them (B39).
 One flake noted, not a blocker: server test "F44: a run ending non-completed
 creates a web notification…" (`engine-runner.test.ts`) failed once under
 full-suite load and passed 3/3 in isolation and on full-suite re-run —
-timing-sensitive; worth tightening when T2 lands. Remaining Phase 15 work for
-the next session: B40, B41, F49, T2, U19.
+timing-sensitive; worth tightening when T2 lands. Remaining Phase 15 implementation
+work: T2 and U19. F49's owner-operated live private-chat smoke test remains part of
+final acceptance.
 
 ---
 
@@ -6063,6 +6064,19 @@ prefix ambiguity, command errors returned to the user, 429/backoff, network
 timeout, chunking, failed approval delivery, re-sending pending approval, restart,
 and Start/Pause/Stop All using the unified runtime. Live private-chat smoke test
 confirms buttons and commands without introducing a webhook or new framework.
+
+**Acceptance evidence (2026-07-15):** implementation is in
+[#150](https://github.com/IngeniousArtist/hoopedorc/pull/150). The focused
+Telegram/shared-action suite passes 25 tests, the complete engine/server/adapters
+suites pass 159/159/12 tests, workspace typecheck and production build pass, and
+Settings/Setup delivery status was checked at 375, 768, and 1280px without console
+errors. Automated coverage includes command registration, private chat and user
+identity rejection, project-prefix ambiguity, surfaced command errors,
+`retry_after` handling, timeouts, chunking, permanent approval-delivery failure,
+pending-approval resend after restart, and unified Start/Pause/Stop All actions.
+The live private-chat smoke test is deliberately still outstanding because it
+requires the owner's configured bot and an intentional external Telegram message;
+Fable review remains the independent post-merge validation.
 
 ### T2. Frontend unit and end-to-end test foundation
 
