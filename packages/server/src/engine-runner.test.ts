@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { Orchestrator, OrchestratorStartOptions, SchedulerDeps } from "@orc/engine";
 import type { GateResult, Project, RollbackJob, Task } from "@orc/types";
@@ -450,6 +453,143 @@ test("B34: persisted manual requests resume after process restart", async () => 
   controlled.resolveStart();
   await runtime.settled;
   assert.equal(engine.hasActivity(proj.id), false);
+});
+
+test("B41: shutdown rejects new work and uses one deadline across every runtime", async () => {
+  const db = setup();
+  const projects = [project(db, "p1"), project(db, "p2")];
+  for (const proj of projects) seedTask(db, proj.id, `${proj.id}-task`);
+  repo.updateTask(db, "p1-task", {
+    dispatchRequestedAt: "2026-07-15T00:00:00.000Z",
+  });
+  const controls = projects.map(() => controlledOrchestrator());
+  let factory = 0;
+  const engine = new EngineRunner(db, new WsHub(), {
+    ensureClone: async () => {},
+    orchestratorFactory: () => controls[factory++]!.orchestrator,
+    shutdownDeadlineMs: 5,
+  });
+
+  await Promise.all(projects.map((proj) => engine.start(proj)));
+  await Promise.all(controls.map((control) => control.started));
+  const first = engine.shutdown(projects);
+  const second = engine.shutdown(projects);
+  assert.equal(second, first, "repeated fatal/signal events share one shutdown");
+  const result = await first;
+
+  assert.equal(result.settled, false);
+  assert.deepEqual(result.stoppedProjectIds.sort(), ["p1", "p2"]);
+  assert.deepEqual(result.pendingProjectIds.sort(), ["p1", "p2"]);
+  assert.equal(controls[0]!.state.pauseCalls.length, 1);
+  assert.equal(controls[1]!.state.pauseCalls.length, 1);
+  assert.equal(repo.getTask(db, "p1-task")?.dispatchRequestedAt, undefined);
+  await assert.rejects(engine.start(projects[0]!), /shutting down/);
+  await assert.rejects(
+    engine.dispatchOne(projects[0]!, "p1-task"),
+    /shutting down/,
+  );
+
+  for (const control of controls) control.resolveStart();
+  await Promise.all(projects.map((proj) => activeRuntime(engine, proj.id)?.settled));
+});
+
+test("B41: a rate-limit cooldown survives a database and EngineRunner restart", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hoopedorc-cooldown-restart-"));
+  const path = join(dir, "orc.db");
+  try {
+    const firstDb = initDb(path);
+    repo.upsertSettings(firstDb, defaultSettings());
+    const proj = project(firstDb, "p1");
+    seedTask(firstDb, proj.id, "t1", { status: "in_progress", attempts: 1 });
+    const firstEngine = new EngineRunner(firstDb, new WsHub());
+    const events = buildDeps(firstEngine, proj).events;
+    const startedAt = new Date().toISOString();
+    events.onRunUpdated({
+      id: "rate-limited-run",
+      projectId: proj.id,
+      taskId: "t1",
+      model: "deepseek-flash",
+      attempt: 1,
+      status: "running",
+      startedAt,
+      costUsd: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+    });
+    events.onRunUpdated({
+      id: "rate-limited-run",
+      projectId: proj.id,
+      taskId: "t1",
+      model: "deepseek-flash",
+      attempt: 1,
+      status: "failed",
+      startedAt,
+      endedAt: new Date().toISOString(),
+      exitReason: "rate_limited",
+      costUsd: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+    });
+    const firstUntil = firstEngine.getCoolingDownUntil("deepseek-flash");
+    assert.ok(firstUntil && firstUntil > Date.now());
+    firstDb.close();
+
+    const reopened = initDb(path);
+    const restartedEngine = new EngineRunner(reopened, new WsHub());
+    assert.equal(restartedEngine.getCoolingDownUntil("deepseek-flash"), firstUntil);
+    assert.match(
+      restartedEngine.checkModelCooldown("deepseek-flash") ?? "",
+      /cooling down/,
+    );
+    reopened.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("B41: shutdown aborts a managed rollback stage and leaves it restartable", async () => {
+  const db = setup();
+  const proj = project(db, "rollback-shutdown");
+  const task = seedTask(db, proj.id, "source", {
+    status: "done",
+    prNumber: 42,
+  });
+  const base = fakeRollbackDeps();
+  let started!: () => void;
+  const cloneStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let aborted = false;
+  base.deps.git.ensureClone = async (_project, signal) => {
+    started();
+    await new Promise<void>((_resolve, reject) => {
+      const onAbort = () => {
+        aborted = true;
+        reject(new DOMException("aborted", "AbortError"));
+      };
+      if (signal?.aborted) return onAbort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  };
+  const engine = new EngineRunner(db, new WsHub(), {
+    rollbackDepsFactory: () => base.deps,
+    shutdownDeadlineMs: 100,
+  });
+
+  const job = await engine.rollback(proj, task);
+  await cloneStarted;
+  const result = await engine.shutdown([proj]);
+
+  assert.equal(aborted, true);
+  assert.equal(result.settled, true);
+  assert.deepEqual(result.pendingRollbackIds, []);
+  const saved = repo.getRollbackJob(db, job.id)!;
+  assert.equal(saved.status, "requested");
+  assert.match(saved.statusReason ?? "", /resume on restart/);
+  assert.equal(
+    repo.getAuditLog(db, proj.id).some((entry) => entry.kind === "rollback_interrupted"),
+    true,
+  );
 });
 
 test("B34: an old runtime finally cannot unregister a newer generation", async () => {

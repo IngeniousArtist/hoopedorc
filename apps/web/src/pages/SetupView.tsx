@@ -40,17 +40,9 @@ export function SetupView({
   const [testing, setTesting] = useState(false);
   const [modelHealth, setModelHealth] = useState<ModelHealthResponse | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
-  // F24: "what's actually deployed" surfaced from the server's own boot-time
-  // read of package.json — so a remote box isn't a guessing game over SSH.
-  const [version, setVersion] = useState<string | null>(null);
-
-  useEffect(() => {
-    api<HealthResponse>("health")
-      .then((d) => setVersion(d.version))
-      .catch(() => {
-        /* non-critical — the header just omits the version */
-      });
-  }, []);
+  // F24/B41: deployed version plus live lifecycle/dependency state from the
+  // unauthenticated uptime endpoint. This contains no credentials.
+  const [runtimeHealth, setRuntimeHealth] = useState<HealthResponse | null>(null);
 
   const fetchModelHealth = useCallback(async () => {
     setHealthLoading(true);
@@ -67,7 +59,12 @@ export function SetupView({
     setLoading(true);
     setError(null);
     try {
-      setHealth(await api<SetupHealthResponse>("setupHealth"));
+      const [setup, runtime] = await Promise.all([
+        api<SetupHealthResponse>("setupHealth"),
+        api<HealthResponse>("health"),
+      ]);
+      setHealth(setup);
+      setRuntimeHealth(runtime);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -102,9 +99,9 @@ export function SetupView({
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">
           Setup &amp; Health
-          {version && (
+          {runtimeHealth && (
             <span className="ml-2 align-middle text-xs font-normal text-neutral-500">
-              Hoopedorc v{version}
+              Hoopedorc v{runtimeHealth.version}
             </span>
           )}
         </h2>
@@ -140,6 +137,49 @@ export function SetupView({
         </a>{" "}
         for install steps, a first-project walkthrough, and troubleshooting.
       </p>
+
+      {loading && !runtimeHealth ? (
+        <div
+          className="h-16 animate-pulse rounded-lg border border-neutral-800 bg-neutral-900"
+          aria-label="Loading runtime status"
+        />
+      ) : runtimeHealth ? (
+        <div
+          className={
+            "rounded-lg border px-4 py-3 " +
+            (runtimeHealth.ok
+              ? "border-green-800 bg-green-950/30"
+              : "border-amber-800 bg-amber-950/30")
+          }
+        >
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <p
+              className={
+                "text-sm font-medium " +
+                (runtimeHealth.ok ? "text-green-300" : "text-amber-300")
+              }
+            >
+              {runtimeHealth.state === "running"
+                ? runtimeHealth.degraded.length > 0
+                  ? "Runtime degraded"
+                  : "Runtime healthy"
+                : `Runtime ${runtimeHealth.state.replace("_", " ")}`}
+            </p>
+            <span className="text-xs text-neutral-300">
+              Docker: {runtimeHealth.dependencies.docker.available ? "available" : "unavailable"}
+              {runtimeHealth.dependencies.docker.required ? " · required" : " · optional"}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-neutral-300">
+            {runtimeHealth.dependencies.docker.detail}
+          </p>
+          {runtimeHealth.degraded.map((detail) => (
+            <p key={detail} className="mt-1 text-xs text-amber-200">
+              {detail}
+            </p>
+          ))}
+        </div>
+      ) : null}
 
       {error && <div className="text-sm text-red-400">Error: {error}</div>}
 

@@ -497,6 +497,19 @@ or otherwise prints a reminder to restart the process yourself (however
 you're actually running it — a process manager, a `screen`/`tmux`
 session, etc). Check `GET /api/health`'s `version` field (also shown at
 the top of the Setup & Health page) to confirm the update actually took.
+That endpoint and panel also show whether the runtime is running or shutting
+down and whether Docker is available/required. A missing optional Docker daemon
+is informational (`auto` uses the host); a missing required daemon marks health
+degraded. No token, environment value, or credential path is exposed.
+
+Service restarts are graceful: `SIGTERM`/`SIGINT` immediately reject new
+mutations, cancel active model/gate/setup work, stop Telegram, flush logs and
+checkpoint SQLite before exiting. The systemd unit allows 25 seconds around
+the app's single 15-second runtime deadline. Fatal exceptions perform the same
+bounded cleanup and exit nonzero so `Restart=on-failure` can recover. Active
+projects are left paused with a shutdown audit entry; press Start after a
+planned restart when you are ready to resume them. Rate-limit cooldown expiry
+is persisted, so a restart does not prematurely hammer the same subscription.
 
 ## Remote setup (Tailscale)
 

@@ -173,6 +173,15 @@ should show the event; each entry's `detail.affectedProjectIds` lists all
 of them), and returns `StopAllResponse.projectIds` — the ones that actually
 had something to stop.
 
+Process shutdown (B41) is one idempotent transaction for `SIGTERM`, `SIGINT`,
+uncaught exceptions, and unhandled rejections. Admission closes before the
+first await; all project runtimes and rollback subprocess signals are stopped
+in parallel under one 15-second settlement deadline. Telegram polling and
+buffered logs stop next, shutdown audit rows are written, live sockets/HTTP
+close, SQLite's WAL is checkpointed, and the DB closes before exit. Signals
+exit zero; fatal errors exit nonzero so systemd restarts the service. A
+persisted `model_cooldowns` row keeps a rate-limit expiry across restarts.
+
 `PlanAttachment` (F27) — `{ name, size, mtime }` for a file uploaded from
 PlanView as planning context. Stored on disk at
 `<project.localPath>/context/attachments/<name>` (`packages/server/src/
@@ -242,7 +251,7 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 
 | Route | Body → Response |
 |---|---|
-| `GET /api/health` | → `{ ok, mock }` |
+| `GET /api/health` | → `HealthResponse` (`ok`, version, lifecycle state, safe degraded reasons, Docker availability/requirement) |
 | `POST /api/projects` | `CreateProjectRequest` → `CreateProjectResponse` |
 | `GET /api/projects` | → `ListProjectsResponse` |
 | `GET /api/projects/:id` | → `GetProjectResponse` |

@@ -98,4 +98,17 @@ export class WsHub {
       client.ws.send(payload);
     }
   }
+
+  /** Close live sockets before Fastify drains its HTTP server. This prevents
+   * an idle dashboard tab from holding graceful service shutdown open. */
+  close(code = 1012, reason = "server restarting"): void {
+    for (const client of this.clients) {
+      try {
+        client.ws.close(code, reason);
+      } catch {
+        client.ws.terminate();
+      }
+    }
+    this.clients.clear();
+  }
 }

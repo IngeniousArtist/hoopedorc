@@ -52,7 +52,9 @@ export type { ValidatorInvocationSink } from "./validator.js";
 export { Orchestrator } from "./orchestrator.js";
 export {
   DEFAULT_GATE_IMAGE,
+  DOCKER_PROBE_TTL_MS,
   detectDocker,
+  invalidateDockerDetection,
   isPlausibleImageRef,
   resolveSandboxMode,
 } from "./sandbox.js";

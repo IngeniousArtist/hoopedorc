@@ -36,6 +36,27 @@ test("detectDocker caches the probe result across calls", async () => {
   _resetDockerDetectionForTests();
 });
 
+test("B41: Docker detection recovers unavailable -> available -> unavailable after TTL", async () => {
+  _resetDockerDetectionForTests();
+  let now = 0;
+  let calls = 0;
+  const results = [false, true, false];
+  const probe = async () => results[calls++]!;
+  const options = { now: () => now, ttlMs: 100 };
+
+  assert.equal(await detectDocker(probe, options), false);
+  now = 99;
+  assert.equal(await detectDocker(probe, options), false);
+  assert.equal(calls, 1, "the unavailable result is still cached inside the TTL");
+
+  now = 100;
+  assert.equal(await detectDocker(probe, options), true);
+  now = 200;
+  assert.equal(await detectDocker(probe, options), false);
+  assert.equal(calls, 3);
+  _resetDockerDetectionForTests();
+});
+
 test('resolveSandboxMode("off") never probes for Docker', async () => {
   let probed = false;
   const resolved = await resolveSandboxMode("off", async () => {
@@ -143,6 +164,8 @@ test("sandbox forwards safe npm/runtime settings but no CLI or registry credenti
 });
 
 test("sandbox force-removes its uniquely named container when docker run is aborted", async () => {
+  _resetDockerDetectionForTests();
+  assert.equal(await detectDocker(async () => true), true);
   const calls: { command: string; args: readonly string[] }[] = [];
   const runner = (async (command: string, args: readonly string[]) => {
     calls.push({ command, args });
@@ -165,4 +188,14 @@ test("sandbox force-removes its uniquely named container when docker run is abor
     command: "docker",
     args: ["rm", "-f", containerName],
   });
+  let reprobes = 0;
+  assert.equal(
+    await detectDocker(async () => {
+      reprobes++;
+      return false;
+    }),
+    false,
+  );
+  assert.equal(reprobes, 1, "a failed docker execution invalidates the availability cache");
+  _resetDockerDetectionForTests();
 });

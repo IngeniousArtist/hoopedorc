@@ -25,7 +25,7 @@ import type {
 } from "@orc/types";
 import { SECRET_SENTINEL, TASK_STATUSES, WS_PATH, pickAssignedModel } from "@orc/types";
 import type { TaskStatus } from "@orc/types";
-import { GitServiceImpl, isPlausibleImageRef } from "@orc/engine";
+import { GitServiceImpl, detectDocker, isPlausibleImageRef } from "@orc/engine";
 import {
   ENV,
   SettingsValidationError,
@@ -85,6 +85,8 @@ import { TelegramBot, sendTelegramMessage } from "./telegram";
 import { getModelRoster, runSetupChecks, testModels } from "./setup";
 import { parseSetupCommand } from "./project-config";
 import { persistInvocationEvent } from "./invocation-ledger";
+import { ShutdownCoordinator, installShutdownHandlers } from "./shutdown";
+import { buildRuntimeHealth } from "./runtime-health";
 import type {
   DraftTask,
   Notification,
@@ -97,8 +99,10 @@ type RouteParams = { id: string };
 function plannerRequestCancellation(
   request: IncomingMessage,
   response: ServerResponse,
+  activeControllers?: Set<AbortController>,
 ): { signal: AbortSignal; cleanup: () => void } {
   const controller = new AbortController();
+  activeControllers?.add(controller);
   const abort = () => controller.abort();
   const abortIfDisconnected = () => {
     if (!response.writableEnded) abort();
@@ -110,6 +114,7 @@ function plannerRequestCancellation(
     cleanup: () => {
       request.removeListener("aborted", abort);
       response.removeListener("close", abortIfDisconnected);
+      activeControllers?.delete(controller);
     },
   };
 }
@@ -641,6 +646,9 @@ async function main() {
   const db = setupDb();
   const hub = new WsHub();
   const engine = new EngineRunner(db, hub);
+  const maintenanceTimers: ReturnType<typeof setInterval>[] = [];
+  const backgroundMaintenance = new Set<Promise<void>>();
+  const requestControllers = new Set<AbortController>();
 
   // ensure settings exist
   if (!repo.getSettings(db)) {
@@ -664,7 +672,9 @@ async function main() {
     }
   }
   pruneOldLogs();
-  setInterval(pruneOldLogs, ONE_DAY_MS).unref();
+  const logPruneTimer = setInterval(pruneOldLogs, ONE_DAY_MS);
+  logPruneTimer.unref();
+  maintenanceTimers.push(logPruneTimer);
 
   // B23: mirrors pruneOldLogs — the notifications table otherwise grows
   // unbounded across months of autonomous runs. Never touches a pending
@@ -684,22 +694,33 @@ async function main() {
     }
   }
   pruneOldNotifications();
-  setInterval(pruneOldNotifications, ONE_DAY_MS).unref();
+  const notificationPruneTimer = setInterval(pruneOldNotifications, ONE_DAY_MS);
+  notificationPruneTimer.unref();
+  maintenanceTimers.push(notificationPruneTimer);
 
   // F17: online-backup the DB on boot and once a day thereafter. No-op for
   // a mock/in-memory boot (nothing durable to protect). A failed backup
   // must never crash the server — log a warning and move on.
   function backupDb(): void {
-    runBackup(db, ENV.mock ? ":memory:" : ENV.dbPath, ENV.dbBackupDir, ENV.dbBackupKeep)
+    const backup = runBackup(
+      db,
+      ENV.mock ? ":memory:" : ENV.dbPath,
+      ENV.dbBackupDir,
+      ENV.dbBackupKeep,
+    )
       .then((result) => {
         if (!result.skipped) app.log.info(`DB backup written: ${result.file}`);
       })
       .catch((err) => {
         app.log.warn(`DB backup failed: ${err instanceof Error ? err.message : String(err)}`);
       });
+    backgroundMaintenance.add(backup);
+    void backup.finally(() => backgroundMaintenance.delete(backup));
   }
   backupDb();
-  setInterval(backupDb, ONE_DAY_MS).unref();
+  const backupTimer = setInterval(backupDb, ONE_DAY_MS);
+  backupTimer.unref();
+  maintenanceTimers.push(backupTimer);
 
   // F19: cron-style auto-start — checked roughly once a minute (fine enough
   // granularity for a "daily at HH:MM" schedule) against every project's
@@ -738,7 +759,9 @@ async function main() {
         });
     }
   }
-  setInterval(checkSchedules, SCHEDULE_CHECK_MS).unref();
+  const scheduleTimer = setInterval(checkSchedules, SCHEDULE_CHECK_MS);
+  scheduleTimer.unref();
+  maintenanceTimers.push(scheduleTimer);
 
   // Zombie approvals (B10): any approval-notification still unresolved from
   // before this boot has no live resolver anymore (EngineRunner.pendingApprovals
@@ -1071,8 +1094,85 @@ async function main() {
 
   configureTelegram(); // start the bot at boot if enabled
 
+  let engineShutdown: ReturnType<EngineRunner["shutdown"]> | undefined;
+  const shutdown = new ShutdownCoordinator({
+    stopAccepting: () => {
+      for (const timer of maintenanceTimers) clearInterval(timer);
+      for (const controller of requestControllers) controller.abort();
+      requestControllers.clear();
+      engineShutdown ??= engine.shutdown(repo.getProjects(db));
+    },
+    stopEngine: () => engineShutdown ?? engine.shutdown(repo.getProjects(db)),
+    stopTelegram: () => {
+      telegram?.stop();
+      telegram = undefined;
+      engine.setNotifier(undefined);
+    },
+    flushLogs: async () => {
+      engine.flushPendingLogs();
+      await Promise.allSettled([...backgroundMaintenance]);
+    },
+    recordAudit: (reason, result) => {
+      for (const projectId of result.stoppedProjectIds) {
+        repo.updateProject(db, projectId, { status: "paused" });
+        repo.createAuditEntry(db, {
+          projectId,
+          kind: "shutdown",
+          actor: "engine",
+          summary: `Runtime stopped for ${reason}`,
+          detail: {
+            settled: result.settled,
+            pendingProjectIds: result.pendingProjectIds,
+            pendingRollbackIds: result.pendingRollbackIds,
+          },
+        });
+      }
+    },
+    closeServer: async () => {
+      hub.close();
+      await app.close();
+    },
+    checkpointDb: () => {
+      if (!ENV.mock) db.pragma("wal_checkpoint(TRUNCATE)");
+    },
+    closeDb: () => {
+      db.close();
+    },
+    log: (message, error) => {
+      if (error) {
+        app.log.error(
+          `${message}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+        );
+      } else {
+        app.log.info(message);
+      }
+    },
+    exit: (code) => process.exit(code),
+  });
+
+  // Existing keep-alive connections may issue another request while the
+  // engine drains. Health remains readable; every mutating action is refused.
+  app.addHook("onRequest", async (req, reply) => {
+    if (shutdown.snapshot.state !== "shutting_down") return;
+    if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+      return;
+    }
+    return reply.code(503).send({ error: "server is shutting down" });
+  });
+
   // ── Health ──
-  app.get("/api/health", async () => ({ ok: true, mock: ENV.mock, version }));
+  app.get("/api/health", async () => {
+    const dockerAvailable = await detectDocker();
+    const settings = repo.getSettings(db) ?? defaultSettings();
+    const dockerRequired = settings.sandboxGates === "required";
+    return buildRuntimeHealth({
+      lifecycle: shutdown.snapshot,
+      mock: ENV.mock,
+      version,
+      dockerAvailable,
+      dockerRequired,
+    });
+  });
 
   // ── Projects ──
 
@@ -1290,7 +1390,11 @@ async function main() {
 
     let prdMarkdown: string;
     const createdTasks: Task[] = [];
-    const cancellation = plannerRequestCancellation(req.raw, reply.raw);
+    const cancellation = plannerRequestCancellation(
+      req.raw,
+      reply.raw,
+      requestControllers,
+    );
 
     try {
       // Real planner: whichever model routing.planner resolves to turns the
@@ -1409,7 +1513,11 @@ async function main() {
       return reply.code(400).send({ error: (err as Error).message });
     }
 
-    const cancellation = plannerRequestCancellation(req.raw, reply.raw);
+    const cancellation = plannerRequestCancellation(
+      req.raw,
+      reply.raw,
+      requestControllers,
+    );
     try {
       const cwd = await resolvePlannerCwd(project);
       // F27: name-only list of whatever's currently in context/attachments/
@@ -1473,7 +1581,11 @@ async function main() {
       return reply.code(400).send({ error: (err as Error).message });
     }
 
-    const cancellation = plannerRequestCancellation(req.raw, reply.raw);
+    const cancellation = plannerRequestCancellation(
+      req.raw,
+      reply.raw,
+      requestControllers,
+    );
     try {
       const cwd = await resolvePlannerCwd(project);
       const attachmentNames = listAttachments(attachmentsDir(project, ENV.mock)).map(
@@ -2260,19 +2372,43 @@ async function main() {
   });
 
   // ── Setup / health check ──
-  app.get("/api/setup", async () => {
+  app.get("/api/setup", async (req, reply) => {
     const settings = repo.getSettings(db) ?? defaultSettings();
-    return runSetupChecks(settings, repo.getProjects(db));
+    const cancellation = plannerRequestCancellation(
+      req.raw,
+      reply.raw,
+      requestControllers,
+    );
+    try {
+      return await runSetupChecks(
+        settings,
+        repo.getProjects(db),
+        cancellation.signal,
+      );
+    } finally {
+      cancellation.cleanup();
+    }
   });
 
   // Live-test every enabled model with a trivial prompt (costs a little).
-  app.post("/api/setup/test-models", async () => {
+  app.post("/api/setup/test-models", async (req, reply) => {
     const settings = repo.getSettings(db) ?? defaultSettings();
-    const result = await testModels(
-      settings,
-      ENV.opencodeBaseUrl,
-      (event) => recordModelInvocation(event),
+    const cancellation = plannerRequestCancellation(
+      req.raw,
+      reply.raw,
+      requestControllers,
     );
+    let result: Awaited<ReturnType<typeof testModels>>;
+    try {
+      result = await testModels(
+        settings,
+        ENV.opencodeBaseUrl,
+        (event) => recordModelInvocation(event),
+        cancellation.signal,
+      );
+    } finally {
+      cancellation.cleanup();
+    }
     // F6: persist each result so the health panel has a "last check" column
     // that survives a reload, not just whatever's in this response.
     const ts = new Date().toISOString();
@@ -2293,8 +2429,17 @@ async function main() {
   });
 
   // Full opencode model roster, for the onboarding wizard's model-mapping step.
-  app.get("/api/setup/models", async () => {
-    return getModelRoster();
+  app.get("/api/setup/models", async (req, reply) => {
+    const cancellation = plannerRequestCancellation(
+      req.raw,
+      reply.raw,
+      requestControllers,
+    );
+    try {
+      return await getModelRoster(cancellation.signal);
+    } finally {
+      cancellation.cleanup();
+    }
   });
 
   // Per-model observability for the multi-subscription audience (F6): last
@@ -2355,21 +2500,14 @@ async function main() {
     }
   });
 
-  // Survive stray async errors instead of letting an unattended run die. A
-  // single rejected promise or thrown callback deep in a background task
-  // pipeline should be logged, not take the whole server (and every other
-  // in-flight project) down with it. Orphan recovery handles anything that
-  // was genuinely mid-flight on the next start.
-  process.on("unhandledRejection", (reason) => {
+  installShutdownHandlers(shutdown, process, (label, error) => {
     app.log.error(
-      `unhandledRejection: ${reason instanceof Error ? reason.stack : String(reason)}`,
+      `${label}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
     );
-  });
-  process.on("uncaughtException", (err) => {
-    app.log.error(`uncaughtException: ${err.stack ?? err.message}`);
   });
 
   await app.listen({ port: ENV.port, host: ENV.host });
+  shutdown.markRunning();
   app.log.info(
     `hoopedorc server up on ${ENV.host}:${ENV.port} (mock=${ENV.mock})`,
   );

@@ -43,6 +43,17 @@ export interface HealthResponse {
   ok: boolean;
   mock: boolean;
   version: string;
+  state: "starting" | "running" | "shutting_down" | "stopped";
+  shutdownReason?: string;
+  /** Actionable dependency failures; never contains credentials or raw env. */
+  degraded: string[];
+  dependencies: {
+    docker: {
+      available: boolean;
+      required: boolean;
+      detail: string;
+    };
+  };
 }
 
 export interface CreateProjectResponse {

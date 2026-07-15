@@ -4,6 +4,7 @@ import type {
   DraftTask,
   LogEvent,
   MergeDecision,
+  ModelId,
   ModelInvocation,
   Notification,
   PlanChatMessage,
@@ -1541,6 +1542,56 @@ export function getLatestModelChecks(db: Db): ModelCheckRecord[] {
     )
     .all() as Record<string, unknown>[];
   return rows.map(mapModelCheck);
+}
+
+// ── Persisted model cooldowns (B41) ──
+
+export interface ModelCooldownRecord {
+  modelId: ModelId;
+  until: string;
+  reason: string;
+  updatedAt: string;
+}
+
+function mapModelCooldown(row: Record<string, unknown>): ModelCooldownRecord {
+  return {
+    modelId: asStr(row.model_id) as ModelId,
+    until: asStr(row.until),
+    reason: asStr(row.reason),
+    updatedAt: asStr(row.updated_at),
+  };
+}
+
+export function setModelCooldown(
+  db: Db,
+  modelId: ModelId,
+  until: string,
+  reason = "rate_limited",
+): ModelCooldownRecord {
+  const updatedAt = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO model_cooldowns (model_id, until, reason, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(model_id) DO UPDATE SET
+       until = excluded.until,
+       reason = excluded.reason,
+       updated_at = excluded.updated_at`,
+  ).run(modelId, until, reason, updatedAt);
+  return getModelCooldown(db, modelId)!;
+}
+
+export function getModelCooldown(
+  db: Db,
+  modelId: ModelId,
+): ModelCooldownRecord | null {
+  const row = db
+    .prepare("SELECT * FROM model_cooldowns WHERE model_id = ?")
+    .get(modelId) as Record<string, unknown> | undefined;
+  return row ? mapModelCooldown(row) : null;
+}
+
+export function clearModelCooldown(db: Db, modelId: ModelId): void {
+  db.prepare("DELETE FROM model_cooldowns WHERE model_id = ?").run(modelId);
 }
 
 export interface ModelRunStats {

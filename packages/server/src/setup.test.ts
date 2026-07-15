@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ModelInvocation, Project } from "@orc/types";
 import { defaultSettings } from "./config.js";
-import { projectSetupChecks, testModels } from "./setup.js";
+import { getModelRoster, projectSetupChecks, testModels } from "./setup.js";
 
 test("B40: model test emits a health invocation even for subscription-priced calls", async () => {
   const bin = mkdtempSync(join(tmpdir(), "hoopedorc-health-ledger-"));
@@ -48,6 +48,65 @@ process.stdin.on("end", () => {
   assert.equal(events[1]?.costUsd, 0);
   assert.equal(events[1]?.tokensIn, 8);
   assert.equal(events[1]?.tokensCached, 2);
+});
+
+test("B41: shutdown aborts an in-flight model health request", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-health-abort-"));
+  const fakeCli = `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => setInterval(() => {}, 1_000));
+`;
+  const file = join(bin, "claude");
+  writeFileSync(file, fakeCli);
+  chmodSync(file, 0o755);
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  const settings = defaultSettings();
+  settings.models = settings.models.filter((model) => model.id === "claude");
+  const events: ModelInvocation[] = [];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 100);
+  try {
+    const result = await testModels(
+      settings,
+      "",
+      (event) => events.push(event),
+      controller.signal,
+    );
+    assert.equal(result.results[0]?.ok, false);
+  } finally {
+    clearTimeout(timer);
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+
+  assert.equal(events.length, 2);
+  assert.equal(events[1]?.outcome, "stopped");
+  assert.equal(events[1]?.exitReason, "killed");
+});
+
+test("B41: shutdown aborts an in-flight setup CLI probe", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-setup-abort-"));
+  const fakeCli = `#!/usr/bin/env node
+setInterval(() => {}, 1_000);
+`;
+  const file = join(bin, "opencode");
+  writeFileSync(file, fakeCli);
+  chmodSync(file, 0o755);
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 100);
+  try {
+    await assert.rejects(
+      getModelRoster(controller.signal),
+      (error: unknown) => (error as Error).name === "AbortError",
+    );
+  } finally {
+    clearTimeout(timer);
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
 });
 
 test("B38: Setup health names each project's selected manager and runtime", async () => {
