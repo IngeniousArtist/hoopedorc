@@ -1691,7 +1691,7 @@ target rules.
 | B41 — graceful shutdown and runtime recovery | ✅ done, awaiting Fable validation | [#149](https://github.com/IngeniousArtist/hoopedorc/pull/149) |
 | F49 — Telegram reliability and phone-control hardening | ✅ implementation done, live private-chat smoke + Fable validation pending | [#150](https://github.com/IngeniousArtist/hoopedorc/pull/150) |
 | T2 — frontend unit/E2E test foundation | ✅ implementation done, awaiting Fable validation | [#151](https://github.com/IngeniousArtist/hoopedorc/pull/151) |
-| U19 — full responsive UX pass | ✅ implementation done, real-phone smoke + Fable validation pending | PR pending |
+| U19 — full responsive UX pass | ✅ implementation done, real-phone smoke + Fable validation pending | [#152](https://github.com/IngeniousArtist/hoopedorc/pull/152) |
 
 The owner approved this wave on 2026-07-14. Implementation proceeds in
 the dependency order specified in Part 10 below, with Fable independently
@@ -6132,7 +6132,8 @@ overflow assertions show no overlaps, clipped controls, unreadable text, or stic
 footer occlusion. A real phone smoke test over the owner's Tailscale route closes
 the item.
 
-**Implementation evidence (2026-07-15):** U19 now applies phone-only 40px touch
+**Implementation evidence (2026-07-15):** implementation is in
+[#152](https://github.com/IngeniousArtist/hoopedorc/pull/152). U19 now applies phone-only 40px touch
 targets while preserving desktop density, collapses fixed form/action columns,
 keeps project identity separate from destructive controls, and adds notch/home-
 indicator safe-area offsets to navigation, the task drawer, Settings' sticky save
