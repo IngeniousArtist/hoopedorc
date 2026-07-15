@@ -19,6 +19,12 @@ EnvironmentFile=/opt/hoopedorc/.env
 ExecStart=/usr/bin/npm run start:prebuilt
 Restart=on-failure
 RestartSec=5
+# B41: the server handles SIGTERM by refusing new work, cancelling every
+# managed process, flushing/checkpointing SQLite, and exiting cleanly. Keep
+# systemd's outer deadline above the app's 15s settlement deadline; the
+# control-group fallback guarantees a broken cleanup cannot orphan a CLI.
+TimeoutStopSec=25
+KillMode=control-group
 # Uncomment and tune for small instances — caps the server process's memory
 # so a leak/spike gets restarted (Restart=on-failure above) instead of the
 # OOM killer picking an arbitrary process on the box:

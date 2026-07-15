@@ -176,6 +176,16 @@ CREATE TABLE IF NOT EXISTS model_checks (
 );
 CREATE INDEX IF NOT EXISTS idx_model_checks_model ON model_checks(model_id, ts);
 
+-- B41: rate-limit state is global to one logical model subscription, not one
+-- project/runtime. Persisting the expiry prevents a service restart from
+-- immediately hammering a model that was already cooling down.
+CREATE TABLE IF NOT EXISTS model_cooldowns (
+  model_id   TEXT PRIMARY KEY,
+  until      TEXT NOT NULL,
+  reason     TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   id   INTEGER PRIMARY KEY CHECK (id = 1),
   json TEXT NOT NULL                            -- JSON Settings blob

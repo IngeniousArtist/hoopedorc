@@ -521,7 +521,12 @@ export class WorktreeManagerImpl implements WorktreeManager {
     });
   }
 
-  private async resolveSetupMode(project: Project, appleToolchain = false): Promise<boolean> {
+  private async resolveSetupMode(
+    project: Project,
+    appleToolchain = false,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    signal?.throwIfAborted();
     const platform = this.setupDeps.hostPlatform ?? process.platform;
     if (appleToolchain && platform !== "darwin") {
       throw new ProjectSetupError(
@@ -531,6 +536,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
     const resolved = await (this.setupDeps.resolveMode ?? resolveSandboxMode)(
       this.settings?.sandboxGates,
     );
+    signal?.throwIfAborted();
     if (!appleToolchain || !resolved.useSandbox) return resolved.useSandbox;
     if (this.settings?.sandboxGates === "required") {
       throw new ProjectSetupError(
@@ -801,7 +807,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
     plan: NodeDependencyPlan,
     signal?: AbortSignal,
   ): Promise<string> {
-    const useSandbox = await this.resolveSetupMode(project);
+    const useSandbox = await this.resolveSetupMode(project, false, signal);
     const runtime = await this.nodeRuntime(project, worktreePath, useSandbox, signal);
     const version = await this.managerVersion(
       project,
@@ -884,7 +890,11 @@ export class WorktreeManagerImpl implements WorktreeManager {
       return `${setup.command} (cached for this worktree)`;
     }
     const appleToolchain = containsAppleProject(worktreePath, setup.command);
-    const useSandbox = await this.resolveSetupMode(project, appleToolchain);
+    const useSandbox = await this.resolveSetupMode(
+      project,
+      appleToolchain,
+      signal,
+    );
     try {
       await this.executeSetup({
         project,
@@ -916,7 +926,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
   ): Promise<void> {
     signal?.throwIfAborted();
     if (containsAppleProject(worktreePath, project.config?.setupCommand?.command)) {
-      await this.resolveSetupMode(project, true);
+      await this.resolveSetupMode(project, true, signal);
     }
     const plan = inspectNodeDependencies(worktreePath);
     if (plan) await this.ensureNodeDeps(project, worktreePath, plan, signal);
@@ -925,8 +935,12 @@ export class WorktreeManagerImpl implements WorktreeManager {
 
   /** Project-aware Setup & Health line. It resolves the same package manager,
    * runtime, sandbox, and Apple-host policy used by real task preparation. */
-  async setupHealth(project: Project): Promise<{ ok: boolean; detail: string }> {
+  async setupHealth(
+    project: Project,
+    signal?: AbortSignal,
+  ): Promise<{ ok: boolean; detail: string }> {
     try {
+      signal?.throwIfAborted();
       if (!existsSync(project.localPath)) {
         throw new ProjectSetupError(`local clone not found at ${project.localPath}`);
       }
@@ -934,23 +948,29 @@ export class WorktreeManagerImpl implements WorktreeManager {
       const setup = project.config?.setupCommand;
       const apple = containsAppleProject(project.localPath, setup?.command);
       if (apple) {
-        await this.resolveSetupMode(project, true);
+        await this.resolveSetupMode(project, true, signal);
         details.push("Apple/Xcode project — macOS host toolchain");
       }
       const plan = inspectNodeDependencies(project.localPath);
       if (plan) {
-        const useSandbox = await this.resolveSetupMode(project);
-        const runtime = await this.nodeRuntime(project, project.localPath, useSandbox);
+        const useSandbox = await this.resolveSetupMode(project, false, signal);
+        const runtime = await this.nodeRuntime(
+          project,
+          project.localPath,
+          useSandbox,
+          signal,
+        );
         const version = await this.managerVersion(
           project,
           project.localPath,
           plan.manager,
           useSandbox,
+          signal,
         );
         details.push(`${plan.manager}@${version} via ${plan.lockfile} (${runtime.nodeVersion} ${runtime.platform}/${runtime.arch})`);
       }
       if (setup) {
-        const useSandbox = await this.resolveSetupMode(project, apple);
+        const useSandbox = await this.resolveSetupMode(project, apple, signal);
         if (useSandbox) {
           try {
             await this.executeSetup({
@@ -958,6 +978,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
               cwd: project.localPath,
               command: "sh",
               args: ["-c", 'command -v "$1" >/dev/null 2>&1', "hoopedorc", setup.command],
+              signal,
               timeoutMs: PROBE_TIMEOUT_MS,
               useSandbox: true,
             });
@@ -980,6 +1001,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
         detail: details.length > 0 ? details.join("; ") : "no Node lockfile or custom setup command — nothing to prepare",
       };
     } catch (err) {
+      signal?.throwIfAborted();
       return { ok: false, detail: (err as Error).message };
     }
   }

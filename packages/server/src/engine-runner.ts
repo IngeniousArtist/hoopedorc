@@ -102,6 +102,8 @@ export interface EngineRunnerOptions {
   /** B34 only bounds the HTTP wait; the runtime remains registered until it
    * really settles. B35 makes every subprocess honor that deadline promptly. */
   stopSettleTimeoutMs?: number;
+  /** One total deadline for service shutdown across every project/rollback. */
+  shutdownDeadlineMs?: number;
   /** Test seam for the persisted rollback state machine. */
   rollbackDepsFactory?: (project: Project) => RollbackExecutionDeps;
 }
@@ -112,6 +114,13 @@ export interface RollbackExecutionDeps {
   worktrees: WorktreeManager;
   gates: GateRunner;
   validator: Validator;
+}
+
+export interface EngineShutdownResult {
+  stoppedProjectIds: string[];
+  settled: boolean;
+  pendingProjectIds: string[];
+  pendingRollbackIds: string[];
 }
 
 /**
@@ -129,17 +138,12 @@ export class EngineRunner {
   private readonly pendingApprovals = new Map<string, (choice: string) => void>();
   private readonly rollbackRuns = new Map<string, Promise<void>>();
   private readonly rollbackByProject = new Map<string, string>();
+  private readonly rollbackAbortControllers = new Map<string, AbortController>();
+  private acceptingWork = true;
+  private shutdownPromise?: Promise<EngineShutdownResult>;
   /** Optional second channel (Telegram). Set after construction. */
   private notifier?: ServerNotifier;
 
-  /**
-   * F6: model id -> cooldown expiry (ms epoch), set when an adapter run
-   * fails with exitReason "rate_limited" (see @orc/adapters' classifyFailure).
-   * Consulted by every project's Orchestrator via checkModelCooldown below —
-   * cross-project, since a rate limit on a model's API key applies globally,
-   * not per-project.
-   */
-  private readonly coolingDown = new Map<ModelId, number>();
   private static readonly COOLDOWN_MS = 5 * 60 * 1000;
 
   /**
@@ -196,9 +200,21 @@ export class EngineRunner {
     }
   }
 
+  /** B41 shutdown boundary: force the final buffered batch to SQLite before
+   * the database is checkpointed and closed. */
+  flushPendingLogs(): void {
+    this.flushLogs();
+  }
+
   /** Wire an extra notifier (Telegram) for approvals + status pushes. */
   setNotifier(n: ServerNotifier | undefined): void {
     this.notifier = n;
+  }
+
+  private assertAcceptingWork(): void {
+    if (!this.acceptingWork) {
+      throw new Error("server is shutting down — new work is not accepted");
+    }
   }
 
   /**
@@ -228,10 +244,11 @@ export class EngineRunner {
   /** Returns a reason string while `modelId` is cooling down, else null —
    *  wired into every Orchestrator as SchedulerDeps.checkModelCooldown. */
   checkModelCooldown(modelId: ModelId): string | null {
-    const until = this.coolingDown.get(modelId);
-    if (!until) return null;
-    if (until <= Date.now()) {
-      this.coolingDown.delete(modelId);
+    const cooldown = repo.getModelCooldown(this.db, modelId);
+    if (!cooldown) return null;
+    const until = new Date(cooldown.until).getTime();
+    if (!Number.isFinite(until) || until <= Date.now()) {
+      repo.clearModelCooldown(this.db, modelId);
       return null;
     }
     return `rate-limited, cooling down for ~${Math.ceil((until - Date.now()) / 60_000)}m more`;
@@ -239,8 +256,14 @@ export class EngineRunner {
 
   /** For the model-health panel (F6) — current cooldown expiry, if any. */
   getCoolingDownUntil(modelId: ModelId): number | undefined {
-    const until = this.coolingDown.get(modelId);
-    return until && until > Date.now() ? until : undefined;
+    const cooldown = repo.getModelCooldown(this.db, modelId);
+    if (!cooldown) return undefined;
+    const until = new Date(cooldown.until).getTime();
+    if (!Number.isFinite(until) || until <= Date.now()) {
+      repo.clearModelCooldown(this.db, modelId);
+      return undefined;
+    }
+    return until;
   }
 
   /** Persist one B40 lifecycle event and fan out only the first accepted
@@ -255,9 +278,10 @@ export class EngineRunner {
       }
     }
     if (saved.invocation.exitReason === "rate_limited") {
-      this.coolingDown.set(
+      repo.setModelCooldown(
+        this.db,
         saved.invocation.model,
-        Date.now() + EngineRunner.COOLDOWN_MS,
+        new Date(Date.now() + EngineRunner.COOLDOWN_MS).toISOString(),
       );
       if (saved.invocation.projectId) {
         this.logError(
@@ -667,6 +691,7 @@ export class EngineRunner {
     project: Project,
     task: Task,
     job: RollbackJob,
+    signal?: AbortSignal,
   ): Promise<string> {
     const prUrl = `${project.repoUrl}/pull/${job.rollbackPrNumber}`;
     const reasons = job.decision?.reasons ?? [];
@@ -702,8 +727,15 @@ export class EngineRunner {
     });
     this.hub.broadcast({ type: "notification", payload: notif });
     this.notifier?.approvalRequested(notif, { prUrl, reasons });
-    return new Promise<string>((resolve) => {
+    return new Promise<string>((resolve, reject) => {
+      const onAbort = () => {
+        this.pendingApprovals.delete(notif.id);
+        reject(new DOMException("Rollback approval interrupted", "AbortError"));
+      };
+      if (signal?.aborted) return onAbort();
+      signal?.addEventListener("abort", onAbort, { once: true });
       this.pendingApprovals.set(notif.id, (choice) => {
+        signal?.removeEventListener("abort", onAbort);
         // Persist before resolving the waiter. A crash immediately after the
         // HTTP/Telegram response can then resume the chosen path on boot.
         this.updateRollback(job.id, { approvalChoice: choice });
@@ -792,6 +824,7 @@ export class EngineRunner {
    * priority runtime already owns the project, promote that exact runtime;
    * never create a competing Orchestrator. */
   async start(project: Project): Promise<void> {
+    this.assertAcceptingWork();
     const persistenceError = planningPersistenceError(project);
     if (persistenceError) throw new Error(persistenceError);
     if (this.rollbackByProject.has(project.id)) {
@@ -931,6 +964,7 @@ export class EngineRunner {
 
   /** Persist and prioritize a task through the project's one scheduler. */
   async dispatchOne(project: Project, taskId: string): Promise<Task> {
+    this.assertAcceptingWork();
     if (this.rollbackByProject.has(project.id)) {
       throw new Error("a rollback is active for this project");
     }
@@ -966,6 +1000,7 @@ export class EngineRunner {
   /** Recreate a manual-only runtime for durable requests after process boot or
    * after an older runtime settles. Returns true only when one was started. */
   resumeQueued(project: Project): boolean {
+    if (!this.acceptingWork) return false;
     if (this.runtimes.has(project.id) || this.rollbackByProject.has(project.id)) {
       return false;
     }
@@ -996,8 +1031,11 @@ export class EngineRunner {
     }
 
     this.rollbackByProject.set(project.id, job.id);
-    const run = this.runRollbackJob(project, task, job).finally(() => {
+    const controller = new AbortController();
+    this.rollbackAbortControllers.set(job.id, controller);
+    const run = this.runRollbackJob(project, task, job, controller.signal).finally(() => {
       this.rollbackRuns.delete(job.id);
+      this.rollbackAbortControllers.delete(job.id);
       if (this.rollbackByProject.get(project.id) === job.id) {
         this.rollbackByProject.delete(project.id);
       }
@@ -1010,6 +1048,7 @@ export class EngineRunner {
     project: Project,
     sourceTask: Task,
     initialJob: RollbackJob,
+    signal: AbortSignal,
   ): Promise<void> {
     const deps = this.buildRollbackDeps(project);
     let job = repo.getRollbackJob(this.db, initialJob.id) ?? initialJob;
@@ -1036,17 +1075,18 @@ export class EngineRunner {
     let preparedWorktree = false;
 
     try {
-      await deps.git.ensureClone(project);
+      await deps.git.ensureClone(project, signal);
 
       if (job.status === "requested" || job.status === "preparing") {
         job = this.updateRollback(job.id, {
           status: "preparing",
           statusReason: "Preparing an isolated rollback worktree",
         });
-        const prepared = await deps.git.prepareRollback(project, job);
+        const prepared = await deps.git.prepareRollback(project, job, signal);
         await deps.worktrees.prepareForGates(
           project,
           this.rollbackTask(sourceTask, job),
+          signal,
         );
         preparedWorktree = true;
         job = this.updateRollback(job.id, {
@@ -1071,16 +1111,17 @@ export class EngineRunner {
           job.status === "validating" ||
           job.status === "pushing")
       ) {
-        await deps.git.prepareRollback(project, job);
+        await deps.git.prepareRollback(project, job, signal);
         await deps.worktrees.prepareForGates(
           project,
           this.rollbackTask(sourceTask, job),
+          signal,
         );
       }
 
       if (job.status === "gating") {
         const rollbackTask = this.rollbackTask(sourceTask, job);
-        const gate = await deps.gates.run(project, rollbackTask);
+        const gate = await deps.gates.run(project, rollbackTask, signal);
         const cleanup = await deps.worktrees.restoreToHead(rollbackTask);
         if (!cleanup.ok) {
           gate.tests = false;
@@ -1130,6 +1171,7 @@ export class EngineRunner {
               source: "validator",
               message: line,
             }),
+          signal,
         );
         job = this.updateRollback(job.id, {
           decision,
@@ -1146,11 +1188,11 @@ export class EngineRunner {
       }
 
       if (job.status === "pushing") {
-        await deps.git.push(job.worktreePath, job.branch);
+        await deps.git.push(job.worktreePath, job.branch, signal);
         const rollbackTask = this.rollbackTask(sourceTask, job);
         const prNumber =
           job.rollbackPrNumber ??
-          (await deps.git.openRollbackPr(project, rollbackTask, job));
+          (await deps.git.openRollbackPr(project, rollbackTask, job, signal));
         job = this.updateRollback(job.id, {
           rollbackPrNumber: prNumber,
           status: "checking",
@@ -1170,6 +1212,8 @@ export class EngineRunner {
             project,
             job.rollbackPrNumber!,
             (project.config.githubChecksTimeoutMin ?? 15) * 60_000,
+            undefined,
+            signal,
           );
           if (checks === "failed" || checks === "timeout") {
             statusReason = `GitHub checks ${checks}; explicit approval is required to proceed`;
@@ -1184,7 +1228,7 @@ export class EngineRunner {
       if (job.status === "awaiting_approval") {
         const choice =
           job.approvalChoice ??
-          (await this.requestRollbackApproval(project, sourceTask, job));
+          (await this.requestRollbackApproval(project, sourceTask, job, signal));
         job = refresh();
         job = this.updateRollback(job.id, {
           status: choice === "approve_merge" ? "merging" : "rejecting",
@@ -1200,6 +1244,7 @@ export class EngineRunner {
           project,
           job,
           `Closed by Hoopedorc: rollback of PR #${job.sourcePrNumber} was rejected.`,
+          signal,
         );
         job = this.updateRollback(job.id, {
           status: "rejected",
@@ -1214,9 +1259,9 @@ export class EngineRunner {
       }
 
       if (job.status === "merging") {
-        await deps.git.prepareRollback(project, job);
+        await deps.git.prepareRollback(project, job, signal);
         const rollbackTask = this.rollbackTask(sourceTask, job);
-        const sync = await deps.git.syncBranchWithMain(project, rollbackTask);
+        const sync = await deps.git.syncBranchWithMain(project, rollbackTask, signal);
         if (sync === "conflict") {
           throw new RollbackConflictError(
             `Rollback PR #${job.rollbackPrNumber} now conflicts with ${project.defaultBranch}`,
@@ -1227,6 +1272,8 @@ export class EngineRunner {
             project,
             job.rollbackPrNumber!,
             (project.config.githubChecksTimeoutMin ?? 15) * 60_000,
+            undefined,
+            signal,
           );
           if (checks === "failed" || checks === "timeout") {
             job = this.updateRollback(job.id, {
@@ -1238,6 +1285,7 @@ export class EngineRunner {
               project,
               sourceTask,
               job,
+              signal,
             );
             job = refresh();
             if (choice !== "approve_merge") {
@@ -1249,6 +1297,7 @@ export class EngineRunner {
                 project,
                 job,
                 `Closed by Hoopedorc: refreshed rollback of PR #${job.sourcePrNumber} was rejected.`,
+                signal,
               );
               job = this.updateRollback(job.id, {
                 status: "rejected",
@@ -1265,7 +1314,7 @@ export class EngineRunner {
           }
         }
 
-        await deps.git.mergePr(project, job.rollbackPrNumber!);
+        await deps.git.mergePr(project, job.rollbackPrNumber!, signal);
         job = this.updateRollback(job.id, {
           status: "completed",
           statusReason: `Merged rollback PR #${job.rollbackPrNumber}; PR #${job.sourcePrNumber} is reverted`,
@@ -1302,7 +1351,14 @@ export class EngineRunner {
       const message = err instanceof Error ? err.message : String(err);
       job = refresh();
       const failedStage = job.status;
-      if (err instanceof RollbackConflictError) {
+      if (signal.aborted) {
+        this.updateRollback(job.id, {
+          statusReason: "Interrupted by server shutdown; rollback will resume on restart",
+        });
+        audit("rollback_interrupted", "Rollback interrupted by server shutdown", {
+          stage: failedStage,
+        });
+      } else if (err instanceof RollbackConflictError) {
         if (job.rollbackPrNumber != null) {
           await deps.git
             .closeRollbackPr(project, job, `Closed by Hoopedorc: ${message}`)
@@ -1337,6 +1393,7 @@ export class EngineRunner {
 
   /** Re-arm every nonterminal rollback after process restart. */
   resumeRollbacks(): number {
+    if (!this.acceptingWork) return 0;
     let resumed = 0;
     for (const job of repo.getRecoverableRollbackJobs(this.db)) {
       const project = repo.getProject(this.db, job.projectId);
@@ -1411,8 +1468,70 @@ export class EngineRunner {
     return stopped;
   }
 
+  /**
+   * B41 service shutdown: reject new work synchronously, abort every owned
+   * orchestrator in parallel, and wait under one total deadline (not one
+   * timeout per project). Rollback jobs are restart-safe and are included in
+   * settlement, though their checkpointed state remains recoverable if the
+   * deadline expires.
+   */
+  shutdown(projects: Project[]): Promise<EngineShutdownResult> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+    this.acceptingWork = false;
+    this.shutdownPromise = (async () => {
+      const projectById = new Map(projects.map((project) => [project.id, project]));
+      const runtimes = [...this.runtimes.entries()];
+      const rollbackRuns = [...this.rollbackRuns.entries()];
+      const stoppedProjectIds = [
+        ...new Set([
+          ...runtimes.map(([projectId]) => projectId),
+          ...this.rollbackByProject.keys(),
+        ]),
+      ];
+
+      const stopRequests = runtimes.map(async ([projectId, runtime]) => {
+        runtime.state = "stopping";
+        const project = projectById.get(projectId) ?? repo.getProject(this.db, projectId);
+        if (!project) return;
+        for (const task of repo.clearDispatchRequests(this.db, projectId)) {
+          this.hub.broadcast({ type: "task.updated", payload: task });
+        }
+        await runtime.orchestrator.pause(project, { drain: false });
+      });
+      for (const controller of this.rollbackAbortControllers.values()) {
+        controller.abort();
+      }
+
+      const settlement = Promise.allSettled(stopRequests).then(() =>
+        Promise.allSettled([
+          ...runtimes.map(([, runtime]) => runtime.settled),
+          ...rollbackRuns.map(([, run]) => run),
+        ]),
+      );
+      const deadlineMs = this.options.shutdownDeadlineMs ?? 15_000;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settled = await Promise.race([
+        settlement.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), deadlineMs);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      this.flushLogs();
+
+      return {
+        stoppedProjectIds,
+        settled,
+        pendingProjectIds: [...this.runtimes.keys()],
+        pendingRollbackIds: [...this.rollbackRuns.keys()],
+      };
+    })();
+    return this.shutdownPromise;
+  }
+
   /** Persist and start a gated rollback PR. Duplicate calls return one job. */
   async rollback(project: Project, task: Task): Promise<RollbackJob> {
+    this.assertAcceptingWork();
     if (task.prNumber == null) {
       throw new Error("task has no merged PR to roll back");
     }

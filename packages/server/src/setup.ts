@@ -24,14 +24,17 @@ async function check(
   args: string[],
   parse: (out: string) => string = firstLine,
   env?: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<SetupCheck> {
   try {
     const { stdout, stderr } = await pexec(cmd, args, {
       timeout: 20_000,
       env,
+      signal,
     });
     return { name, ok: true, detail: parse(`${stdout}\n${stderr}`).slice(0, 200) };
   } catch (err) {
+    signal?.throwIfAborted();
     const e = err as { stderr?: string; message?: string };
     return {
       name,
@@ -58,21 +61,23 @@ async function check(
 export async function runSetupChecks(
   settings: Settings,
   projects: Project[] = [],
+  signal?: AbortSignal,
 ): Promise<SetupHealthResponse> {
   const codexConfigured = settings.models.some((m) => m.runner === "codex");
   const agentEnv = sanitizedEnv();
-  const projectChecks = await projectSetupChecks(settings, projects);
+  const projectChecks = await projectSetupChecks(settings, projects, signal);
   const checks = await Promise.all<SetupCheck>([
     check("GitHub CLI (gh)", "gh", ["auth", "status"], (s) => {
       const acct = s.match(/Logged in to [^\s]+ account (\S+)/);
       return acct ? `logged in as ${acct[1]}` : firstLine(s);
-    }),
+    }, undefined, signal),
     check(
       "Claude Code (claude)",
       "claude",
       ["auth", "status", "--text"],
       firstLine,
       agentEnv,
+      signal,
     ),
     check(
       "OpenCode (opencode)",
@@ -85,6 +90,7 @@ export async function runSetupChecks(
         return creds.length ? `${creds.length} credential(s)` : firstLine(s);
       },
       agentEnv,
+      signal,
     ),
     codexConfigured
       ? check(
@@ -93,9 +99,10 @@ export async function runSetupChecks(
           ["login", "status"],
           firstLine,
           agentEnv,
+          signal,
         )
       : Promise.resolve({ name: "Codex CLI (codex)", ok: true, detail: "not configured" }),
-    gateSandboxCheck(settings),
+    gateSandboxCheck(settings, signal),
   ]);
   checks.push(...projectChecks);
   return { checks, allOk: checks.every((c) => c.ok) };
@@ -104,11 +111,12 @@ export async function runSetupChecks(
 export async function projectSetupChecks(
   settings: Pick<Settings, "sandboxGates">,
   projects: Project[],
+  signal?: AbortSignal,
 ): Promise<SetupCheck[]> {
   const projectSetup = new WorktreeManagerImpl(settings);
   return Promise.all(
     projects.map(async (project): Promise<SetupCheck> => {
-      const result = await projectSetup.setupHealth(project);
+      const result = await projectSetup.setupHealth(project, signal);
       return {
         name: `Project setup — ${project.name}`,
         ok: result.ok,
@@ -125,10 +133,15 @@ export async function projectSetupChecks(
  * no daemon is a real misconfiguration: every gate run would fail loudly the
  * moment a task reaches review.
  */
-async function gateSandboxCheck(settings: Settings): Promise<SetupCheck> {
+async function gateSandboxCheck(
+  settings: Settings,
+  signal?: AbortSignal,
+): Promise<SetupCheck> {
   const name = "Gate sandbox";
   try {
+    signal?.throwIfAborted();
     const resolved = await resolveSandboxMode(settings.sandboxGates);
+    signal?.throwIfAborted();
     // Per-project `gateImage` overrides aren't visible here (this check has
     // no project context) — show the default every project falls back to.
     const detail = resolved.useSandbox
@@ -136,6 +149,7 @@ async function gateSandboxCheck(settings: Settings): Promise<SetupCheck> {
       : resolved.detail;
     return { name, ok: true, detail };
   } catch (err) {
+    signal?.throwIfAborted();
     return { name, ok: false, detail: (err as Error).message.slice(0, 200) };
   }
 }
@@ -146,11 +160,12 @@ async function gateSandboxCheck(settings: Settings): Promise<SetupCheck> {
  * having the user type an id blind. Empty on failure (e.g. opencode not
  * installed yet) rather than throwing, since this is advisory only.
  */
-export async function getModelRoster(): Promise<ModelRosterResponse> {
+export async function getModelRoster(signal?: AbortSignal): Promise<ModelRosterResponse> {
   try {
     const { stdout } = await pexec("opencode", ["models"], {
       timeout: 20_000,
       env: sanitizedEnv(),
+      signal,
     });
     const models = stdout
       .split("\n")
@@ -158,6 +173,7 @@ export async function getModelRoster(): Promise<ModelRosterResponse> {
       .filter(Boolean);
     return { models };
   } catch {
+    signal?.throwIfAborted();
     return { models: [] };
   }
 }
@@ -171,6 +187,7 @@ export async function testModels(
   settings: Settings,
   opencodeBaseUrl: string,
   onInvocation?: (event: ModelInvocation) => void,
+  signal?: AbortSignal,
 ): Promise<TestModelsResponse> {
   const enabled = settings.models.filter((m) => m.enabled);
   const results: ModelTestResult[] = await Promise.all(
@@ -203,6 +220,7 @@ export async function testModels(
             "Say hello and state which AI model you are (name and version), in one short line.",
           cwd: tmpdir(),
           onLog: () => {},
+          signal,
         });
         onInvocation?.({
           ...baseInvocation,
@@ -234,8 +252,8 @@ export async function testModels(
         onInvocation?.({
           ...baseInvocation,
           endedAt: new Date().toISOString(),
-          outcome: "failed",
-          exitReason: "error",
+          outcome: signal?.aborted ? "stopped" : "failed",
+          exitReason: signal?.aborted ? "killed" : "error",
           costUsd: 0,
           tokensIn: 0,
           tokensOut: 0,

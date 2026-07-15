@@ -40,6 +40,14 @@ for the one-command version. The manual steps:
    for you on future deploys, so you only run `npm run build` by hand once,
    here.
 
+The unit gives Hoopedorc 25 seconds to handle `SIGTERM`. The app immediately
+refuses new mutations, cancels active model/gate/setup processes, waits up to
+15 seconds for all project and rollback runtimes together, stops Telegram,
+flushes logs, checkpoints SQLite's WAL, records a shutdown audit entry, and
+exits zero. Fatal exceptions use the same cleanup but exit nonzero so
+`Restart=on-failure` brings the service back. `KillMode=control-group` remains
+the final guard against an orphaned CLI if the process cannot finish cleanup.
+
 For the full ordered walkthrough (instance sizing, all CLI auths, `.env`,
 Tailscale, first-boot verification) see USER_GUIDE's
 [Deploying to EC2 — checklist](../docs/USER_GUIDE.md#deploying-to-ec2--checklist).

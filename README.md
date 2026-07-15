@@ -73,6 +73,8 @@ exhausting it in the first place.
 - One-click rollback of any merged task; full audit log
 - Stuck-run detection (max runtime, output idle, spin-loop) with automatic
   abort and fallback
+- Graceful SIGTERM/SIGINT/fatal-error cleanup with bounded runtime settlement,
+  SQLite checkpointing, restart-safe rate-limit cooldowns, and dependency health
 
 **Cost & subscription awareness**
 - Per-project and global monthly budget caps with 50%/80% soft warnings

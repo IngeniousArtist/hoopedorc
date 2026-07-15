@@ -38,7 +38,10 @@ export function isPlausibleImageRef(ref: string): boolean {
   return ref.length > 0 && ref.length <= 200 && IMAGE_REF_RE.test(ref);
 }
 
+export const DOCKER_PROBE_TTL_MS = 30_000;
+
 let dockerProbeResult: Promise<boolean> | null = null;
+let dockerProbeAt = 0;
 
 async function runDockerVersionProbe(): Promise<boolean> {
   try {
@@ -50,22 +53,32 @@ async function runDockerVersionProbe(): Promise<boolean> {
 }
 
 /**
- * Whether a Docker daemon responds, cached for the process lifetime — a gate
- * run can call this several times (typecheck/lint/build/test each check
- * independently), and re-probing before every one would add real latency for
- * no benefit (the daemon doesn't flap mid-run in practice).
+ * Whether a Docker daemon responds. The short cache avoids a subprocess for
+ * every gate while still recovering when Docker Desktop/the daemon starts or
+ * stops after Hoopedorc. Failed docker executions invalidate it immediately.
  */
-export function detectDocker(probe: () => Promise<boolean> = runDockerVersionProbe): Promise<boolean> {
-  if (!dockerProbeResult) {
-    dockerProbeResult = probe();
+export function detectDocker(
+  probe: () => Promise<boolean> = runDockerVersionProbe,
+  options: { now?: () => number; ttlMs?: number } = {},
+): Promise<boolean> {
+  const now = (options.now ?? Date.now)();
+  const ttlMs = options.ttlMs ?? DOCKER_PROBE_TTL_MS;
+  if (!dockerProbeResult || now - dockerProbeAt >= ttlMs) {
+    dockerProbeAt = now;
+    dockerProbeResult = probe().catch(() => false);
   }
   return dockerProbeResult;
+}
+
+export function invalidateDockerDetection(): void {
+  dockerProbeResult = null;
+  dockerProbeAt = 0;
 }
 
 /** Test-only: clears the cached probe so a test can simulate the daemon
  *  appearing/disappearing between calls. */
 export function _resetDockerDetectionForTests(): void {
-  dockerProbeResult = null;
+  invalidateDockerDetection();
 }
 
 let warnedNoDockerForAuto = false;
@@ -116,6 +129,7 @@ export async function resolveSandboxMode(
     }
     return { useSandbox: false, detail: "host (auto — docker not detected)" };
   }
+  warnedNoDockerForAuto = false;
   return { useSandbox: true, detail: "docker (auto)" };
 }
 
@@ -208,6 +222,7 @@ export async function sandboxedExecFile(
       maxOutputBytes: opts.maxBuffer,
     });
   } catch (err) {
+    invalidateDockerDetection();
     // Killing the docker CLI does not guarantee the daemon stopped the
     // container. The unique name gives us an unambiguous cleanup target.
     await runner("docker", ["rm", "-f", containerName], {
