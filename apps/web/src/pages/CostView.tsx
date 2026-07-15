@@ -199,7 +199,7 @@ export function CostView({ projectId }: { projectId: string }) {
         </h3>
         <div className="divide-y divide-neutral-800">
           {a.byModel.length === 0 && (
-            <div className="px-4 py-3 text-xs text-neutral-400">No costs yet</div>
+            <div className="px-4 py-3 text-xs text-neutral-400">No model calls yet</div>
           )}
           {a.byModel.map((m) => (
             <div
@@ -208,7 +208,7 @@ export function CostView({ projectId }: { projectId: string }) {
             >
               <span className="text-neutral-300">{m.model}</span>
               <span className="text-[11px] text-neutral-400">
-                {m.runs} run{m.runs === 1 ? "" : "s"} ·{" "}
+                {m.runs} call{m.runs === 1 ? "" : "s"} ·{" "}
                 {fmtTokens(m.tokensIn)}/{fmtTokens(m.tokensOut)} tok
               </span>
               <span className="ml-auto font-mono text-neutral-200">

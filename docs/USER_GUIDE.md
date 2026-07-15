@@ -61,8 +61,10 @@ merge — rather than either babysitting every diff or trusting a black box.
   Codex is subscription-billed the same way Claude is — Hoopedorc can't see
   into that spend, so codex-runner tasks always show **$0.0000** in cost
   views (real token counts still show; they're just not priced). Use the
-  model's **quota** (max runs per window) rather than a cost cap to keep it
-  in check, since a dollar cap can never trigger for a run that costs $0.
+  model's **quota** (max model invocations per window) rather than a cost cap
+  to keep it in check, since a dollar cap can never trigger for a call that
+  costs $0. Planning, deconstruction, validation, docs, and health-test calls
+  count too—not only author attempts.
 - Run `npm install && npm run setup` from the repo root — `setup` creates
   `.env` from `.env.example` if you don't have one yet, and checks all
   three CLIs (`gh`/`claude`/`opencode`) for you.
@@ -167,8 +169,10 @@ going on a always-on box.
   autonomous run winds down cleanly rather than erroring out.
 - **Subscription quotas.** Model plans with usage windows (Claude Pro's
   rolling cap being the motivating case) can be declared per model in
-  Settings → Models: a window in hours plus a max run count and/or max
-  spend. Once a model's window is exhausted the scheduler routes around it
+  Settings → Models: a window in hours plus a max invocation count and/or max
+  spend. Every model-backed stage counts (planner, deconstructor, author,
+  validator, docs, and health), including subscription calls reported as $0.
+  Once a model's window is exhausted the scheduler routes around it
   (skips dispatching, retries once the window rolls) instead of burning
   attempts on rate-limit failures. This complements the automatic cooldown
   that already kicks in *after* a rate-limited failure.

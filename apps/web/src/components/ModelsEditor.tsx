@@ -358,7 +358,7 @@ export function ModelsEditor({
                       },
                     })
                   }
-                  placeholder="max runs"
+                  placeholder="max calls"
                   className={`${inputCls} disabled:opacity-40`}
                 />
                 <input

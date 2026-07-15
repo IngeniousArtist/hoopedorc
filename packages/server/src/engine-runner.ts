@@ -14,6 +14,7 @@ import {
 import { makeAdapter, type AgentAdapter } from "@orc/adapters";
 import type {
   ModelId,
+  ModelInvocation,
   Project,
   RollbackJob,
   RunSummaryDetail,
@@ -27,6 +28,7 @@ import type { WsHub } from "./ws-hub";
 import { checkBudget, checkBudgetThresholds, checkModelQuota } from "./budget";
 import { manualCostUsd } from "./pricing";
 import { planningPersistenceError } from "./planning-commit";
+import { persistInvocationEvent } from "./invocation-ledger";
 import type { ServerNotifier } from "./telegram";
 
 function fmtDurationMs(ms: number): string {
@@ -241,6 +243,32 @@ export class EngineRunner {
     return until && until > Date.now() ? until : undefined;
   }
 
+  /** Persist one B40 lifecycle event and fan out only the first accepted
+   * terminal transition. SQLite owns the exactly-once decision. */
+  private recordInvocation(event: ModelInvocation): ModelInvocation {
+    const saved = persistInvocationEvent(this.db, event);
+    if (!saved.transitioned) return saved.invocation;
+    if (saved.cost) {
+      this.hub.broadcast({ type: "cost.updated", payload: saved.cost });
+      if (saved.invocation.projectId) {
+        this.checkAndPushBudgetAlerts(saved.invocation.projectId);
+      }
+    }
+    if (saved.invocation.exitReason === "rate_limited") {
+      this.coolingDown.set(
+        saved.invocation.model,
+        Date.now() + EngineRunner.COOLDOWN_MS,
+      );
+      if (saved.invocation.projectId) {
+        this.logError(
+          saved.invocation.projectId,
+          `${saved.invocation.model} looks rate-limited — cooling down for ${EngineRunner.COOLDOWN_MS / 60_000}m`,
+        );
+      }
+    }
+    return saved.invocation;
+  }
+
   isRunning(projectId: string): boolean {
     return this.runtimes.get(projectId)?.autonomousStartedAt !== undefined;
   }
@@ -310,26 +338,7 @@ export class EngineRunner {
     const validator = new ValidatorImpl(
       adapterFor,
       liveSettings,
-      (model, taskId, costUsd, tokensIn, tokensOut, tokensCached = 0) => {
-        // Manual per-model pricing (Settings) overrides the CLI-reported
-        // cost — the CLIs' own pricing tables go stale (see pricing.ts).
-        const cfg = liveSettings().models.find((m) => m.id === model);
-        const manual = manualCostUsd(cfg, tokensIn, tokensOut, tokensCached);
-        const finalCost = manual ?? costUsd;
-        if (finalCost <= 0) return; // nothing billable to record
-        const cost = repo.createCost(this.db, {
-          projectId: project.id,
-          model,
-          taskId,
-          costUsd: finalCost,
-          tokensIn,
-          tokensOut,
-          tokensCached,
-          ts: new Date().toISOString(),
-        });
-        this.hub.broadcast({ type: "cost.updated", payload: cost });
-        this.checkAndPushBudgetAlerts(project.id);
-      },
+      (event) => this.recordInvocation(event),
     );
 
     const deps: SchedulerDeps = {
@@ -441,6 +450,32 @@ export class EngineRunner {
           const manual = manualCostUsd(cfg, r.tokensIn, r.tokensOut, r.tokensCached ?? 0);
           if (manual != null) r = { ...r, costUsd: manual };
 
+          this.recordInvocation({
+            id: r.id,
+            projectId: project.id,
+            taskId: r.taskId,
+            runId: r.id,
+            stage: r.id.endsWith("-docs") ? "docs" : "author",
+            model: r.model,
+            runner: cfg?.runner ?? "unknown",
+            effort: r.effort ?? "default",
+            startedAt: r.startedAt,
+            endedAt: r.endedAt,
+            outcome:
+              r.status === "running"
+                ? "running"
+                : r.status === "passed"
+                  ? "completed"
+                  : r.status === "stopped"
+                    ? "stopped"
+                    : "failed",
+            exitReason: r.exitReason,
+            costUsd: r.costUsd,
+            tokensIn: r.tokensIn,
+            tokensOut: r.tokensOut,
+            tokensCached: r.tokensCached ?? 0,
+          });
+
           const existingRun = repo.getRun(this.db, r.id);
           if (existingRun?.status === "stopped" && r.status !== "running") {
             // The Stop route owns the terminal run status. Preserve it when
@@ -457,28 +492,6 @@ export class EngineRunner {
             repo.updateRun(this.db, r.id, r);
           } else {
             repo.createRun(this.db, r);
-          }
-          if (r.exitReason === "rate_limited") {
-            this.coolingDown.set(r.model, Date.now() + EngineRunner.COOLDOWN_MS);
-            this.logError(
-              project.id,
-              `${r.model} looks rate-limited — cooling down for ${EngineRunner.COOLDOWN_MS / 60_000}m`,
-            );
-          }
-          if (r.costUsd > 0) {
-            const cost = repo.createCost(this.db, {
-              projectId: project.id,
-              model: r.model,
-              taskId: r.taskId,
-              runId: r.id,
-              costUsd: r.costUsd,
-              tokensIn: r.tokensIn,
-              tokensOut: r.tokensOut,
-              tokensCached: r.tokensCached ?? 0,
-              ts: new Date().toISOString(),
-            });
-            this.hub.broadcast({ type: "cost.updated", payload: cost });
-            this.checkAndPushBudgetAlerts(project.id);
           }
           this.hub.broadcast({
             type: "run.updated",
@@ -614,24 +627,7 @@ export class EngineRunner {
       validator: new ValidatorImpl(
         adapterFor,
         liveSettings,
-        (model, taskId, costUsd, tokensIn, tokensOut, tokensCached = 0) => {
-          const config = liveSettings().models.find((candidate) => candidate.id === model);
-          const finalCost =
-            manualCostUsd(config, tokensIn, tokensOut, tokensCached) ?? costUsd;
-          if (finalCost <= 0) return;
-          const cost = repo.createCost(this.db, {
-            projectId: project.id,
-            model,
-            taskId,
-            costUsd: finalCost,
-            tokensIn,
-            tokensOut,
-            tokensCached,
-            ts: new Date().toISOString(),
-          });
-          this.hub.broadcast({ type: "cost.updated", payload: cost });
-          this.checkAndPushBudgetAlerts(project.id);
-        },
+        (event) => this.recordInvocation(event),
       ),
     };
   }

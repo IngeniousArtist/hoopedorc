@@ -4,6 +4,7 @@ import type {
   DraftTask,
   LogEvent,
   MergeDecision,
+  ModelInvocation,
   Notification,
   PlanChatMessage,
   Project,
@@ -124,7 +125,7 @@ export function updateProject(
 
 /**
  * Delete a project and every row that references it (tasks, runs, logs,
- * merge decisions, costs, notifications, audit log). SQLite FKs are enforced
+ * merge decisions, invocations, costs, notifications, audit log). SQLite FKs are enforced
  * (PRAGMA foreign_keys = ON), so children must go first; wrapped in a
  * transaction so a partial delete can't leave orphans.
  */
@@ -140,6 +141,7 @@ export function deleteProject(db: Db, id: string): void {
       db.prepare("DELETE FROM runs WHERE task_id = ?").run(taskId);
     }
     db.prepare("DELETE FROM costs WHERE project_id = ?").run(projectId);
+    db.prepare("DELETE FROM model_invocations WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM notifications WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM audit_log WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM rollback_jobs WHERE project_id = ?").run(projectId);
@@ -513,7 +515,171 @@ export function getRecoverableRollbackJobs(db: Db): RollbackJob[] {
   ).map(mapRollbackJob);
 }
 
-// ── Runs ──
+// ── Model invocation ledger (B40) ──
+
+function mapInvocation(row: Record<string, unknown>): ModelInvocation {
+  return {
+    id: asStr(row.id),
+    projectId: row.project_id ? asStr(row.project_id) : undefined,
+    taskId: row.task_id ? asStr(row.task_id) : undefined,
+    runId: row.run_id ? asStr(row.run_id) : undefined,
+    stage: asStr(row.stage) as ModelInvocation["stage"],
+    model: asStr(row.model) as ModelInvocation["model"],
+    runner: asStr(row.runner) as ModelInvocation["runner"],
+    effort: asStr(row.effort) || "default",
+    startedAt: asStr(row.started_at),
+    endedAt: row.ended_at ? asStr(row.ended_at) : undefined,
+    outcome: asStr(row.outcome) as ModelInvocation["outcome"],
+    exitReason: row.exit_reason ? asStr(row.exit_reason) : undefined,
+    costUsd: Number(row.cost_usd),
+    tokensIn: Number(row.tokens_in),
+    tokensOut: Number(row.tokens_out),
+    tokensCached: Number(row.tokens_cached),
+  };
+}
+
+export function getInvocation(db: Db, id: string): ModelInvocation | null {
+  const row = db.prepare("SELECT * FROM model_invocations WHERE id = ?").get(id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? mapInvocation(row) : null;
+}
+
+export function getInvocations(
+  db: Db,
+  filter: { projectId?: string; taskId?: string; stage?: ModelInvocation["stage"] } = {},
+): ModelInvocation[] {
+  const where: string[] = [];
+  const values: string[] = [];
+  if (filter.projectId) {
+    where.push("project_id = ?");
+    values.push(filter.projectId);
+  }
+  if (filter.taskId) {
+    where.push("task_id = ?");
+    values.push(filter.taskId);
+  }
+  if (filter.stage) {
+    where.push("stage = ?");
+    values.push(filter.stage);
+  }
+  return db
+    .prepare(
+      `SELECT * FROM model_invocations${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ` +
+        "ORDER BY started_at DESC",
+    )
+    .all(...values)
+    .map((row) => mapInvocation(row as Record<string, unknown>));
+}
+
+/** Idempotent start write. A duplicate producer cannot replace the original
+ * attempt-stable runner/effort/correlation fields. */
+export function createInvocation(db: Db, invocation: ModelInvocation): ModelInvocation {
+  db.prepare(
+    `INSERT OR IGNORE INTO model_invocations (
+       id, project_id, task_id, run_id, stage, model, runner, effort,
+       started_at, ended_at, outcome, exit_reason, cost_usd,
+       tokens_in, tokens_out, tokens_cached
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    invocation.id,
+    invocation.projectId ?? null,
+    invocation.taskId ?? null,
+    invocation.runId ?? null,
+    invocation.stage,
+    invocation.model,
+    invocation.runner,
+    invocation.effort,
+    invocation.startedAt,
+    invocation.endedAt ?? null,
+    invocation.outcome,
+    invocation.exitReason ?? null,
+    invocation.costUsd,
+    invocation.tokensIn,
+    invocation.tokensOut,
+    invocation.tokensCached,
+  );
+  return getInvocation(db, invocation.id)!;
+}
+
+export interface InvocationTerminalResult {
+  invocation: ModelInvocation;
+  /** True only for the caller that won running -> terminal. */
+  transitioned: boolean;
+  /** Compatibility cost projection created in the same transaction. */
+  cost?: CostRecord;
+}
+
+/** Exactly-once terminal transition and cost projection. Keeping both writes
+ * in one SQLite transaction prevents a crash from leaving billed usage in
+ * one accounting surface but not the other. */
+export function terminalizeInvocation(
+  db: Db,
+  id: string,
+  terminal: Pick<
+    ModelInvocation,
+    | "outcome"
+    | "endedAt"
+    | "exitReason"
+    | "costUsd"
+    | "tokensIn"
+    | "tokensOut"
+    | "tokensCached"
+  >,
+): InvocationTerminalResult | null {
+  if (terminal.outcome === "running") {
+    throw new Error("terminal invocation outcome cannot be running");
+  }
+  return db.transaction((): InvocationTerminalResult | null => {
+    const changed = db.prepare(
+      `UPDATE model_invocations
+       SET ended_at = ?, outcome = ?, exit_reason = ?, cost_usd = ?,
+           tokens_in = ?, tokens_out = ?, tokens_cached = ?
+       WHERE id = ? AND outcome = 'running'`,
+    ).run(
+      terminal.endedAt ?? new Date().toISOString(),
+      terminal.outcome,
+      terminal.exitReason ?? null,
+      terminal.costUsd,
+      terminal.tokensIn,
+      terminal.tokensOut,
+      terminal.tokensCached,
+      id,
+    );
+    const invocation = getInvocation(db, id);
+    if (!invocation) return null;
+    if (changed.changes === 0) return { invocation, transitioned: false };
+
+    let cost: CostRecord | undefined;
+    if (invocation.projectId && invocation.costUsd > 0) {
+      const costId = crypto.randomUUID();
+      db.prepare(
+        `INSERT INTO costs (
+           id, invocation_id, project_id, model, task_id, run_id,
+           cost_usd, tokens_in, tokens_out, tokens_cached, ts
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        costId,
+        invocation.id,
+        invocation.projectId,
+        invocation.model,
+        invocation.taskId ?? null,
+        invocation.runId ?? null,
+        invocation.costUsd,
+        invocation.tokensIn,
+        invocation.tokensOut,
+        invocation.tokensCached,
+        invocation.endedAt ?? new Date().toISOString(),
+      );
+      cost = mapCost(
+        db.prepare("SELECT * FROM costs WHERE id = ?").get(costId) as Record<string, unknown>,
+      );
+    }
+    return { invocation, transitioned: true, cost };
+  })();
+}
+
+// ── Runs (task-attempt compatibility view) ──
 
 function mapRun(row: Record<string, unknown>): Run {
   return {
@@ -533,6 +699,41 @@ function mapRun(row: Record<string, unknown>): Run {
     tokensOut: Number(row.tokens_out),
     tokensCached: row.tokens_cached != null ? Number(row.tokens_cached) : 0,
   };
+}
+
+function syncRunInvocation(db: Db, run: Run): void {
+  createInvocation(db, {
+    id: run.id,
+    projectId: run.projectId || undefined,
+    taskId: run.taskId,
+    runId: run.id,
+    stage: run.id.endsWith("-docs") ? "docs" : "author",
+    model: run.model,
+    runner: "unknown",
+    effort: run.effort ?? "default",
+    startedAt: run.startedAt,
+    outcome: "running",
+    costUsd: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    tokensCached: 0,
+  });
+  if (run.status !== "running") {
+    terminalizeInvocation(db, run.id, {
+      outcome:
+        run.status === "passed"
+          ? "completed"
+          : run.status === "stopped"
+            ? "stopped"
+            : "failed",
+      endedAt: run.endedAt,
+      exitReason: run.exitReason,
+      costUsd: run.costUsd,
+      tokensIn: run.tokensIn,
+      tokensOut: run.tokensOut,
+      tokensCached: run.tokensCached ?? 0,
+    });
+  }
 }
 
 export function getRuns(db: Db, taskId: string): Run[] {
@@ -573,7 +774,9 @@ export function createRun(
     r.tokensOut,
     r.tokensCached ?? 0,
   );
-  return getRun(db, id)!;
+  const created = getRun(db, id)!;
+  syncRunInvocation(db, created);
+  return created;
 }
 
 export function updateRun(
@@ -786,6 +989,7 @@ export function createMergeDecision(
 function mapCost(row: Record<string, unknown>): CostRecord {
   return {
     id: asStr(row.id),
+    invocationId: row.invocation_id ? asStr(row.invocation_id) : undefined,
     projectId: asStr(row.project_id),
     model: asStr(row.model) as CostRecord["model"],
     taskId: row.task_id ? asStr(row.task_id) : undefined,
@@ -800,7 +1004,11 @@ function mapCost(row: Record<string, unknown>): CostRecord {
 
 export function getCosts(db: Db, projectId: string): CostRecord[] {
   return db
-    .prepare("SELECT * FROM costs WHERE project_id = ? ORDER BY ts DESC")
+    .prepare(
+      `SELECT * FROM costs
+       WHERE project_id = ? AND invocation_id IS NOT NULL
+       ORDER BY ts DESC`,
+    )
     .all(projectId)
     .map((r) => mapCost(r as Record<string, unknown>));
 }
@@ -810,11 +1018,50 @@ export function createCost(
   c: Omit<CostRecord, "id"> & { id?: string },
 ): CostRecord {
   const id = c.id ?? crypto.randomUUID();
+  const linkedRun = c.runId ? getInvocation(db, c.runId) : null;
+  const invocationId = c.invocationId ?? linkedRun?.id ?? `legacy-cost:${id}`;
+  const existing = db
+    .prepare("SELECT * FROM costs WHERE invocation_id = ?")
+    .get(invocationId) as Record<string, unknown> | undefined;
+  if (existing) return mapCost(existing);
+  if (!linkedRun && !c.invocationId) {
+    createInvocation(db, {
+      id: invocationId,
+      projectId: c.projectId,
+      taskId: c.taskId,
+      stage: c.taskId ? "validator" : "planner",
+      model: c.model,
+      runner: "unknown",
+      effort: "default",
+      startedAt: c.ts,
+      endedAt: c.ts,
+      outcome: "completed",
+      exitReason: "legacy_compatibility_write",
+      costUsd: c.costUsd,
+      tokensIn: c.tokensIn,
+      tokensOut: c.tokensOut,
+      tokensCached: c.tokensCached ?? 0,
+    });
+  }
   db.prepare(
-    `INSERT INTO costs (id, project_id, model, task_id, run_id, cost_usd, tokens_in, tokens_out, tokens_cached, ts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, c.projectId, c.model, c.taskId ?? null, c.runId ?? null, c.costUsd, c.tokensIn, c.tokensOut, c.tokensCached ?? 0, c.ts);
-  return { ...c, id } as CostRecord;
+    `INSERT INTO costs (id, invocation_id, project_id, model, task_id, run_id, cost_usd, tokens_in, tokens_out, tokens_cached, ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    invocationId,
+    c.projectId,
+    c.model,
+    c.taskId ?? null,
+    c.runId ?? null,
+    c.costUsd,
+    c.tokensIn,
+    c.tokensOut,
+    c.tokensCached ?? 0,
+    c.ts,
+  );
+  return mapCost(
+    db.prepare("SELECT * FROM costs WHERE id = ?").get(id) as Record<string, unknown>,
+  );
 }
 
 export function getCostSummary(
@@ -822,7 +1069,9 @@ export function getCostSummary(
   projectId: string,
 ): { totalUsd: number; byModel: Record<string, number> } {
   const rows = db
-    .prepare("SELECT model, SUM(cost_usd) as total FROM costs WHERE project_id = ? GROUP BY model")
+    .prepare(
+      "SELECT model, SUM(cost_usd) as total FROM model_invocations WHERE project_id = ? GROUP BY model",
+    )
     .all(projectId) as { model: string; total: number }[];
   const byModel: Record<string, number> = {};
   let totalUsd = 0;
@@ -839,7 +1088,8 @@ export function getCostSummary(
 export function getCostSince(db: Db, projectId: string, sinceIso: string): number {
   const row = db
     .prepare(
-      "SELECT COALESCE(SUM(cost_usd), 0) as total FROM costs WHERE project_id = ? AND ts >= ?",
+      `SELECT COALESCE(SUM(cost_usd), 0) as total
+       FROM model_invocations WHERE project_id = ? AND started_at >= ?`,
     )
     .get(projectId, sinceIso) as { total: number } | undefined;
   return row ? Number(row.total) : 0;
@@ -873,7 +1123,8 @@ export function getCostAnalytics(
                 SUM(tokens_in) AS tin,
                 SUM(tokens_out) AS tout,
                 COUNT(*)       AS runs
-         FROM costs WHERE project_id = ? GROUP BY model ORDER BY cost DESC`,
+         FROM model_invocations
+         WHERE project_id = ? GROUP BY model ORDER BY cost DESC`,
       )
       .all(projectId) as Record<string, unknown>[]
   ).map((r) => ({
@@ -887,8 +1138,9 @@ export function getCostAnalytics(
   const daily = (
     db
       .prepare(
-        `SELECT substr(ts, 1, 10) AS date, SUM(cost_usd) AS cost
-         FROM costs WHERE project_id = ? GROUP BY date ORDER BY date ASC`,
+        `SELECT substr(started_at, 1, 10) AS date, SUM(cost_usd) AS cost
+         FROM model_invocations
+         WHERE project_id = ? GROUP BY date ORDER BY date ASC`,
       )
       .all(projectId) as Record<string, unknown>[]
   ).map((r) => ({ date: asStr(r.date), costUsd: Number(r.cost) }));
@@ -896,12 +1148,12 @@ export function getCostAnalytics(
   const byTask = (
     db
       .prepare(
-        `SELECT c.task_id AS task_id,
+        `SELECT i.task_id AS task_id,
                 COALESCE(t.title, '(planning / untracked)') AS title,
-                SUM(c.cost_usd) AS cost
-         FROM costs c LEFT JOIN tasks t ON t.id = c.task_id
-         WHERE c.project_id = ?
-         GROUP BY c.task_id ORDER BY cost DESC`,
+                SUM(i.cost_usd) AS cost
+         FROM model_invocations i LEFT JOIN tasks t ON t.id = i.task_id
+         WHERE i.project_id = ?
+         GROUP BY i.task_id ORDER BY cost DESC`,
       )
       .all(projectId) as Record<string, unknown>[]
   ).map((r) => ({
@@ -915,7 +1167,7 @@ export function getCostAnalytics(
       `SELECT COALESCE(SUM(cost_usd),0) AS cost,
               COALESCE(SUM(tokens_in),0) AS tin,
               COALESCE(SUM(tokens_out),0) AS tout
-       FROM costs WHERE project_id = ?`,
+       FROM model_invocations WHERE project_id = ?`,
     )
     .get(projectId) as { cost: number; tin: number; tout: number };
 
@@ -939,7 +1191,7 @@ export function getModelRunAverages(
   const rows = db
     .prepare(
       `SELECT model, AVG(cost_usd) AS avg, COUNT(*) AS n
-       FROM costs WHERE cost_usd > 0 GROUP BY model`,
+       FROM model_invocations WHERE cost_usd > 0 GROUP BY model`,
     )
     .all() as { model: string; avg: number; n: number }[];
   const out: Record<string, { avgCostPerRun: number; runs: number }> = {};
@@ -964,7 +1216,9 @@ function firstOfMonthUtc(): string {
 
 export function getModelMonthlyCost(db: Db, model: string): number {
   const row = db
-    .prepare("SELECT COALESCE(SUM(cost_usd), 0) as total FROM costs WHERE model = ? AND ts >= ?")
+    .prepare(
+      "SELECT COALESCE(SUM(cost_usd), 0) as total FROM model_invocations WHERE model = ? AND started_at >= ?",
+    )
     .get(model, firstOfMonthUtc()) as { total: number } | undefined;
   return row ? Number(row.total) : 0;
 }
@@ -972,32 +1226,30 @@ export function getModelMonthlyCost(db: Db, model: string): number {
 /** Total spend this calendar month across all projects and models. */
 export function getGlobalMonthlyCost(db: Db): number {
   const row = db
-    .prepare("SELECT COALESCE(SUM(cost_usd), 0) as total FROM costs WHERE ts >= ?")
+    .prepare(
+      "SELECT COALESCE(SUM(cost_usd), 0) as total FROM model_invocations WHERE started_at >= ?",
+    )
     .get(firstOfMonthUtc()) as { total: number } | undefined;
   return row ? Number(row.total) : 0;
 }
 
 /**
- * F16: how many times `model` has run and how much it has cost, since
- * `sinceIso`, across ALL projects — a subscription's usage cap applies to
- * the model's API key/plan, not any one project. Run count comes from the
- * `runs` table (every attempt, not just terminal ones — a subscription's
- * rolling window cares about requests made, not outcomes); cost comes from
- * `costs` the same way `getModelMonthlyCost` does, just with a rolling
- * window instead of a calendar-month one.
+ * B40: every model invocation and its cost since `sinceIso`, across ALL
+ * projects and stages. Started/in-flight calls count immediately because a
+ * subscription quota cares about requests made, not eventual outcomes.
  */
 export function getModelUsageSince(
   db: Db,
   model: string,
   sinceIso: string,
 ): { runs: number; costUsd: number } {
-  const runRow = db
-    .prepare("SELECT COUNT(*) as n FROM runs WHERE model = ? AND started_at >= ?")
-    .get(model, sinceIso) as { n: number };
-  const costRow = db
-    .prepare("SELECT COALESCE(SUM(cost_usd), 0) as total FROM costs WHERE model = ? AND ts >= ?")
-    .get(model, sinceIso) as { total: number };
-  return { runs: Number(runRow.n), costUsd: Number(costRow.total) };
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd), 0) AS total
+       FROM model_invocations WHERE model = ? AND started_at >= ?`,
+    )
+    .get(model, sinceIso) as { n: number; total: number };
+  return { runs: Number(row.n), costUsd: Number(row.total) };
 }
 
 // ── Notifications ──
@@ -1228,6 +1480,7 @@ export function clearBudgetAlerts(db: Db, scope: string): void {
 
 export interface ModelCheckRecord {
   id: string;
+  invocationId?: string;
   modelId: string;
   displayName: string;
   ok: boolean;
@@ -1241,6 +1494,7 @@ export interface ModelCheckRecord {
 function mapModelCheck(row: Record<string, unknown>): ModelCheckRecord {
   return {
     id: asStr(row.id),
+    invocationId: row.invocation_id ? asStr(row.invocation_id) : undefined,
     modelId: asStr(row.model_id),
     displayName: asStr(row.display_name),
     ok: Number(row.ok) === 1,
@@ -1258,10 +1512,11 @@ export function createModelCheck(
 ): ModelCheckRecord {
   const id = c.id ?? crypto.randomUUID();
   db.prepare(
-    `INSERT INTO model_checks (id, model_id, display_name, ok, cost_usd, ms, reply, error, ts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO model_checks (id, invocation_id, model_id, display_name, ok, cost_usd, ms, reply, error, ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
+    c.invocationId ?? null,
     c.modelId,
     c.displayName,
     c.ok ? 1 : 0,
@@ -1297,17 +1552,19 @@ export interface ModelRunStats {
 }
 
 /**
- * Rolling failure rate + median duration per model, from every completed run
- * ever recorded — cross-project, since a model's reliability isn't a
- * per-project property.
+ * Rolling failure rate + median duration per model, from every terminal
+ * invocation at every stage — cross-project, since a model's reliability
+ * isn't a per-project property.
  */
 export function getModelRunStats(db: Db): ModelRunStats[] {
   const rows = db
     .prepare(
-      `SELECT model, exit_reason, started_at, ended_at FROM runs WHERE ended_at IS NOT NULL`,
+      `SELECT model, outcome, exit_reason, started_at, ended_at
+       FROM model_invocations WHERE ended_at IS NOT NULL`,
     )
     .all() as {
     model: string;
+    outcome: string;
     exit_reason: string | null;
     started_at: string;
     ended_at: string;
@@ -1321,6 +1578,8 @@ export function getModelRunStats(db: Db): ModelRunStats[] {
     const entry = byModel.get(r.model) ?? { total: 0, failed: 0, durations: [] };
     entry.total++;
     if (
+      r.outcome === "failed" ||
+      r.outcome === "interrupted" ||
       r.exit_reason === "error" ||
       r.exit_reason === "stuck" ||
       r.exit_reason === "rate_limited"

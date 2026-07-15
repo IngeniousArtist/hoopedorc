@@ -1,10 +1,54 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { Project } from "@orc/types";
-import { projectSetupChecks } from "./setup.js";
+import type { ModelInvocation, Project } from "@orc/types";
+import { defaultSettings } from "./config.js";
+import { projectSetupChecks, testModels } from "./setup.js";
+
+test("B40: model test emits a health invocation even for subscription-priced calls", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-health-ledger-"));
+  const fakeCli = `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    type: "result",
+    result: "Hello from Claude",
+    total_cost_usd: 0,
+    usage: { input_tokens: 8, output_tokens: 3, cache_read_input_tokens: 2 }
+  }) + "\\n");
+});
+`;
+  const file = join(bin, "claude");
+  writeFileSync(file, fakeCli);
+  chmodSync(file, 0o755);
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  const settings = defaultSettings();
+  settings.models = settings.models.filter((model) => model.id === "claude");
+  const events: ModelInvocation[] = [];
+  try {
+    const result = await testModels(
+      settings,
+      "",
+      (event) => events.push(event),
+    );
+    assert.equal(result.results[0]?.ok, true);
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.stage, "health");
+  assert.equal(events[0]?.outcome, "running");
+  assert.equal(events[1]?.id, events[0]?.id);
+  assert.equal(events[1]?.outcome, "completed");
+  assert.equal(events[1]?.costUsd, 0);
+  assert.equal(events[1]?.tokensIn, 8);
+  assert.equal(events[1]?.tokensCached, 2);
+});
 
 test("B38: Setup health names each project's selected manager and runtime", async () => {
   const localPath = mkdtempSync(join(tmpdir(), "hoopedorc-setup-health-"));

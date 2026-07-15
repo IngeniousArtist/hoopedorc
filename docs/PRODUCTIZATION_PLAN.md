@@ -1687,7 +1687,7 @@ target rules.
 | F48 — per-model effort setting across all model stages | ✅ done, Fable-validated 2026-07-15 | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
 | B38 — portable dependency setup and atomic caching | ✅ done, Fable-validated 2026-07-15 | [#145](https://github.com/IngeniousArtist/hoopedorc/pull/145) |
 | B39 — planning and git durability | ✅ done, Fable-validated 2026-07-15 | [#146](https://github.com/IngeniousArtist/hoopedorc/pull/146) |
-| B40 — complete model-invocation accounting | pending | — |
+| B40 — complete model-invocation accounting | ✅ done, awaiting Fable validation | [#148](https://github.com/IngeniousArtist/hoopedorc/pull/148) |
 | B41 — graceful shutdown and runtime recovery | pending | — |
 | F49 — Telegram reliability and phone-control hardening | pending | — |
 | T2 — frontend unit/E2E test foundation | pending | — |
@@ -5975,6 +5975,26 @@ existing run/cost history and prevent double billing during rollout.
 **Acceptance:** tests cover every stage, crash/restart of an in-flight invocation,
 fallbacks, zero-cost subscription calls, token-priced calls, migration/backfill,
 and quota blocking based on planner/validator usage as well as author usage.
+
+**Acceptance evidence (2026-07-15, PR [#148](https://github.com/IngeniousArtist/hoopedorc/pull/148)):** `model_invocations` is now the
+authoritative, exactly-once ledger for planner, deconstructor, author, validator,
+docs, and health calls. Producers write an attempt-stable `running` row before
+each CLI spawn and terminalize it with correlation, runner/effort, outcome,
+exit reason, fresh/cached/output tokens, and manual-or-reported cost. The
+terminal compare-and-set and positive legacy cost projection share one SQLite
+transaction; quotas, budget totals, planning totals, cost analytics, Telegram
+health, and rolling model health now read the ledger, including $0 subscription
+calls. Startup interrupts orphaned in-flight calls. The idempotent migration
+backfills historical runs/costs/model checks, links one visible projection per
+invocation, and does not double-count duplicate legacy run costs.
+
+Full workspace typecheck and production build passed, as did `git diff --check`,
+158/158 engine tests, 134/134 server tests, and 12/12 adapter tests. B40 tests
+cover all six stages, separate fallback/repair attempts, author/docs/run
+correlation, validator and health lifecycles, zero-cost calls, manual token
+pricing, duplicated terminal events, process restart, duplicate legacy billing,
+idempotent backfill, planner/validator quota consumption, and analytics/health
+derivation. Fable review remains the independent post-merge validation.
 
 ### B41. Graceful shutdown, cooldown recovery, and runtime health — MEDIUM
 

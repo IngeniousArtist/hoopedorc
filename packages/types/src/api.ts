@@ -377,6 +377,8 @@ export interface SetupHealthResponse {
 export interface ModelTestResult {
   id: ModelId;
   displayName: string;
+  /** Correlates the displayed/persisted check to B40's invocation ledger. */
+  invocationId?: string;
   /** Attempt-stable setting used by this health invocation. */
   effort: string;
   ok: boolean;
@@ -405,7 +407,7 @@ export interface ModelHealthEntry {
     reply?: string;
     error?: string;
   };
-  /** From every completed run ever recorded, across all projects. */
+  /** From every terminal model invocation, across all stages and projects. */
   totalRuns: number;
   failedRuns: number;
   medianDurationMs: number | null;

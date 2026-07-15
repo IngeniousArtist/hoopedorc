@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import type { ModelInvocation } from "@orc/types";
 import { ENV, defaultSettings } from "./config.js";
 import {
   extractJsonObject,
@@ -11,6 +12,7 @@ import {
   plannerModelLabel,
   resolvePlannerModel,
   runPlannerChat,
+  runPlannerDeconstruct,
 } from "./planner.js";
 
 test("S10: Claude, Codex, and OpenCode planners receive the same credential-free environment", async (t) => {
@@ -152,6 +154,123 @@ process.stdin.on("end", () => {
     if (savedPath === undefined) delete process.env.PATH;
     else process.env.PATH = savedPath;
   }
+});
+
+test("B40: planner emits a pre-spawn and terminal invocation with usage", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-planner-ledger-"));
+  const fakeCli = `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    result: "hello",
+    total_cost_usd: 0.12,
+    usage: {
+      input_tokens: 7,
+      cache_creation_input_tokens: 2,
+      cache_read_input_tokens: 3,
+      output_tokens: 4
+    }
+  }));
+});
+`;
+  const file = join(bin, "claude");
+  writeFileSync(file, fakeCli);
+  chmodSync(file, 0o755);
+
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  const events: ModelInvocation[] = [];
+  try {
+    await runPlannerChat(
+      [{ role: "user", content: "hello" }],
+      "ledger test",
+      bin,
+      { id: "claude", runner: "claude-code", model: "sonnet", effort: "high" },
+      undefined,
+      undefined,
+      undefined,
+      (event) => events.push(event),
+    );
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.outcome, "running");
+  assert.equal(events[0]?.stage, "planner");
+  assert.equal(events[0]?.model, "claude");
+  assert.equal(events[0]?.runner, "claude-code");
+  assert.equal(events[1]?.id, events[0]?.id);
+  assert.equal(events[1]?.outcome, "completed");
+  assert.equal(events[1]?.costUsd, 0.12);
+  assert.equal(events[1]?.tokensIn, 9);
+  assert.equal(events[1]?.tokensCached, 3);
+  assert.equal(events[1]?.tokensOut, 4);
+});
+
+test("B40: deconstructor repair retry records two separate invocations", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-deconstruct-ledger-"));
+  const counter = join(bin, "count");
+  const valid = JSON.stringify({
+    prd: "# Plan",
+    agentsMd: "# Agents",
+    tasks: [{
+      title: "Build",
+      description: "Build it",
+      difficulty: "medium",
+      acceptanceCriteria: ["works"],
+      dependsOn: [],
+      scopePaths: ["src/**"],
+    }],
+  });
+  const fakeCli = `#!/usr/bin/env node
+const fs = require("node:fs");
+const counter = ${JSON.stringify(counter)};
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const count = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) : 0;
+  fs.writeFileSync(counter, String(count + 1));
+  process.stdout.write(JSON.stringify({
+    result: count === 0 ? "not json" : ${JSON.stringify(valid)},
+    total_cost_usd: 0
+  }));
+});
+`;
+  const file = join(bin, "claude");
+  writeFileSync(file, fakeCli);
+  chmodSync(file, 0o755);
+
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  const events: ModelInvocation[] = [];
+  try {
+    const result = await runPlannerDeconstruct(
+      [{ role: "user", content: "build it" }],
+      "retry test",
+      bin,
+      { id: "claude", runner: "claude-code", model: "sonnet" },
+      undefined,
+      undefined,
+      () => {},
+      undefined,
+      (event) => events.push(event),
+    );
+    assert.equal(result.output.tasks.length, 1);
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+
+  assert.equal(events.length, 4);
+  assert.ok(events.every((event) => event.stage === "deconstructor"));
+  assert.notEqual(events[0]?.id, events[2]?.id);
+  assert.deepEqual(events.map((event) => event.outcome), [
+    "running",
+    "completed",
+    "running",
+    "completed",
+  ]);
 });
 
 // B31: the owner's exact failure shape — pure JSON whose "prd" string
@@ -465,6 +584,7 @@ test("resolvePlannerModel: codex and claude-code routing are unaffected by the o
   settings.routing.planner = "codex-model";
   const codex = resolvePlannerModel(settings, "chat");
   assert.deepEqual(codex, {
+    id: "codex-model",
     runner: "codex",
     model: "gpt-5.2-codex",
     effort: "xhigh",

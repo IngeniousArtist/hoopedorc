@@ -3,7 +3,14 @@ import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execManagedProcess, modelEffortArgs, sanitizedEnv } from "@orc/adapters";
-import type { Difficulty, PlanChatMessage, Role, Settings } from "@orc/types";
+import type {
+  Difficulty,
+  ModelId,
+  ModelInvocation,
+  PlanChatMessage,
+  Role,
+  Settings,
+} from "@orc/types";
 import { ENV } from "./config.js";
 
 // Planning runs headless, through whichever CLI `routing.planner`'s model
@@ -27,6 +34,9 @@ import { ENV } from "./config.js";
 
 /** Which CLI + model id to run the planner through (F37/F45). */
 export interface PlannerModel {
+  /** Logical Hoopedorc model id used for quotas/accounting. Older embedders
+   * may omit it; resolved production routing always supplies it. */
+  id?: ModelId;
   runner: "claude-code" | "codex" | "opencode";
   /** `claude --model` alias, `codex exec -m` id, or opencode `provider/model`
    *  id; omitted => CLI default (claude-code/codex only — opencode always
@@ -69,7 +79,7 @@ export function resolvePlannerModel(
   if (!cfg) throw new Error(`planner routing references missing model "${routedId}"`);
   if (!cfg.enabled) throw new Error(`planner model "${cfg.displayName}" is disabled`);
   if (cfg.runner === "codex") {
-    return { runner: "codex", model: cfg.codexModel, effort: cfg.effort };
+    return { id: cfg.id, runner: "codex", model: cfg.codexModel, effort: cfg.effort };
   }
   if (cfg?.runner === "opencode") {
     if (!cfg.opencodeModel) {
@@ -83,6 +93,7 @@ export function resolvePlannerModel(
       );
     }
     return {
+      id: cfg.id,
       runner: "opencode",
       model: cfg.opencodeModel,
       effort: cfg.effort,
@@ -90,6 +101,7 @@ export function resolvePlannerModel(
     };
   }
   return {
+    id: cfg.id,
     runner: "claude-code",
     model: cfg.claudeModel ?? ENV.plannerModel,
     effort: cfg.effort,
@@ -391,7 +403,12 @@ this iteration — not the already-completed ones.`
 interface ClaudeJsonResult {
   text: string;
   costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+  tokensCached: number;
 }
+
+export type PlannerInvocationSink = (event: ModelInvocation) => void;
 
 /** Run `claude -p --output-format json` and return its text + reported cost. */
 async function runClaudeJson(
@@ -422,13 +439,24 @@ async function runClaudeJson(
       result?: unknown;
       total_cost_usd?: number;
       cost_usd?: number;
+      usage?: {
+        input_tokens?: number;
+        output_tokens?: number;
+        cache_read_input_tokens?: number;
+        cache_creation_input_tokens?: number;
+      };
     };
+    const usage = wrapper.usage;
     return {
       text: typeof wrapper.result === "string" ? wrapper.result : out,
       costUsd: wrapper.total_cost_usd ?? wrapper.cost_usd ?? 0,
+      tokensIn:
+        (usage?.input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0),
+      tokensOut: usage?.output_tokens ?? 0,
+      tokensCached: usage?.cache_read_input_tokens ?? 0,
     };
   } catch {
-    return { text: out, costUsd: 0 };
+    return { text: out, costUsd: 0, tokensIn: 0, tokensOut: 0, tokensCached: 0 };
   }
 }
 
@@ -492,7 +520,7 @@ async function runCodexJson(
     if (schemaFile) args.push("--output-schema", schemaFile);
 
     try {
-      await execManagedProcess("codex", args, {
+      const { stdout } = await execManagedProcess("codex", args, {
         cwd,
         env: sanitizedEnv({ PWD: cwd }),
         input: prompt,
@@ -511,7 +539,31 @@ async function runCodexJson(
       if (!text.trim()) {
         throw new Error("codex planner completed without a final message");
       }
-      return { text: text.trim(), costUsd: 0 };
+      let tokensIn = 0;
+      let tokensOut = 0;
+      let tokensCached = 0;
+      for (const line of stdout.split("\n")) {
+        try {
+          const event = JSON.parse(line) as {
+            type?: string;
+            usage?: {
+              input_tokens?: number;
+              output_tokens?: number;
+              cached_input_tokens?: number;
+            };
+          };
+          if (event.type !== "turn.completed" || !event.usage) continue;
+          tokensCached = event.usage.cached_input_tokens ?? tokensCached;
+          tokensIn = Math.max(
+            0,
+            (event.usage.input_tokens ?? 0) - tokensCached,
+          );
+          tokensOut = event.usage.output_tokens ?? tokensOut;
+        } catch {
+          /* non-JSON CLI log line */
+        }
+      }
+      return { text: text.trim(), costUsd: 0, tokensIn, tokensOut, tokensCached };
     } finally {
       cleanup();
     }
@@ -553,12 +605,30 @@ async function runOpencodeJson(
       timeoutMs: PLAN_TIMEOUT_MS,
     });
     let costUsd = 0;
+    let tokensIn = 0;
+    let tokensOut = 0;
+    let tokensCached = 0;
     let text = "";
 
     const handleEvent = (obj: Record<string, unknown>) => {
-      const part = obj.part as { text?: string; cost?: number } | undefined;
+      const part = obj.part as
+        | {
+            text?: string;
+            cost?: number;
+            tokens?: {
+              input?: number;
+              output?: number;
+              cache?: { read?: number; write?: number };
+            };
+          }
+        | undefined;
       if (typeof part?.text === "string") text += part.text;
       if (typeof part?.cost === "number") costUsd += part.cost;
+      if (part?.tokens) {
+        tokensIn += (part.tokens.input ?? 0) + (part.tokens.cache?.write ?? 0);
+        tokensOut += part.tokens.output ?? 0;
+        tokensCached += part.tokens.cache?.read ?? 0;
+      }
     };
 
     for (const line of stdout.split("\n")) {
@@ -570,41 +640,95 @@ async function runOpencodeJson(
         /* non-JSON log line */
       }
     }
-    return { text, costUsd };
+    return { text, costUsd, tokensIn, tokensOut, tokensCached };
 }
 
 /** Dispatch to the right CLI for whichever model `routing.planner` resolves to. */
-function runPlannerJson(
+async function runPlannerJson(
   prompt: string,
   cwd: string,
   plannerModel: PlannerModel,
   outputSchema?: object,
   signal?: AbortSignal,
+  stage: "planner" | "deconstructor" = "planner",
+  onInvocation?: PlannerInvocationSink,
 ): Promise<ClaudeJsonResult> {
-  if (plannerModel.runner === "codex") {
-    return runCodexJson(
-      prompt,
-      cwd,
-      plannerModel.model,
-      plannerModel.effort,
-      outputSchema,
-      signal,
-    );
-  }
-  if (plannerModel.runner === "opencode") {
-    if (!plannerModel.model) {
-      return Promise.reject(new Error("opencode planner model has no model id configured"));
+  const startedAt = new Date().toISOString();
+  const base = {
+    id: `${stage}-${randomUUID()}`,
+    stage,
+    model: plannerModel.id ?? plannerModel.model ?? "unknown",
+    runner: plannerModel.runner,
+    effort: plannerModel.effort ?? "default",
+    startedAt,
+  } satisfies Pick<
+    ModelInvocation,
+    "id" | "stage" | "model" | "runner" | "effort" | "startedAt"
+  >;
+  onInvocation?.({
+    ...base,
+    outcome: "running",
+    costUsd: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    tokensCached: 0,
+  });
+  try {
+    let result: ClaudeJsonResult;
+    if (plannerModel.runner === "codex") {
+      result = await runCodexJson(
+        prompt,
+        cwd,
+        plannerModel.model,
+        plannerModel.effort,
+        outputSchema,
+        signal,
+      );
+    } else if (plannerModel.runner === "opencode") {
+      if (!plannerModel.model) {
+        throw new Error("opencode planner model has no model id configured");
+      }
+      result = await runOpencodeJson(
+        prompt,
+        cwd,
+        plannerModel.model,
+        plannerModel.effort,
+        plannerModel.opencodeBaseUrl ?? "",
+        signal,
+      );
+    } else {
+      result = await runClaudeJson(
+        prompt,
+        cwd,
+        plannerModel.model,
+        plannerModel.effort,
+        signal,
+      );
     }
-    return runOpencodeJson(
-      prompt,
-      cwd,
-      plannerModel.model,
-      plannerModel.effort,
-      plannerModel.opencodeBaseUrl ?? "",
-      signal,
-    );
+    onInvocation?.({
+      ...base,
+      endedAt: new Date().toISOString(),
+      outcome: "completed",
+      exitReason: "completed",
+      costUsd: result.costUsd,
+      tokensIn: result.tokensIn,
+      tokensOut: result.tokensOut,
+      tokensCached: result.tokensCached,
+    });
+    return result;
+  } catch (err) {
+    onInvocation?.({
+      ...base,
+      endedAt: new Date().toISOString(),
+      outcome: signal?.aborted ? "stopped" : "failed",
+      exitReason: signal?.aborted ? "killed" : "error",
+      costUsd: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      tokensCached: 0,
+    });
+    throw err;
   }
-  return runClaudeJson(prompt, cwd, plannerModel.model, plannerModel.effort, signal);
 }
 
 /**
@@ -912,10 +1036,19 @@ export async function runPlanner(
   plannerModel: PlannerModel,
   onWarn: (msg: string) => void = () => {},
   signal?: AbortSignal,
+  onInvocation?: PlannerInvocationSink,
 ): Promise<PlanOutput> {
   const schema = plannerModel.runner === "codex" ? DECONSTRUCT_JSON_SCHEMA : undefined;
   const prompt = buildPrompt(goal, projectName);
-  const { text } = await runPlannerJson(prompt, cwd, plannerModel, schema, signal);
+  const { text } = await runPlannerJson(
+    prompt,
+    cwd,
+    plannerModel,
+    schema,
+    signal,
+    "deconstructor",
+    onInvocation,
+  );
   try {
     return parsePlanOutput(text, projectName, goal, onWarn);
   } catch (err) {
@@ -929,6 +1062,8 @@ export async function runPlanner(
       plannerModel,
       schema,
       signal,
+      "deconstructor",
+      onInvocation,
     );
     return parsePlanOutput(retry.text, projectName, goal, onWarn);
   }
@@ -943,6 +1078,7 @@ export async function runPlannerChat(
   priorContext?: string,
   attachments?: string[],
   signal?: AbortSignal,
+  onInvocation?: PlannerInvocationSink,
 ): Promise<{ reply: string; costUsd: number }> {
   const { text, costUsd } = await runPlannerJson(
     buildChatPrompt(messages, projectName, priorContext, attachments),
@@ -950,6 +1086,8 @@ export async function runPlannerChat(
     plannerModel,
     undefined,
     signal,
+    "planner",
+    onInvocation,
   );
   return { reply: text.trim(), costUsd };
 }
@@ -966,15 +1104,24 @@ export async function runPlannerDeconstruct(
   attachments?: string[],
   onWarn: (msg: string) => void = () => {},
   signal?: AbortSignal,
+  onInvocation?: PlannerInvocationSink,
 ): Promise<{ output: PlanOutput; costUsd: number }> {
   const schema = plannerModel.runner === "codex" ? DECONSTRUCT_JSON_SCHEMA : undefined;
   const prompt = buildDeconstructPrompt(messages, projectName, priorContext, attachments);
-  const { text, costUsd } = await runPlannerJson(prompt, cwd, plannerModel, schema, signal);
+  const { text, costUsd } = await runPlannerJson(
+    prompt,
+    cwd,
+    plannerModel,
+    schema,
+    signal,
+    "deconstructor",
+    onInvocation,
+  );
   try {
     return { output: parsePlanOutput(text, projectName, "", onWarn), costUsd };
   } catch (err) {
-    // B31 layer 3: one re-ask retry before giving up — cost accumulates
-    // across both calls so recordPlanningCost sees the true total spend.
+    // B31 layer 3: one re-ask retry before giving up. Each CLI call gets its
+    // own invocation row; `costUsd` still accumulates for the API response.
     onWarn(
       `planner: deconstruct output failed to parse (${err instanceof Error ? err.message : String(err)}) — retrying once`,
     );
@@ -984,6 +1131,8 @@ export async function runPlannerDeconstruct(
       plannerModel,
       schema,
       signal,
+      "deconstructor",
+      onInvocation,
     );
     return {
       output: parsePlanOutput(retry.text, projectName, "", onWarn),

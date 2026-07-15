@@ -16,6 +16,7 @@ import type {
   Difficulty,
   MergePolicy,
   ModelId,
+  ModelInvocation,
   Project,
   ProjectConfig,
   Role,
@@ -83,6 +84,7 @@ import {
 import { TelegramBot, sendTelegramMessage } from "./telegram";
 import { getModelRoster, runSetupChecks, testModels } from "./setup";
 import { parseSetupCommand } from "./project-config";
+import { persistInvocationEvent } from "./invocation-ledger";
 import type {
   DraftTask,
   Notification,
@@ -857,19 +859,17 @@ async function main() {
     return { notification, resolved: true };
   }
 
-  /** Record + broadcast planner spend so it counts against the project budget. */
-  function recordPlanningCost(projectId: string, costUsd: number) {
-    if (costUsd <= 0) return;
-    const cost = repo.createCost(db, {
-      projectId,
-      model: "claude",
-      costUsd,
-      tokensIn: 0,
-      tokensOut: 0,
-      ts: new Date().toISOString(),
+  /** Shared planner/health path into B40's exactly-once ledger. */
+  function recordModelInvocation(event: ModelInvocation, projectId?: string): void {
+    const saved = persistInvocationEvent(db, {
+      ...event,
+      projectId: event.projectId ?? projectId,
     });
-    broadcast({ type: "cost.updated", payload: cost });
-    engine.checkAndPushBudgetAlerts(projectId);
+    if (!saved.transitioned || !saved.cost) return;
+    broadcast({ type: "cost.updated", payload: saved.cost });
+    if (saved.invocation.projectId) {
+      engine.checkAndPushBudgetAlerts(saved.invocation.projectId);
+    }
   }
 
   // ── Telegram (optional second channel) ──
@@ -1011,7 +1011,7 @@ async function main() {
           }
           if (m.windowUsage) {
             const { runs, costUsd, maxRuns, maxCostUsd } = m.windowUsage;
-            const runsPart = maxRuns != null ? `${runs}/${maxRuns} runs` : `${runs} runs`;
+            const runsPart = maxRuns != null ? `${runs}/${maxRuns} calls` : `${runs} calls`;
             const costPart = maxCostUsd != null ? `$${costUsd.toFixed(2)}/$${maxCostUsd.toFixed(2)}` : null;
             parts.push([runsPart, costPart].filter(Boolean).join(", "));
           }
@@ -1307,6 +1307,7 @@ async function main() {
         plannerModel,
         (msg) => app.log.warn(msg),
         cancellation.signal,
+        (event) => recordModelInvocation(event, id),
       );
       prdMarkdown = plan.prdMarkdown;
       // No review step on this single-shot path, so inject the standing docs
@@ -1425,8 +1426,8 @@ async function main() {
         buildPriorContext(db, project),
         attachmentNames,
         cancellation.signal,
+        (event) => recordModelInvocation(event, id),
       );
-      recordPlanningCost(id, costUsd);
       // Persist the full conversation (including assistant reply) so the Plan
       // tab can restore it on reload or after a tab switch.
       const updatedMessages = [...messages, { role: "assistant" as const, content: text }];
@@ -1487,8 +1488,8 @@ async function main() {
         attachmentNames,
         (msg) => app.log.warn(msg),
         cancellation.signal,
+        (event) => recordModelInvocation(event, id),
       );
-      recordPlanningCost(id, costUsd);
       const tasks = withAssignedModels(output, settings);
       // Persist draft tasks + PRD + AGENTS.md (F38) so the Plan tab can
       // restore them on reload.
@@ -1538,7 +1539,9 @@ async function main() {
     const session = repo.getPlanningSession(db, id);
     const planCostUsd = (
       db.prepare(
-        "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM costs WHERE project_id = ? AND task_id IS NULL",
+        `SELECT COALESCE(SUM(cost_usd), 0) AS total
+         FROM model_invocations
+         WHERE project_id = ? AND stage IN ('planner', 'deconstructor')`,
       ).get(id) as { total: number }
     ).total;
     return { ...session, planCostUsd };
@@ -2265,12 +2268,17 @@ async function main() {
   // Live-test every enabled model with a trivial prompt (costs a little).
   app.post("/api/setup/test-models", async () => {
     const settings = repo.getSettings(db) ?? defaultSettings();
-    const result = await testModels(settings, ENV.opencodeBaseUrl);
+    const result = await testModels(
+      settings,
+      ENV.opencodeBaseUrl,
+      (event) => recordModelInvocation(event),
+    );
     // F6: persist each result so the health panel has a "last check" column
     // that survives a reload, not just whatever's in this response.
     const ts = new Date().toISOString();
     for (const r of result.results) {
       repo.createModelCheck(db, {
+        invocationId: r.invocationId,
         modelId: r.id,
         displayName: r.displayName,
         ok: r.ok,

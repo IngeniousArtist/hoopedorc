@@ -298,7 +298,7 @@ export function SetupView({
                       <span>never tested</span>
                     )}
                     <span>
-                      {m.totalRuns} run{m.totalRuns === 1 ? "" : "s"}
+                      {m.totalRuns} call{m.totalRuns === 1 ? "" : "s"}
                       {failureRate !== null && ` · ${failureRate}% failed`}
                     </span>
                     {m.medianDurationMs != null && (
@@ -316,7 +316,7 @@ export function SetupView({
                         }
                       >
                         quota: {m.windowUsage.runs}
-                        {m.windowUsage.maxRuns != null && `/${m.windowUsage.maxRuns}`} runs
+                        {m.windowUsage.maxRuns != null && `/${m.windowUsage.maxRuns}`} calls
                         {(m.windowUsage.maxCostUsd != null || m.windowUsage.costUsd > 0) &&
                           `, $${m.windowUsage.costUsd.toFixed(2)}${
                             m.windowUsage.maxCostUsd != null
