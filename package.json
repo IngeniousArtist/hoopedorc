@@ -17,6 +17,10 @@
   "scripts": {
     "build": "npm run build -w @orc/types && npm run build -w @orc/adapters && npm run build -w @orc/engine && npm run build -w @orc/server && npm run build -w @orc/web",
     "typecheck": "npm run build -w @orc/types && npm run build -w @orc/adapters && npm run build -w @orc/engine && npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint -w @orc/web",
+    "test": "npm test -w @orc/engine && npm test -w @orc/adapters && npm test -w @orc/server && npm run test:web",
+    "test:web": "npm test -w @orc/web",
+    "test:e2e": "playwright test -c apps/web/playwright.config.ts",
     "dev": "concurrently -n types,adapters,engine,server,web -c blue,cyan,yellow,green,magenta \"npm:dev -w @orc/types\" \"npm:dev -w @orc/adapters\" \"npm:dev -w @orc/engine\" \"npm:dev -w @orc/server\" \"npm:dev -w @orc/web\"",
     "mock": "concurrently -n mock-api,web -c green,magenta \"MOCK=1 npm run dev -w @orc/server\" \"npm run dev -w @orc/web\"",
     "db:init": "npm run db:init -w @orc/server",

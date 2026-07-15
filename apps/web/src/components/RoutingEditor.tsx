@@ -156,9 +156,10 @@ export function RoutingEditor({
                     // delete leaves holes — compact so the engine sees a
                     // clean ordered list.
                     const compact = next.filter(Boolean);
-                    return compact.length > 0
-                      ? { ...r, fallbacks: compact }
-                      : (({ fallbacks: _drop, ...rest }) => rest)(r);
+                    if (compact.length > 0) return { ...r, fallbacks: compact };
+                    const rest = { ...r };
+                    delete rest.fallbacks;
+                    return rest;
                   });
                 }}
                 allowEmpty

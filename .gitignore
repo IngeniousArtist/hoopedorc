@@ -13,3 +13,5 @@ skills-lock.json
 worktrees
 .hoopedorc
 hoopedorc.db
+playwright-report
+test-results

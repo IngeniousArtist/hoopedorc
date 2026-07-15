@@ -24,7 +24,7 @@ import { Settings } from "./pages/Settings";
 import { SetupView } from "./pages/SetupView";
 import { Welcome } from "./pages/Welcome";
 
-type Page =
+export type Page =
   | "board"
   | "plan"
   | "costs"
@@ -69,7 +69,7 @@ const GLOBAL_HASH_PAGES: Page[] = ["settings", "setup", "projects", "new-project
  *  doesn't parse into a known, deep-linkable page (an empty hash, garbage
  *  in the URL bar, or a page like "welcome" that isn't meant to be one) —
  *  callers fall back to their own defaults in that case. */
-function parseHash(hash: string): { page: Page; projectId?: string } | null {
+export function parseHash(hash: string): { page: Page; projectId?: string } | null {
   const path = hash.replace(/^#\/?/, "");
   if (!path) return null;
   const parts = path.split("/");
@@ -83,7 +83,7 @@ function parseHash(hash: string): { page: Page; projectId?: string } | null {
 
 /** The exact inverse of `parseHash` — kept as one function so the two can
  *  never drift into producing/accepting different shapes. */
-function hashFor(page: Page, projectId: string): string {
+export function hashFor(page: Page, projectId: string): string {
   if (PROJECT_PAGES.includes(page) && projectId) return `#/p/${projectId}/${page}`;
   return `#/${page}`;
 }
@@ -382,19 +382,23 @@ export function App() {
         content size, and overflow-x-auto children have no min size to hit).
         Two rows sidesteps that — the nav links always get the full row width.
       */}
-      <nav className="sticky top-0 z-40 border-b border-neutral-800 bg-neutral-900 px-4 py-2">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-sm font-semibold tracking-wide text-neutral-100">
+      <nav className="sticky top-0 z-40 border-b border-neutral-800 bg-neutral-900 px-3 py-2 sm:px-4">
+        <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
+          <span className="mr-auto text-sm font-semibold tracking-wide text-neutral-100">
             Hoopedorc
           </span>
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wide text-neutral-600">
+          <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
+            <label
+              htmlFor="project-selector"
+              className="sr-only text-[10px] uppercase tracking-wide text-neutral-500 sm:not-sr-only"
+            >
               Project
-            </span>
+            </label>
             <select
+              id="project-selector"
               value={selectedProjectId}
               onChange={(e) => setSelectedProjectId(e.target.value)}
-              className="max-w-[160px] rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 sm:max-w-[220px]"
+              className="min-h-10 min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 focus-visible:ring-2 focus-visible:ring-blue-500 sm:w-[220px] sm:flex-none"
             >
               {projects.length === 0 && <option value="">No projects</option>}
               {projects.map((p) => (
@@ -407,7 +411,7 @@ export function App() {
               onClick={() => navigate("new-project")}
               title="Create a new project"
               className={
-                "shrink-0 rounded border px-2 py-1 text-[11px] transition-colors " +
+                "min-h-10 shrink-0 rounded border px-3 py-1 text-[11px] transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 " +
                 (page === "new-project"
                   ? "border-blue-700 bg-blue-950/40 text-blue-200"
                   : "border-neutral-700 text-neutral-300 hover:bg-neutral-800")
@@ -420,7 +424,7 @@ export function App() {
                 onClick={handleStopAll}
                 disabled={stopAllBusy}
                 title="Abort every running project immediately"
-                className="shrink-0 rounded border border-red-800 px-2 py-1 text-[11px] font-medium text-red-300 hover:bg-red-950/40 disabled:opacity-50"
+                className="min-h-10 shrink-0 rounded border border-red-800 px-3 py-1 text-[11px] font-medium text-red-300 hover:bg-red-950/40 focus-visible:ring-2 focus-visible:ring-red-500 disabled:opacity-50"
               >
                 {stopAllBusy ? "…" : "⏹ Stop all"}
               </button>
@@ -428,7 +432,10 @@ export function App() {
           </div>
         </div>
 
-        <div className="mt-2 flex items-center gap-1 overflow-x-auto">
+        <div
+          data-horizontal-scroll="navigation"
+          className="mt-2 flex items-center gap-1 overflow-x-auto"
+        >
           {NAV.map((item, i) => (
             <Fragment key={item.page}>
               {i === GLOBAL_NAV_START && GLOBAL_NAV_START > 0 && (
@@ -440,7 +447,7 @@ export function App() {
               <button
                 onClick={() => navigate(item.page)}
                 className={
-                  "shrink-0 rounded px-3 py-1 text-xs transition-colors " +
+                  "min-h-10 shrink-0 rounded px-3 py-1 text-xs transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 " +
                   (page === item.page
                     ? "bg-neutral-700 text-neutral-100"
                     : "text-neutral-400 hover:text-neutral-200")
@@ -458,7 +465,7 @@ export function App() {
         </div>
       </nav>
 
-      <main className="p-4">
+      <main className="p-3 sm:p-4">
         {needsProject && !hasProject ? (
           <div className="mx-auto max-w-md rounded-lg border border-neutral-800 bg-neutral-900 p-6 text-center">
             <p className="text-sm text-neutral-300">No project selected.</p>
