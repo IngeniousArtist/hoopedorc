@@ -1690,7 +1690,7 @@ target rules.
 | B40 — complete model-invocation accounting | ✅ done, awaiting Fable validation | [#148](https://github.com/IngeniousArtist/hoopedorc/pull/148) |
 | B41 — graceful shutdown and runtime recovery | ✅ done, awaiting Fable validation | [#149](https://github.com/IngeniousArtist/hoopedorc/pull/149) |
 | F49 — Telegram reliability and phone-control hardening | ✅ implementation done, live private-chat smoke + Fable validation pending | [#150](https://github.com/IngeniousArtist/hoopedorc/pull/150) |
-| T2 — frontend unit/E2E test foundation | pending | — |
+| T2 — frontend unit/E2E test foundation | ✅ implementation done, awaiting Fable validation | [#151](https://github.com/IngeniousArtist/hoopedorc/pull/151) |
 | U19 — full responsive UX pass | pending | — |
 
 The owner approved this wave on 2026-07-14. Implementation proceeds in
@@ -1721,9 +1721,9 @@ raising typed errors instead of swallowing them (B39).
 One flake noted, not a blocker: server test "F44: a run ending non-completed
 creates a web notification…" (`engine-runner.test.ts`) failed once under
 full-suite load and passed 3/3 in isolation and on full-suite re-run —
-timing-sensitive; worth tightening when T2 lands. Remaining Phase 15 implementation
-work: T2 and U19. F49's owner-operated live private-chat smoke test remains part of
-final acceptance.
+timing-sensitive; worth tightening if it recurs under the now-landed T2 browser/unit
+foundation. Remaining Phase 15 implementation work: U19. F49's owner-operated live
+private-chat smoke test remains part of final acceptance.
 
 ---
 
@@ -6092,6 +6092,22 @@ mock fixtures and deterministic viewport tests rather than screenshot-only tests
 **Acceptance:** CI runs all engine/server/adapter/web suites plus Playwright smoke
 tests. A deliberately broken route mapping, mobile overflow, or failed settings
 save must cause a test failure.
+
+**Acceptance evidence (2026-07-15):** implementation is in
+[#151](https://github.com/IngeniousArtist/hoopedorc/pull/151). Vitest + React
+Testing Library run 14 behavior tests covering route/auth contracts, the shared
+WebSocket, Settings dirty/success/failure state, approvals, Stop/delete guards,
+retry, effort editing, and toast recovery. Four Playwright tests run against the
+real mock API and cover deep links, an injected failed Settings save, approval
+response, responsive navigation, and document-overflow diagnostics at phone
+width. The complete local gate passes: workspace typecheck/build/lint, 159 engine,
+159 server, 12 adapter, and 14 web tests, followed by 4 Chromium smoke tests. A
+changed canonical route fails direct contract assertions; a failed Settings PUT
+must preserve dirty state and show the server error; any unmarked element escaping
+the 390px viewport fails with element diagnostics (only the explicitly scrollable
+navigation and Board regions are exempt). CI now installs pinned Playwright
+Chromium and runs every workspace suite plus the browser smoke suite. Fable review
+remains the independent post-merge validation.
 
 ### U19. Full responsive UX and mobile editing pass
 

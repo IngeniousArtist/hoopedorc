@@ -142,7 +142,7 @@ export function Board({
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [fetchEstimates, projectId]);
 
   useEffect(() => {
     if (!selectedTaskId) {
@@ -492,7 +492,10 @@ export function Board({
 
       {/* snap-x makes mobile a one-column-at-a-time swipe; sm: reverts to the
           normal multi-column horizontal scroll once there's room for it. */}
-      <div className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-4 sm:snap-none">
+      <div
+        data-horizontal-scroll="board"
+        className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-4 sm:snap-none"
+      >
         {COLUMNS.map((col) => {
           const colTasks = tasks.filter((t) => t.status === col.status);
           // U3: never collapse a column that has cards, even if it was

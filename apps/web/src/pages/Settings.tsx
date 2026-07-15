@@ -2,7 +2,6 @@ import {
   SECRET_SENTINEL,
   type HealthResponse,
   type MergePolicy,
-  type ModelId,
   type ModelRosterResponse,
   type RoutingPolicy,
   type Settings as SettingsType,
