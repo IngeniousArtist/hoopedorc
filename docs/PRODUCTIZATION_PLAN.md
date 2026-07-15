@@ -1687,11 +1687,11 @@ target rules.
 | F48 — per-model effort setting across all model stages | ✅ done, Fable-validated 2026-07-15 | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
 | B38 — portable dependency setup and atomic caching | ✅ done, Fable-validated 2026-07-15 | [#145](https://github.com/IngeniousArtist/hoopedorc/pull/145) |
 | B39 — planning and git durability | ✅ done, Fable-validated 2026-07-15 | [#146](https://github.com/IngeniousArtist/hoopedorc/pull/146) |
-| B40 — complete model-invocation accounting | ✅ done, awaiting Fable validation | [#148](https://github.com/IngeniousArtist/hoopedorc/pull/148) |
-| B41 — graceful shutdown and runtime recovery | ✅ done, awaiting Fable validation | [#149](https://github.com/IngeniousArtist/hoopedorc/pull/149) |
-| F49 — Telegram reliability and phone-control hardening | ✅ implementation done, live private-chat smoke + Fable validation pending | [#150](https://github.com/IngeniousArtist/hoopedorc/pull/150) |
-| T2 — frontend unit/E2E test foundation | ✅ implementation done, awaiting Fable validation | [#151](https://github.com/IngeniousArtist/hoopedorc/pull/151) |
-| U19 — full responsive UX pass | ✅ implementation done, real-phone smoke + Fable validation pending | [#152](https://github.com/IngeniousArtist/hoopedorc/pull/152) |
+| B40 — complete model-invocation accounting | ✅ done, Fable-validated 2026-07-15 | [#148](https://github.com/IngeniousArtist/hoopedorc/pull/148) |
+| B41 — graceful shutdown and runtime recovery | ✅ done, Fable-validated 2026-07-15 | [#149](https://github.com/IngeniousArtist/hoopedorc/pull/149) |
+| F49 — Telegram reliability and phone-control hardening | ✅ Fable-validated 2026-07-15; owner live private-chat smoke pending | [#150](https://github.com/IngeniousArtist/hoopedorc/pull/150) |
+| T2 — frontend unit/E2E test foundation | ✅ done, Fable-validated 2026-07-15 | [#151](https://github.com/IngeniousArtist/hoopedorc/pull/151) |
+| U19 — full responsive UX pass | ✅ Fable-validated 2026-07-15; owner real-phone smoke pending | [#152](https://github.com/IngeniousArtist/hoopedorc/pull/152) |
 
 The owner approved this wave on 2026-07-14. Implementation proceeds in
 the dependency order specified in Part 10 below, with Fable independently
@@ -1722,8 +1722,46 @@ One flake noted, not a blocker: server test "F44: a run ending non-completed
 creates a web notification…" (`engine-runner.test.ts`) failed once under
 full-suite load and passed 3/3 in isolation and on full-suite re-run —
 timing-sensitive; worth tightening if it recurs under the now-landed T2 browser/unit
-foundation. Remaining Phase 15 implementation work: U19. F49's owner-operated live
-private-chat smoke test remains part of final acceptance.
+foundation. (It did not recur during the 2026-07-15 B40–U19 validation below.)
+
+**Fable post-merge validation (2026-07-15), covering PRs #148–#152 (B40, B41,
+F49, T2, U19):** all merged work re-verified independently on `main` at 4506dda.
+`npm run typecheck`, `npm run build`, and `npm run lint` pass; every suite passes
+at the claimed counts — 159/159 engine, 12/12 adapter, 159/159 server, 14/14 web
+unit, and 14/14 Playwright e2e; GitHub CI is green on `main` for all five merge
+commits. Code spot-checks confirmed each item's load-bearing claim in the merged
+source: idempotent `INSERT OR IGNORE` invocation starts with a compare-and-set
+terminal transition that shares one SQLite transaction with the legacy cost
+projection, partial unique indexes preventing double-linked costs/model checks,
+an idempotent boot migration that links exactly one legacy cost row per run and
+interrupts orphaned `running` rows, ledger-derived quotas that count in-flight
+calls, and cooldown/cost fan-out only on the first accepted terminal transition
+(B40); an idempotent `ShutdownCoordinator` that attempts every cleanup step,
+upgrades a graceful exit to code 1 on cleanup failure, closes admission
+synchronously before its first await, refuses mutating HTTP requests with 503
+during drain, one 15-second total engine deadline across all projects/rollbacks,
+SQLite-persisted cooldowns, and 30-second-TTL Docker detection invalidated
+immediately on failed docker executions (B41); private-chat + chat-id + sender-id
+enforcement on both messages and callback queries, per-method request deadlines
+with `retry_after`-aware bounded retry capped at 30s, bot-token redaction in
+errors, chunked sends with reply markup only on the final chunk,
+Markdown→plain-text approval retry, and permanent approval-delivery failure
+fanned out to a web notification (F49); behavior-level unit assertions including
+the failed-settings-save-stays-dirty contract, with CI running typecheck/build/
+lint, all four workspace suites, and lockfile-pinned Chromium e2e (T2); and
+element-level overflow diagnostics exempting only `data-horizontal-scroll`
+regions, fixed/sticky-surface bounds checks, 40px touch targets scoped to
+`max-width: 639px` so desktop density is untouched, safe-area offsets on
+navigation/drawer/toasts/sticky save bar, reduced-motion support, and the drawer
+Retry action relocated to Overview so a task failing before a PR opens is not
+stranded (U19).
+
+One nit, not a blocker: `@playwright/test` is `^1.61.1` in
+`apps/web/package.json`, so the "pinned" browser claim holds through
+`package-lock.json` (which `npm ci` honors) rather than an exact version.
+Remaining Phase 15 acceptance before `v0.7.0`: the owner's live Telegram
+private-chat smoke test (F49) and the owner's real-phone smoke over the deployed
+Tailscale route (U19).
 
 ---
 
