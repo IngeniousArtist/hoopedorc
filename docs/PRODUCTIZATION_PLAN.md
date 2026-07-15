@@ -1687,7 +1687,7 @@ target rules.
 | F48 — per-model effort setting across all model stages | ✅ done, Fable-validated 2026-07-15 | [#144](https://github.com/IngeniousArtist/hoopedorc/pull/144) |
 | B38 — portable dependency setup and atomic caching | ✅ done, Fable-validated 2026-07-15 | [#145](https://github.com/IngeniousArtist/hoopedorc/pull/145) |
 | B39 — planning and git durability | ✅ done, Fable-validated 2026-07-15 | [#146](https://github.com/IngeniousArtist/hoopedorc/pull/146) |
-| B40 — complete model-invocation accounting | implementation complete; PR pending | — |
+| B40 — complete model-invocation accounting | ✅ done, awaiting Fable validation | [#148](https://github.com/IngeniousArtist/hoopedorc/pull/148) |
 | B41 — graceful shutdown and runtime recovery | pending | — |
 | F49 — Telegram reliability and phone-control hardening | pending | — |
 | T2 — frontend unit/E2E test foundation | pending | — |
@@ -5976,7 +5976,7 @@ existing run/cost history and prevent double billing during rollout.
 fallbacks, zero-cost subscription calls, token-priced calls, migration/backfill,
 and quota blocking based on planner/validator usage as well as author usage.
 
-**Acceptance evidence (2026-07-15, PR pending):** `model_invocations` is now the
+**Acceptance evidence (2026-07-15, PR [#148](https://github.com/IngeniousArtist/hoopedorc/pull/148)):** `model_invocations` is now the
 authoritative, exactly-once ledger for planner, deconstructor, author, validator,
 docs, and health calls. Producers write an attempt-stable `running` row before
 each CLI spawn and terminalize it with correlation, runner/effort, outcome,
