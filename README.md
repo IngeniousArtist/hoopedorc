@@ -87,8 +87,9 @@ exhausting it in the first place.
 
 **Away-from-keyboard autonomy**
 - Telegram: approvals with PR link + validator reasons, status digests,
-  `/status` `/cost` `/start` `/pause` commands; browser notifications when
-  the tab is hidden
+  inline project controls and prefix-friendly `/status` `/start` `/pause`
+  commands, with deadlines/retry/chunking and visible delivery health; browser
+  notifications when the tab is hidden
 - A pending approval blocks only the flagged task — it waits indefinitely
   for your decision while independent tasks keep flowing
 - Scheduled runs (nightly / every-N-hours per project); end-of-run report

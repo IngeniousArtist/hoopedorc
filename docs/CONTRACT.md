@@ -182,6 +182,16 @@ close, SQLite's WAL is checkpointed, and the DB closes before exit. Signals
 exit zero; fatal errors exit nonzero so systemd restarts the service. A
 persisted `model_cooldowns` row keeps a rate-limit expiry across restarts.
 
+Telegram control (F49) uses the same `startProject`, `pauseProject`, retry,
+stop-all, and settings actions as HTTP. Project arguments resolve only on a
+unique case-insensitive name/id prefix. Messages and callbacks require a private
+chat whose chat id and callback/message user id both equal the configured id.
+Bot API calls have per-request deadlines, bounded retry with capped
+`retry_after`, and 4000-character chunking. `HealthResponse.dependencies.telegram`
+contains only delivery state/timestamps and a token-redacted last error. A
+terminal approval-delivery failure creates a non-blocking web notification; the
+original approval remains pending and is eligible for `/pending`/restart resend.
+
 `PlanAttachment` (F27) — `{ name, size, mtime }` for a file uploaded from
 PlanView as planning context. Stored on disk at
 `<project.localPath>/context/attachments/<name>` (`packages/server/src/

@@ -5,12 +5,138 @@
 // actually unit-testable against a real in-memory DB, the same reasoning
 // budget.ts/scheduler.ts/attachments.ts are their own modules.
 
-import type { MergePolicy, ServerEvent, Task } from "@orc/types";
+import type { MergePolicy, Project, ServerEvent, Task } from "@orc/types";
 import { checkBudget } from "./budget";
 import { defaultSettings } from "./config";
 import type { Db } from "./db/index";
 import * as repo from "./db/repo";
 import type { EngineRunner } from "./engine-runner";
+import type { ServerNotifier } from "./telegram";
+
+export type ProjectActionResult =
+  | { ok: true; project: Project }
+  | { ok: false; status: number; error: string };
+
+/** Shared by /pending and bot (re)configuration after process restart. */
+export function resendPendingApprovals(
+  db: Db,
+  notifier: Pick<ServerNotifier, "approvalRequested">,
+): number {
+  const pending = repo
+    .getNotifications(db)
+    .filter((notification) =>
+      notification.requiresApproval && !notification.respondedWith
+    );
+  for (const notification of pending) {
+    notifier.approvalRequested(notification, notification.context);
+  }
+  return pending.length;
+}
+
+/** Turn a permanently missed phone approval into one deduplicated web alert. */
+export function notifyTelegramApprovalFailure(
+  db: Db,
+  broadcast: (e: ServerEvent) => void,
+  notificationId: string,
+  error: string,
+): boolean {
+  const approval = repo.getNotification(db, notificationId);
+  if (!approval) return false;
+  const failureId = `telegram-delivery:${notificationId}`;
+  if (repo.getNotification(db, failureId)) return false;
+  const notification = repo.createNotification(db, {
+    id: failureId,
+    projectId: approval.projectId,
+    taskId: approval.taskId,
+    severity: "warn",
+    title: "Telegram approval delivery failed",
+    message: `Approval is still pending in the web UI. Telegram error: ${error}`,
+    requiresApproval: false,
+  });
+  broadcast({ type: "notification", payload: notification });
+  return true;
+}
+
+/** One Start implementation for HTTP, schedules, and Telegram controls. */
+export async function startProject(
+  db: Db,
+  engine: EngineRunner,
+  broadcast: (e: ServerEvent) => void,
+  id: string,
+): Promise<ProjectActionResult> {
+  const project = repo.getProject(db, id);
+  if (!project) return { ok: false, status: 404, error: "project not found" };
+  try {
+    await engine.start(project);
+  } catch (err) {
+    return {
+      ok: false,
+      status: 409,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+  const running = repo.updateProject(db, id, { status: "running" })!;
+  broadcast({ type: "project.updated", payload: running });
+  return { ok: true, project: running };
+}
+
+/** One Pause implementation for HTTP and Telegram controls. */
+export async function pauseProject(
+  db: Db,
+  engine: EngineRunner,
+  broadcast: (e: ServerEvent) => void,
+  id: string,
+  drain?: boolean,
+): Promise<ProjectActionResult> {
+  const project = repo.getProject(db, id);
+  if (!project) return { ok: false, status: 404, error: "project not found" };
+  try {
+    await engine.pause(project, { drain });
+  } catch (err) {
+    return {
+      ok: false,
+      status: 409,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+  const paused = repo.updateProject(db, id, { status: "paused" })!;
+  broadcast({ type: "project.updated", payload: paused });
+  return { ok: true, project: paused };
+}
+
+/** Phone-friendly unique id/name prefix resolution for Telegram controls. */
+export function findProjectByPrefix(
+  db: Db,
+  raw: string,
+): { ok: true; project: Project } | { ok: false; error: string } {
+  const query = raw.trim().toLocaleLowerCase();
+  if (!query) return { ok: false, error: "Project name or id is required." };
+  const projects = repo.getProjects(db);
+  const exact = projects.filter(
+    (project) =>
+      project.id.toLocaleLowerCase() === query ||
+      project.name.toLocaleLowerCase() === query,
+  );
+  const matches = exact.length > 0
+    ? exact
+    : projects.filter(
+        (project) =>
+          project.id.toLocaleLowerCase().startsWith(query) ||
+          project.name.toLocaleLowerCase().startsWith(query),
+      );
+  if (matches.length === 0) {
+    return { ok: false, error: `No project matches "${raw}".` };
+  }
+  if (matches.length > 1) {
+    return {
+      ok: false,
+      error: `Ambiguous, matches: ${matches
+        .map((project) => `${project.name} (${project.id})`)
+        .join(", ")}`,
+    };
+  }
+  return { ok: true, project: matches[0]! };
+}
 
 /**
  * Stop-all's real work, shared by `POST /api/engine/stop-all` and the

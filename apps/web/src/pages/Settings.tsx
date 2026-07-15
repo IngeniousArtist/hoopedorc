@@ -1,5 +1,6 @@
 import {
   SECRET_SENTINEL,
+  type HealthResponse,
   type MergePolicy,
   type ModelId,
   type ModelRosterResponse,
@@ -113,11 +114,26 @@ export function Settings({
   const [saved, setSaved] = useState(false);
   const [telegramTesting, setTelegramTesting] = useState(false);
   const [telegramTestMsg, setTelegramTestMsg] = useState<string | null>(null);
+  const [runtimeHealth, setRuntimeHealth] = useState<HealthResponse | null>(null);
+  const [runtimeHealthLoading, setRuntimeHealthLoading] = useState(true);
+  const [runtimeHealthError, setRuntimeHealthError] = useState(false);
   // B28: same roster the onboarding wizard already offers on its model-
   // mapping step (`GET /api/setup/models`, shells `opencode models`) — the
   // machinery existed but wasn't wired into Settings' own "+ Add model", so
   // adding a model here meant typing an opencode id blind.
   const [roster, setRoster] = useState<string[]>([]);
+
+  async function refreshRuntimeHealth() {
+    setRuntimeHealthLoading(true);
+    setRuntimeHealthError(false);
+    try {
+      setRuntimeHealth(await api<HealthResponse>("health"));
+    } catch {
+      setRuntimeHealthError(true);
+    } finally {
+      setRuntimeHealthLoading(false);
+    }
+  }
 
   useEffect(() => {
     api<{ settings: SettingsType }>("getSettings")
@@ -128,6 +144,7 @@ export function Settings({
       .catch(() => {
         /* advisory only — ModelsEditor falls back to a blind text field */
       });
+    void refreshRuntimeHealth();
   }, []);
 
   if (!settings) {
@@ -339,6 +356,7 @@ export function Settings({
       setSettings(res.settings);
       setDirty(false);
       setSaved(true);
+      void refreshRuntimeHealth();
     } catch (e) {
       setError(String(e));
     } finally {
@@ -644,8 +662,40 @@ export function Settings({
           Create a bot with @BotFather, paste its token + your chat ID below,
           send a test, then enable. Tip: message the bot once with no chat ID
           set and it replies with yours. Approvals + commands are restricted to
-          that chat ID.
+          that private chat and its matching user ID.
         </p>
+        {runtimeHealthLoading ? (
+          <div className="rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-[11px] text-neutral-400">
+            Delivery: checking…
+          </div>
+        ) : runtimeHealthError ? (
+          <div className="flex min-h-10 items-center justify-between gap-3 rounded border border-amber-800 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-200">
+            <span>Delivery status unavailable.</span>
+            <button
+              type="button"
+              onClick={() => void refreshRuntimeHealth()}
+              className="min-h-10 rounded border border-amber-700 px-3 py-2 focus-visible:ring-2 focus-visible:ring-amber-400"
+            >
+              Re-check
+            </button>
+          </div>
+        ) : runtimeHealth ? (
+          <div
+            className={
+              "rounded border px-3 py-2 text-[11px] " +
+              (runtimeHealth.dependencies.telegram.state === "degraded"
+                ? "border-amber-800 bg-amber-950/30 text-amber-200"
+                : "border-neutral-800 bg-neutral-950 text-neutral-300")
+            }
+          >
+            Delivery: {runtimeHealth.dependencies.telegram.state.replace("_", " ")}
+            {runtimeHealth.dependencies.telegram.lastError
+              ? ` — ${runtimeHealth.dependencies.telegram.lastError}`
+              : runtimeHealth.dependencies.telegram.lastSuccessAt
+                ? ` — last success ${new Date(runtimeHealth.dependencies.telegram.lastSuccessAt).toLocaleString()}`
+                : ""}
+          </div>
+        ) : null}
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="col-span-2">

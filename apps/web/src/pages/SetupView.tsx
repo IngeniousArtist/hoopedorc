@@ -169,6 +169,9 @@ export function SetupView({
               Docker: {runtimeHealth.dependencies.docker.available ? "available" : "unavailable"}
               {runtimeHealth.dependencies.docker.required ? " · required" : " · optional"}
             </span>
+            <span className="text-xs text-neutral-300">
+              Telegram: {runtimeHealth.dependencies.telegram.state.replace("_", " ")}
+            </span>
           </div>
           <p className="mt-1 text-xs text-neutral-300">
             {runtimeHealth.dependencies.docker.detail}

@@ -54,9 +54,14 @@ import { createGithubRepo, getPrDiff, slugifyRepoName } from "./github";
 import { checkBudget } from "./budget";
 import {
   computeModelHealth,
+  findProjectByPrefix,
   findTaskByIdPrefix,
+  notifyTelegramApprovalFailure,
+  pauseProject,
+  resendPendingApprovals,
   retryTask,
   setMergePolicy,
+  startProject,
   stopAllProjects,
 } from "./commands";
 import { estimatePlan } from "./estimate";
@@ -81,7 +86,12 @@ import {
   PlanningCommitError,
   planningPersistenceError,
 } from "./planning-commit";
-import { TelegramBot, sendTelegramMessage } from "./telegram";
+import {
+  TelegramBot,
+  sendTelegramMessage,
+  type TelegramCommandReply,
+  type TelegramDeliveryHealth,
+} from "./telegram";
 import { getModelRoster, runSetupChecks, testModels } from "./setup";
 import { parseSetupCommand } from "./project-config";
 import { persistInvocationEvent } from "./invocation-ledger";
@@ -737,9 +747,14 @@ async function main() {
       // engine.start() throws (a manual dispatch is in flight), this cycle
       // doesn't count, so the next check can retry instead of silently
       // losing the schedule slot until the next interval/day.
-      engine
-        .start(project)
-        .then(() => {
+      void startProject(db, engine, broadcast, project.id)
+        .then((result) => {
+          if (!result.ok) {
+            app.log.info(
+              `scheduled start skipped for "${project.name}": ${result.error}`,
+            );
+            return;
+          }
           // Mirror the /start route: mark the project running and tell open
           // tabs the run began. Without this the UI kept showing the
           // pre-run status (completed/paused/created) for the whole
@@ -751,11 +766,6 @@ async function main() {
           });
           if (updated) broadcast({ type: "project.updated", payload: updated });
           app.log.info(`scheduled start: ${project.name}`);
-        })
-        .catch((err) => {
-          app.log.info(
-            `scheduled start skipped for "${project.name}": ${err instanceof Error ? err.message : String(err)}`,
-          );
         });
     }
   }
@@ -897,8 +907,26 @@ async function main() {
 
   // ── Telegram (optional second channel) ──
   let telegram: TelegramBot | undefined;
+  let telegramHealth: TelegramDeliveryHealth = {
+    enabled: false,
+    running: false,
+    state: "disabled",
+  };
 
-  async function telegramCommand(cmd: string, args: string[]): Promise<string> {
+  function projectControls(): TelegramCommandReply["inlineKeyboard"] {
+    return repo.getProjects(db).slice(0, 12).map((project) => [
+      {
+        text: project.status === "running" ? `⏸ ${project.name}` : `▶ ${project.name}`,
+        callbackData: `proj:${project.status === "running" ? "pause" : "start"}:${project.id}`,
+      },
+      { text: "Status", callbackData: `proj:status:${project.id}` },
+    ]);
+  }
+
+  async function telegramCommand(
+    cmd: string,
+    args: string[],
+  ): Promise<string | TelegramCommandReply> {
     switch (cmd) {
       case "help":
         return [
@@ -906,8 +934,8 @@ async function main() {
           "/status — projects + task counts",
           "/cost — spend this month",
           "/projects — list project ids",
-          "/start <projectId>",
-          "/pause <projectId>",
+          "/start <project-name-or-id-prefix>",
+          "/pause <project-name-or-id-prefix>",
           "/autonomous [on|off] — view/flip the merge policy",
           "/pending — re-send open approvals",
           "/stopall — stop everything running (asks to confirm)",
@@ -918,20 +946,25 @@ async function main() {
       case "projects": {
         const ps = repo.getProjects(db);
         return ps.length
-          ? ps.map((p) => `${p.name} [${p.status}] — ${p.id}`).join("\n")
+          ? {
+              text: ps.map((p) => `${p.name} [${p.status}] — ${p.id}`).join("\n"),
+              inlineKeyboard: projectControls(),
+            }
           : "No projects.";
       }
       case "status": {
         const ps = repo.getProjects(db);
         if (!ps.length) return "No projects.";
-        return ps
-          .map((p) => {
+        return {
+          text: ps.map((p) => {
             const ts = repo.getTasks(db, p.id);
             const done = ts.filter((t) => t.status === "done").length;
             const failed = ts.filter((t) => t.status === "failed").length;
             return `${p.name} [${p.status}] ${done}/${ts.length} done${failed ? `, ${failed} failed` : ""}`;
           })
-          .join("\n");
+          .join("\n"),
+          inlineKeyboard: projectControls(),
+        };
       }
       case "cost": {
         const monthly = repo.getGlobalMonthlyCost(db);
@@ -942,20 +975,18 @@ async function main() {
       }
       case "start":
       case "pause": {
-        const id = args[0];
-        if (!id) return `Usage: /${cmd} <projectId>`;
-        const project = repo.getProject(db, id);
-        if (!project) return `No project ${id}`;
+        const ref = args.join(" ");
+        if (!ref) return `Usage: /${cmd} <project-name-or-id-prefix>`;
+        const found = findProjectByPrefix(db, ref);
+        if (!found.ok) return found.error;
+        const project = found.project;
         if (cmd === "start") {
-          await engine.start(project);
-          repo.updateProject(db, id, { status: "running" });
-          const running = repo.getProject(db, id)!;
-          broadcast({ type: "project.updated", payload: running });
+          const result = await startProject(db, engine, broadcast, project.id);
+          if (!result.ok) return `Could not start ${project.name}: ${result.error}`;
           return `Started ${project.name}`;
         }
-        await engine.pause(project);
-        repo.updateProject(db, id, { status: "paused" });
-        broadcast({ type: "project.updated", payload: repo.getProject(db, id)! });
+        const result = await pauseProject(db, engine, broadcast, project.id, true);
+        if (!result.ok) return `Could not pause ${project.name}: ${result.error}`;
         return `Paused ${project.name}`;
       }
       case "autonomous": {
@@ -963,25 +994,22 @@ async function main() {
         const arg = (args[0] ?? "").toLowerCase();
         if (!arg) {
           return settings.mergePolicy === "fully_autonomous"
-            ? "Autonomous mode is ON — every validated change auto-merges, including risky ones."
+            ? "Autonomous mode is ON — validated changes auto-merge, but destructive-change rails and validator escalations still require a human."
             : `Autonomous mode is OFF (merge policy: ${settings.mergePolicy}).`;
         }
         if (arg !== "on" && arg !== "off") return "Usage: /autonomous [on|off]";
         const policy: MergePolicy = arg === "on" ? "fully_autonomous" : "hard_gate_flag_risky";
         setMergePolicy(db, policy, "telegram");
         return arg === "on"
-          ? "Autonomous mode ON — every validated change will auto-merge from now on, including risky ones. No more merge approval prompts until you turn this off."
+          ? "Autonomous mode ON — validated changes auto-merge; destructive-change rails and validator escalations still require a human."
           : `Autonomous mode OFF — back to "${policy}" (risky changes ask before merging again).`;
       }
       case "pending": {
-        const notifs = repo
-          .getNotifications(db)
-          .filter((n) => n.requiresApproval && !n.respondedWith);
-        if (notifs.length === 0) return "Nothing pending.";
-        for (const n of notifs) {
-          telegram?.approvalRequested(n, n.context);
-        }
-        return `Re-sent ${notifs.length} pending approval${notifs.length === 1 ? "" : "s"}.`;
+        if (!telegram) return "Telegram is not running.";
+        const count = resendPendingApprovals(db, telegram);
+        return count === 0
+          ? "Nothing pending."
+          : `Re-sent ${count} pending approval${count === 1 ? "" : "s"}.`;
       }
       case "stopall": {
         const projects = repo.getProjects(db);
@@ -1060,11 +1088,21 @@ async function main() {
     }
     const settings = repo.getSettings(db) ?? defaultSettings();
     const tg = settings.telegram;
-    if (!tg?.enabled) return;
+    if (!tg?.enabled) {
+      telegramHealth = { enabled: false, running: false, state: "disabled" };
+      return;
+    }
     const tokenVar = tg.botTokenRef ?? "TELEGRAM_BOT_TOKEN";
     // Raw token (stored in settings) wins; otherwise read the named env var.
     const token = tg.botToken || process.env[tokenVar];
     if (!token) {
+      telegramHealth = {
+        enabled: true,
+        running: false,
+        state: "degraded",
+        lastError: `No bot token configured (${tokenVar})`,
+        lastErrorAt: new Date().toISOString(),
+      };
       app.log.warn(
         `telegram enabled but no token (set botToken or env var ${tokenVar}) — bot not started`,
       );
@@ -1078,6 +1116,25 @@ async function main() {
           return resolveNotification(id, choice)?.resolved ?? false;
         },
         onCommand: telegramCommand,
+        onProjectAction: async (action, projectId) => {
+          const project = repo.getProject(db, projectId);
+          if (!project) return "Project no longer exists.";
+          if (action === "status") {
+            const tasks = repo.getTasks(db, projectId);
+            const done = tasks.filter((task) => task.status === "done").length;
+            const failed = tasks.filter((task) => task.status === "failed").length;
+            return `${project.name} [${project.status}] ${done}/${tasks.length} done${failed ? `, ${failed} failed` : ""}`;
+          }
+          const result = action === "start"
+            ? await startProject(db, engine, broadcast, projectId)
+            : await pauseProject(db, engine, broadcast, projectId, true);
+          return result.ok
+            ? `${action === "start" ? "Started" : "Paused"} ${result.project.name}`
+            : `Could not ${action} ${project.name}: ${result.error}`;
+        },
+        onApprovalDeliveryFailure: (notificationId, error) => {
+          notifyTelegramApprovalFailure(db, broadcast, notificationId, error);
+        },
         onStopAllConfirm: async (confirmed) => {
           if (!confirmed) return "Cancelled — nothing was stopped.";
           const stoppedIds = await stopAllProjects(db, engine, broadcast, "telegram");
@@ -1089,7 +1146,10 @@ async function main() {
       (m) => app.log.info(m),
     );
     telegram.start();
+    telegramHealth = telegram.health;
     engine.setNotifier(telegram);
+    // Restart/settings-save recovery: re-send every still-live approval.
+    resendPendingApprovals(db, telegram);
   }
 
   configureTelegram(); // start the bot at boot if enabled
@@ -1105,6 +1165,7 @@ async function main() {
     stopEngine: () => engineShutdown ?? engine.shutdown(repo.getProjects(db)),
     stopTelegram: () => {
       telegram?.stop();
+      if (telegram) telegramHealth = telegram.health;
       telegram = undefined;
       engine.setNotifier(undefined);
     },
@@ -1171,6 +1232,7 @@ async function main() {
       version,
       dockerAvailable,
       dockerRequired,
+      telegram: telegram?.health ?? telegramHealth,
     });
   });
 
@@ -1787,37 +1849,19 @@ async function main() {
 
   app.post("/api/projects/:id/start", async (req, reply) => {
     const { id } = req.params as RouteParams;
-    const project = repo.getProject(db, id);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    const persistenceError = planningPersistenceError(project);
-    if (persistenceError) return reply.code(409).send({ error: persistenceError });
-
-    try {
-      // Promote an existing manual-priority runtime or start the DAG. Either
-      // way, one Orchestrator remains the sole owner of this project.
-      await engine.start(project);
-    } catch (err) {
-      return reply.code(409).send({
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    repo.updateProject(db, id, { status: "running" });
-    const running = repo.getProject(db, id)!;
-    broadcast({ type: "project.updated", payload: running });
-    return { project: running };
+    const result = await startProject(db, engine, broadcast, id);
+    return result.ok
+      ? { project: result.project }
+      : reply.code(result.status).send({ error: result.error });
   });
 
   app.post("/api/projects/:id/pause", async (req, reply) => {
     const { id } = req.params as RouteParams;
-    const project = repo.getProject(db, id);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-
     const body = (req.body as { drain?: boolean } | undefined) ?? {};
-    await engine.pause(project, { drain: body.drain });
-    repo.updateProject(db, id, { status: "paused" });
-    broadcast({ type: "project.updated", payload: repo.getProject(db, id)! });
-    return { project: repo.getProject(db, id)! };
+    const result = await pauseProject(db, engine, broadcast, id, body.drain);
+    return result.ok
+      ? { project: result.project }
+      : reply.code(result.status).send({ error: result.error });
   });
 
   // F23: the global "Stop all" panic button — one confirmed tap aborts
