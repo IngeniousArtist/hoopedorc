@@ -72,15 +72,32 @@ echo
 # versions `list-unit-files <pattern>` exits 0 even on zero matches
 # (printing "0 unit files listed." rather than failing), which would have
 # made this branch fire `sudo systemctl restart` against a unit that
-# doesn't exist. NOT verified against a real systemd box in this
-# environment (macOS has none installed) — verify on your box before
-# relying on it, the same rule the Remote setup section's tailscale
-# commands already follow.
+# doesn't exist. Verified working against a real systemd box (Ubuntu, this
+# project's own EC2 deploy).
+#
+# `systemctl list-unit-files` matches by unit *name* only, system-wide — it
+# says nothing about which checkout that unit actually serves. On a box
+# that also keeps a second, non-deployed clone around (e.g. a dev checkout
+# alongside the /opt one the unit's WorkingDirectory points at), running
+# this script from the dev checkout matched the same unit name and
+# restarted the *other* checkout's live process — confirmed by watching
+# hoopedorc.service's ActiveEnterTimestamp jump during a dev-checkout
+# update run. Comparing the unit's own WorkingDirectory against this
+# checkout's directory before restarting closes that gap.
 if command -v systemctl >/dev/null 2>&1 && \
    systemctl list-unit-files 'hoopedorc.service' 2>/dev/null | grep -q '^hoopedorc\.service'; then
-  echo "Restarting hoopedorc.service..."
-  sudo systemctl restart hoopedorc
-  echo "Done — restarted via systemd."
+  unit_dir="$(systemctl show hoopedorc.service -p WorkingDirectory --value 2>/dev/null || true)"
+  if [ "$unit_dir" = "$here" ]; then
+    echo "Restarting hoopedorc.service..."
+    sudo systemctl restart hoopedorc
+    echo "Done — restarted via systemd."
+  else
+    echo "Done — dependencies updated and rebuilt."
+    echo "A hoopedorc.service unit exists on this box, but its WorkingDirectory"
+    echo "(${unit_dir:-<unset>}) isn't this checkout ($here) — leaving it alone"
+    echo "rather than restarting an unrelated deployment. Restart this checkout's"
+    echo "own process yourself if it's the one actually serving traffic."
+  fi
 else
   echo "Done — dependencies updated and rebuilt."
   echo "No hoopedorc systemd unit found on this box: restart the server yourself"

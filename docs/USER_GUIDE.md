@@ -500,12 +500,18 @@ uncommitted changes (commit/stash first); warns and asks for confirmation
 if any project is currently running (`GET /api/projects` against
 `127.0.0.1` — updating restarts the process, aborting anything active);
 then `git pull --ff-only && npm ci && npm run build`; then restarts
-`hoopedorc.service` via `systemctl` if that unit is installed (the
+`hoopedorc.service` via `systemctl` if that unit is installed **and its
+`WorkingDirectory` matches this checkout** (the
 [EC2 / headless Linux](#ec2--headless-linux) native+systemd path above),
 or otherwise prints a reminder to restart the process yourself (however
 you're actually running it — a process manager, a `screen`/`tmux`
-session, etc). Check `GET /api/health`'s `version` field (also shown at
-the top of the Setup & Health page) to confirm the update actually took.
+session, etc). The `WorkingDirectory` check matters if this box also keeps
+a second, non-deployed checkout around (e.g. a dev clone next to the
+`/opt` one the systemd unit actually serves from) — `systemctl` matches
+unit *names*, not checkouts, so without it running the script from the
+wrong checkout would restart someone else's deployment. Check
+`GET /api/health`'s `version` field (also shown at the top of the Setup &
+Health page) to confirm the update actually took.
 That endpoint and panel also show whether the runtime is running or shutting
 down and whether Docker is available/required. A missing optional Docker daemon
 is informational (`auto` uses the host); a missing required daemon marks health
