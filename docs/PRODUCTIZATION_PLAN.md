@@ -6285,8 +6285,8 @@ systemd/Tailscale acceptance check.
 
 | Item | Status | PR |
 |---|---|---|
-| D1 — concise repository contributor guide | ✅ done | pending |
-| F50 — safe UI-triggered update and restart | implemented; owner EC2 smoke pending | pending |
+| D1 — concise repository contributor guide | ✅ done | [#155](https://github.com/IngeniousArtist/hoopedorc/pull/155) |
+| F50 — safe UI-triggered update and restart | implemented; owner EC2 smoke pending | [#155](https://github.com/IngeniousArtist/hoopedorc/pull/155) |
 
 The owner requested this wave on 2026-07-16 after the first EC2 dogfooding
 cycle. It follows the same branch → scoped implementation → full verification →
