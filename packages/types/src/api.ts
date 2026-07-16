@@ -393,6 +393,40 @@ export interface SetupHealthResponse {
   allOk: boolean;
 }
 
+export type SelfUpdateState =
+  | "idle"
+  | "queued"
+  | "checking"
+  | "pulling"
+  | "installing"
+  | "building"
+  | "restarting"
+  | "succeeded"
+  | "failed";
+
+/** F50: deployment capability plus the current/last guarded self-update. */
+export interface SelfUpdateStatusResponse {
+  /** Whether this deployment has the exact systemd boundary needed by F50. */
+  available: boolean;
+  /** Stable deployment limitation (mock/non-Linux/unit mismatch/no sudo). */
+  unavailableReason?: string;
+  /** Temporary refusal (active project, dirty tree, non-main, in progress). */
+  blockedReason?: string;
+  state: SelfUpdateState;
+  message: string;
+  startedAt?: string;
+  updatedAt?: string;
+  finishedAt?: string;
+  branch?: string;
+  fromCommit?: string;
+  toCommit?: string;
+  updateUnit: string;
+}
+
+export interface StartSelfUpdateResponse {
+  status: SelfUpdateStatusResponse;
+}
+
 /** Result of running a trivial prompt through one model (costs a little). */
 export interface ModelTestResult {
   id: ModelId;
@@ -558,6 +592,8 @@ export const ROUTES = {
   taskRollback: "GET /api/tasks/:id/rollback",
   taskDecisions: "GET /api/tasks/:id/decisions",
   setupHealth: "GET /api/setup",
+  selfUpdateStatus: "GET /api/setup/self-update",
+  startSelfUpdate: "POST /api/setup/self-update",
   setupModels: "GET /api/setup/models",
   modelCatalog: "GET /api/setup/model-catalog",
   modelHealth: "GET /api/setup/model-health",

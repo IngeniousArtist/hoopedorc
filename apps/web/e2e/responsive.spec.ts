@@ -158,7 +158,60 @@ for (const viewport of TARGET_VIEWPORTS) {
       await page.getByRole("button", { name: "Save Settings" }).click();
       await expect(page.getByText("Settings saved.")).toBeVisible();
 
+      let updateStarted = false;
+      await page.route("**/api/setup/self-update", async (route) => {
+        if (route.request().method() === "POST") {
+          updateStarted = true;
+          await route.fulfill({
+            status: 202,
+            json: {
+              status: {
+                available: true,
+                blockedReason: "An update is already in progress.",
+                state: "queued",
+                message: "Update queued in a separate systemd service.",
+                branch: "main",
+                fromCommit: "abc1234",
+                startedAt: "2026-07-16T12:00:00.000Z",
+                updatedAt: "2026-07-16T12:00:00.000Z",
+                updateUnit: "hoopedorc-self-update.service",
+              },
+            },
+          });
+          return;
+        }
+        await route.fulfill({
+          json: updateStarted
+            ? {
+                available: true,
+                blockedReason: "An update is already in progress.",
+                state: "queued",
+                message: "Update queued in a separate systemd service.",
+                branch: "main",
+                fromCommit: "abc1234",
+                startedAt: "2026-07-16T12:00:00.000Z",
+                updatedAt: "2026-07-16T12:00:00.000Z",
+                updateUnit: "hoopedorc-self-update.service",
+              }
+            : {
+                available: true,
+                state: "idle",
+                message: "No UI update has run yet.",
+                branch: "main",
+                fromCommit: "abc1234",
+                updateUnit: "hoopedorc-self-update.service",
+              },
+        });
+      });
       await page.goto("/#/setup");
+      await page.getByRole("button", { name: "Update & restart" }).click();
+      await expect(page.getByText(/Update and restart now\?/i)).toBeVisible();
+      await expectResponsivePage(page, viewport.width < 640);
+      await captureViewport(page, testInfo, `${viewport.name}-update-confirmation`);
+      await page.getByRole("button", { name: "Confirm update & restart" }).click();
+      await expect(page.getByRole("button", { name: "Update in progress…" })).toBeDisabled();
+      await expect(page.getByText("Queued", { exact: true })).toBeVisible();
+      await expectResponsivePage(page, viewport.width < 640);
       await page.getByRole("button", { name: "Re-run setup wizard" }).click();
       await expect(page.getByRole("heading", { name: "Welcome to Hoopedorc" })).toBeVisible();
       await expectResponsivePage(page, viewport.width < 640);

@@ -6243,6 +6243,7 @@ for that final device/network check.
 | 13 | B30, F40–F43 | Remote-supervision wave, built while the owner's EC2 deploy happens: approval re-arm on restart first (B30 — F40's `/pending` leans on its mechanism), then the Telegram commands (F40), then the three small ones (F41 hold-dispatch option, F43 sandbox UI toggle, F42 bootstrap script) in any order. Tagged `v0.5.0`. F42's live-on-real-EC2 half is still owed (no EC2 box/Docker daemon available in this environment). | ✅ done |
 | 14 | B31–B33, S8, F44–F47 | Autonomy-hardening wave from the owner's first real dogfooding runs: B31+F46+F47 first (one PR — all in `planner.ts`; B31 unblocks planning outright and F45 depends on it), then B32 (the autonomous-stall fix), then S8 (destructive-change rail — before more autonomous runs happen), then B33, F44, F45 in any order. Tag `v0.6.0` at the end. | ✅ done |
 | 15 | B34–B41, S9–S10, F48–F49, T2, U19 | Reliability/portability/mobile wave from the v0.6.0 Codex audit and owner decisions: execution ownership → process cancellation → fail-closed safety → rollback PR → credential boundary → live settings/effort → portable setup/cache → durability/accounting → shutdown/Telegram → web tests → responsive UX. Tag `v0.7.0` only after cross-platform/live acceptance. | in progress |
+| 16 | D1, F50 | Make the established contribution workflow cheap to load, then add a fixed-command, fail-closed EC2 update path that survives the serving unit's restart. | implementation complete; live EC2 smoke pending |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
@@ -6276,4 +6277,112 @@ section above. Phase 15 (Part 10) is now active; its approved item specs,
 PR order, acceptance criteria, owner decisions, and explicit non-goals are
 recorded above. F13 phases 2–3 remain deferred until a separate design can
 isolate agents without breaking same-user CLI OAuth/keychain access or the
-Mac/Xcode execution model.
+Mac/Xcode execution model. Phase 16's D1/F50 implementation is complete; the
+owner's first update from the deployed Setup page remains the required live
+systemd/Tailscale acceptance check.
+
+### Phase 16 — Part 11: contributor workflow and remote self-update — IMPLEMENTED; LIVE EC2 ACCEPTANCE PENDING
+
+| Item | Status | PR |
+|---|---|---|
+| D1 — concise repository contributor guide | ✅ done | [#155](https://github.com/IngeniousArtist/hoopedorc/pull/155) |
+| F50 — safe UI-triggered update and restart | implemented; owner EC2 smoke pending | [#155](https://github.com/IngeniousArtist/hoopedorc/pull/155) |
+
+The owner requested this wave on 2026-07-16 after the first EC2 dogfooding
+cycle. It follows the same branch → scoped implementation → full verification →
+PR → green CI → merge workflow as the earlier waves.
+
+---
+
+## Part 11 — Contributor workflow and remote self-update
+
+### D1. Concise repository contributor guide
+
+**Problem:** The repository's working rules, package boundaries, invariants,
+and verification expectations are present across the large product plan and
+several focused docs. A new coding session can miss the established workflow
+or waste context rereading the whole historical roadmap.
+
+**Implementation:**
+
+- Add a root `AGENTS.md` that is the concise day-to-day source of truth for
+  branch/PR workflow, architecture boundaries, contract/persistence checklists,
+  Git/runtime invariants, UI/deployment expectations, and required gates.
+- Keep `docs/PRODUCTIZATION_PLAN.md` as the item-specification and evidence
+  archive rather than duplicating its history.
+- Add the minimal `CLAUDE.md` bridge so Claude Code reads the same canonical
+  guide instead of maintaining a divergent second copy.
+
+**Acceptance:**
+
+- A future agent can identify the correct package, contract update path,
+  verification commands, and branch/PR sequence from `AGENTS.md` alone.
+- The guide explicitly protects planning durability, unrelated worktree
+  changes, scheduler/process ownership, fail-closed gates, sanitized agent
+  environments, graceful shutdown, and deployment update safety.
+- `CLAUDE.md` points to `AGENTS.md`; there is one maintained workflow source.
+
+### F50. Safe UI-triggered update and restart
+
+**Problem:** The remote Tailscale-served EC2 deployment already has a guarded
+`scripts/update.sh`, but the owner must SSH into the box to run it. A naive
+server child process would be killed by `hoopedorc.service`'s
+`KillMode=control-group` during restart, potentially leaving a half-updated
+deployment.
+
+**Implementation:**
+
+- Extend `scripts/update.sh` with a non-interactive mode and machine-readable
+  status updates while preserving the manual workflow.
+- Add typed GET/POST setup endpoints for update capability/status and starting
+  an update. The POST accepts no command, branch, path, or unit arguments.
+- Before launch, refuse mock/non-Linux/non-systemd deployments, a
+  `hoopedorc.service` whose exact `WorkingDirectory` is not this checkout,
+  non-`main` or dirty Git state, active project runs, missing passwordless
+  systemd launch capability, and a concurrent update.
+- Launch the fixed update script as the service user in a separate transient
+  systemd service. It must therefore survive the main service's graceful
+  restart without escaping the existing same-user filesystem/CLI boundary.
+- Keep `git pull --ff-only`; never stash, reset, merge, force-push, or absorb
+  unrelated changes. The script repeats the active-run and repository checks
+  to close the request-to-launch race.
+- Add a Setup & Health card with availability explanation, current/last status,
+  inline confirmation, progress polling, duplicate-submit prevention, and
+  actionable failure text.
+- Document the EC2/systemd requirement and manual fallback.
+
+**Acceptance:**
+
+- On the supported EC2 deployment, one confirmed UI action performs the same
+  guarded pull/install/build flow as `npm run update`, gracefully restarts the
+  exact serving unit, and the Tailscale URL becomes healthy again.
+- The updater remains alive while `hoopedorc.service` stops and restarts.
+- Dirty trees, non-main branches, active projects, mismatched units, unsupported
+  hosts, unavailable non-interactive privilege, and concurrent requests are
+  refused before Git or dependency state changes.
+- A pull/install/build/restart failure remains visible after reconnect with a
+  journal hint; a successful restart is recognizable after the new server
+  boots.
+- Shared types, `ROUTES`, contract docs, server policy tests, web interaction
+  tests, mock behavior, responsive browser checks, and the full repository gate
+  are updated and green.
+
+**Implementation evidence (2026-07-16):** `AGENTS.md` is now the canonical
+day-to-day workflow and `CLAUDE.md` imports it instead of duplicating policy.
+The Setup & Health page exposes one fixed update action backed by typed
+GET/POST routes. The server refuses unsupported hosts, mismatched systemd
+working directories, dirty/non-main checkouts, active projects, missing
+passwordless transient-unit capability, Settings-only API tokens, and
+concurrent launches. It then starts the repository-owned updater as the service
+user in a separate transient systemd unit. `scripts/update.sh` repeats the
+fail-closed checks, writes atomic durable status, uses `git pull --ff-only`,
+installs with `npm ci`, builds, and restarts only `hoopedorc.service`.
+
+The full local gate passes: typecheck, production build, lint, ShellCheck,
+160 engine tests, 12 adapter tests, 173 server tests, 20 web interaction tests,
+and 14 Playwright tests across 360/390/768/1280/1440 widths. Desktop and phone
+browser inspection found no document overflow or console errors. This
+environment is macOS and has no real `hoopedorc.service`, so the acceptance
+line proving the detached updater survives an actual EC2 restart and returns
+healthy through Tailscale remains intentionally assigned to the owner after
+deployment.

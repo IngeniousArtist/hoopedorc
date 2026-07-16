@@ -40,6 +40,15 @@ for the one-command version. The manual steps:
    for you on future deploys, so you only run `npm run build` by hand once,
    here.
 
+After that first deployment, Setup & Health exposes **Update Hoopedorc** when
+the service user can launch `sudo -n systemd-run`, the checkout is clean on
+`main`, `API_TOKEN` is present in `.env` when auth is enabled, and the installed
+unit's exact `WorkingDirectory` matches the checkout. It runs the same guarded
+`scripts/update.sh` in a separate transient unit, so restarting
+`hoopedorc.service` cannot kill the updater. Hardened boxes that deliberately
+deny passwordless systemd launch keep the button disabled and continue using
+`npm run update` over SSH.
+
 The unit gives Hoopedorc 25 seconds to handle `SIGTERM`. The app immediately
 refuses new mutations, cancels active model/gate/setup processes, waits up to
 15 seconds for all project and rollback runtimes together, stops Telegram,
@@ -47,6 +56,8 @@ flushes logs, checkpoints SQLite's WAL, records a shutdown audit entry, and
 exits zero. Fatal exceptions use the same cleanup but exit nonzero so
 `Restart=on-failure` brings the service back. `KillMode=control-group` remains
 the final guard against an orphaned CLI if the process cannot finish cleanup.
+The self-updater is intentionally launched as a different transient systemd
+unit, outside this control group, before it restarts the main service.
 
 For the full ordered walkthrough (instance sizing, all CLI auths, `.env`,
 Tailscale, first-boot verification) see USER_GUIDE's

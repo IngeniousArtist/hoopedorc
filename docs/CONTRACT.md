@@ -299,6 +299,8 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 | `PUT /api/settings` | `UpdateSettingsRequest` → `UpdateSettingsResponse` |
 | `GET /api/notifications` | → `ListNotificationsResponse` |
 | `POST /api/notifications/:id/respond` | `RespondNotificationRequest` → `{ ok }` |
+| `GET /api/setup/self-update` | → `SelfUpdateStatusResponse` (deployment availability, temporary blockers, and current/last update phase) |
+| `POST /api/setup/self-update` | no body → `StartSelfUpdateResponse` (202; launches only the fixed guarded updater in a separate systemd unit) |
 | `GET /api/setup/models` | → `ModelRosterResponse` |
 | `GET /api/setup/model-catalog` | → `ModelCatalogResponse` (installed Codex catalog, Claude Code aliases/current IDs, and OpenCode `zai/`/`xai/`/`deepseek/` models) |
 | `GET /api/setup/model-health` | → `ModelHealthResponse` |
