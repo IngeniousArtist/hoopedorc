@@ -1,13 +1,17 @@
 import type {
   CreateProjectResponse,
+  ModelCatalogResponse,
   ModelConfig,
-  ModelRosterResponse,
   Settings as SettingsType,
   SetupHealthResponse,
 } from "@orc/types";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
-import { ModelsEditor } from "../components/ModelsEditor";
+import {
+  ModelsEditor,
+  modelSlugSuggestions,
+  type ModelSlugSuggestions,
+} from "../components/ModelsEditor";
 import { RoutingEditor } from "../components/RoutingEditor";
 import { NewProject } from "./NewProject";
 
@@ -51,7 +55,7 @@ export function Welcome({
   const [step, setStep] = useState(0);
   const [settings, setSettings] = useState<SettingsType | null>(null);
   const [health, setHealth] = useState<SetupHealthResponse | null>(null);
-  const [roster, setRoster] = useState<string[]>([]);
+  const [modelSlugs, setModelSlugs] = useState<ModelSlugSuggestions>({});
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -62,8 +66,8 @@ export function Welcome({
     api<SetupHealthResponse>("setupHealth")
       .then(setHealth)
       .catch(() => {});
-    api<ModelRosterResponse>("setupModels")
-      .then((r) => setRoster(r.models))
+    api<ModelCatalogResponse>("modelCatalog")
+      .then((catalog) => setModelSlugs(modelSlugSuggestions(catalog)))
       .catch(() => {});
   }, []);
 
@@ -225,7 +229,7 @@ export function Welcome({
           <ModelsEditor
             models={settings.models}
             onChange={updateModels}
-            roster={roster}
+            modelSlugs={modelSlugs}
           />
         </section>
       )}

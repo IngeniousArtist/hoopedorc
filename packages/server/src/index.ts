@@ -92,7 +92,12 @@ import {
   type TelegramCommandReply,
   type TelegramDeliveryHealth,
 } from "./telegram";
-import { getModelRoster, runSetupChecks, testModels } from "./setup";
+import {
+  getModelCatalog,
+  getModelRoster,
+  runSetupChecks,
+  testModels,
+} from "./setup";
 import { parseSetupCommand } from "./project-config";
 import { persistInvocationEvent } from "./invocation-ledger";
 import { ShutdownCoordinator, installShutdownHandlers } from "./shutdown";
@@ -2481,6 +2486,19 @@ async function main() {
     );
     try {
       return await getModelRoster(cancellation.signal);
+    } finally {
+      cancellation.cleanup();
+    }
+  });
+
+  app.get("/api/setup/model-catalog", async (req, reply) => {
+    const cancellation = plannerRequestCancellation(
+      req.raw,
+      reply.raw,
+      requestControllers,
+    );
+    try {
+      return await getModelCatalog(cancellation.signal);
     } finally {
       cancellation.cleanup();
     }

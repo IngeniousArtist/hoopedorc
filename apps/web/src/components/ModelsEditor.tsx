@@ -2,6 +2,7 @@ import {
   CLAUDE_EFFORTS,
   CODEX_EFFORTS,
   OPENCODE_EFFORT_SUGGESTIONS,
+  type ModelCatalogResponse,
   type ModelConfig,
   type Role,
   type RoutingPolicy,
@@ -19,6 +20,25 @@ const ALL_ROLES: Role[] = [
 ];
 
 const RUNNERS: RunnerKind[] = ["opencode", "claude-code", "codex"];
+
+export type ModelSlugSuggestions = Partial<Record<RunnerKind, string[]>>;
+
+export function modelSlugSuggestions(
+  catalog: ModelCatalogResponse,
+): ModelSlugSuggestions {
+  return Object.fromEntries(
+    catalog.catalogs.map((entry) => [
+      entry.runner,
+      entry.models.map((model) => model.slug),
+    ]),
+  ) as ModelSlugSuggestions;
+}
+
+const MODEL_LIST_IDS: Record<RunnerKind, string> = {
+  "claude-code": "claude-code-model-catalog",
+  codex: "codex-model-catalog",
+  opencode: "opencode-model-catalog",
+};
 
 const inputCls =
   "w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200";
@@ -53,17 +73,13 @@ function routingReferences(routing: RoutingPolicy | undefined, modelId: string):
 export function ModelsEditor({
   models,
   onChange,
-  roster,
+  modelSlugs,
   routing,
 }: {
   models: ModelConfig[];
   onChange: (models: ModelConfig[]) => void;
-  /** Real `opencode models` output, offered as a datalist on the opencode
-   *  model field so mapping a model is picking from a real id instead of
-   *  typing one blind (F1's onboarding wizard already passes this; B28
-   *  wires the same call into Settings so its own "+ Add model" gets it
-   *  too). */
-  roster?: string[];
+  /** Runner-specific model slugs from the shared Model Slugs catalog. */
+  modelSlugs?: ModelSlugSuggestions;
   /** B28: current routing, so removing a model can warn before leaving a
    *  dangling reference behind (the server rejects the save either way —
    *  this just tells the user why up front, naming what references it). */
@@ -234,6 +250,11 @@ export function ModelsEditor({
                       patch(idx, { claudeModel: e.target.value || undefined })
                     }
                     placeholder="sonnet"
+                    list={
+                      modelSlugs?.["claude-code"]?.length
+                        ? MODEL_LIST_IDS["claude-code"]
+                        : undefined
+                    }
                     className={inputCls + " font-mono"}
                   />
                 ) : m.runner === "codex" ? (
@@ -243,7 +264,12 @@ export function ModelsEditor({
                     onChange={(e) =>
                       patch(idx, { codexModel: e.target.value || undefined })
                     }
-                    placeholder="gpt-5.2-codex"
+                    placeholder="gpt-5.6-sol"
+                    list={
+                      modelSlugs?.codex?.length
+                        ? MODEL_LIST_IDS.codex
+                        : undefined
+                    }
                     className={inputCls + " font-mono"}
                   />
                 ) : (
@@ -254,7 +280,11 @@ export function ModelsEditor({
                       patch(idx, { opencodeModel: e.target.value || undefined })
                     }
                     placeholder="deepseek/deepseek-v4-flash"
-                    list={roster?.length ? "opencode-model-roster" : undefined}
+                    list={
+                      modelSlugs?.opencode?.length
+                        ? MODEL_LIST_IDS.opencode
+                        : undefined
+                    }
                     className={inputCls + " font-mono"}
                   />
                 )}
@@ -438,13 +468,15 @@ export function ModelsEditor({
         Changing an ID that's referenced in Routing above will require
         re-selecting the model there. Save applies all changes.
       </p>
-      {roster?.length ? (
-        <datalist id="opencode-model-roster">
-          {roster.map((id) => (
-            <option key={id} value={id} />
-          ))}
-        </datalist>
-      ) : null}
+      {RUNNERS.map((runner) =>
+        modelSlugs?.[runner]?.length ? (
+          <datalist key={runner} id={MODEL_LIST_IDS[runner]}>
+            {modelSlugs[runner]!.map((id) => (
+              <option key={id} value={id} />
+            ))}
+          </datalist>
+        ) : null,
+      )}
       <datalist id="opencode-effort-variants">
         {OPENCODE_EFFORT_SUGGESTIONS.map((effort) => (
           <option key={effort} value={effort} />

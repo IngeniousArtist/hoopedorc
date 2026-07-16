@@ -86,6 +86,7 @@ for (const viewport of TARGET_VIEWPORTS) {
         { path: `/#/p/${projectId}/notifications`, heading: "Notifications", name: "notifications" },
         { path: "/#/projects", heading: "Projects", name: "projects" },
         { path: "/#/settings", heading: "Settings", name: "settings" },
+        { path: "/#/model-slugs", heading: "Model Slugs", name: "model-slugs" },
         { path: "/#/setup", heading: /Setup/, name: "setup" },
         { path: "/#/new-project", heading: "New Project", name: "new-project" },
       ] as const;
@@ -138,6 +139,10 @@ for (const viewport of TARGET_VIEWPORTS) {
 
       await seedEditablePlan(page);
       await page.goto(`/#/p/${projectId}/plan`);
+      const planningMessage = page.getByLabel("Planning message");
+      await expect(planningMessage).toBeVisible();
+      await expect(planningMessage).toHaveCSS("resize", "vertical");
+      expect((await planningMessage.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(100);
       await expect(page.getByLabel("Task 1 title")).toHaveValue("Responsive editing pass");
       await expect(page.getByLabel("Assigned model for Responsive editing pass")).toBeVisible();
       await expectResponsivePage(page, viewport.width < 640);

@@ -497,7 +497,7 @@ const CODEX_SANDBOX = "danger-full-access";
 export class CodexAdapter implements AgentAdapter {
   readonly runner = "codex" as const;
 
-  /** Optional `codex exec -m` id (e.g. "gpt-5.2-codex"). */
+  /** Optional `codex exec -m` id (e.g. "gpt-5.6-sol"). */
   constructor(
     private readonly codexModel?: string,
     private readonly effort?: string,

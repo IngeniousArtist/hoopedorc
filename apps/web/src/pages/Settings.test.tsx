@@ -14,7 +14,7 @@ function arrangeSettings(update: "success" | "failure") {
   const settings = settingsFixture();
   apiMock.mockImplementation(async (key) => {
     if (key === "getSettings") return { settings };
-    if (key === "setupModels") return { models: [] };
+    if (key === "modelCatalog") return { generatedAt: "", catalogs: [] };
     if (key === "health") return healthFixture;
     if (key === "updateSettings") {
       if (update === "failure") throw new Error("Settings could not be saved");

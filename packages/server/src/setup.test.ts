@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ModelInvocation, Project } from "@orc/types";
 import { defaultSettings } from "./config.js";
-import { getModelRoster, projectSetupChecks, testModels } from "./setup.js";
+import {
+  getModelCatalog,
+  getModelRoster,
+  projectSetupChecks,
+  testModels,
+} from "./setup.js";
 
 test("B40: model test emits a health invocation even for subscription-priced calls", async () => {
   const bin = mkdtempSync(join(tmpdir(), "hoopedorc-health-ledger-"));
@@ -104,6 +109,81 @@ setInterval(() => {}, 1_000);
     );
   } finally {
     clearTimeout(timer);
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+});
+
+test("model catalog reads Codex slugs, documents Claude choices, and filters OpenCode providers", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-model-catalog-"));
+  const codex = join(bin, "codex");
+  const opencode = join(bin, "opencode");
+  writeFileSync(
+    codex,
+    `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  models: [
+    {
+      slug: "gpt-test-codex",
+      display_name: "GPT Test Codex",
+      description: "test model",
+      visibility: "list",
+      supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }]
+    },
+    {
+      slug: "hidden-internal",
+      display_name: "Hidden",
+      visibility: "hide",
+      supported_reasoning_levels: []
+    }
+  ]
+}));
+`,
+  );
+  writeFileSync(
+    opencode,
+    `#!/usr/bin/env node
+process.stdout.write([
+  "zai/glm-test",
+  "xai/grok-test",
+  "deepseek/deepseek-test",
+  "openrouter/deepseek/deepseek-test",
+  "anthropic/claude-test"
+].join("\\n"));
+`,
+  );
+  chmodSync(codex, 0o755);
+  chmodSync(opencode, 0o755);
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  try {
+    const result = await getModelCatalog();
+    const codexCatalog = result.catalogs.find((catalog) => catalog.runner === "codex");
+    const claudeCatalog = result.catalogs.find(
+      (catalog) => catalog.runner === "claude-code",
+    );
+    const openCodeCatalog = result.catalogs.find(
+      (catalog) => catalog.runner === "opencode",
+    );
+
+    assert.deepEqual(codexCatalog?.models, [
+      {
+        slug: "gpt-test-codex",
+        displayName: "GPT Test Codex",
+        description: "test model",
+        kind: "model",
+        reasoningEfforts: ["low", "high"],
+      },
+    ]);
+    assert.ok(claudeCatalog?.models.some((model) => model.slug === "sonnet"));
+    assert.ok(
+      claudeCatalog?.models.some((model) => model.slug === "claude-opus-4-8"),
+    );
+    assert.deepEqual(
+      openCodeCatalog?.models.map((model) => model.slug),
+      ["deepseek/deepseek-test", "xai/grok-test", "zai/glm-test"],
+    );
+  } finally {
     if (savedPath === undefined) delete process.env.PATH;
     else process.env.PATH = savedPath;
   }

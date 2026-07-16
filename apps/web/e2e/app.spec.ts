@@ -7,6 +7,10 @@ test.describe.serial("critical operator workflows", () => {
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
     await expect(page).toHaveURL(/#\/settings$/);
 
+    await page.getByRole("button", { name: "Model Slugs" }).click();
+    await expect(page.getByRole("heading", { name: "Model Slugs" })).toBeVisible();
+    await expect(page).toHaveURL(/#\/model-slugs$/);
+
     await page.getByRole("button", { name: "Board" }).click();
     await expect(page).toHaveURL(/#\/p\/proj-hoopedorc\/board$/);
     await expect(page.locator("article").filter({ hasText: "Kanban board UI" })).toBeVisible();

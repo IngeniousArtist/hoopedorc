@@ -13,6 +13,7 @@ import type {
   ProjectConfig,
   Role,
   Run,
+  RunnerKind,
   Settings,
   Task,
   TaskStatus,
@@ -455,6 +456,30 @@ export interface ModelRosterResponse {
   models: string[];
 }
 
+export type ModelCatalogEntryKind = "alias" | "model";
+
+export interface ModelCatalogEntry {
+  slug: string;
+  displayName: string;
+  description?: string;
+  provider?: string;
+  kind: ModelCatalogEntryKind;
+  reasoningEfforts?: string[];
+}
+
+export interface RunnerModelCatalog {
+  runner: RunnerKind;
+  label: string;
+  source: string;
+  models: ModelCatalogEntry[];
+  error?: string;
+}
+
+export interface ModelCatalogResponse {
+  generatedAt: string;
+  catalogs: RunnerModelCatalog[];
+}
+
 /** Send a one-off Telegram test message. Uses saved config unless overridden. */
 export interface TelegramTestRequest {
   token?: string;
@@ -534,6 +559,7 @@ export const ROUTES = {
   taskDecisions: "GET /api/tasks/:id/decisions",
   setupHealth: "GET /api/setup",
   setupModels: "GET /api/setup/models",
+  modelCatalog: "GET /api/setup/model-catalog",
   modelHealth: "GET /api/setup/model-health",
   testModels: "POST /api/setup/test-models",
   stopAll: "POST /api/engine/stop-all",

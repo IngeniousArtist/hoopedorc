@@ -16,6 +16,22 @@ All notable changes to Hoopedorc are recorded here. Format loosely follows
 - Git commit/fetch/merge/push failures now retain typed stages. Only a verified
   clean tree is a commit no-op; optional changelog/worktree/branch cleanup stays
   non-blocking but emits an operator-visible warning when it fails.
+- Planning archives and uploaded attachments under Hoopedorc's local
+  `context/` paths no longer trip the unrelated-change guard that protects the
+  primary clone; real owner changes elsewhere still block persistence.
+
+### Model slug catalog
+
+- Added a dedicated, searchable Model Slugs page with one-click copy,
+  per-runner loading/error/empty states, responsive coverage, and deep links.
+- Codex slugs come from the installed CLI's bundled catalog, Claude Code shows
+  its short aliases and current documented full IDs, and OpenCode is limited
+  to the requested `zai/`, `xai/`, and `deepseek/` providers.
+- Settings and onboarding now autocomplete runner model fields from the same
+  catalog, replacing the stale Codex example that no longer appeared in the
+  installed CLI.
+- The planning chat composer now starts at five lines and can be resized
+  vertically for long prompts without creating horizontal page overflow.
 
 ### B38 — portable dependency setup and atomic caching
 
