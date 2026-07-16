@@ -99,11 +99,12 @@ exhausting it in the first place.
 
 **Operations**
 - One process serves API + built web app; systemd unit provided (prebuilt
-  start — no rebuild on restart); `npm run update` pulls/rebuilds/restarts
-  in place; automatic daily DB backup rotation; log pruning; first-run
-  onboarding wizard with CLI health checks, a live Model Slugs catalog for
-  Codex/Claude Code/selected OpenCode providers, and an ordered EC2 deploy
-  checklist in the user guide
+  start — no rebuild on restart); Setup & Health can run the guarded
+  pull/rebuild/restart remotely on supported EC2/systemd deployments, with
+  `npm run update` as the terminal fallback; automatic daily DB backup
+  rotation; log pruning; first-run onboarding wizard with CLI health checks,
+  a live Model Slugs catalog for Codex/Claude Code/selected OpenCode
+  providers, and an ordered EC2 deploy checklist in the user guide
 
 ## Quickstart
 
@@ -128,6 +129,11 @@ For development:
 npm run mock         # frontend dev against mock data on :5173 (no real models)
 npm run dev          # all packages in watch mode
 ```
+
+Contributors and coding agents should start with [`AGENTS.md`](AGENTS.md).
+It contains the concise branch/PR workflow, architecture boundaries,
+load-bearing invariants, and required verification gates; use the larger
+productization plan only for an item's full specification and evidence history.
 
 See [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) for the full walkthrough
 (first project, the safety model, the gate sandbox, scheduled runs, remote

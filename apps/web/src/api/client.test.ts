@@ -13,6 +13,9 @@ describe("API route contract", () => {
     expect(apiUrl("respondNotification", { id: "notif-1" })).toBe(
       "/api/notifications/notif-1/respond",
     );
+    expect(apiMethod("startSelfUpdate")).toBe("POST");
+    expect(apiUrl("selfUpdateStatus")).toBe("/api/setup/self-update");
+    expect(apiUrl("startSelfUpdate")).toBe("/api/setup/self-update");
   });
 
   it("opens one auth gate for concurrent 401 responses and retries every request", async () => {

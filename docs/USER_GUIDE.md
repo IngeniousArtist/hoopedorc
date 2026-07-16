@@ -497,7 +497,38 @@ recoverable from GitHub, so the DB backups are the part that matters.
 
 ## Updating
 
-From the repo root on the deployed box:
+On the supported EC2/headless Linux deployment, open **Setup & Health →
+Update Hoopedorc**. The card checks availability and explains any blocker.
+Press **Update & restart**, review the inline confirmation, and confirm once.
+Progress remains durable across the brief Tailscale disconnect while the
+service restarts.
+
+The UI path is deliberately narrow and fail-closed:
+
+- the checkout must be clean and on `main`;
+- no project may be `running`;
+- `hoopedorc.service` must exist and its exact `WorkingDirectory` must be this
+  checkout;
+- the service user must be able to run `sudo -n systemd-run` and restart the
+  service without a password (the normal default EC2 `ubuntu`/`ec2-user`
+  setup); and
+- when API auth is enabled, `API_TOKEN` must be in `.env`, not only stored
+  through Settings, so the detached updater can authenticate its repeated
+  active-project check.
+
+The server accepts no update command, branch, path, unit, or argument from the
+browser. It launches the fixed `scripts/update.sh` in
+`hoopedorc-self-update.service`, a separate transient systemd unit running as
+the same OS user. That separate control group is what lets the updater survive
+`hoopedorc.service`'s own `KillMode=control-group` restart. Status is stored at
+`~/.hoopedorc/self-update-status.json`; if a phase fails, inspect:
+
+```bash
+journalctl -u hoopedorc-self-update.service
+```
+
+If the card says UI update is unavailable, use the terminal fallback from the
+repo root on the deployed box:
 
 ```bash
 npm run update
@@ -772,7 +803,10 @@ below by hand on any other distro.
    **Setup & Health** shows all three (or four, with Codex) CLI checks
    green and the gate-sandbox line matches what you expect; tail logs with
    `journalctl -u hoopedorc -f` if anything's red. From here, **Updating**
-   above (`npm run update`) is how you keep the box current.
+   above (the Setup & Health button, with `npm run update` as fallback) is how
+   you keep the box current. The button reports unavailable instead of
+   weakening a hardened sudo policy; keep using the terminal fallback on such
+   a box.
 
 Data lives at `DB_PATH` (default `./hoopedorc.db`, so
 `/opt/hoopedorc/hoopedorc.db` if you cloned to `/opt/hoopedorc`) plus its

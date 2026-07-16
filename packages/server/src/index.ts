@@ -102,6 +102,7 @@ import { parseSetupCommand } from "./project-config";
 import { persistInvocationEvent } from "./invocation-ledger";
 import { ShutdownCoordinator, installShutdownHandlers } from "./shutdown";
 import { buildRuntimeHealth } from "./runtime-health";
+import { SelfUpdater, SelfUpdateRefusedError } from "./self-update";
 import type {
   DraftTask,
   Notification,
@@ -640,12 +641,13 @@ async function main() {
   // F24: same "3 directories below the repo root" reasoning as webDist below —
   // read once at boot (not per-request) so /api/health and SetupView can show
   // what's actually deployed on a remote box instead of "ssh in and guess".
+  const repoRoot = resolve(here, "../../../");
   const version = (
-    JSON.parse(readFileSync(resolve(here, "../../../package.json"), "utf8")) as {
+    JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8")) as {
       version: string;
     }
   ).version;
-  const webDist = resolve(here, "../../../apps/web/dist");
+  const webDist = resolve(repoRoot, "apps/web/dist");
   if (existsSync(webDist)) {
     await app.register(fastifyStatic, { root: webDist });
     app.setNotFoundHandler((req, reply) => {
@@ -659,6 +661,10 @@ async function main() {
   }
 
   const db = setupDb();
+  const selfUpdater = new SelfUpdater({
+    repoRoot,
+    mock: ENV.mock,
+  });
   const hub = new WsHub();
   const engine = new EngineRunner(db, hub);
   const maintenanceTimers: ReturnType<typeof setInterval>[] = [];
@@ -2436,6 +2442,43 @@ async function main() {
       );
     } finally {
       cancellation.cleanup();
+    }
+  });
+
+  function runningProjectNames(): string[] {
+    return repo
+      .getProjects(db)
+      .filter((project) => project.status === "running")
+      .map((project) => project.name);
+  }
+
+  function selfUpdateRuntimeBlocker(): string | undefined {
+    return getApiToken() && !ENV.apiToken
+      ? "UI updates require API_TOKEN in .env so the detached updater can repeat the active-project check."
+      : undefined;
+  }
+
+  // F50: read-only deployment capability plus durable progress from the
+  // separate transient systemd updater.
+  app.get("/api/setup/self-update", async () => {
+    return selfUpdater.status(runningProjectNames(), selfUpdateRuntimeBlocker());
+  });
+
+  // No body by design: clients cannot choose a command, branch, checkout,
+  // service, or argument. The fixed updater repeats every safety check after
+  // launch to close the request-to-process race.
+  app.post("/api/setup/self-update", async (_req, reply) => {
+    try {
+      const status = await selfUpdater.start(
+        runningProjectNames(),
+        selfUpdateRuntimeBlocker(),
+      );
+      return reply.code(202).send({ status });
+    } catch (error) {
+      if (error instanceof SelfUpdateRefusedError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
     }
   });
 

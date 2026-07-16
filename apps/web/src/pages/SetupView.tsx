@@ -1,10 +1,12 @@
 import type {
   HealthResponse,
   ModelHealthResponse,
+  SelfUpdateStatusResponse,
+  StartSelfUpdateResponse,
   SetupHealthResponse,
   TestModelsResponse,
 } from "@orc/types";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 
 function timeAgo(iso: string): string {
@@ -27,6 +29,38 @@ function fmtDuration(ms: number): string {
     : `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
+const ACTIVE_UPDATE_STATES = new Set<SelfUpdateStatusResponse["state"]>([
+  "queued",
+  "checking",
+  "pulling",
+  "installing",
+  "building",
+  "restarting",
+]);
+
+function updateStateLabel(state: SelfUpdateStatusResponse["state"]): string {
+  switch (state) {
+    case "idle":
+      return "Ready";
+    case "queued":
+      return "Queued";
+    case "checking":
+      return "Checking";
+    case "pulling":
+      return "Pulling";
+    case "installing":
+      return "Installing";
+    case "building":
+      return "Building";
+    case "restarting":
+      return "Restarting";
+    case "succeeded":
+      return "Updated";
+    case "failed":
+      return "Failed";
+  }
+}
+
 export function SetupView({
   onRerunSetup,
 }: {
@@ -43,6 +77,13 @@ export function SetupView({
   // F24/B41: deployed version plus live lifecycle/dependency state from the
   // unauthenticated uptime endpoint. This contains no credentials.
   const [runtimeHealth, setRuntimeHealth] = useState<HealthResponse | null>(null);
+  const [updateStatus, setUpdateStatus] =
+    useState<SelfUpdateStatusResponse | null>(null);
+  const [updateStatusLoading, setUpdateStatusLoading] = useState(false);
+  const [startingUpdate, setStartingUpdate] = useState(false);
+  const [confirmUpdate, setConfirmUpdate] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const updateStatusRequesting = useRef(false);
 
   const fetchModelHealth = useCallback(async () => {
     setHealthLoading(true);
@@ -86,6 +127,39 @@ export function SetupView({
     }
   }, [fetchModelHealth]);
 
+  const fetchUpdateStatus = useCallback(
+    async (surfaceError = true, showLoading = true) => {
+      if (updateStatusRequesting.current) return;
+      updateStatusRequesting.current = true;
+      if (showLoading) setUpdateStatusLoading(true);
+      try {
+        const status = await api<SelfUpdateStatusResponse>("selfUpdateStatus");
+        setUpdateStatus(status);
+        if (status.state !== "failed") setUpdateError(null);
+      } catch (e) {
+        if (surfaceError) setUpdateError(String(e));
+      } finally {
+        if (showLoading) setUpdateStatusLoading(false);
+        updateStatusRequesting.current = false;
+      }
+    },
+    [],
+  );
+
+  const startUpdate = useCallback(async () => {
+    setStartingUpdate(true);
+    setUpdateError(null);
+    try {
+      const result = await api<StartSelfUpdateResponse>("startSelfUpdate");
+      setUpdateStatus(result.status);
+      setConfirmUpdate(false);
+    } catch (e) {
+      setUpdateError(String(e));
+    } finally {
+      setStartingUpdate(false);
+    }
+  }, []);
+
   useEffect(() => {
     check();
   }, [check]);
@@ -93,6 +167,35 @@ export function SetupView({
   useEffect(() => {
     fetchModelHealth();
   }, [fetchModelHealth]);
+
+  useEffect(() => {
+    fetchUpdateStatus();
+  }, [fetchUpdateStatus]);
+
+  useEffect(() => {
+    if (!updateStatus || !ACTIVE_UPDATE_STATES.has(updateStatus.state)) return;
+    const timer = window.setInterval(() => {
+      // A connection failure is expected during the brief service restart.
+      // Keep the durable "restarting" state on screen and retry quietly.
+      void fetchUpdateStatus(false, false);
+    }, 2_000);
+    return () => window.clearInterval(timer);
+  }, [fetchUpdateStatus, updateStatus]);
+
+  const updateInProgress =
+    updateStatus !== null && ACTIVE_UPDATE_STATES.has(updateStatus.state);
+  const updateDisabled =
+    startingUpdate ||
+    updateInProgress ||
+    !updateStatus?.available ||
+    Boolean(updateStatus.blockedReason);
+  const updateBadgeLabel = updateStatus
+    ? !updateStatus.available
+      ? "Unavailable"
+      : updateStatus.blockedReason && !updateInProgress
+        ? "Blocked"
+        : updateStateLabel(updateStatus.state)
+    : null;
 
   return (
     <div className="max-w-2xl space-y-4">
@@ -185,6 +288,144 @@ export function SetupView({
       ) : null}
 
       {error && <div className="text-sm text-red-400">Error: {error}</div>}
+
+      {/* F50: guarded pull/install/build/restart for the exact EC2 checkout. */}
+      <div className="space-y-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-medium text-neutral-200">
+                Update Hoopedorc
+              </h3>
+              {updateStatus && (
+                <span
+                  className={
+                    "rounded px-1.5 py-0.5 text-[10px] font-medium " +
+                    (updateStatus.state === "succeeded"
+                      ? "bg-green-900/60 text-green-300"
+                      : updateStatus.state === "failed"
+                        ? "bg-red-950 text-red-300"
+                        : updateInProgress
+                          ? "bg-blue-950 text-blue-300"
+                          : !updateStatus.available || updateStatus.blockedReason
+                            ? "bg-amber-950 text-amber-300"
+                          : "bg-neutral-800 text-neutral-300")
+                  }
+                >
+                  {updateBadgeLabel}
+                </span>
+              )}
+            </div>
+            <p className="mt-1 max-w-prose text-[11px] text-neutral-400">
+              Pulls the latest <code>main</code>, installs the lockfile,
+              builds, and gracefully restarts this exact systemd deployment.
+              The Tailscale URL may disconnect briefly while the service comes
+              back.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void fetchUpdateStatus()}
+            disabled={updateStatusLoading}
+            className="min-h-10 w-full rounded border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50 sm:min-h-0 sm:w-auto"
+          >
+            {updateStatusLoading ? "Checking…" : "Check status"}
+          </button>
+        </div>
+
+        {updateStatusLoading && !updateStatus ? (
+          <div
+            className="h-16 animate-pulse rounded border border-neutral-800 bg-neutral-950"
+            aria-label="Loading update status"
+          />
+        ) : updateStatus ? (
+          <div
+            className={
+              "rounded border px-3 py-2 " +
+              (updateStatus.state === "failed"
+                ? "border-red-900 bg-red-950/30"
+                : updateStatus.state === "succeeded"
+                  ? "border-green-900 bg-green-950/20"
+                  : "border-neutral-800 bg-neutral-950")
+            }
+            aria-live="polite"
+          >
+            <p className="text-xs text-neutral-200">{updateStatus.message}</p>
+            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-neutral-500">
+              {updateStatus.branch && <span>branch {updateStatus.branch}</span>}
+              {updateStatus.fromCommit && (
+                <span>
+                  commit {updateStatus.fromCommit}
+                  {updateStatus.toCommit &&
+                    updateStatus.toCommit !== updateStatus.fromCommit &&
+                    ` → ${updateStatus.toCommit}`}
+                </span>
+              )}
+              {updateStatus.finishedAt && (
+                <span>finished {timeAgo(updateStatus.finishedAt)}</span>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {updateStatus?.unavailableReason && (
+          <p className="text-xs text-amber-300">
+            UI update unavailable: {updateStatus.unavailableReason} Run{" "}
+            <code className="text-amber-200">npm run update</code> from the
+            deployment checkout instead.
+          </p>
+        )}
+
+        {!updateStatus?.unavailableReason && updateStatus?.blockedReason && (
+          <p className="text-xs text-amber-300">{updateStatus.blockedReason}</p>
+        )}
+
+        {updateError && (
+          <div
+            role="alert"
+            className="rounded border border-red-900 bg-red-950/30 px-3 py-2 text-xs text-red-300"
+          >
+            Could not update: {updateError}
+          </div>
+        )}
+
+        {confirmUpdate ? (
+          <div className="space-y-3 rounded border border-amber-800 bg-amber-950/30 p-3">
+            <p className="text-xs text-amber-100">
+              Update and restart now? The server will refuse if a project is
+              running or the checkout is not clean on <code>main</code>.
+            </p>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setConfirmUpdate(false)}
+                disabled={startingUpdate}
+                className="min-h-10 rounded border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 hover:bg-neutral-800 disabled:opacity-50 sm:min-h-0"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void startUpdate()}
+                disabled={startingUpdate}
+                aria-busy={startingUpdate}
+                className="min-h-10 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50 sm:min-h-0"
+              >
+                {startingUpdate ? "Launching update…" : "Confirm update & restart"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setConfirmUpdate(true)}
+            disabled={updateDisabled}
+            className="min-h-10 w-full rounded bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-0 sm:w-auto"
+          >
+            {updateInProgress ? "Update in progress…" : "Update & restart"}
+          </button>
+        )}
+      </div>
 
       {health && (
         <>

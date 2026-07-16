@@ -98,9 +98,14 @@ state.
 - Production: `npm run build` once, then `npm run start:prebuilt` under the
   provided systemd unit (`deploy/hoopedorc.service`) — one process serves the
   API and the built web app; `npm run update` pulls/rebuilds/restarts in
-  place. The CLIs (`gh`/`claude`/`opencode`, optionally `codex`) must be
-  authenticated on the box as the service user. Full ordered walkthrough:
-  USER_GUIDE's "Deploying to EC2 — checklist".
+  place. F50's Setup UI invokes that same fixed script through a separate
+  transient `hoopedorc-self-update.service`, after validating clean `main`,
+  idle projects, exact unit/checkout ownership, and non-interactive systemd
+  capability. The updater runs as the service user and remains outside the
+  main unit's control group, so the graceful restart cannot kill it midway.
+  The CLIs (`gh`/`claude`/`opencode`, optionally `codex`) must be authenticated
+  on the box as the service user. Full ordered walkthrough: USER_GUIDE's
+  "Deploying to EC2 — checklist".
 
 ## Key decisions (locked)
 - Merge policy: **hard gate + flag risky** (`Settings.mergePolicy`; a
