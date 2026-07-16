@@ -16,6 +16,7 @@ import { TokenGate } from "./components/TokenGate";
 import { AuditView } from "./pages/AuditView";
 import { Board } from "./pages/Board";
 import { CostView } from "./pages/CostView";
+import { ModelCatalogView } from "./pages/ModelCatalogView";
 import { NewProject } from "./pages/NewProject";
 import { Notifications } from "./pages/Notifications";
 import { PlanView } from "./pages/PlanView";
@@ -31,6 +32,7 @@ export type Page =
   | "audit"
   | "notifications"
   | "settings"
+  | "model-slugs"
   | "setup"
   | "new-project"
   | "projects"
@@ -46,6 +48,7 @@ const NAV: { page: Page; label: string }[] = [
   { page: "notifications", label: "Notifications" },
   { page: "projects", label: "Projects" },
   { page: "settings", label: "Settings" },
+  { page: "model-slugs", label: "Model Slugs" },
   { page: "setup", label: "Setup" },
 ];
 
@@ -62,7 +65,13 @@ const STORAGE_KEY = "hoop.projectId";
 /** F21: global (non-project-scoped) pages that make sense as a deep link.
  *  Deliberately excludes "welcome" — it's only reached via the F1 auto
  *  redirect / SetupView's "Re-run setup" link, never a real destination. */
-const GLOBAL_HASH_PAGES: Page[] = ["settings", "setup", "projects", "new-project"];
+const GLOBAL_HASH_PAGES: Page[] = [
+  "settings",
+  "model-slugs",
+  "setup",
+  "projects",
+  "new-project",
+];
 
 /** F21: `#/<page>` for global pages, `#/p/<projectId>/<page>` for project
  *  pages — the inverse of `hashFor` below. Returns null for anything that
@@ -520,6 +529,7 @@ export function App() {
             {page === "settings" && (
               <Settings onDirtyChange={handleSettingsDirtyChange} />
             )}
+            {page === "model-slugs" && <ModelCatalogView />}
             {page === "setup" && (
               <SetupView onRerunSetup={() => setPage("welcome")} />
             )}

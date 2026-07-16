@@ -542,45 +542,62 @@ export function PlanView({
               chat history stays available in "Past planning sessions" below.
             </div>
           ) : (
-            <div className="flex gap-2">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.md,.txt,.csv,.json"
-                className="hidden"
-                onChange={(e) => handleAttachFiles(e.target.files)}
-              />
-              <button
-                aria-label="Attach planning files"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-                title="Attach images, PDFs, or reference files for the planner to read"
-                className="shrink-0 self-start rounded border border-neutral-700 px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+            <div className="space-y-1.5">
+              <label
+                htmlFor="planning-message"
+                className="block text-xs font-medium text-neutral-300"
               >
-                {uploading ? "…" : "📎"}
-              </button>
-              <textarea
-                aria-label="Planning message"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                    e.preventDefault();
-                    sendChat();
-                  }
-                }}
-                placeholder="Describe what to build… (Cmd+Enter to send)"
-                rows={2}
-                className={inputCls + " resize-none"}
-              />
-              <button
-                onClick={sendChat}
-                disabled={!input.trim() || chatting}
-                className="shrink-0 rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                Planning message
+              </label>
+              <div className="flex items-start gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept=".png,.jpg,.jpeg,.gif,.webp,.pdf,.md,.txt,.csv,.json"
+                  className="hidden"
+                  onChange={(e) => handleAttachFiles(e.target.files)}
+                />
+                <button
+                  type="button"
+                  aria-label="Attach planning files"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                  title="Attach images, PDFs, or reference files for the planner to read"
+                  className="min-h-10 shrink-0 rounded border border-neutral-700 px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
+                >
+                  {uploading ? "…" : "📎"}
+                </button>
+                <textarea
+                  id="planning-message"
+                  aria-describedby="planning-message-help"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                      e.preventDefault();
+                      sendChat();
+                    }
+                  }}
+                  placeholder="Describe what to build…"
+                  rows={5}
+                  className="min-h-28 min-w-0 flex-1 resize-y rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm leading-relaxed text-neutral-200 focus-visible:ring-2 focus-visible:ring-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={sendChat}
+                  disabled={!input.trim() || chatting}
+                  className="min-h-10 shrink-0 rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 focus-visible:ring-2 focus-visible:ring-blue-400 disabled:opacity-50"
+                >
+                  Send
+                </button>
+              </div>
+              <p
+                id="planning-message-help"
+                className="text-xs text-neutral-400"
               >
-                Send
-              </button>
+                Drag the lower-right corner to resize. Ctrl/Cmd+Enter sends.
+              </p>
             </div>
           )}
 

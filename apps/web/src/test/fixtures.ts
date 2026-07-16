@@ -4,7 +4,7 @@ export const modelFixture: ModelConfig = {
   id: "codex",
   displayName: "Codex",
   runner: "codex",
-  codexModel: "gpt-5.2-codex",
+  codexModel: "gpt-5.6-sol",
   roles: ["planner", "frontend", "validator"],
   enabled: true,
   maxConcurrent: 1,

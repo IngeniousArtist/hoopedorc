@@ -234,6 +234,13 @@ existing messages/prd/draftTasks clear) so the next chat turn starts a
 genuinely new file. A failed write never fails the underlying request
 (warn-logged and swallowed, same posture as F17's DB backups).
 
+`context/attachments/` and `context/plan-sessions/` are Hoopedorc-owned,
+local planning state. The primary-clone cleanliness guard excludes those
+two prefixes when persisting PRD/AGENTS/CLAUDE, while still rejecting every
+other unexpected staged, unstaged, or untracked path. This keeps a plan from
+blocking on the archive/attachment files Hoopedorc created itself without
+weakening protection for unrelated owner work.
+
 F38: `/plan/deconstruct` also produces `agentsMd` — generated `AGENTS.md`
 content (project summary, stack/platform, directory structure, the real
 dev/test/build/lint commands matching the scaffold task's actual
@@ -293,6 +300,7 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 | `GET /api/notifications` | → `ListNotificationsResponse` |
 | `POST /api/notifications/:id/respond` | `RespondNotificationRequest` → `{ ok }` |
 | `GET /api/setup/models` | → `ModelRosterResponse` |
+| `GET /api/setup/model-catalog` | → `ModelCatalogResponse` (installed Codex catalog, Claude Code aliases/current IDs, and OpenCode `zai/`/`xai/`/`deepseek/` models) |
 | `GET /api/setup/model-health` | → `ModelHealthResponse` |
 
 ## WebSocket (`@orc/types/ws.ts`, `WS_PATH = /ws`)

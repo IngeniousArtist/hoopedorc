@@ -142,6 +142,15 @@ type ResolvedRepositoryFile = RepositoryFileWrite & {
   relative: string;
 };
 
+const HOOPEDORC_LOCAL_CONTEXT_PREFIXES = [
+  "context/attachments/",
+  "context/plan-sessions/",
+];
+
+function isHoopedorcLocalContextPath(path: string): boolean {
+  return HOOPEDORC_LOCAL_CONTEXT_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
 function safeRepositoryPath(
   root: string,
   candidate: string,
@@ -665,7 +674,13 @@ export class GitServiceImpl implements GitService {
           .map((path) => path.trim())
           .filter(Boolean),
       )];
-      const unexpected = dirty.filter((path) => !expected.has(path));
+      // Plan chat writes these local-only files before /plan/commit reaches
+      // this guard. They are deliberately outside the planning artifact
+      // commit, so treating them as unrelated dirt makes every non-ignored
+      // context archive/attachment block its own plan from being approved.
+      const unexpected = dirty.filter(
+        (path) => !expected.has(path) && !isHoopedorcLocalContextPath(path),
+      );
       if (unexpected.length > 0) {
         throw new GitOperationError(
           "inspect",

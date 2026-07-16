@@ -2,7 +2,7 @@ import {
   SECRET_SENTINEL,
   type HealthResponse,
   type MergePolicy,
-  type ModelRosterResponse,
+  type ModelCatalogResponse,
   type RoutingPolicy,
   type Settings as SettingsType,
   type TelegramTestResponse,
@@ -11,7 +11,11 @@ import type { ModelConfig } from "@orc/types";
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useBrowserNotify } from "../hooks/useBrowserNotify";
-import { ModelsEditor } from "../components/ModelsEditor";
+import {
+  ModelsEditor,
+  modelSlugSuggestions,
+  type ModelSlugSuggestions,
+} from "../components/ModelsEditor";
 import { RoutingEditor } from "../components/RoutingEditor";
 
 const MERGE_POLICY_LABELS: Record<MergePolicy, string> = {
@@ -116,11 +120,7 @@ export function Settings({
   const [runtimeHealth, setRuntimeHealth] = useState<HealthResponse | null>(null);
   const [runtimeHealthLoading, setRuntimeHealthLoading] = useState(true);
   const [runtimeHealthError, setRuntimeHealthError] = useState(false);
-  // B28: same roster the onboarding wizard already offers on its model-
-  // mapping step (`GET /api/setup/models`, shells `opencode models`) — the
-  // machinery existed but wasn't wired into Settings' own "+ Add model", so
-  // adding a model here meant typing an opencode id blind.
-  const [roster, setRoster] = useState<string[]>([]);
+  const [modelSlugs, setModelSlugs] = useState<ModelSlugSuggestions>({});
 
   async function refreshRuntimeHealth() {
     setRuntimeHealthLoading(true);
@@ -138,8 +138,8 @@ export function Settings({
     api<{ settings: SettingsType }>("getSettings")
       .then((r) => setSettings(r.settings))
       .catch((e) => setError(String(e)));
-    api<ModelRosterResponse>("setupModels")
-      .then((r) => setRoster(r.models))
+    api<ModelCatalogResponse>("modelCatalog")
+      .then((catalog) => setModelSlugs(modelSlugSuggestions(catalog)))
       .catch(() => {
         /* advisory only — ModelsEditor falls back to a blind text field */
       });
@@ -382,7 +382,7 @@ export function Settings({
         models={settings.models}
         onChange={updateModels}
         routing={settings.routing}
-        roster={roster}
+        modelSlugs={modelSlugs}
       />
 
       <RoutingEditor

@@ -101,8 +101,9 @@ exhausting it in the first place.
 - One process serves API + built web app; systemd unit provided (prebuilt
   start — no rebuild on restart); `npm run update` pulls/rebuilds/restarts
   in place; automatic daily DB backup rotation; log pruning; first-run
-  onboarding wizard with CLI health checks and a real model roster; an
-  ordered EC2 deploy checklist in the user guide
+  onboarding wizard with CLI health checks, a live Model Slugs catalog for
+  Codex/Claude Code/selected OpenCode providers, and an ordered EC2 deploy
+  checklist in the user guide
 
 ## Quickstart
 

@@ -86,7 +86,7 @@ export interface ModelConfig {
   claudeModel?: string;
   /**
    * For runner === "codex": the `codex exec -m/--model` id to target (e.g.
-   * "gpt-5.2-codex"). Omitted => CLI default, mirroring `claudeModel`.
+   * "gpt-5.6-sol"). Omitted => CLI default, mirroring `claudeModel`.
    */
   codexModel?: string;
   /** Optional reasoning effort/variant. Unset means the CLI's own default.

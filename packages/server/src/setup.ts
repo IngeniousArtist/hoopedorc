@@ -4,10 +4,13 @@ import { promisify } from "node:util";
 import { makeAdapter, sanitizedEnv } from "@orc/adapters";
 import { DEFAULT_GATE_IMAGE, resolveSandboxMode, WorktreeManagerImpl } from "@orc/engine";
 import type {
+  ModelCatalogEntry,
+  ModelCatalogResponse,
   ModelRosterResponse,
   ModelInvocation,
   ModelTestResult,
   Project,
+  RunnerModelCatalog,
   Settings,
   SetupCheck,
   SetupHealthResponse,
@@ -15,8 +18,17 @@ import type {
 } from "@orc/types";
 
 const pexec = promisify(execFile);
+const MODEL_CATALOG_MAX_BUFFER = 16 * 1024 * 1024;
 
 const firstLine = (s: string) => s.trim().split("\n")[0]?.trim() ?? "ok";
+
+function cliErrorMessage(err: unknown): string {
+  const error = err as { stderr?: string; stdout?: string; message?: string };
+  return (error.stderr || error.stdout || error.message || String(err))
+    .toString()
+    .trim()
+    .slice(0, 300);
+}
 
 async function check(
   name: string,
@@ -162,20 +174,241 @@ async function gateSandboxCheck(
  */
 export async function getModelRoster(signal?: AbortSignal): Promise<ModelRosterResponse> {
   try {
-    const { stdout } = await pexec("opencode", ["models"], {
-      timeout: 20_000,
-      env: sanitizedEnv(),
-      signal,
-    });
-    const models = stdout
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean);
-    return { models };
+    return { models: await readOpenCodeModels(signal) };
   } catch {
     signal?.throwIfAborted();
     return { models: [] };
   }
+}
+
+async function readOpenCodeModels(signal?: AbortSignal): Promise<string[]> {
+  const { stdout } = await pexec("opencode", ["models"], {
+    timeout: 20_000,
+    maxBuffer: MODEL_CATALOG_MAX_BUFFER,
+    env: sanitizedEnv(),
+    signal,
+  });
+  return [...new Set(
+    stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean),
+  )];
+}
+
+const CLAUDE_CODE_MODELS: ModelCatalogEntry[] = [
+  {
+    slug: "fable",
+    displayName: "Fable (latest alias)",
+    description: "Short Claude Code alias for the current Fable model.",
+    kind: "alias",
+  },
+  {
+    slug: "opus",
+    displayName: "Opus (latest alias)",
+    description: "Short Claude Code alias for the current Opus model.",
+    kind: "alias",
+  },
+  {
+    slug: "sonnet",
+    displayName: "Sonnet (latest alias)",
+    description: "Short Claude Code alias for the current Sonnet model.",
+    kind: "alias",
+  },
+  {
+    slug: "claude-fable-5",
+    displayName: "Claude Fable 5",
+    description: "Next-generation model for the hardest coding and knowledge work.",
+    kind: "model",
+  },
+  {
+    slug: "claude-opus-4-8",
+    displayName: "Claude Opus 4.8",
+    description: "Frontier model for long-running agents and complex coding.",
+    kind: "model",
+  },
+  {
+    slug: "claude-opus-4-7",
+    displayName: "Claude Opus 4.7",
+    description: "Frontier model for long-running agents and coding.",
+    kind: "model",
+  },
+  {
+    slug: "claude-opus-4-6",
+    displayName: "Claude Opus 4.6",
+    description: "High-capability model for agents and coding.",
+    kind: "model",
+  },
+  {
+    slug: "claude-opus-4-5",
+    displayName: "Claude Opus 4.5 alias",
+    description: "Convenience alias for the latest Claude Opus 4.5 snapshot.",
+    kind: "alias",
+  },
+  {
+    slug: "claude-opus-4-5-20251101",
+    displayName: "Claude Opus 4.5 (2025-11-01)",
+    description: "Pinned Claude Opus 4.5 snapshot.",
+    kind: "model",
+  },
+  {
+    slug: "claude-sonnet-5",
+    displayName: "Claude Sonnet 5",
+    description: "Fast frontier model for coding, agents, and everyday work.",
+    kind: "model",
+  },
+  {
+    slug: "claude-sonnet-4-6",
+    displayName: "Claude Sonnet 4.6",
+    description: "Balanced speed and intelligence for coding and agents.",
+    kind: "model",
+  },
+  {
+    slug: "claude-sonnet-4-5",
+    displayName: "Claude Sonnet 4.5 alias",
+    description: "Convenience alias for the latest Claude Sonnet 4.5 snapshot.",
+    kind: "alias",
+  },
+  {
+    slug: "claude-sonnet-4-5-20250929",
+    displayName: "Claude Sonnet 4.5 (2025-09-29)",
+    description: "Pinned Claude Sonnet 4.5 snapshot.",
+    kind: "model",
+  },
+  {
+    slug: "claude-haiku-4-5",
+    displayName: "Claude Haiku 4.5 alias",
+    description: "Convenience alias for the latest Claude Haiku 4.5 snapshot.",
+    kind: "alias",
+  },
+  {
+    slug: "claude-haiku-4-5-20251001",
+    displayName: "Claude Haiku 4.5 (2025-10-01)",
+    description: "Fastest current Claude model.",
+    kind: "model",
+  },
+];
+
+function claudeCodeCatalog(): RunnerModelCatalog {
+  return {
+    runner: "claude-code",
+    label: "Claude Code",
+    source: "Claude Code aliases and Anthropic's current documented model IDs",
+    models: CLAUDE_CODE_MODELS,
+  };
+}
+
+async function codexCatalog(signal?: AbortSignal): Promise<RunnerModelCatalog> {
+  const base: Omit<RunnerModelCatalog, "models"> = {
+    runner: "codex",
+    label: "Codex",
+    source: "codex debug models --bundled",
+  };
+  try {
+    const { stdout } = await pexec("codex", ["debug", "models", "--bundled"], {
+      timeout: 20_000,
+      maxBuffer: MODEL_CATALOG_MAX_BUFFER,
+      env: sanitizedEnv(),
+      signal,
+    });
+    const parsed = JSON.parse(stdout) as {
+      models?: Array<{
+        slug?: unknown;
+        display_name?: unknown;
+        description?: unknown;
+        visibility?: unknown;
+        supported_reasoning_levels?: Array<{ effort?: unknown }>;
+      }>;
+    };
+    if (!Array.isArray(parsed.models)) {
+      throw new Error("Codex returned a catalog without a models array");
+    }
+    const models = parsed.models.flatMap((model): ModelCatalogEntry[] => {
+      if (
+        typeof model.slug !== "string" ||
+        model.slug.length === 0 ||
+        model.visibility === "hide"
+      ) {
+        return [];
+      }
+      const reasoningEfforts = model.supported_reasoning_levels
+        ?.map((level) => level.effort)
+        .filter((effort): effort is string => typeof effort === "string");
+      return [{
+        slug: model.slug,
+        displayName:
+          typeof model.display_name === "string" && model.display_name
+            ? model.display_name
+            : model.slug,
+        description:
+          typeof model.description === "string" ? model.description : undefined,
+        kind: "model",
+        reasoningEfforts:
+          reasoningEfforts && reasoningEfforts.length > 0
+            ? reasoningEfforts
+            : undefined,
+      }];
+    });
+    return { ...base, models };
+  } catch (err) {
+    signal?.throwIfAborted();
+    return {
+      ...base,
+      models: [],
+      error: cliErrorMessage(err) || "Codex model catalog is unavailable",
+    };
+  }
+}
+
+const OPENCODE_CATALOG_PROVIDERS = ["zai", "xai", "deepseek"] as const;
+
+async function openCodeCatalog(signal?: AbortSignal): Promise<RunnerModelCatalog> {
+  const base: Omit<RunnerModelCatalog, "models"> = {
+    runner: "opencode",
+    label: "OpenCode",
+    source: "opencode models (filtered to zai/, xai/, and deepseek/)",
+  };
+  try {
+    const allowed = new Set<string>(OPENCODE_CATALOG_PROVIDERS);
+    const models = (await readOpenCodeModels(signal))
+      .flatMap((slug): ModelCatalogEntry[] => {
+        const separator = slug.indexOf("/");
+        if (separator <= 0) return [];
+        const provider = slug.slice(0, separator);
+        if (!allowed.has(provider)) return [];
+        return [{
+          slug,
+          displayName: slug.slice(separator + 1),
+          provider,
+          kind: "model",
+        }];
+      })
+      .sort((a, b) =>
+        (a.provider ?? "").localeCompare(b.provider ?? "") ||
+        a.slug.localeCompare(b.slug),
+      );
+    return { ...base, models };
+  } catch (err) {
+    signal?.throwIfAborted();
+    return {
+      ...base,
+      models: [],
+      error: cliErrorMessage(err) || "OpenCode model catalog is unavailable",
+    };
+  }
+}
+
+export async function getModelCatalog(
+  signal?: AbortSignal,
+): Promise<ModelCatalogResponse> {
+  const [codex, opencode] = await Promise.all([
+    codexCatalog(signal),
+    openCodeCatalog(signal),
+  ]);
+  return {
+    generatedAt: new Date().toISOString(),
+    catalogs: [codex, claudeCodeCatalog(), opencode],
+  };
 }
 
 /**

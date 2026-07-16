@@ -181,6 +181,40 @@ test("B39: a failed planning push is typed and a no-diff retry publishes the loc
   assert.equal(await git(project.localPath, ["log", "--format=%s", "-1"]), "docs: planning context");
 });
 
+test("planning persistence ignores Hoopedorc-owned context while still rejecting unrelated changes", async () => {
+  const { root, project } = await rollbackRepo("planning-owned-context");
+  const remote = join(root, "remote.git");
+  const sessions = join(project.localPath, "context", "plan-sessions");
+  const attachments = join(project.localPath, "context", "attachments");
+  mkdirSync(sessions, { recursive: true });
+  mkdirSync(attachments, { recursive: true });
+  writeFileSync(join(sessions, "2026-07-16-0717.md"), "# Planning session\n");
+  writeFileSync(join(attachments, "requirements.md"), "# Requirements\n");
+
+  await new GitServiceImpl().commitFiles(
+    project,
+    [{ path: "docs/PRD.md", content: "# PRD" }],
+    "docs: planning context",
+  );
+
+  assert.equal(
+    await git(root, ["--git-dir", remote, "show", "main:docs/PRD.md"]),
+    "# PRD",
+  );
+  assert.match(await git(project.localPath, ["status", "--porcelain"]), /\?\? context\//);
+
+  writeFileSync(join(project.localPath, "owner-notes.md"), "unfinished owner work\n");
+  await assert.rejects(
+    new GitServiceImpl().commitFiles(
+      project,
+      [{ path: "docs/PRD.md", content: "# Updated PRD" }],
+      "docs: planning context",
+    ),
+    (err: unknown) =>
+      rejectsAt("inspect")(err) && /owner-notes\.md/.test((err as Error).message),
+  );
+});
+
 test("B39: atomic planning persistence preserves a tracked hand-maintained CLAUDE.md", async () => {
   const { root, project } = await rollbackRepo("planning-claude-preserve");
   const remote = join(root, "remote.git");

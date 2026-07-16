@@ -8,6 +8,9 @@ describe("application deep links", () => {
       projectId: "proj-1",
     });
     expect(parseHash(hashFor("settings", "proj-1"))).toEqual({ page: "settings" });
+    expect(parseHash(hashFor("model-slugs", "proj-1"))).toEqual({
+      page: "model-slugs",
+    });
   });
 
   it("rejects unknown, incomplete, and non-linkable destinations", () => {

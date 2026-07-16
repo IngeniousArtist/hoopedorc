@@ -65,6 +65,11 @@ merge — rather than either babysitting every diff or trusting a black box.
   to keep it in check, since a dollar cap can never trigger for a call that
   costs $0. Planning, deconstruction, validation, docs, and health-test calls
   count too—not only author attempts.
+- Open **Model Slugs** in the top navigation whenever you need an exact
+  runner value. Codex is read from the installed CLI, OpenCode is filtered
+  to `zai/`, `xai/`, and `deepseek/`, and Claude Code shows its short aliases
+  plus current full IDs. Each slug has a copy button, and the same catalog
+  powers the model-field suggestions in onboarding and Settings.
 - Run `npm install && npm run setup` from the repo root — `setup` creates
   `.env` from `.env.example` if you don't have one yet, and checks all
   three CLIs (`gh`/`claude`/`opencode`) for you.
@@ -475,7 +480,10 @@ requests are refused until the retry durably pushes the context. A push that
 failed after creating the local commit is safe to retry: Hoopedorc pushes that
 existing no-diff commit rather than duplicating it or the task rows. The
 returned error names the failed stage (for example `fetch`, `commit`, `push`,
-or `archive`).
+or `archive`). Hoopedorc's own `context/plan-sessions/` archives and
+`context/attachments/` uploads never count as unrelated primary-clone
+changes; unfinished files elsewhere still block the planning commit so they
+cannot be swept into automation accidentally.
 
 ## Backups & data
 
