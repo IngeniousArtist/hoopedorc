@@ -6418,7 +6418,7 @@ deployment.
 | F51 — lean task references and runner-accurate skills | ✅ implementation complete; local full gate passed 2026-07-23 | [#157](https://github.com/IngeniousArtist/hoopedorc/pull/157) |
 | F52 — direct Figma nodes and planning verification | ✅ done; merged and independently verified 2026-07-23 | [#158](https://github.com/IngeniousArtist/hoopedorc/pull/158) |
 | B42 — recoverable Figma capability blocks | ✅ done; merged and independently verified 2026-07-23 | [#159](https://github.com/IngeniousArtist/hoopedorc/pull/159) |
-| F53 — automatic visual-fidelity QA task | ✅ implementation complete; local full gate passed 2026-07-23; delivery in progress | — |
+| F53 — automatic visual-fidelity QA task | ✅ implementation complete; local full gate passed 2026-07-23; review in progress | [#160](https://github.com/IngeniousArtist/hoopedorc/pull/160) |
 
 The owner approved this focused wave on 2026-07-23 after the original context
 proposal was compared with the merged code and found to overstate the missing
@@ -6631,10 +6631,11 @@ full gate passed: typecheck, build, lint, 171 engine tests, 12 adapter tests,
 202 server tests, 25 web tests, 16 Playwright scenarios across 360, 390, 768,
 1280, and 1440px, and `git diff --check`. Playwright required the approved
 unsandboxed command after the managed sandbox refused the local mock/Vite
-listener with `EPERM`; the tests themselves passed. PR delivery remains in
-progress. The owner-supplied live plan → autorun → visual-QA check on a scratch
-UI and EC2 runner remains outstanding because no real owner desktop/mobile
-frames, scratch UI, or EC2 configuration were supplied in this environment.
+listener with `EPERM`; the tests themselves passed. Delivery is under review in
+[#160](https://github.com/IngeniousArtist/hoopedorc/pull/160). The
+owner-supplied live plan → autorun → visual-QA check on a scratch UI and EC2
+runner remains outstanding because no real owner desktop/mobile frames,
+scratch UI, or EC2 configuration were supplied in this environment.
 
 **Problem:** the current validator reviews acceptance and the code diff but does
 not guarantee a browser-based comparison with supplied Figma screens.

@@ -802,8 +802,9 @@ independently as `8fc7bb6`. The local full gate passed: typecheck, build, lint,
 Playwright scenarios across 360, 390, 768, 1280, and 1440px, and
 `git diff --check`. Playwright required the approved unsandboxed command after
 the managed sandbox refused the local mock/Vite listener with `EPERM`; the
-tests themselves passed. PR delivery and the owner-supplied live
-EC2/Figma/browser check remain.
+tests themselves passed. Delivery is under review in
+[#160](https://github.com/IngeniousArtist/hoopedorc/pull/160); the
+owner-supplied live EC2/Figma/browser check remains.
 
 **Goal:** Make close Figma fidelity the default execution outcome whenever
 verified screen nodes are supplied.
