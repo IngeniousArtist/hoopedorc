@@ -9,7 +9,10 @@ import type {
   Task,
 } from "@orc/types";
 import { execManagedProcess, type AgentAdapter } from "@orc/adapters";
-import { buildEngineeringStandardsBlock } from "./guidelines.js";
+import {
+  buildEngineeringStandardsBlock,
+  buildTaskHandoffBlock,
+} from "./guidelines.js";
 import type { GitAcquisition, Validator } from "./index.js";
 
 const MAX_VALIDATOR_DIFF_BYTES = 512 * 1024;
@@ -235,13 +238,14 @@ export class ValidatorImpl implements Validator {
       task.role === "frontend",
       task.role === "docs",
     );
+    const taskHandoff = buildTaskHandoffBlock(task.description);
     return `You are a code reviewer. Grade the implementation of this task against its acceptance criteria, using the diff below as the primary evidence.
 
 ## Task
 **Title:** ${task.title}
 **Description:** ${task.description}
 
-## Acceptance Criteria
+${taskHandoff}## Acceptance Criteria
 ${task.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}
 ${standards}
 ## Gate Results

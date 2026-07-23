@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { ModelInvocation } from "@orc/types";
 import { ENV, defaultSettings } from "./config.js";
 import {
+  buildDeconstructPrompt,
   extractJsonObject,
   flattenRawTasks,
   parsePlanOutput,
@@ -14,6 +15,29 @@ import {
   runPlannerChat,
   runPlannerDeconstruct,
 } from "./planner.js";
+
+test("F51: deconstruction requests self-contained task references without adding fields", () => {
+  const prompt = buildDeconstructPrompt(
+    [
+      {
+        role: "user",
+        content:
+          "Use docs/specs/auth.md and login-copy.md. Use browser verification for the login flow.",
+      },
+    ],
+    "reference handoff",
+    undefined,
+    ["login-copy.md"],
+  );
+
+  assert.match(prompt, /description: a self-contained implementation handoff/);
+  assert.match(prompt, /"### Relevant references"/);
+  assert.match(prompt, /docs\/PRD\.md — Authentication \/ Login/);
+  assert.match(prompt, /context\/attachments\/login-copy\.md/);
+  assert.match(prompt, /"### Required skills\/capabilities"/);
+  assert.match(prompt, /never invent a skill name/);
+  assert.match(prompt, /never emit\s+fields beyond the ones shown above/i);
+});
 
 test("S10: Claude, Codex, and OpenCode planners receive the same credential-free environment", async (t) => {
   const bin = mkdtempSync(join(tmpdir(), "hoopedorc-planner-env-"));
@@ -503,6 +527,41 @@ test("parsePlanOutput defaults empty acceptanceCriteria from the description", (
   });
   const out = parsePlanOutput(text, "proj");
   assert.deepEqual(out.tasks[0]!.acceptanceCriteria, ["Do the thing."]);
+});
+
+test("F51: parsePlanOutput preserves reference sections and ordinary descriptions verbatim", () => {
+  const referencedDescription = [
+    "Implement login.",
+    "",
+    "### Relevant references",
+    "- docs/PRD.md — Authentication / Login",
+    "- context/attachments/login-copy.md",
+    "",
+    "### Required skills/capabilities",
+    "- browser verification — exercise the real login flow",
+  ].join("\n");
+  const ordinaryDescription = "Implement logout without changing the session schema.";
+  const text = JSON.stringify({
+    prd: "p",
+    agentsMd: "",
+    tasks: [
+      { title: "Login", description: referencedDescription },
+      { title: "Logout", description: ordinaryDescription },
+    ],
+  });
+  const out = parsePlanOutput(text, "proj");
+
+  assert.equal(out.tasks[0]!.description, referencedDescription);
+  assert.equal(out.tasks[1]!.description, ordinaryDescription);
+  assert.deepEqual(Object.keys(out.tasks[0]!).sort(), [
+    "acceptanceCriteria",
+    "dependsOn",
+    "description",
+    "difficulty",
+    "role",
+    "scopePaths",
+    "title",
+  ]);
 });
 
 test("parsePlanOutput surfaces warnings via the onWarn callback", () => {

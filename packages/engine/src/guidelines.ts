@@ -80,14 +80,13 @@ export function buildEngineeringStandardsBlock(
 }
 
 /**
- * F34: renders a project's `ProjectConfig.skillHints` into a "## Skills"
- * author-prompt block — a nudge, not a mechanism. Claude Code discovers
- * skills on its own (user-level `~/.claude/skills/` or the target repo's own
- * `.claude/skills/`) but only *uses* one reliably when the task at hand is
- * explicitly pointed at it; other runners have no skills concept at all, so
- * for them this just reads as ordinary instructions (harmless, often still
- * useful). Returns "" when there are no hints — an unset/empty project
- * leaves the author prompt byte-identical to before this feature existed.
+ * F34/F51: renders a project's `ProjectConfig.skillHints` into a "## Skills"
+ * author-prompt block — a nudge, not an installer or capability registry.
+ * Claude Code, Codex, and OpenCode can all expose skills, but each runner owns
+ * its own discovery/configuration rules. The prompt remains useful even when
+ * a runner treats a hint as ordinary instructions. Returns "" when there are
+ * no hints — an unset/empty project leaves the author prompt byte-identical
+ * to before this feature existed.
  */
 export function buildSkillsBlock(skillHints: string[] | undefined): string {
   if (!skillHints || skillHints.length === 0) return "";
@@ -95,6 +94,40 @@ export function buildSkillsBlock(skillHints: string[] | undefined): string {
     `\n## Skills\nThe following skills are available in this environment; invoke each ` +
     `when its condition applies:\n${skillHints.map((h) => `- ${h}`).join("\n")}\n`
   );
+}
+
+const RELEVANT_REFERENCES_HEADING =
+  /^[ \t]{0,3}#{2,6}[ \t]+Relevant references[ \t]*#*[ \t]*$/im;
+const REQUIRED_CAPABILITIES_HEADING =
+  /^[ \t]{0,3}#{2,6}[ \t]+Required skills\/capabilities[ \t]*#*[ \t]*$/im;
+
+/**
+ * F51: task descriptions may carry two lightweight Markdown handoff sections
+ * instead of growing a second Task/API/SQLite context schema. Authors and
+ * validators both receive this conditional reminder so a path, PRD heading,
+ * attachment, or named capability is actually inspected rather than merely
+ * appearing in the prompt. Existing/manual tasks without either exact
+ * heading return "" and keep both prompts byte-identical.
+ */
+export function buildTaskHandoffBlock(description: string): string {
+  const hasReferences = RELEVANT_REFERENCES_HEADING.test(description);
+  const hasCapabilities = REQUIRED_CAPABILITIES_HEADING.test(description);
+  if (!hasReferences && !hasCapabilities) return "";
+
+  const instructions: string[] = [];
+  if (hasReferences) {
+    instructions.push(
+      "- Open and inspect every item under `Relevant references` before implementing or judging " +
+        "this task; do not treat the pointer itself as evidence.",
+    );
+  }
+  if (hasCapabilities) {
+    instructions.push(
+      "- Use each applicable item under `Required skills/capabilities`; if one is unavailable, " +
+        "say so clearly instead of pretending it was used.",
+    );
+  }
+  return `## Task handoff\n${instructions.join("\n")}\n\n`;
 }
 
 /**

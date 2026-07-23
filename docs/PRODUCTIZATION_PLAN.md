@@ -6264,7 +6264,7 @@ emulation could not substitute for.
 | 14 | B31–B33, S8, F44–F47 | Autonomy-hardening wave from the owner's first real dogfooding runs: B31+F46+F47 first (one PR — all in `planner.ts`; B31 unblocks planning outright and F45 depends on it), then B32 (the autonomous-stall fix), then S8 (destructive-change rail — before more autonomous runs happen), then B33, F44, F45 in any order. Tag `v0.6.0` at the end. | ✅ done |
 | 15 | B34–B41, S9–S10, F48–F49, T2, U19 | Reliability/portability/mobile wave from the v0.6.0 Codex audit and owner decisions: execution ownership → process cancellation → fail-closed safety → rollback PR → credential boundary → live settings/effort → portable setup/cache → durability/accounting → shutdown/Telegram → web tests → responsive UX. Final owner Telegram and real-phone checks passed 2026-07-23. | ✅ done |
 | 16 | D1, F50 | Make the established contribution workflow cheap to load, then add a fixed-command, fail-closed EC2 update path that survives the serving unit's restart. | implementation complete; live EC2 smoke pending |
-| 17 | F51, F52, B42, F53 | Focused context/Figma wave: lean task references and current runner skill facts → exact Figma-node planning verification → recoverable capability blocks → automatic visual-fidelity QA through the existing DAG/gate/validator pipeline. Full spec: `docs/HOOPEDORC_CONTEXT_INTAKE_UPGRADE.md`. | approved; not started |
+| 17 | F51, F52, B42, F53 | Focused context/Figma wave: lean task references and current runner skill facts → exact Figma-node planning verification → recoverable capability blocks → automatic visual-fidelity QA through the existing DAG/gate/validator pipeline. Full spec: `docs/HOOPEDORC_CONTEXT_INTAKE_UPGRADE.md`. | in progress; F51 complete |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
@@ -6415,7 +6415,7 @@ deployment.
 
 | Item | Status | PR |
 |---|---|---|
-| F51 — lean task references and runner-accurate skills | approved; not started | — |
+| F51 — lean task references and runner-accurate skills | ✅ implementation complete; local full gate passed 2026-07-23 | this PR |
 | F52 — direct Figma nodes and planning verification | approved; depends on F51 | — |
 | B42 — recoverable Figma capability blocks | approved; depends on F52 | — |
 | F53 — automatic visual-fidelity QA task | approved; depends on B42 | — |
@@ -6471,6 +6471,19 @@ compiler/cache, per-screen Markdown packages, design sync, raw pixel-diff
 gating, a generic Critic role, or a second orchestration lifecycle.
 
 ### F51. Lean task references and runner-accurate skills
+
+**Status (2026-07-23):** implemented and locally verified on
+`f51-lean-task-references`. The deconstructor now produces self-contained task
+descriptions with optional exact `Relevant references` and `Required
+skills/capabilities` sections. A shared conditional helper tells both author
+and validator to inspect them while returning an empty string for ordinary
+legacy descriptions. The runner documentation now reflects installed Claude
+Code, Codex, and OpenCode skill behavior and keeps skills separate from MCP
+configuration. No Task/API/SQLite context field was added.
+
+Local verification passed: typecheck, build, lint, 164 engine tests, 12 adapter
+tests, 175 server tests, 20 web tests, 14 Playwright tests, and
+`git diff --check`.
 
 **Problem:** task descriptions are not required to identify the exact PRD
 heading, attachment, repository spec, or design source an author and validator

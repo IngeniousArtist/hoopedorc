@@ -1405,6 +1405,50 @@ test("F34: skillHints appear in the author prompt when configured, absent when u
   assert.doesNotMatch(withoutHints!, /## Skills/);
 });
 
+test("F51: author inspects task references/capabilities while ordinary descriptions add no handoff block", async () => {
+  const capturedPrompts: string[] = [];
+  const capturingAdapter: AgentAdapter = {
+    runner: "opencode",
+    async run(opts): Promise<AgentRunResult> {
+      capturedPrompts.push(opts.prompt);
+      return {
+        ok: true,
+        exitReason: "completed",
+        costUsd: 0.01,
+        tokensIn: 1,
+        tokensOut: 1,
+        summary: JSON.stringify({ verdict: "approve", reasons: ["lgtm"], confidence: 0.95 }),
+      };
+    },
+  };
+  const referencedDescription = [
+    "Implement the login screen.",
+    "",
+    "### Relevant references",
+    "- docs/PRD.md — Authentication / Login",
+    "- context/attachments/login-copy.md",
+    "",
+    "### Required skills/capabilities",
+    "- browser verification — exercise the real login flow",
+  ].join("\n");
+
+  await new Orchestrator(
+    fakeDeps({ settings: settings(), adapterFor: () => capturingAdapter }, []),
+  ).start(PROJECT, [task("referenced", [], { description: referencedDescription })]);
+  await new Orchestrator(
+    fakeDeps({ settings: settings(), adapterFor: () => capturingAdapter }, []),
+  ).start(PROJECT, [task("ordinary", [], { description: "Implement the logout endpoint." })]);
+
+  assert.equal(capturedPrompts.length, 2);
+  const [referencedPrompt, ordinaryPrompt] = capturedPrompts;
+  assert.match(referencedPrompt!, /docs\/PRD\.md — Authentication \/ Login/);
+  assert.match(referencedPrompt!, /context\/attachments\/login-copy\.md/);
+  assert.match(referencedPrompt!, /## Task handoff/);
+  assert.match(referencedPrompt!, /Open and inspect every item/);
+  assert.match(referencedPrompt!, /if one is unavailable/);
+  assert.doesNotMatch(ordinaryPrompt!, /## Task handoff/);
+});
+
 test("F38: the AGENTS.md nudge appears in the author prompt exactly when the file exists in the real worktree", async () => {
   const capturedPrompts: string[] = [];
   const capturingAdapter: AgentAdapter = {

@@ -1,6 +1,6 @@
 # Hoopedorc — Focused Context Handoff and Figma Fidelity Upgrade
 
-**Status:** approved implementation brief; implementation has not started
+**Status:** implementation in progress; F51 implemented and locally verified
 
 **Approved:** 2026-07-23
 
@@ -582,6 +582,9 @@ until the prior PR is merged and independently checked.
 
 ### Phase 17.1 — F51: lean task references and runner-accurate skills
 
+**Status:** implementation complete and locally verified on
+`f51-lean-task-references`.
+
 **Goal:** Preserve planning nuance in ordinary task handoffs without adding a
 new context schema.
 
@@ -624,6 +627,11 @@ new context schema.
 - validator prompt-content tests;
 - well-formed existing plan output remains compatible;
 - missing references produce no empty prompt noise.
+
+**Verification (2026-07-23):** typecheck, build, lint, 164 engine tests, 12
+adapter tests, 175 server tests, 20 web tests, 14 Playwright tests, and
+`git diff --check` passed locally. No API route, task field, or SQLite schema
+was added.
 
 ### Phase 17.2 — F52: direct Figma nodes and planning verification
 

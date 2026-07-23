@@ -163,6 +163,19 @@ mergeable, PR-sized unit of work. If a piece of work is too big for one task, sp
 multiple sequential tasks connected via dependsOn rather than nesting.
 
 Rules for each task:
+- description: a self-contained implementation handoff. State the intended behavior, important
+  constraints/edge cases, and relevant existing code paths so the author does not need the planning
+  transcript to understand the work. When applicable, end the description with these exact Markdown
+  subsections (omit either entire subsection when it has no entries):
+  - "### Relevant references": only the exact sources this task must inspect — for example
+    "docs/PRD.md — Authentication / Login", "docs/specs/auth.md — Session rotation", or
+    "context/attachments/login-copy.md". Preserve exact paths, PRD headings, attachment names, and
+    external design links from the conversation/prior context/repository; do not invent pointers or
+    copy large source contents into the task.
+  - "### Required skills/capabilities": only skills the user explicitly named for the project, or
+    fixed capabilities explicitly required by the agreed workflow (for example browser verification).
+    Use "skill/capability — why it is needed"; never invent a skill name or assume that installing a
+    skill configures an MCP/tool.
 - difficulty: "easy" | "medium" | "hard" — this directly selects which model authors the
   task, so calibrate it honestly rather than defaulting everything to "medium":
   - "easy": small, mechanical, low-risk (config tweaks, simple CRUD, boilerplate, a single
@@ -369,7 +382,7 @@ ${transcript}
 Reply as the Assistant to the latest User message.`;
 }
 
-function buildDeconstructPrompt(
+export function buildDeconstructPrompt(
   messages: PlanChatMessage[],
   projectName: string,
   priorContext?: string,

@@ -161,6 +161,43 @@ test("F29: a docs-role task's review prompt includes the docs guidelines; a fron
   assert.doesNotMatch(frontendPrompt!, /### Docs/);
 });
 
+test("F51: validator inspects task references/capabilities while ordinary descriptions add no handoff block", async () => {
+  const prompts: string[] = [];
+  const validator = new ValidatorImpl(capturingAdapterFactory(prompts), baseSettings());
+  const referencedDescription = [
+    "Implement the login screen.",
+    "",
+    "### Relevant references",
+    "- docs/PRD.md — Authentication / Login",
+    "- context/attachments/login-copy.md",
+    "",
+    "### Required skills/capabilities",
+    "- browser verification — exercise the real login flow",
+  ].join("\n");
+
+  await validator.review(
+    PROJECT,
+    task({ description: referencedDescription }),
+    GATE,
+    "deepseek-flash",
+  );
+  await validator.review(
+    PROJECT,
+    task({ description: "Implement the logout endpoint." }),
+    GATE,
+    "deepseek-flash",
+  );
+
+  assert.equal(prompts.length, 2);
+  const [referencedPrompt, ordinaryPrompt] = prompts;
+  assert.match(referencedPrompt!, /docs\/PRD\.md — Authentication \/ Login/);
+  assert.match(referencedPrompt!, /context\/attachments\/login-copy\.md/);
+  assert.match(referencedPrompt!, /## Task handoff/);
+  assert.match(referencedPrompt!, /Open and inspect every item/);
+  assert.match(referencedPrompt!, /if one is unavailable/);
+  assert.doesNotMatch(ordinaryPrompt!, /## Task handoff/);
+});
+
 test("S8: the review prompt always includes the fixed destructive-changes block, regardless of guidelines", async () => {
   const prompts: string[] = [];
   // No Settings.guidelines configured — like DOCS_GUIDELINES, the
