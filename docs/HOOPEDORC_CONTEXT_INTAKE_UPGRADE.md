@@ -637,7 +637,9 @@ was added.
 ### Phase 17.2 — F52: direct Figma nodes and planning verification
 
 **Status:** implemented and locally verified on `f52-direct-figma-nodes`; PR
-delivery and independent merged verification are in progress.
+delivery is tracked in
+[#158](https://github.com/IngeniousArtist/hoopedorc/pull/158), and independent
+merged verification remains in progress.
 
 The completed scope follows this brief without adding a generic context
 platform: exact user links are bounded/allowlisted/canonicalized; the selected

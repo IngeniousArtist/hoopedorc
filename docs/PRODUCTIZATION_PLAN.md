@@ -6416,7 +6416,7 @@ deployment.
 | Item | Status | PR |
 |---|---|---|
 | F51 — lean task references and runner-accurate skills | ✅ implementation complete; local full gate passed 2026-07-23 | [#157](https://github.com/IngeniousArtist/hoopedorc/pull/157) |
-| F52 — direct Figma nodes and planning verification | ✅ implementation complete; local full gate passed 2026-07-23; PR delivery in progress | — |
+| F52 — direct Figma nodes and planning verification | ✅ implementation complete; local full gate passed 2026-07-23; delivery in progress | [#158](https://github.com/IngeniousArtist/hoopedorc/pull/158) |
 | B42 — recoverable Figma capability blocks | approved; depends on F52 | — |
 | F53 — automatic visual-fidelity QA task | approved; depends on B42 | — |
 
@@ -6508,11 +6508,12 @@ discovery semantics.
 ### F52. Direct Figma nodes and planning verification
 
 **Status (2026-07-23):** implemented and locally verified on
-`f52-direct-figma-nodes`; PR delivery and independent merged verification are
-in progress. The implementation keeps exact-node intake in the existing
-planning chat/deconstruction path, adds one nullable planning-session JSON
-field, and does not add a task field, generic capability registry, raw Figma
-cache, or parallel orchestration path.
+`f52-direct-figma-nodes`
+([#158](https://github.com/IngeniousArtist/hoopedorc/pull/158)); delivery and
+independent merged verification are in progress. The implementation keeps
+exact-node intake in the existing planning chat/deconstruction path, adds one
+nullable planning-session JSON field, and does not add a task field, generic
+capability registry, raw Figma cache, or parallel orchestration path.
 
 Exact user-supplied `design`/`file`/`proto` node URLs are allowlisted,
 canonicalized, deduplicated, and bounded. The routed real Claude Code, Codex,
