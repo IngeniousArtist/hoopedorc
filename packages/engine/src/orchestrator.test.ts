@@ -6,6 +6,7 @@ import { test } from "node:test";
 import type { AgentAdapter, AgentRunResult } from "@orc/adapters";
 import type { GateResult, MergeDecision, Project, Run, Settings, Task } from "@orc/types";
 import {
+  FIGMA_CAPABILITY_UNAVAILABLE_MARKER,
   Orchestrator,
   buildFallbackChain,
   detectDestructiveChanges,
@@ -2828,4 +2829,398 @@ test("B39: optional cleanup and changelog failures stay non-blocking but emit wa
         /Optional changelog publication failed.*changelog push failed/.test(entry.message),
     ),
   );
+});
+
+test("B42: failed Figma preflight blocks before attempt, worktree, author, commit, gates, validator, or PR", async () => {
+  const calls = {
+    worktree: 0,
+    author: 0,
+    commit: 0,
+    gate: 0,
+    validator: 0,
+    pr: 0,
+    cleanup: 0,
+  };
+  const capabilityEvents: string[] = [];
+  const blocked = task("figma-blocked", [], {
+    description:
+      "Implement the screen.\n\n### Relevant references\n- https://www.figma.com/design/abc123/App?node-id=1-2",
+  });
+  const deps = fakeDeps(
+    {
+      preflightFigma: async () => ({
+        required: true,
+        context: {
+          runner: "opencode",
+          canonicalUrl:
+            "https://www.figma.com/design/abc123/App?node-id=1-2",
+          nodeId: "1:2",
+        },
+        issue: {
+          stage: "author_preflight",
+          code: "figma_mcp_missing",
+          model: "deepseek-flash",
+          runner: "opencode",
+          message: "The selected runner does not have an available Figma MCP/tool.",
+          actions: [
+            "Fix or re-authenticate Figma MCP for this runner, then Retry the task.",
+            "Reassign the task to another Figma-capable model, then Retry it.",
+          ],
+          canonicalUrl:
+            "https://www.figma.com/design/abc123/App?node-id=1-2",
+          nodeId: "1:2",
+        },
+      }),
+      adapterFor: () => ({
+        runner: "opencode",
+        async run() {
+          calls.author++;
+          return {
+            ok: true,
+            exitReason: "completed",
+            costUsd: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+            summary: "",
+          };
+        },
+      }),
+      worktrees: {
+        async create() {
+          calls.worktree++;
+          return { branch: "never", path: "/tmp/never" };
+        },
+      },
+      git: {
+        async commitAll() { calls.commit++; },
+        async openPr() {
+          calls.pr++;
+          return 1;
+        },
+        async cleanupTaskBranch() { calls.cleanup++; },
+      },
+      gates: {
+        async run() {
+          calls.gate++;
+          return GOOD_GATE;
+        },
+      },
+      validator: {
+        async review() {
+          calls.validator++;
+          throw new Error("validator must not run");
+        },
+      },
+      events: {
+        onLog() {},
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        onFigmaCapabilityBlocked(info) {
+          capabilityEvents.push(info.issue.code);
+        },
+        async requestApproval() { return "reject"; },
+      },
+    },
+    [],
+  );
+
+  await new Orchestrator(deps).start(PROJECT, [blocked]);
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.attempts, 0);
+  assert.equal(blocked.branch, undefined);
+  assert.equal(blocked.worktreePath, undefined);
+  assert.deepEqual(calls, {
+    worktree: 0,
+    author: 0,
+    commit: 0,
+    gate: 0,
+    validator: 0,
+    pr: 0,
+    cleanup: 0,
+  });
+  assert.deepEqual(capabilityEvents, ["figma_mcp_missing"]);
+  assert.match(blocked.statusReason ?? "", /Stage: author preflight/);
+  assert.match(blocked.statusReason ?? "", /deepseek-flash/);
+  assert.match(blocked.statusReason ?? "", /opencode/);
+  assert.match(blocked.statusReason ?? "", /Retry/);
+});
+
+test("B42: Stop during preflight settles as a user block without creating a worktree", async () => {
+  let preflightStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    preflightStarted = resolve;
+  });
+  let worktrees = 0;
+  const candidate = task("stop-preflight");
+  const orchestrator = new Orchestrator(
+    fakeDeps(
+      {
+        preflightFigma: async ({ signal }) => {
+          preflightStarted();
+          return new Promise((resolve) => {
+            signal?.addEventListener(
+              "abort",
+              () => resolve({ required: false }),
+              { once: true },
+            );
+          });
+        },
+        worktrees: {
+          async create() {
+            worktrees++;
+            return { branch: "never", path: "/tmp/never" };
+          },
+        },
+      },
+      [],
+    ),
+  );
+
+  const run = orchestrator.start(PROJECT, [candidate]);
+  await started;
+  assert.equal(orchestrator.stopTask(candidate.id), true);
+  await run;
+
+  assert.equal(candidate.status, "blocked");
+  assert.equal(candidate.statusReason, "Stopped by user");
+  assert.equal(candidate.attempts, 0);
+  assert.equal(worktrees, 0);
+});
+
+test("B42: one Figma block does not stop an independent ready task", async () => {
+  const blocked = task("blocked", [], {
+    description:
+      "Use https://www.figma.com/design/abc123/App?node-id=1-2",
+  });
+  const independent = task("independent");
+  const deps = fakeDeps(
+    {
+      preflightFigma: async ({ task: candidate }) =>
+        candidate.id === blocked.id
+          ? {
+              required: true,
+              context: {
+                runner: "opencode",
+                canonicalUrl:
+                  "https://www.figma.com/design/abc123/App?node-id=1-2",
+                nodeId: "1:2",
+              },
+              issue: {
+                stage: "author_preflight",
+                code: "figma_access_denied",
+                model: "deepseek-flash",
+                runner: "opencode",
+                message: "The selected runner cannot access the referenced Figma file.",
+                actions: ["Fix access, then Retry."],
+              },
+            } as const
+          : { required: false } as const,
+    },
+    [],
+  );
+
+  await new Orchestrator(deps).start(PROJECT, [blocked, independent]);
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(independent.status, "done");
+});
+
+test("B42: a fallback-model preflight does not consume a second author attempt and cleans retry-colliding remote state", async () => {
+  let authorCalls = 0;
+  let cleanupCalls = 0;
+  const blocked = task("fallback-block", [], {
+    description:
+      "Use https://www.figma.com/design/abc123/App?node-id=1-2",
+  });
+  const deps = fakeDeps(
+    {
+      preflightFigma: async ({ model }) =>
+        model === "deepseek-flash"
+          ? {
+              required: true,
+              context: {
+                runner: "opencode",
+                canonicalUrl:
+                  "https://www.figma.com/design/abc123/App?node-id=1-2",
+                nodeId: "1:2",
+              },
+            } as const
+          : {
+              required: true,
+              context: {
+                runner: "opencode",
+                canonicalUrl:
+                  "https://www.figma.com/design/abc123/App?node-id=1-2",
+                nodeId: "1:2",
+              },
+              issue: {
+                stage: "author_preflight",
+                code: "figma_mcp_missing",
+                model: "deepseek-pro",
+                runner: "opencode",
+                message: "The fallback runner has no Figma MCP.",
+                actions: ["Configure it, then Retry."],
+              },
+            } as const,
+      adapterFor: () => ({
+        runner: "opencode",
+        async run() {
+          authorCalls++;
+          return {
+            ok: false,
+            exitReason: "error",
+            costUsd: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+            summary: "ordinary runner failure",
+          };
+        },
+      }),
+      git: {
+        async cleanupTaskBranch() {
+          cleanupCalls++;
+        },
+      },
+    },
+    [],
+  );
+
+  await new Orchestrator(deps).start(PROJECT, [blocked]);
+
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.attempts, 1);
+  assert.equal(authorCalls, 1);
+  assert.equal(cleanupCalls, 1);
+});
+
+test("B42: a mid-author capability marker is a failed run and blocks before commit or review", async () => {
+  let prompt = "";
+  let commits = 0;
+  let gates = 0;
+  let reviews = 0;
+  const runs: Run[] = [];
+  const blocked = task("mid-author", [], {
+    description:
+      "Match https://www.figma.com/design/abc123/App?node-id=1-2",
+  });
+  const deps = fakeDeps(
+    {
+      preflightFigma: async () => ({
+        required: true,
+        context: {
+          runner: "opencode",
+          canonicalUrl:
+            "https://www.figma.com/design/abc123/App?node-id=1-2",
+          nodeId: "1:2",
+        },
+      }),
+      adapterFor: () => ({
+        runner: "opencode",
+        async run(options) {
+          prompt = options.prompt;
+          return {
+            ok: true,
+            exitReason: "completed",
+            costUsd: 0.01,
+            tokensIn: 2,
+            tokensOut: 1,
+            summary: `Figma disappeared.\n${FIGMA_CAPABILITY_UNAVAILABLE_MARKER}`,
+          };
+        },
+      }),
+      git: { async commitAll() { commits++; } },
+      gates: {
+        async run() {
+          gates++;
+          return GOOD_GATE;
+        },
+      },
+      validator: {
+        async review() {
+          reviews++;
+          throw new Error("validator must not run");
+        },
+      },
+      events: {
+        onLog() {},
+        onTaskUpdated() {},
+        onRunUpdated(run) { runs.push(run); },
+        onMergeDecision() {},
+        async requestApproval() { return "reject"; },
+      },
+    },
+    [],
+  );
+
+  await new Orchestrator(deps).start(PROJECT, [blocked]);
+
+  assert.match(prompt, /Figma capability continuity/);
+  assert.match(prompt, new RegExp(FIGMA_CAPABILITY_UNAVAILABLE_MARKER.replace(
+    /[.*+?^${}()|[\]\\]/gu,
+    "\\$&",
+  )));
+  assert.equal(blocked.status, "blocked");
+  assert.equal(blocked.attempts, 1, "the author call itself consumed one attempt");
+  assert.equal(runs.at(-1)?.status, "failed");
+  assert.equal(commits, 0);
+  assert.equal(gates, 0);
+  assert.equal(reviews, 0);
+  assert.doesNotMatch(blocked.statusReason ?? "", /no changes/i);
+});
+
+test("B42: no-Figma tasks add no continuity prompt, and blocked tasks stay blocked on restart", async () => {
+  let ordinaryPrompt = "";
+  let verifierCalls = 0;
+  const ordinary = task("ordinary");
+  await new Orchestrator(
+    fakeDeps(
+      {
+        preflightFigma: async () => {
+          verifierCalls++;
+          return { required: false };
+        },
+        adapterFor: () => ({
+          runner: "opencode",
+          async run(options) {
+            ordinaryPrompt = options.prompt;
+            return {
+              ok: true,
+              exitReason: "completed",
+              costUsd: 0,
+              tokensIn: 0,
+              tokensOut: 0,
+              summary: "",
+            };
+          },
+        }),
+      },
+      [],
+    ),
+  ).start(PROJECT, [ordinary]);
+  assert.equal(verifierCalls, 1);
+  assert.doesNotMatch(ordinaryPrompt, /Figma capability continuity/);
+
+  const persisted = task("persisted", [], {
+    status: "blocked",
+    attempts: 0,
+    statusReason: "Fix Figma MCP, then Retry.",
+  });
+  let restartPreflights = 0;
+  await new Orchestrator(
+    fakeDeps(
+      {
+        preflightFigma: async () => {
+          restartPreflights++;
+          return { required: false };
+        },
+      },
+      [],
+    ),
+  ).start(PROJECT, [persisted]);
+  assert.equal(persisted.status, "blocked");
+  assert.equal(persisted.attempts, 0);
+  assert.equal(persisted.statusReason, "Fix Figma MCP, then Retry.");
+  assert.equal(restartPreflights, 0);
 });

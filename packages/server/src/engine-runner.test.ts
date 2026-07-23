@@ -4,7 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { Orchestrator, OrchestratorStartOptions, SchedulerDeps } from "@orc/engine";
-import type { GateResult, Project, RollbackJob, Task } from "@orc/types";
+import type {
+  FigmaCapabilityIssue,
+  GateResult,
+  ModelInvocation,
+  Project,
+  RollbackJob,
+  Task,
+  VerifiedFigmaReference,
+} from "@orc/types";
 import { defaultSettings } from "./config.js";
 import { initDb } from "./db/index.js";
 import * as repo from "./db/repo.js";
@@ -12,6 +20,7 @@ import {
   EngineRunner,
   type RollbackExecutionDeps,
 } from "./engine-runner.js";
+import { FigmaVerificationError } from "./planner.js";
 import type { ServerNotifier } from "./telegram.js";
 import { WsHub } from "./ws-hub.js";
 
@@ -300,6 +309,252 @@ test("F44: a fresh buildOrchestrator() call (a new run) resets the dedupe — no
 
   const notifs = repo.getNotifications(db, "p1").filter((n) => n.taskId === "t1");
   assert.equal(notifs.length, 2);
+});
+
+test("B42: author preflight probes one node per file, records health accounting, and caches only this runtime/model/file", async () => {
+  const db = setup();
+  const hub = new WsHub();
+  const proj = project(db, "figma-preflight", { localPath: "/tmp/figma-preflight" });
+  const first = seedTask(db, proj.id, "first", {
+    description:
+      "Use https://www.figma.com/design/FileOne/App?node-id=1-2 and " +
+      "https://www.figma.com/design/FileOne/App?node-id=3-4 and " +
+      "https://www.figma.com/design/FileTwo/App?node-id=5-6",
+  });
+  const probeBatches: string[][] = [];
+  let invocationSequence = 0;
+  const engine = new EngineRunner(db, hub, {
+    figmaVerifier: async (
+      requested,
+      _cwd,
+      plannerModel,
+      _signal,
+      onInvocation,
+    ) => {
+      probeBatches.push(requested.map((reference) => reference.fileKey));
+      invocationSequence++;
+      const startedAt = new Date().toISOString();
+      const base: ModelInvocation = {
+        id: `health-b42-${invocationSequence}`,
+        stage: "health",
+        model: plannerModel.id!,
+        runner: plannerModel.runner,
+        effort: plannerModel.effort ?? "default",
+        startedAt,
+        outcome: "running",
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        tokensCached: 0,
+      };
+      onInvocation?.(base);
+      onInvocation?.({
+        ...base,
+        endedAt: new Date().toISOString(),
+        outcome: "completed",
+        exitReason: "completed",
+        tokensIn: 2,
+        tokensOut: 1,
+      });
+      const references: VerifiedFigmaReference[] = requested.map((reference) => ({
+        ...reference,
+        name: reference.nodeId,
+        verifiedModel: plannerModel.id!,
+        verifiedRunner: plannerModel.runner,
+        verifiedAt: new Date().toISOString(),
+      }));
+      return { references, costUsd: 0 };
+    },
+  });
+  const deps = buildDeps(engine, proj);
+
+  const result = await deps.preflightFigma!({
+    project: proj,
+    task: first,
+    model: first.assignedModel,
+  });
+  assert.equal(result.required, true);
+  assert.deepEqual(probeBatches, [["FileOne", "FileTwo"]]);
+  const invocation = repo.getInvocations(db, { taskId: first.id })[0]!;
+  assert.equal(invocation.projectId, proj.id);
+  assert.equal(invocation.taskId, first.id);
+  assert.equal(invocation.stage, "health");
+  assert.equal(invocation.outcome, "completed");
+
+  await deps.preflightFigma!({
+    project: proj,
+    task: first,
+    model: first.assignedModel,
+  });
+  const sameFiles = seedTask(db, proj.id, "same-files", {
+    description:
+      "Use https://www.figma.com/design/FileOne/App?node-id=9-10",
+  });
+  await deps.preflightFigma!({
+    project: proj,
+    task: sameFiles,
+    model: sameFiles.assignedModel,
+  });
+  assert.equal(probeBatches.length, 1, "same runtime/model/file should reuse access");
+
+  const changedSettings = repo.getSettings(db)!;
+  repo.upsertSettings(db, {
+    ...changedSettings,
+    models: changedSettings.models.map((model) =>
+      model.id === sameFiles.assignedModel
+        ? { ...model, opencodeModel: "changed/provider-model" }
+        : model,
+    ),
+  });
+  await deps.preflightFigma!({
+    project: proj,
+    task: sameFiles,
+    model: sameFiles.assignedModel,
+  });
+  assert.equal(
+    probeBatches.length,
+    2,
+    "a live runner-model configuration change must prove access again",
+  );
+
+  const otherModel = seedTask(db, proj.id, "other-model", {
+    assignedModel: "deepseek-pro",
+    description:
+      "Use https://www.figma.com/design/FileOne/App?node-id=9-10",
+  });
+  await deps.preflightFigma!({
+    project: proj,
+    task: otherModel,
+    model: otherModel.assignedModel,
+  });
+  assert.deepEqual(probeBatches.at(-1), ["FileOne"]);
+
+  const ordinary = seedTask(db, proj.id, "ordinary");
+  const ordinaryResult = await deps.preflightFigma!({
+    project: proj,
+    task: ordinary,
+    model: ordinary.assignedModel,
+  });
+  assert.deepEqual(ordinaryResult, { required: false });
+  assert.equal(probeBatches.length, 3, "no-Figma task must not call the verifier");
+
+  const freshRuntimeDeps = buildDeps(engine, proj);
+  await freshRuntimeDeps.preflightFigma!({
+    project: proj,
+    task: sameFiles,
+    model: sameFiles.assignedModel,
+  });
+  assert.equal(probeBatches.length, 4, "new runtime must prove access again");
+});
+
+test("B42: preflight failures keep structured author-stage recovery context", async () => {
+  const db = setup();
+  const proj = project(db, "figma-failure");
+  const task = seedTask(db, proj.id, "task", {
+    description:
+      "Use https://www.figma.com/design/FileOne/App?node-id=1-2",
+  });
+  const issue: FigmaCapabilityIssue = {
+    stage: "author_preflight",
+    code: "figma_auth_required",
+    model: task.assignedModel,
+    runner: "opencode",
+    message: "The selected runner's Figma MCP needs authentication.",
+    actions: ["Authenticate, then Retry."],
+    canonicalUrl:
+      "https://www.figma.com/design/FileOne/App?node-id=1-2",
+    nodeId: "1:2",
+  };
+  const engine = new EngineRunner(db, new WsHub(), {
+    figmaVerifier: async () => {
+      throw new FigmaVerificationError(issue);
+    },
+  });
+  const result = await buildDeps(engine, proj).preflightFigma!({
+    project: proj,
+    task,
+    model: task.assignedModel,
+  });
+  assert.equal(result.required, true);
+  if (!result.required) assert.fail("expected a Figma-dependent result");
+  assert.deepEqual(result.issue, issue);
+});
+
+test("B42: capability notification and Telegram alert dedupe durably across runtimes", () => {
+  const db = setup();
+  const hub = new WsHub();
+  const broadcasts: unknown[] = [];
+  hub.broadcast = ((event: unknown) => broadcasts.push(event)) as typeof hub.broadcast;
+  const proj = project(db, "figma-notification");
+  const task = seedTask(db, proj.id, "task", {
+    status: "blocked",
+    statusReason:
+      "Figma auth required. Model: deepseek-flash; runner: opencode. Recovery: Retry.",
+  });
+  const telegram: string[] = [];
+  const notifier: ServerNotifier = {
+    approvalRequested() {},
+    taskStatus() {},
+    info(message) { telegram.push(message); },
+    modelTrouble() {},
+  };
+  const engine = new EngineRunner(db, hub);
+  engine.setNotifier(notifier);
+  const info = {
+    taskId: task.id,
+    taskTitle: task.title,
+    issue: {
+      stage: "author_preflight",
+      code: "figma_auth_required",
+      model: task.assignedModel,
+      runner: "opencode",
+      message: "Figma auth required.",
+      actions: ["Authenticate, then Retry."],
+      canonicalUrl:
+        "https://www.figma.com/design/FileOne/App?node-id=1-2",
+      nodeId: "1:2",
+    } satisfies FigmaCapabilityIssue,
+  };
+
+  buildDeps(engine, proj).events.onFigmaCapabilityBlocked!(info);
+  buildDeps(engine, proj).events.onFigmaCapabilityBlocked!(info);
+
+  const notifications = repo
+    .getNotifications(db, proj.id)
+    .filter((notification) => /Figma access blocked/.test(notification.title));
+  assert.equal(notifications.length, 1);
+  assert.ok(notifications[0]!.context?.capabilityKey);
+  assert.doesNotMatch(notifications[0]!.message, /secret|token=/i);
+  assert.equal(telegram.length, 1);
+  assert.equal(
+    broadcasts.filter(
+      (event) => (event as { type?: string }).type === "notification",
+    ).length,
+    1,
+  );
+  assert.equal(
+    repo
+      .getAuditLog(db, proj.id)
+      .filter((entry) => entry.kind === "capability_blocked").length,
+    1,
+  );
+});
+
+test("B42: a run with blocked work finishes paused, never falsely completed", () => {
+  const db = setup();
+  const hub = new WsHub();
+  const proj = project(db, "figma-paused", { status: "running" });
+  seedTask(db, proj.id, "blocked", {
+    status: "blocked",
+    statusReason: "Fix Figma access, then Retry.",
+  });
+  const engine = new EngineRunner(db, hub);
+  (
+    engine as unknown as {
+      finishAutonomousRun(project: Project, startedAt: string): void;
+    }
+  ).finishAutonomousRun(proj, new Date().toISOString());
+  assert.equal(repo.getProject(db, proj.id)?.status, "paused");
 });
 
 test("F44: a run ending non-completed creates a web notification carrying the same message as the log line", async () => {

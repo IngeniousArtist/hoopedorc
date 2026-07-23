@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   extractFigmaReferences,
+  extractFigmaReferencesFromText,
   MAX_FIGMA_REFERENCES,
   normalizeVerifiedFigmaReferences,
 } from "./figma-references.js";
@@ -62,6 +63,19 @@ test("F52: an assistant-mentioned link cannot become an enforceable reference", 
   ]);
   assert.deepEqual(intake.nodes, []);
   assert.deepEqual(intake.files, []);
+});
+
+test("B42: durable task text uses the same exact-node parser", () => {
+  const intake = extractFigmaReferencesFromText(
+    "### Relevant references\n" +
+      "- https://www.figma.com/design/File123/Login?node-id=10-20\n" +
+      "- https://www.figma.com/design/File123/whole-file",
+  );
+  assert.deepEqual(
+    intake.nodes.map((reference) => reference.nodeId),
+    ["10:20"],
+  );
+  assert.equal(intake.files.length, 1);
 });
 
 test("F52: recognized Figma input is bounded", () => {

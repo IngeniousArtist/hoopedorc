@@ -191,7 +191,7 @@ export type FigmaCapabilityIssueCode =
 
 /** Actionable, secret-free failure returned in ApiError.details by F52. */
 export interface FigmaCapabilityIssue {
-  stage: "deconstruction";
+  stage: "deconstruction" | "author_preflight" | "author";
   code: FigmaCapabilityIssueCode;
   model: ModelId;
   runner: RunnerKind;

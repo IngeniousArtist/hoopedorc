@@ -839,7 +839,7 @@ export class GitServiceImpl implements GitService {
           "--repo",
           project.repoUrl,
           "--comment",
-          `Closed by Hoopedorc: task failed. ${task.statusReason ?? ""}`.trim(),
+          `Closed by Hoopedorc: task ${task.status}. ${task.statusReason ?? ""}`.trim(),
           "--delete-branch",
         ]);
       } catch (err) {

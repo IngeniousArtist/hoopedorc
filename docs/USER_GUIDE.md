@@ -480,6 +480,34 @@ A server restart deliberately causes a fresh live probe; a normal browser
 reload restores the verified cards without one. No-Figma plans make no extra
 model call and show no design state.
 
+The same access is checked again when execution reaches a task whose
+description or acceptance criteria contains an exact Figma node. The check
+uses that task's actual assigned author model, opens one representative node
+per referenced file, and happens before an attempt or worktree exists.
+Successful access may be reused for another task only while the same project
+runtime, assigned runner/model configuration, and file remain current.
+
+If access is missing, only that task moves to **Blocked**. Its detail drawer
+explains the model, runner, reference, problem, and both recovery choices;
+independent tasks keep running and the overall project ends **Paused** while
+the blocked work remains:
+
+1. Repair or re-authenticate that runner's Figma MCP, then click **Retry**.
+2. While the task is blocked, choose another author model in its drawer,
+   save the change, then click **Retry**.
+
+The same task and dependencies are reused. The failed preflight consumes no
+author attempt and creates no worktree, commit, PR, gate run, or validator
+call. Restarting Hoopedorc preserves the explanation and does not automatically
+retry it. The web and Telegram capability alert is deduplicated durably, so a
+restart does not repeat the same warning.
+
+If Figma access disappears after the author already started, the runner is
+instructed to stop with a fixed capability marker. Hoopedorc records that call
+as failed, blocks the task with the same recovery guidance, and does not
+misreport it as a successful run with no changes. This mid-call case did use
+one author attempt because the model actually ran.
+
 ## Using skills with your agents
 
 Claude Code, Codex, and OpenCode can all expose skills, but discovery and

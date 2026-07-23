@@ -534,6 +534,8 @@ export interface Notification {
   context?: {
     prUrl?: string;
     reasons?: string[];
+    /** B42: stable, secret-free key for durable capability-alert dedupe. */
+    capabilityKey?: string;
   };
 }
 

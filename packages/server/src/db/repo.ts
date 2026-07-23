@@ -1296,6 +1296,28 @@ export function getNotification(db: Db, id: string): Notification | null {
   return row ? mapNotification(row) : null;
 }
 
+/** B42: capability alerts must remain deduplicated across server restarts. */
+export function getNotificationByCapabilityKey(
+  db: Db,
+  taskId: string,
+  capabilityKey: string,
+): Notification | null {
+  const rows = db
+    .prepare(
+      `SELECT * FROM notifications
+       WHERE task_id = ? AND context IS NOT NULL
+       ORDER BY created_at DESC`,
+    )
+    .all(taskId) as Record<string, unknown>[];
+  for (const row of rows) {
+    const notification = mapNotification(row);
+    if (notification.context?.capabilityKey === capabilityKey) {
+      return notification;
+    }
+  }
+  return null;
+}
+
 /** B23: newest-first, capped so months of autonomous runs don't hand the
  *  Notifications page (and the U1 nav badge's seed fetch) an ever-growing
  *  list — mirrors the bound `pruneNotifications` below enforces at rest.

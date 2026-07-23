@@ -153,14 +153,14 @@ new `Settings.telegram.modelAlerts` (boolean, default true when unset,
 independent of `digest`) — a short Telegram push via the new
 `ServerNotifier.modelTrouble`.
 
-`Notification.context` (F22) is `{ prUrl?: string; reasons?: string[] }` —
-the same PR link + top validator reasons Telegram's approval message
-already carries (`ApprovalContext` in `packages/server/src/telegram.ts`),
-computed once in `EngineRunner`'s `requestApproval` and persisted onto the
-notification so the web UI can render it too, not just Telegram. Optional
-and only ever set on an `action_required` approval notification that has
-at least a PR or a reason to show; absent on every other notification kind
-and on any row that predates this field.
+`Notification.context` is
+`{ prUrl?: string; reasons?: string[]; capabilityKey?: string }`. F22's PR
+link + top validator reasons are computed once in `EngineRunner`'s
+`requestApproval` and persisted onto an `action_required` notification so the
+web UI and Telegram use the same decision context. B42's `capabilityKey` is a
+stable, secret-free identity stored only on capability warning notifications;
+the server uses it to suppress the same alert across runtime/server restarts.
+The optional context remains absent on older rows and unrelated notifications.
 
 `POST /api/engine/stop-all` (F23) — the global panic button, one confirmed
 tap from anywhere in the app rather than Projects page → per-row action →
@@ -324,6 +324,33 @@ After such a failure, `PlanDeconstructRequest.figmaVerification:
 Figma probe, clears the verified session list on successful deconstruction,
 and removes unverified Figma URLs from task descriptions/criteria so later
 execution cannot mistake them for proved live-node fidelity.
+
+B42 repeats the proof at the execution boundary. Before a task containing an
+exact canonical Figma node creates a worktree or consumes an author attempt,
+`EngineRunner` extracts the references with the same allowlisted parser and
+invokes the actual assigned model's runner through the same bounded,
+sanitized verification path. One representative node is opened per distinct
+file. Each real probe is a project/task-associated `health` invocation. A
+positive result may be reused only inside that orchestrator runtime for the
+same logical model, runner configuration/model, and file; a changed model,
+runner configuration, file, or runtime probes again. No-Figma tasks call no
+verifier/model.
+
+A failed execution preflight sets only that task to `blocked`, leaves
+`attempts` unchanged, creates no worktree/branch/commit/PR/gate/validator
+work, and persists a secret-free `statusReason` naming stage, model, runner,
+reference, and repair choices. Other ready tasks continue and the project
+finishes `paused`, not falsely `completed`. The existing assigned-model PATCH
+and Retry endpoint are the only resume path; Retry clears old execution
+coordinates and reuses the same task/DAG. Capability notifications and their
+Telegram counterpart use the durable `capabilityKey` above.
+
+After a successful preflight, the author prompt requires the stable
+`[HOOPEDORC_CAPABILITY_UNAVAILABLE:figma]` marker if tool access disappears
+mid-call. A marked result is persisted as a failed author run, blocks the
+task, and stops before commit, gates, validator, or PR rather than falling
+through to the ordinary no-change/fallback path. Any prior remote task branch
+is cleaned best-effort so a later Retry cannot collide with it.
 
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.
