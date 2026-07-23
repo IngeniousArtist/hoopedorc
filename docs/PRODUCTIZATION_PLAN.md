@@ -6415,7 +6415,7 @@ deployment.
 
 | Item | Status | PR |
 |---|---|---|
-| F51 — lean task references and runner-accurate skills | ✅ implementation complete; local full gate passed 2026-07-23 | this PR |
+| F51 — lean task references and runner-accurate skills | ✅ implementation complete; local full gate passed 2026-07-23 | [#157](https://github.com/IngeniousArtist/hoopedorc/pull/157) |
 | F52 — direct Figma nodes and planning verification | approved; depends on F51 | — |
 | B42 — recoverable Figma capability blocks | approved; depends on F52 | — |
 | F53 — automatic visual-fidelity QA task | approved; depends on B42 | — |
@@ -6473,13 +6473,14 @@ gating, a generic Critic role, or a second orchestration lifecycle.
 ### F51. Lean task references and runner-accurate skills
 
 **Status (2026-07-23):** implemented and locally verified on
-`f51-lean-task-references`. The deconstructor now produces self-contained task
-descriptions with optional exact `Relevant references` and `Required
-skills/capabilities` sections. A shared conditional helper tells both author
-and validator to inspect them while returning an empty string for ordinary
-legacy descriptions. The runner documentation now reflects installed Claude
-Code, Codex, and OpenCode skill behavior and keeps skills separate from MCP
-configuration. No Task/API/SQLite context field was added.
+`f51-lean-task-references` ([#157](https://github.com/IngeniousArtist/hoopedorc/pull/157)).
+The deconstructor now produces self-contained task descriptions with optional
+exact `Relevant references` and `Required skills/capabilities` sections. A
+shared conditional helper tells both author and validator to inspect them while
+returning an empty string for ordinary legacy descriptions. The runner
+documentation now reflects installed Claude Code, Codex, and OpenCode skill
+behavior and keeps skills separate from MCP configuration. No
+Task/API/SQLite context field was added.
 
 Local verification passed: typecheck, build, lint, 164 engine tests, 12 adapter
 tests, 175 server tests, 20 web tests, 14 Playwright tests, and

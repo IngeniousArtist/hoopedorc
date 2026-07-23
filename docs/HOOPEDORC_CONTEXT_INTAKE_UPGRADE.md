@@ -583,7 +583,8 @@ until the prior PR is merged and independently checked.
 ### Phase 17.1 — F51: lean task references and runner-accurate skills
 
 **Status:** implementation complete and locally verified on
-`f51-lean-task-references`.
+`f51-lean-task-references`; delivery tracked in
+[#157](https://github.com/IngeniousArtist/hoopedorc/pull/157).
 
 **Goal:** Preserve planning nuance in ordinary task handoffs without adding a
 new context schema.
