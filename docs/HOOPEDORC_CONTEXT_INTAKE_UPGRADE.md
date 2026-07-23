@@ -1,7 +1,8 @@
 # Hoopedorc — Focused Context Handoff and Figma Fidelity Upgrade
 
-**Status:** implementation in progress; F51, F52, and B42 merged and
-independently verified; F53 implemented and locally verified
+**Status:** implementation complete; F51, F52, B42, and F53 merged and
+independently verified; owner-supplied live EC2/Figma/browser acceptance
+pending
 
 **Approved:** 2026-07-23
 
@@ -795,15 +796,14 @@ degrading fidelity during autorun.
 
 ### Phase 17.4 — F53: automatic visual-fidelity QA task
 
-**Status (2026-07-23):** implementation complete on
-`f53-automatic-visual-qa` after B42 merged and passed the full repository gate
-independently as `8fc7bb6`. The local full gate passed: typecheck, build, lint,
-171 engine tests, 12 adapter tests, 202 server tests, 25 web tests, 16
-Playwright scenarios across 360, 390, 768, 1280, and 1440px, and
-`git diff --check`. Playwright required the approved unsandboxed command after
-the managed sandbox refused the local mock/Vite listener with `EPERM`; the
-tests themselves passed. Delivery is under review in
-[#160](https://github.com/IngeniousArtist/hoopedorc/pull/160); the
+**Status (2026-07-23):** done; merged through
+[#160](https://github.com/IngeniousArtist/hoopedorc/pull/160) as `45e3ebb`
+after green CI, then independently verified on merged `main`. Both the branch
+and merged-commit full gates passed: typecheck, build, lint, 171 engine tests,
+12 adapter tests, 202 server tests, 25 web tests, 16 Playwright scenarios
+across 360, 390, 768, 1280, and 1440px, and `git diff --check`. Playwright
+required the approved unsandboxed command after the managed sandbox refused
+the local mock/Vite listener with `EPERM`; the tests themselves passed. The
 owner-supplied live EC2/Figma/browser check remains.
 
 **Goal:** Make close Figma fidelity the default execution outcome whenever
