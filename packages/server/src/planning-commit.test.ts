@@ -30,6 +30,18 @@ function fixture(): { db: Db; project: Project; draft: DraftTask } {
     prd: "# Old draft",
     draftTasks: [],
     agentsMd: "# Old agents",
+    verifiedFigmaReferences: [
+      {
+        canonicalUrl:
+          "https://www.figma.com/design/File123/Login?node-id=10-20",
+        fileKey: "File123",
+        nodeId: "10:20",
+        name: "Login desktop",
+        verifiedModel: "codex",
+        verifiedRunner: "codex",
+        verifiedAt: "2026-07-23T12:00:00.000Z",
+      },
+    ],
     sessionFile: "2026-07-14-1200.md",
   });
   const draft: DraftTask = {
@@ -90,6 +102,7 @@ test("B39: a delayed repository commit immediately blocks Start and finalizes on
   assert.equal(cleared.prd, undefined);
   assert.equal(cleared.draftTasks, undefined);
   assert.equal(cleared.agentsMd, undefined);
+  assert.equal(cleared.verifiedFigmaReferences, undefined);
   assert.equal(cleared.sessionFile, undefined);
 });
 
@@ -133,6 +146,10 @@ test("B39: repository failure keeps the exact draft and retry creates tasks once
   assert.equal(repo.getTasks(db, project.id).length, 0);
   assert.deepEqual(repo.getPlanningSession(db, project.id).draftTasks, [draft]);
   assert.equal(repo.getPlanningSession(db, project.id).agentsMd, "# Retryable agents");
+  assert.equal(
+    repo.getPlanningSession(db, project.id).verifiedFigmaReferences?.[0]?.nodeId,
+    "10:20",
+  );
 
   const retried = await commitPlanningDraft(
     db,
@@ -152,6 +169,7 @@ test("B39: repository failure keeps the exact draft and retry creates tasks once
   assert.equal(cleared.prd, undefined);
   assert.equal(cleared.draftTasks, undefined);
   assert.equal(cleared.agentsMd, undefined);
+  assert.equal(cleared.verifiedFigmaReferences, undefined);
   assert.equal(cleared.sessionFile, undefined);
 });
 

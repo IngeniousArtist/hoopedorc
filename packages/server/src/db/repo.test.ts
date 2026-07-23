@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { initDb } from "./index.js";
 import * as repo from "./repo.js";
@@ -254,6 +257,64 @@ test("getPlanningSession: agentsMd is undefined when never set", () => {
   const db = setup();
   const session = repo.getPlanningSession(db, "proj-1");
   assert.equal(session.agentsMd, undefined);
+});
+
+test("F52: verified Figma references round-trip and clear with planning scratch", () => {
+  const db = setup();
+  const references = [
+    {
+      canonicalUrl:
+        "https://www.figma.com/design/File123/Login?node-id=10-20",
+      fileKey: "File123",
+      nodeId: "10:20",
+      name: "Login desktop",
+      fileName: "Product",
+      width: 1440,
+      height: 900,
+      verifiedModel: "codex",
+      verifiedRunner: "codex" as const,
+      verifiedAt: "2026-07-23T12:00:00.000Z",
+    },
+  ];
+  repo.savePlanningSession(db, "proj-1", {
+    verifiedFigmaReferences: references,
+  });
+  assert.deepEqual(
+    repo.getPlanningSession(db, "proj-1").verifiedFigmaReferences,
+    references,
+  );
+
+  repo.savePlanningSession(db, "proj-1", {
+    verifiedFigmaReferences: null,
+  });
+  assert.equal(
+    repo.getPlanningSession(db, "proj-1").verifiedFigmaReferences,
+    undefined,
+  );
+});
+
+test("F52: an existing database receives the planning Figma column idempotently", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "hoopedorc-f52-migration-")), "orc.db");
+  const original = initDb(path);
+  original.exec("ALTER TABLE projects DROP COLUMN planning_figma_refs");
+  original.close();
+
+  const migrated = initDb(path);
+  const columns = migrated
+    .prepare("PRAGMA table_info(projects)")
+    .all() as { name: string }[];
+  assert.ok(columns.some((column) => column.name === "planning_figma_refs"));
+  migrated.close();
+
+  const reopened = initDb(path);
+  const reopenedColumns = reopened
+    .prepare("PRAGMA table_info(projects)")
+    .all() as { name: string }[];
+  assert.equal(
+    reopenedColumns.filter((column) => column.name === "planning_figma_refs").length,
+    1,
+  );
+  reopened.close();
 });
 
 // ── B34: durable priority dispatch + race-safe Stop transitions ──

@@ -51,6 +51,8 @@ export function initDb(path: string = ENV.dbPath): Db {
     // planning_* scratch fields — persisted so a reload mid-planning keeps
     // the operator's edits, cleared at /plan/commit like planning_prd.
     "ALTER TABLE projects ADD COLUMN planning_agents_md TEXT",
+    // F52: verified exact-node metadata only — no raw Figma payload/cache.
+    "ALTER TABLE projects ADD COLUMN planning_figma_refs TEXT",
     // One-line human-readable terminal outcome ("Merged PR #4" / "Gates
     // kept failing: tests") — set by the orchestrator, shown on Audit cards.
     "ALTER TABLE tasks ADD COLUMN status_reason TEXT",

@@ -51,7 +51,11 @@ async function seedEditablePlan(page: Page) {
     route.fulfill({
       json: {
         messages: [
-          { role: "user", content: "Make the operator UI responsive." },
+          {
+            role: "user",
+            content:
+              "Make the operator UI match https://www.figma.com/design/File123/Operator?node-id=10-20.",
+          },
           { role: "assistant", content: "The plan is ready." },
         ],
         prd: "# Responsive operator UI",
@@ -68,6 +72,21 @@ async function seedEditablePlan(page: Page) {
           },
         ],
         planCostUsd: 0.0123,
+        verifiedFigmaReferences: [
+          {
+            canonicalUrl:
+              "https://www.figma.com/design/File123/Operator?node-id=10-20",
+            fileKey: "File123",
+            nodeId: "10:20",
+            name: "Operator dashboard",
+            fileName: "Hoopedorc",
+            width: 1440,
+            height: 900,
+            verifiedModel: "codex",
+            verifiedRunner: "codex",
+            verifiedAt: "2026-07-23T12:00:00.000Z",
+          },
+        ],
       },
     }),
   );
@@ -145,6 +164,8 @@ for (const viewport of TARGET_VIEWPORTS) {
       expect((await planningMessage.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(100);
       await expect(page.getByLabel("Task 1 title")).toHaveValue("Responsive editing pass");
       await expect(page.getByLabel("Assigned model for Responsive editing pass")).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Verified Figma screens" })).toBeVisible();
+      await expect(page.getByText("node 10:20 · 1440×900")).toBeVisible();
       await expectResponsivePage(page, viewport.width < 640);
       await captureViewport(page, testInfo, `${viewport.name}-plan-editing`);
 

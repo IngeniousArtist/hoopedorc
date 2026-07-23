@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, apiMethod, apiUrl, setUnauthorizedHandler } from "./client";
+import {
+  ApiRequestError,
+  api,
+  apiMethod,
+  apiUrl,
+  setUnauthorizedHandler,
+} from "./client";
 
 afterEach(() => {
   setUnauthorizedHandler(null);
@@ -59,5 +65,40 @@ describe("API route contract", () => {
     await expect(api("updateSettings", { body: { settings: {} } })).rejects.toThrow(
       "Settings could not be saved",
     );
+  });
+
+  it("preserves typed error details for recoverable planning failures", async () => {
+    const details = {
+      issue: {
+        stage: "deconstruction",
+        code: "figma_auth_required",
+        message: "Figma authentication is required.",
+      },
+      costUsd: 0.02,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            error: "Figma authentication is required.",
+            code: "FIGMA_VERIFICATION_FAILED",
+            details,
+          }),
+          {
+            status: 409,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+      ),
+    );
+
+    const error = await api("planDeconstruct").catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(ApiRequestError);
+    expect(error).toMatchObject({
+      status: 409,
+      code: "FIGMA_VERIFICATION_FAILED",
+      details,
+    });
   });
 });

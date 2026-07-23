@@ -437,6 +437,49 @@ explicitly told to inspect the listed sources and to report an unavailable
 capability instead of pretending it was used. Existing tasks without the
 headings keep the previous prompt shape.
 
+## Planning with exact Figma screens
+
+When visual fidelity matters, paste one Figma selection link for each
+canonical screen or state into the normal planning chat. A useful set might
+include desktop and mobile frames plus any materially different loading,
+empty, error, or modal state. Use the link Figma produces for the selected
+top-level frame; it must contain `node-id=...`.
+
+A whole file/page link is still useful for discussion, but Hoopedorc treats it
+as discovery context only and asks for exact screen selections before
+promising close fidelity. Unrelated Figma query parameters are discarded.
+There is no separate intake form and no need to copy raw Figma data into the
+repository.
+
+During chat, the routed planner is told to inspect selected nodes with its
+configured Figma tool. When you generate the task table, the routed
+deconstructor proves access by opening the exact nodes again through its real
+Claude Code, Codex, or OpenCode boundary. PlanView then shows each verified
+frame's real name, node id, available viewport, and verification model/runner.
+That small list survives a reload until the plan is durably committed. The
+deconstructor carries the canonical links into the relevant task descriptions
+and visual acceptance criteria.
+
+If verification cannot prove access, PlanView keeps the conversation and any
+existing PRD, AGENTS.md, task draft, attachments, and earlier verified
+references. The warning identifies the stage/model/runner/node and offers
+three recovery paths:
+
+1. Fix or re-authenticate Figma MCP for that runner and click **Retry
+   verification**.
+2. Change Planner/Deconstructor routing in **Settings**, return to the same
+   Plan session, and retry.
+3. Upload screenshots with the existing attachment button and continue
+   with **Use attachments instead**, without claiming a verified live node.
+
+Missing MCP, authentication, file access, invalid/missing nodes, timeouts, and
+malformed tool output fail closed with secret-free messages. They do not
+create tasks, commits, or archives. A successful probe is reused only for the
+same routed model and exact references in the current planning session.
+A server restart deliberately causes a fresh live probe; a normal browser
+reload restores the verified cards without one. No-Figma plans make no extra
+model call and show no design state.
+
 ## Using skills with your agents
 
 Claude Code, Codex, and OpenCode can all expose skills, but discovery and

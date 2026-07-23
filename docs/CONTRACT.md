@@ -281,6 +281,50 @@ returns an empty string for all older/manual tasks without them. Project-wide
 Hoopedorc forwards skill names but does not install them, infer that a runner
 has them, or treat skill presence as proof that an MCP/tool is configured.
 
+F52 recognizes only bounded `https://figma.com` /
+`https://www.figma.com` design, file, or prototype URLs from planning
+messages. A canonical fidelity reference must contain a numeric `node-id`;
+the server normalizes `1-2`/`1:2` to node id `1:2`, stores an allowlisted URL
+with unrelated query parameters removed, and deduplicates by file/node. A
+whole-file URL remains ordinary discovery context and never creates fidelity
+acceptance by itself. Intake is limited to 12 distinct references and 2,048
+characters per recognized URL; repeating the same canonical link does not
+consume another slot.
+
+Before Figma-backed deconstruction, the routed deconstructor is invoked
+through its real configured runner and sanitized environment with a fixed
+prompt requiring it to open the exact nodes through its Figma MCP/tool. The
+probe is a `health` `ModelInvocation`, with a 90-second deadline and 1 MiB
+output bound. A successful
+`PlanDeconstructResponse.verifiedFigmaReferences` entry contains only
+`canonicalUrl`, `fileKey`, `nodeId`, the real frame `name`, optional
+`fileName`/`width`/`height`, and the verification model, runner, and timestamp.
+The same list is stored in nullable `projects.planning_figma_refs`, returned
+by `PlanningSessionResponse`, retained across failed retries, and cleared in
+the same final planning transaction as the PRD/task/AGENTS scratch. It is
+session evidence, not a raw payload cache or global capability registry.
+The list may avoid a duplicate probe only for the same exact references,
+logical model, runner, and current server process. A browser reload reuses it;
+a server restart or reroute re-probes before claiming live access.
+
+Figma verification failures return HTTP 409 `ApiError` with
+`code: "FIGMA_VERIFICATION_FAILED"` and `details` shaped as
+`FigmaVerificationFailureDetails` (`{ issue, costUsd }`). `issue` includes
+the deconstruction stage, logical model, actual runner, stable issue code,
+secret-free message/actions, and the canonical node identity when available.
+Codes distinguish invalid/bounded input, missing MCP, authentication, access,
+missing node, timeout, malformed output, and other unavailability. The route
+does not replace the existing PRD, AGENTS, task draft, messages, attachments,
+or previously verified list on this failure. Fixing configuration or routing
+and repeating the same request is the resume path. Projects with no exact
+Figma nodes make no probe and omit the optional response/session field.
+After such a failure, `PlanDeconstructRequest.figmaVerification:
+"attachments"` is the explicit fallback (the default/omitted mode is
+`"live"`). It requires at least one existing planning attachment, performs no
+Figma probe, clears the verified session list on successful deconstruction,
+and removes unverified Figma URLs from task descriptions/criteria so later
+execution cannot mistake them for proved live-node fidelity.
+
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.
 
@@ -292,9 +336,9 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 | `GET /api/projects/:id` | → `GetProjectResponse` |
 | `POST /api/projects/:id/plan` | `PlanProjectRequest` → `PlanProjectResponse` |
 | `POST /api/projects/:id/plan/chat` | `PlanChatRequest` → `PlanChatResponse` |
-| `POST /api/projects/:id/plan/deconstruct` | `PlanDeconstructRequest` → `PlanDeconstructResponse` (incl. F38's `agentsMd`) |
+| `POST /api/projects/:id/plan/deconstruct` | `PlanDeconstructRequest` → `PlanDeconstructResponse` (incl. F38's `agentsMd`; F52 optionally returns `verifiedFigmaReferences`, or typed 409 capability details) |
 | `POST /api/projects/:id/plan/save-draft` | `SaveDraftRequest` → `SaveDraftResponse` |
-| `GET /api/projects/:id/plan/session` | → `PlanningSessionResponse` (incl. F38's `agentsMd`) |
+| `GET /api/projects/:id/plan/session` | → `PlanningSessionResponse` (incl. F38's `agentsMd` and F52's optional verified Figma list) |
 | `POST /api/projects/:id/plan/commit` | `PlanCommitRequest` → `PlanCommitResponse` |
 | `GET /api/projects/:id/plan/attachments` | (F27) → `ListPlanAttachmentsResponse` |
 | `POST /api/projects/:id/plan/attachments` | (F27) multipart file upload → `ListPlanAttachmentsResponse` |

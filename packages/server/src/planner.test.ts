@@ -7,7 +7,10 @@ import type { ModelInvocation } from "@orc/types";
 import { ENV, defaultSettings } from "./config.js";
 import {
   buildDeconstructPrompt,
+  buildFigmaVerificationPrompt,
+  ensureVerifiedFigmaTaskHandoff,
   extractJsonObject,
+  FigmaVerificationError,
   flattenRawTasks,
   parsePlanOutput,
   plannerModelLabel,
@@ -15,6 +18,58 @@ import {
   runPlannerChat,
   runPlannerDeconstruct,
 } from "./planner.js";
+
+test("F52: verification prompt requires a real MCP open and secret-free metadata", () => {
+  const prompt = buildFigmaVerificationPrompt([
+    {
+      canonicalUrl:
+        "https://www.figma.com/design/File123/Login?node-id=10-20",
+      fileKey: "File123",
+      nodeId: "10:20",
+    },
+  ]);
+  assert.match(prompt, /ACTUALLY OPEN every node/);
+  assert.match(prompt, /nodeId=10:20/);
+  assert.match(prompt, /real frame\/screen name/);
+  assert.match(prompt, /Never include credentials/);
+});
+
+test("F52: verified references are never lost from every task handoff", () => {
+  const output = ensureVerifiedFigmaTaskHandoff(
+    {
+      prdMarkdown: "# Plan",
+      agentsMd: "# Agents",
+      tasks: [
+        {
+          title: "Build login",
+          description: "Implement the login screen.",
+          difficulty: "medium",
+          role: "frontend",
+          acceptanceCriteria: ["Login works."],
+          dependsOn: [],
+          scopePaths: ["apps/web/**"],
+        },
+      ],
+    },
+    [
+      {
+        canonicalUrl:
+          "https://www.figma.com/design/File123/Login?node-id=10-20",
+        fileKey: "File123",
+        nodeId: "10:20",
+        name: "Login desktop",
+        width: 1440,
+        height: 900,
+        verifiedModel: "codex",
+        verifiedRunner: "codex",
+        verifiedAt: "2026-07-23T12:00:00.000Z",
+      },
+    ],
+  );
+  assert.match(output.tasks[0]!.description, /### Relevant references/);
+  assert.match(output.tasks[0]!.description, /figma-implement-design/);
+  assert.match(output.tasks[0]!.acceptanceCriteria.at(-1)!, /1440×900/);
+});
 
 test("F51: deconstruction requests self-contained task references without adding fields", () => {
   const prompt = buildDeconstructPrompt(
@@ -295,6 +350,412 @@ process.stdin.on("end", () => {
     "running",
     "completed",
   ]);
+});
+
+test("F52: Figma-backed deconstruction probes the actual runner once and returns real metadata", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-figma-verified-"));
+  const verification = JSON.stringify({
+    status: "verified",
+    references: [
+      {
+        index: 0,
+        nodeId: "10:20",
+        name: "Login desktop",
+        fileName: "Product",
+        width: 1440,
+        height: 900,
+      },
+    ],
+    issue: { code: "none", message: "", referenceIndex: null },
+  });
+  const plan = JSON.stringify({
+    prd: "# Plan",
+    agentsMd: "# Agents",
+    tasks: [
+      {
+        title: "Build login",
+        description: "Implement login.",
+        difficulty: "medium",
+        role: "frontend",
+        acceptanceCriteria: ["works"],
+        dependsOn: [],
+        scopePaths: ["apps/web/**"],
+      },
+    ],
+  });
+  const fakeCli = `#!/usr/bin/env node
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => { input += chunk; });
+process.stdin.on("end", () => {
+  const result = input.includes("Verify exact Figma selections")
+    ? ${JSON.stringify(verification)}
+    : ${JSON.stringify(plan)};
+  process.stdout.write(JSON.stringify({ result, total_cost_usd: 0.04 }));
+});
+`;
+  const file = join(bin, "claude");
+  writeFileSync(file, fakeCli);
+  chmodSync(file, 0o755);
+
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  const events: ModelInvocation[] = [];
+  try {
+    const messages = [
+      {
+        role: "user" as const,
+        content:
+          "Match https://www.figma.com/design/File123/Login?node-id=10-20",
+      },
+    ];
+    const result = await runPlannerDeconstruct(
+      messages,
+      "Figma plan",
+      bin,
+      { id: "claude", runner: "claude-code", model: "sonnet" },
+      undefined,
+      undefined,
+      () => {},
+      undefined,
+      (event) => events.push(event),
+    );
+    assert.equal(result.costUsd, 0.08);
+    assert.equal(result.verifiedFigmaReferences?.[0]?.name, "Login desktop");
+    assert.match(result.output.tasks[0]!.description, /node-id=10-20/);
+
+    const cachedEvents: ModelInvocation[] = [];
+    await runPlannerDeconstruct(
+      messages,
+      "Figma plan",
+      bin,
+      { id: "claude", runner: "claude-code", model: "sonnet" },
+      undefined,
+      undefined,
+      () => {},
+      undefined,
+      (event) => cachedEvents.push(event),
+      result.verifiedFigmaReferences,
+    );
+    assert.ok(cachedEvents.every((event) => event.stage === "deconstructor"));
+
+    const reroutedEvents: ModelInvocation[] = [];
+    await runPlannerDeconstruct(
+      messages,
+      "Figma plan",
+      bin,
+      { id: "claude-rerouted", runner: "claude-code", model: "sonnet" },
+      undefined,
+      undefined,
+      () => {},
+      undefined,
+      (event) => reroutedEvents.push(event),
+      result.verifiedFigmaReferences,
+    );
+    assert.deepEqual(
+      reroutedEvents
+        .filter((event) => event.outcome === "running")
+        .map((event) => event.stage),
+      ["health", "deconstructor"],
+    );
+
+    const restartedEvents: ModelInvocation[] = [];
+    await runPlannerDeconstruct(
+      messages,
+      "Figma plan",
+      bin,
+      { id: "claude", runner: "claude-code", model: "sonnet" },
+      undefined,
+      undefined,
+      () => {},
+      undefined,
+      (event) => restartedEvents.push(event),
+      result.verifiedFigmaReferences?.map((reference) => ({
+        ...reference,
+        verifiedAt: "2000-01-01T00:00:00.000Z",
+      })),
+    );
+    assert.deepEqual(
+      restartedEvents
+        .filter((event) => event.outcome === "running")
+        .map((event) => event.stage),
+      ["health", "deconstructor"],
+    );
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+  assert.deepEqual(
+    events.filter((event) => event.outcome === "running").map((event) => event.stage),
+    ["health", "deconstructor"],
+  );
+});
+
+test("F52: an unavailable Figma MCP is actionable and does not run deconstruction", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-figma-missing-"));
+  const unavailable = JSON.stringify({
+    status: "unavailable",
+    references: [],
+    issue: {
+      code: "mcp_missing",
+      message: "raw runner detail must not be exposed",
+      referenceIndex: 0,
+    },
+  });
+  const fakeCli = `#!/usr/bin/env node
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    result: ${JSON.stringify(unavailable)},
+    total_cost_usd: 0.03
+  }));
+});
+`;
+  const file = join(bin, "claude");
+  writeFileSync(file, fakeCli);
+  chmodSync(file, 0o755);
+
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  const events: ModelInvocation[] = [];
+  try {
+    await assert.rejects(
+      runPlannerDeconstruct(
+        [
+          {
+            role: "user",
+            content:
+              "Match https://www.figma.com/design/File123/Login?node-id=10-20",
+          },
+        ],
+        "Figma plan",
+        bin,
+        { id: "claude", runner: "claude-code", model: "sonnet" },
+        undefined,
+        undefined,
+        () => {},
+        undefined,
+        (event) => events.push(event),
+      ),
+      (err: unknown) =>
+        err instanceof FigmaVerificationError &&
+        err.issue.code === "figma_mcp_missing" &&
+        err.issue.nodeId === "10:20" &&
+        err.costUsd === 0.03 &&
+        !err.message.includes("raw runner detail"),
+    );
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+  assert.equal(events.length, 2);
+  assert.ok(events.every((event) => event.stage === "health"));
+});
+
+test("F52: auth, access, node, timeout, and malformed probe results fail closed", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-figma-failures-"));
+  const responseFile = join(bin, "response.json");
+  const fakeCli = `#!/usr/bin/env node
+const fs = require("node:fs");
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    result: fs.readFileSync(${JSON.stringify(responseFile)}, "utf8"),
+    total_cost_usd: 0
+  }));
+});
+`;
+  const file = join(bin, "claude");
+  writeFileSync(file, fakeCli);
+  chmodSync(file, 0o755);
+
+  const cases = [
+    ["auth_required", "figma_auth_required"],
+    ["access_denied", "figma_access_denied"],
+    ["node_not_found", "figma_node_not_found"],
+    ["timeout", "figma_timeout"],
+  ] as const;
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  try {
+    for (const [rawCode, expectedCode] of cases) {
+      writeFileSync(
+        responseFile,
+        JSON.stringify({
+          status: "unavailable",
+          references: [],
+          issue: { code: rawCode, message: "detail", referenceIndex: 0 },
+        }),
+      );
+      await assert.rejects(
+        runPlannerDeconstruct(
+          [
+            {
+              role: "user",
+              content:
+                "Match https://www.figma.com/design/File123/Login?node-id=10-20",
+            },
+          ],
+          "Figma plan",
+          bin,
+          { id: "claude", runner: "claude-code", model: "sonnet" },
+        ),
+        (err: unknown) =>
+          err instanceof FigmaVerificationError &&
+          err.issue.code === expectedCode,
+      );
+    }
+
+    writeFileSync(responseFile, "not JSON");
+    await assert.rejects(
+      runPlannerDeconstruct(
+        [
+          {
+            role: "user",
+            content:
+              "Match https://www.figma.com/design/File123/Login?node-id=10-20",
+          },
+        ],
+        "Figma plan",
+        bin,
+        { id: "claude", runner: "claude-code", model: "sonnet" },
+      ),
+      (err: unknown) =>
+        err instanceof FigmaVerificationError &&
+        err.issue.code === "figma_malformed_response",
+    );
+
+    writeFileSync(
+      responseFile,
+      JSON.stringify({
+        status: "verified",
+        references: [
+          {
+            index: 0,
+            nodeId: "10:20",
+            name: "Login desktop",
+            fileName: "Product",
+            width: 1440,
+            height: 900,
+          },
+        ],
+        issue: {
+          code: "figma_node_missing",
+          message: "contradicts verified status",
+          referenceIndex: 0,
+        },
+      }),
+    );
+    await assert.rejects(
+      runPlannerDeconstruct(
+        [
+          {
+            role: "user",
+            content:
+              "Match https://www.figma.com/design/File123/Login?node-id=10-20",
+          },
+        ],
+        "Figma plan",
+        bin,
+        { id: "claude", runner: "claude-code", model: "sonnet" },
+      ),
+      (err: unknown) =>
+        err instanceof FigmaVerificationError &&
+        err.issue.code === "figma_malformed_response",
+    );
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+});
+
+test("F52: an invalid node id is rejected before any model invocation", async () => {
+  const events: ModelInvocation[] = [];
+  await assert.rejects(
+    runPlannerDeconstruct(
+      [
+        {
+          role: "user",
+          content:
+            "Match https://www.figma.com/design/File123/Login?node-id=invalid",
+        },
+      ],
+      "Figma plan",
+      tmpdir(),
+      { id: "codex", runner: "codex", model: "gpt-test" },
+      undefined,
+      undefined,
+      () => {},
+      undefined,
+      (event) => events.push(event),
+    ),
+    (err: unknown) =>
+      err instanceof FigmaVerificationError &&
+      err.issue.code === "figma_invalid_node",
+  );
+  assert.deepEqual(events, []);
+});
+
+test("F52: explicit attachment fallback makes no probe and strips unverified node claims", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-figma-fallback-"));
+  const url = "https://www.figma.com/design/File123/Login?node-id=10-20";
+  const plan = JSON.stringify({
+    prd: "# Screenshot-backed plan",
+    agentsMd: "# Agents",
+    tasks: [
+      {
+        title: "Build login",
+        description: `Implement login.\n\n### Relevant references\n- ${url}`,
+        difficulty: "medium",
+        role: "frontend",
+        acceptanceCriteria: [`Closely matches ${url}.`],
+        dependsOn: [],
+        scopePaths: ["apps/web/**"],
+      },
+    ],
+  });
+  const fakeCli = `#!/usr/bin/env node
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => { input += chunk; });
+process.stdin.on("end", () => {
+  if (input.includes("Verify exact Figma selections")) process.exit(9);
+  process.stdout.write(JSON.stringify({ result: ${JSON.stringify(plan)}, total_cost_usd: 0 }));
+});
+`;
+  const file = join(bin, "claude");
+  writeFileSync(file, fakeCli);
+  chmodSync(file, 0o755);
+
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  const events: ModelInvocation[] = [];
+  try {
+    const result = await runPlannerDeconstruct(
+      [{ role: "user", content: `Use ${url}` }],
+      "Fallback plan",
+      bin,
+      { id: "claude", runner: "claude-code", model: "sonnet" },
+      undefined,
+      ["login.png"],
+      () => {},
+      undefined,
+      (event) => events.push(event),
+      undefined,
+      undefined,
+      "attachments",
+    );
+    assert.equal(result.verifiedFigmaReferences, undefined);
+    assert.doesNotMatch(result.output.tasks[0]!.description, /figma\.com/);
+    assert.doesNotMatch(
+      result.output.tasks[0]!.acceptanceCriteria.join("\n"),
+      /figma\.com/,
+    );
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+  assert.ok(events.every((event) => event.stage === "deconstructor"));
 });
 
 // B31: the owner's exact failure shape — pure JSON whose "prd" string
