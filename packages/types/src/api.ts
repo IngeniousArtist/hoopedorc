@@ -153,7 +153,60 @@ export interface DraftTask {
 
 export interface PlanDeconstructRequest {
   messages: PlanChatMessage[];
+  /**
+   * Explicit screenshot fallback after a typed live-node failure. Exact node
+   * URLs remain in chat history but are not promoted into task fidelity.
+   */
+  figmaVerification?: "live" | "attachments";
 }
+
+/**
+ * F52: one exact Figma selection that the routed deconstructor actually
+ * opened through its configured runner. This is small planning-session
+ * scratch, not a raw Figma payload or durable global capability cache.
+ */
+export interface VerifiedFigmaReference {
+  canonicalUrl: string;
+  fileKey: string;
+  nodeId: string;
+  name: string;
+  fileName?: string;
+  width?: number;
+  height?: number;
+  verifiedModel: ModelId;
+  verifiedRunner: RunnerKind;
+  verifiedAt: string;
+}
+
+export type FigmaCapabilityIssueCode =
+  | "figma_invalid_node"
+  | "figma_reference_limit"
+  | "figma_mcp_missing"
+  | "figma_auth_required"
+  | "figma_access_denied"
+  | "figma_node_not_found"
+  | "figma_timeout"
+  | "figma_malformed_response"
+  | "figma_unavailable";
+
+/** Actionable, secret-free failure returned in ApiError.details by F52. */
+export interface FigmaCapabilityIssue {
+  stage: "deconstruction";
+  code: FigmaCapabilityIssueCode;
+  model: ModelId;
+  runner: RunnerKind;
+  message: string;
+  actions: string[];
+  canonicalUrl?: string;
+  nodeId?: string;
+}
+
+export interface FigmaVerificationFailureDetails {
+  issue: FigmaCapabilityIssue;
+  /** Completed probe cost, if the runner reported one before refusing. */
+  costUsd: number;
+}
+
 export interface PlanDeconstructResponse {
   prdMarkdown: string;
   tasks: DraftTask[];
@@ -162,6 +215,8 @@ export interface PlanDeconstructResponse {
    *  read it natively; Claude via a committed one-line CLAUDE.md import).
    *  Operator-editable in PlanView before commit, same as prdMarkdown. */
   agentsMd?: string;
+  /** Present only when exact Figma selection URLs were supplied and verified. */
+  verifiedFigmaReferences?: VerifiedFigmaReference[];
 }
 
 export interface PlanCommitRequest {
@@ -183,6 +238,7 @@ export interface PlanningSessionResponse {
   draftTasks?: DraftTask[];
   planCostUsd: number;
   agentsMd?: string;
+  verifiedFigmaReferences?: VerifiedFigmaReference[];
 }
 
 /**

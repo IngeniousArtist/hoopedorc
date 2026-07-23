@@ -208,6 +208,7 @@ export async function commitPlanningDraft(
           prd: null,
           draftTasks: null,
           agentsMd: null,
+          verifiedFigmaReferences: null,
           sessionFile: null,
         });
       })();

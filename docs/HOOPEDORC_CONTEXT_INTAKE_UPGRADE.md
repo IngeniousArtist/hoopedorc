@@ -636,6 +636,30 @@ was added.
 
 ### Phase 17.2 — F52: direct Figma nodes and planning verification
 
+**Status:** implemented and locally verified on `f52-direct-figma-nodes`; PR
+delivery is tracked in
+[#158](https://github.com/IngeniousArtist/hoopedorc/pull/158), and independent
+merged verification remains in progress.
+
+The completed scope follows this brief without adding a generic context
+platform: exact user links are bounded/allowlisted/canonicalized; the selected
+real runner performs a 90-second, 1 MiB bounded node probe; one small nullable
+planning-session list restores verified cards and protects retry
+idempotency; reroutes and server restarts re-probe; typed failures retain all
+scratch and expose repair actions; and an explicit attachment-only fallback
+makes zero Figma calls and strips unverified live-node claims from task
+handoffs.
+
+**Verification (2026-07-23):** typecheck, production build, lint, 164 engine
+tests, 12 adapter tests, 190 server tests, 23 web interaction tests, 15
+Playwright tests, and `git diff --check` passed locally. Browser coverage
+exercised typed failure/draft retention/retry and verified-card layout at
+360/390/768/1280/1440 widths; focused desktop/phone inspection found no
+document overflow or console errors. The EC2 check against a real
+owner-supplied Figma node remains outstanding because this implementation
+run did not include an owner node or deployment MCP configuration. Claude
+Code/OpenCode checks remain conditional on their Figma MCP configuration.
+
 **Goal:** Turn exact Figma selection URLs in planning chat into a small,
 verified, durable planning reference list.
 

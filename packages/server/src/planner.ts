@@ -5,13 +5,22 @@ import { join } from "node:path";
 import { execManagedProcess, modelEffortArgs, sanitizedEnv } from "@orc/adapters";
 import type {
   Difficulty,
+  FigmaCapabilityIssue,
+  FigmaCapabilityIssueCode,
   ModelId,
   ModelInvocation,
   PlanChatMessage,
   Role,
   Settings,
+  VerifiedFigmaReference,
 } from "@orc/types";
 import { ENV } from "./config.js";
+import {
+  extractFigmaReferences,
+  MAX_FIGMA_REFERENCES,
+  normalizeVerifiedFigmaReferences,
+  type FigmaNodeReferenceInput,
+} from "./figma-references.js";
 
 // Planning runs headless, through whichever CLI `routing.planner`'s model
 // resolves to (F37, extended by F45):
@@ -140,6 +149,55 @@ export interface PlanOutput {
 }
 
 const PLAN_TIMEOUT_MS = 5 * 60 * 1000;
+const FIGMA_PROBE_TIMEOUT_MS = 90 * 1_000;
+const FIGMA_PROBE_MAX_OUTPUT_BYTES = 1 * 1024 * 1024;
+const PLANNER_PROCESS_STARTED_AT_MS = Date.now();
+
+const FIGMA_VERIFICATION_SCHEMA = {
+  type: "object",
+  properties: {
+    status: { type: "string", enum: ["verified", "unavailable"] },
+    references: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          index: { type: "integer" },
+          nodeId: { type: "string" },
+          name: { type: "string" },
+          fileName: { type: ["string", "null"] },
+          width: { type: ["number", "null"] },
+          height: { type: ["number", "null"] },
+        },
+        required: ["index", "nodeId", "name", "fileName", "width", "height"],
+        additionalProperties: false,
+      },
+    },
+    issue: {
+      type: "object",
+      properties: {
+        code: {
+          type: "string",
+          enum: [
+            "none",
+            "mcp_missing",
+            "auth_required",
+            "access_denied",
+            "node_not_found",
+            "timeout",
+            "unavailable",
+          ],
+        },
+        message: { type: "string" },
+        referenceIndex: { type: ["integer", "null"] },
+      },
+      required: ["code", "message", "referenceIndex"],
+      additionalProperties: false,
+    },
+  },
+  required: ["status", "references", "issue"],
+  additionalProperties: false,
+} as const;
 
 const DECONSTRUCT_SHAPE = `Respond with ONLY a JSON object, no markdown fences, in this exact shape:
 {
@@ -363,6 +421,115 @@ ${list}
 `;
 }
 
+function figmaChatBlock(messages: PlanChatMessage[]): string {
+  const intake = extractFigmaReferences(messages);
+  if (
+    intake.nodes.length === 0 &&
+    intake.files.length === 0 &&
+    intake.invalidNodeCount === 0 &&
+    !intake.overLimit
+  ) {
+    return "";
+  }
+
+  const selected = intake.nodes
+    .map((reference) => `- ${reference.canonicalUrl}`)
+    .join("\n");
+  const discovery = intake.files.map((url) => `- ${url}`).join("\n");
+  return `
+
+## Figma context
+${selected
+  ? `The user supplied these exact Figma selections:
+${selected}
+
+Use your configured Figma MCP/tool to open the selected nodes during this planning turn. Do not
+claim a frame was inspected from the URL text alone. Ask about routes, data/auth state, responsive
+variants, and interactions needed to reproduce each designed screen.`
+  : ""}
+${discovery
+  ? `The user also supplied whole-file/page links without a selected node:
+${discovery}
+
+Treat these as discovery context only. Ask the user for one exact selection/node link per
+canonical screen or state before promising close design fidelity.`
+  : ""}
+${intake.invalidNodeCount > 0
+  ? "At least one Figma link has an invalid node-id. Ask for a fresh selection link from Figma."
+  : ""}
+${intake.overLimit
+  ? `The conversation exceeds the ${MAX_FIGMA_REFERENCES}-link verification limit. Ask the user to keep only the canonical screens/states.`
+  : ""}
+`;
+}
+
+function verifiedFigmaBlock(references?: VerifiedFigmaReference[]): string {
+  if (!references || references.length === 0) return "";
+  const list = references
+    .map((reference) => {
+      const viewport =
+        reference.width && reference.height
+          ? ` (${reference.width}×${reference.height})`
+          : "";
+      return `- ${reference.name}${viewport} — ${reference.canonicalUrl}`;
+    })
+    .join("\n");
+  return `
+
+## Verified Figma screens
+The routed deconstructor already opened these exact nodes through its configured Figma tool:
+${list}
+
+Map each screen only to tasks that implement or verify it. Put its canonical URL in that task's
+\`### Relevant references\` section, require the author and validator to inspect it in
+\`### Required skills/capabilities\`, and add a concrete acceptance criterion for close visual
+fidelity at the verified viewport when dimensions are available. Do not attach a screen to an
+unrelated backend/docs task.
+`;
+}
+
+function figmaDiscoveryDeconstructBlock(messages: PlanChatMessage[]): string {
+  const intake = extractFigmaReferences(messages);
+  if (intake.files.length === 0) return "";
+  const list = intake.files.map((url) => `- ${url}`).join("\n");
+  return `
+
+## Unselected Figma discovery links
+${list}
+
+These links have no selected node. They may remain ordinary context, but they are NOT verified
+fidelity references. Do not claim a screen matches them and do not add Figma-fidelity acceptance
+criteria for them. The user can paste exact selection links in a later planning turn.
+`;
+}
+
+function figmaAttachmentFallbackBlock(
+  messages: PlanChatMessage[],
+  attachments?: string[],
+  enabled = false,
+): string {
+  if (!enabled) return "";
+  const intake = extractFigmaReferences(messages);
+  const selected = intake.nodes
+    .map((reference) => `- ${reference.canonicalUrl}`)
+    .join("\n");
+  const files = (attachments ?? [])
+    .map((name) => `- context/attachments/${name}`)
+    .join("\n");
+  return `
+
+## Explicit screenshot fallback
+Live-node verification was explicitly skipped after a capability failure. These exact Figma URLs
+remain in the transcript for history but are NOT verified and must not appear in task descriptions
+or acceptance criteria:
+${selected || "- One or more invalid exact-node links (not retained)."}
+
+Use only the uploaded attachment references below as visual sources. Label them as attachments,
+not verified Figma nodes, and do not claim live-node fidelity:
+${files || "- No attachment is available; do not add visual fidelity acceptance."}
+`;
+}
+
 function buildChatPrompt(
   messages: PlanChatMessage[],
   projectName: string,
@@ -375,7 +542,7 @@ function buildChatPrompt(
   return `${CHAT_SYSTEM}
 
 Project: "${projectName}"
-${priorContextBlock(priorContext)}${attachmentsBlock(attachments)}
+${priorContextBlock(priorContext)}${attachmentsBlock(attachments)}${figmaChatBlock(messages)}
 Conversation so far:
 ${transcript}
 
@@ -387,6 +554,8 @@ export function buildDeconstructPrompt(
   projectName: string,
   priorContext?: string,
   attachments?: string[],
+  verifiedFigmaReferences?: VerifiedFigmaReference[],
+  useFigmaAttachmentFallback = false,
 ): string {
   const transcript = messages
     .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
@@ -400,7 +569,7 @@ use your file tools to check real file paths and existing structure before writi
 each task's scopePaths must match files/globs that actually make sense for this repo, not
 invented paths. For a brand-new/empty project, plan from the conversation alone.
 ${priorContext ? "" : SCAFFOLD_INSTRUCTION}
-${priorContextBlock(priorContext)}${attachmentsBlock(attachments)}
+${priorContextBlock(priorContext)}${attachmentsBlock(attachments)}${figmaDiscoveryDeconstructBlock(messages)}${figmaAttachmentFallbackBlock(messages, attachments, useFigmaAttachmentFallback)}${verifiedFigmaBlock(verifiedFigmaReferences)}
 ## Planning conversation
 ${transcript}
 
@@ -430,6 +599,8 @@ async function runClaudeJson(
   model?: string,
   effort?: string,
   signal?: AbortSignal,
+  timeoutMs = PLAN_TIMEOUT_MS,
+  maxOutputBytes?: number,
 ): Promise<ClaudeJsonResult> {
   // Prompt goes on stdin, not argv: a long planning chat (full transcript +
   // prior-context inlined) can exceed macOS's ~1MB total argv cap and fail
@@ -443,7 +614,8 @@ async function runClaudeJson(
     env: sanitizedEnv({ PWD: cwd }),
     input: prompt,
     signal,
-    timeoutMs: PLAN_TIMEOUT_MS,
+    timeoutMs,
+    maxOutputBytes,
   });
   // claude --output-format json wraps the answer:
   // { ..., "result": "<text>", "total_cost_usd": <n> }
@@ -488,6 +660,8 @@ async function runCodexJson(
   effort?: string,
   outputSchema?: object,
   signal?: AbortSignal,
+  timeoutMs = PLAN_TIMEOUT_MS,
+  maxOutputBytes?: number,
 ): Promise<ClaudeJsonResult> {
     const outputFile = join(tmpdir(), `codex-plan-${randomUUID()}.txt`);
     const schemaFile = outputSchema
@@ -538,7 +712,8 @@ async function runCodexJson(
         env: sanitizedEnv({ PWD: cwd }),
         input: prompt,
         signal,
-        timeoutMs: PLAN_TIMEOUT_MS,
+        timeoutMs,
+        maxOutputBytes,
       });
       // --output-last-message is only written on a successful turn (verified
       // live, F36) — an empty/missing file alongside a nonzero exit means the
@@ -548,6 +723,12 @@ async function runCodexJson(
         text = readFileSync(outputFile, "utf8");
       } catch {
         /* not written — turn failed before completing */
+      }
+      if (
+        maxOutputBytes !== undefined &&
+        Buffer.byteLength(text, "utf8") > maxOutputBytes
+      ) {
+        throw new Error("codex planner exceeded its output limit");
       }
       if (!text.trim()) {
         throw new Error("codex planner completed without a final message");
@@ -603,6 +784,8 @@ async function runOpencodeJson(
   effort: string | undefined,
   opencodeBaseUrl: string,
   signal?: AbortSignal,
+  timeoutMs = PLAN_TIMEOUT_MS,
+  maxOutputBytes?: number,
 ): Promise<ClaudeJsonResult> {
     // Prompt on stdin, not argv — same argv-cap reasoning as every other
     // planner/adapter spawn in this codebase.
@@ -615,7 +798,8 @@ async function runOpencodeJson(
       env: sanitizedEnv({ PWD: cwd }),
       input: prompt,
       signal,
-      timeoutMs: PLAN_TIMEOUT_MS,
+      timeoutMs,
+      maxOutputBytes,
     });
     let costUsd = 0;
     let tokensIn = 0;
@@ -663,8 +847,9 @@ async function runPlannerJson(
   plannerModel: PlannerModel,
   outputSchema?: object,
   signal?: AbortSignal,
-  stage: "planner" | "deconstructor" = "planner",
+  stage: ModelInvocation["stage"] = "planner",
   onInvocation?: PlannerInvocationSink,
+  limits?: { timeoutMs?: number; maxOutputBytes?: number },
 ): Promise<ClaudeJsonResult> {
   const startedAt = new Date().toISOString();
   const base = {
@@ -696,6 +881,8 @@ async function runPlannerJson(
         plannerModel.effort,
         outputSchema,
         signal,
+        limits?.timeoutMs,
+        limits?.maxOutputBytes,
       );
     } else if (plannerModel.runner === "opencode") {
       if (!plannerModel.model) {
@@ -708,6 +895,8 @@ async function runPlannerJson(
         plannerModel.effort,
         plannerModel.opencodeBaseUrl ?? "",
         signal,
+        limits?.timeoutMs,
+        limits?.maxOutputBytes,
       );
     } else {
       result = await runClaudeJson(
@@ -716,6 +905,8 @@ async function runPlannerJson(
         plannerModel.model,
         plannerModel.effort,
         signal,
+        limits?.timeoutMs,
+        limits?.maxOutputBytes,
       );
     }
     onInvocation?.({
@@ -837,6 +1028,351 @@ function parseJsonWithRepair(text: string): unknown {
       throw err;
     }
   }
+}
+
+export class FigmaVerificationError extends Error {
+  override name = "FigmaVerificationError";
+
+  constructor(
+    readonly issue: FigmaCapabilityIssue,
+    readonly costUsd = 0,
+  ) {
+    super(issue.message);
+  }
+}
+
+const FIGMA_ACTIONS = [
+  "Fix or re-authenticate Figma MCP for this runner, then retry.",
+  "Select another Figma-capable planner/deconstructor model in Settings.",
+  "Attach screenshots, then continue with attachment-only visual context.",
+];
+
+function issueMessage(code: FigmaCapabilityIssueCode): string {
+  switch (code) {
+    case "figma_invalid_node":
+      return "A Figma link contains an invalid node-id; paste a fresh selection link from Figma.";
+    case "figma_reference_limit":
+      return `This plan contains more than ${MAX_FIGMA_REFERENCES} Figma links; keep only canonical screens and states.`;
+    case "figma_mcp_missing":
+      return "The selected runner does not have an available Figma MCP/tool.";
+    case "figma_auth_required":
+      return "The selected runner's Figma MCP needs authentication.";
+    case "figma_access_denied":
+      return "The selected runner cannot access the referenced Figma file.";
+    case "figma_node_not_found":
+      return "The referenced Figma node could not be found or opened.";
+    case "figma_timeout":
+      return "Figma verification timed out before the selected runner opened the node.";
+    case "figma_malformed_response":
+      return "The selected runner did not return verifiable Figma frame metadata.";
+    default:
+      return "The selected runner could not verify the referenced Figma node.";
+  }
+}
+
+function makeFigmaIssue(
+  code: FigmaCapabilityIssueCode,
+  plannerModel: PlannerModel,
+  reference?: FigmaNodeReferenceInput,
+): FigmaCapabilityIssue {
+  return {
+    stage: "deconstruction",
+    code,
+    model: plannerModel.id ?? plannerModel.model ?? "unknown",
+    runner: plannerModel.runner,
+    message: issueMessage(code),
+    actions: FIGMA_ACTIONS,
+    canonicalUrl: reference?.canonicalUrl,
+    nodeId: reference?.nodeId,
+  };
+}
+
+function classifyFigmaFailure(err: unknown): FigmaCapabilityIssueCode {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/timed?\s*out|timeout/iu.test(message)) return "figma_timeout";
+  if (/unauthori[sz]ed|auth(?:entication)?|log ?in|sign ?in|401|token/iu.test(message)) {
+    return "figma_auth_required";
+  }
+  if (/access denied|permission|forbidden|403|inaccessible/iu.test(message)) {
+    return "figma_access_denied";
+  }
+  if (/node.{0,30}(?:not found|missing|invalid)|\b404\b/iu.test(message)) {
+    return "figma_node_not_found";
+  }
+  if (/mcp.{0,40}(?:missing|not found|unavailable|not configured)|no such tool/iu.test(message)) {
+    return "figma_mcp_missing";
+  }
+  return "figma_unavailable";
+}
+
+export function buildFigmaVerificationPrompt(
+  references: FigmaNodeReferenceInput[],
+): string {
+  const list = references
+    .map(
+      (reference, index) =>
+        `${index}. nodeId=${reference.nodeId} url=${reference.canonicalUrl}`,
+    )
+    .join("\n");
+  return `Verify exact Figma selections for a coding plan.
+
+Use the Figma MCP/tool configured in this runner to ACTUALLY OPEN every node below. Do not infer
+metadata from URL text and do not use web search. Return only the JSON object described below.
+
+${list}
+
+On success return:
+{"status":"verified","references":[{"index":0,"nodeId":"1:2","name":"real frame name","fileName":"real file name or null","width":1440,"height":900}],"issue":{"code":"none","message":"","referenceIndex":null}}
+
+There must be exactly one reference result per requested index. Use the exact addressed node id,
+the real frame/screen name, and viewport dimensions when the tool provides them (otherwise null).
+
+If any node cannot be opened, fail closed and return no references:
+{"status":"unavailable","references":[],"issue":{"code":"mcp_missing|auth_required|access_denied|node_not_found|timeout|unavailable","message":"short secret-free explanation","referenceIndex":0}}
+
+Never include credentials, MCP headers, environment values, unrelated query parameters, raw Figma
+payloads, or commentary.`;
+}
+
+function rawIssueCode(value: unknown): FigmaCapabilityIssueCode {
+  switch (value) {
+    case "mcp_missing":
+      return "figma_mcp_missing";
+    case "auth_required":
+      return "figma_auth_required";
+    case "access_denied":
+      return "figma_access_denied";
+    case "node_not_found":
+      return "figma_node_not_found";
+    case "timeout":
+      return "figma_timeout";
+    default:
+      return "figma_unavailable";
+  }
+}
+
+function cachedFigmaReferences(
+  requested: FigmaNodeReferenceInput[],
+  plannerModel: PlannerModel,
+  cached?: VerifiedFigmaReference[],
+): VerifiedFigmaReference[] | null {
+  if (!cached || cached.length !== requested.length) return null;
+  const expectedModel = plannerModel.id ?? plannerModel.model ?? "unknown";
+  if (
+    cached.some(
+      (reference) =>
+        reference.verifiedModel !== expectedModel ||
+        reference.verifiedRunner !== plannerModel.runner ||
+        !Number.isFinite(Date.parse(reference.verifiedAt)) ||
+        Date.parse(reference.verifiedAt) < PLANNER_PROCESS_STARTED_AT_MS,
+    )
+  ) {
+    return null;
+  }
+  const byUrl = new Map(cached.map((reference) => [reference.canonicalUrl, reference]));
+  const ordered = requested.map((reference) => byUrl.get(reference.canonicalUrl));
+  return ordered.every(
+    (reference): reference is VerifiedFigmaReference => Boolean(reference),
+  )
+    ? ordered
+    : null;
+}
+
+async function verifyFigmaReferences(
+  requested: FigmaNodeReferenceInput[],
+  cwd: string,
+  plannerModel: PlannerModel,
+  signal?: AbortSignal,
+  onInvocation?: PlannerInvocationSink,
+): Promise<{ references: VerifiedFigmaReference[]; costUsd: number }> {
+  let result: ClaudeJsonResult;
+  try {
+    result = await runPlannerJson(
+      buildFigmaVerificationPrompt(requested),
+      cwd,
+      plannerModel,
+      plannerModel.runner === "codex" ? FIGMA_VERIFICATION_SCHEMA : undefined,
+      signal,
+      "health",
+      onInvocation,
+      {
+        timeoutMs: FIGMA_PROBE_TIMEOUT_MS,
+        maxOutputBytes: FIGMA_PROBE_MAX_OUTPUT_BYTES,
+      },
+    );
+  } catch (err) {
+    throw new FigmaVerificationError(
+      makeFigmaIssue(classifyFigmaFailure(err), plannerModel, requested[0]),
+    );
+  }
+
+  let parsed: {
+    status?: unknown;
+    references?: unknown;
+    issue?: { code?: unknown; referenceIndex?: unknown };
+  };
+  try {
+    parsed = parseJsonWithRepair(result.text) as typeof parsed;
+  } catch {
+    throw new FigmaVerificationError(
+      makeFigmaIssue("figma_malformed_response", plannerModel, requested[0]),
+      result.costUsd,
+    );
+  }
+
+  if (parsed.status !== "verified") {
+    const referenceIndex =
+      typeof parsed.issue?.referenceIndex === "number" &&
+      Number.isInteger(parsed.issue.referenceIndex)
+        ? parsed.issue.referenceIndex
+        : 0;
+    throw new FigmaVerificationError(
+      makeFigmaIssue(
+        rawIssueCode(parsed.issue?.code),
+        plannerModel,
+        requested[referenceIndex] ?? requested[0],
+      ),
+      result.costUsd,
+    );
+  }
+
+  if (parsed.issue?.code !== "none") {
+    throw new FigmaVerificationError(
+      makeFigmaIssue("figma_malformed_response", plannerModel, requested[0]),
+      result.costUsd,
+    );
+  }
+
+  if (!Array.isArray(parsed.references)) {
+    throw new FigmaVerificationError(
+      makeFigmaIssue("figma_malformed_response", plannerModel, requested[0]),
+      result.costUsd,
+    );
+  }
+  const normalized = normalizeVerifiedFigmaReferences(
+    requested,
+    parsed.references,
+    plannerModel.id ?? plannerModel.model ?? "unknown",
+    plannerModel.runner,
+    new Date().toISOString(),
+  );
+  if (!normalized) {
+    throw new FigmaVerificationError(
+      makeFigmaIssue("figma_malformed_response", plannerModel, requested[0]),
+      result.costUsd,
+    );
+  }
+  return { references: normalized, costUsd: result.costUsd };
+}
+
+function appendMarkdownList(
+  description: string,
+  heading: string,
+  entries: string[],
+): string {
+  const missingEntries = entries.filter(
+    (entry) => !description.includes(`- ${entry}`),
+  );
+  if (missingEntries.length === 0) return description;
+  const block = missingEntries.map((entry) => `- ${entry}`).join("\n");
+  const index = description.indexOf(heading);
+  if (index === -1) return `${description.trimEnd()}\n\n${heading}\n${block}`;
+  const afterHeading = index + heading.length;
+  const nextHeading = description.indexOf("\n### ", afterHeading);
+  const insertAt = nextHeading === -1 ? description.length : nextHeading;
+  return `${description.slice(0, insertAt).trimEnd()}\n${block}\n${description.slice(insertAt).trimStart()}`;
+}
+
+/**
+ * The deconstructor is asked to map references semantically. This small
+ * fail-safe ensures a model omission cannot make a successfully verified
+ * screen disappear from every implementation handoff.
+ */
+export function ensureVerifiedFigmaTaskHandoff(
+  output: PlanOutput,
+  references: VerifiedFigmaReference[],
+): PlanOutput {
+  const missing = references.filter(
+    (reference) =>
+      !output.tasks.some(
+        (task) =>
+          task.description.includes(reference.canonicalUrl) ||
+          task.acceptanceCriteria.some((criterion) =>
+            criterion.includes(reference.canonicalUrl),
+          ),
+      ),
+  );
+  if (missing.length === 0 || output.tasks.length === 0) return output;
+
+  const taskIndex = output.tasks.findIndex(
+    (task) =>
+      task.role === "frontend" ||
+      task.scopePaths.some((path) =>
+        /(?:^|\/)(?:app|web|ui|client|components?|pages?)(?:\/|$)/iu.test(path),
+      ),
+  );
+  const target = output.tasks[taskIndex === -1 ? 0 : taskIndex]!;
+  target.description = appendMarkdownList(
+    target.description,
+    "### Relevant references",
+    missing.map(
+      (reference) => `${reference.name} — ${reference.canonicalUrl}`,
+    ),
+  );
+  target.description = appendMarkdownList(
+    target.description,
+    "### Required skills/capabilities",
+    [
+      "figma — inspect the referenced nodes before implementation",
+      "figma-implement-design — use for the implementation pass",
+      "browser verification — exercise the real screen at the referenced viewports",
+    ],
+  );
+  for (const reference of missing) {
+    const viewport =
+      reference.width && reference.height
+        ? ` at ${reference.width}×${reference.height}`
+        : "";
+    target.acceptanceCriteria.push(
+      `${reference.name} closely matches ${reference.canonicalUrl}${viewport}.`,
+    );
+  }
+  return output;
+}
+
+function removeUnverifiedFigmaTaskClaims(
+  output: PlanOutput,
+): PlanOutput {
+  const containsFigmaUrl = (value: string) =>
+    /https?:\/\/(?:www\.)?figma\.com\//iu.test(value);
+  for (const task of output.tasks) {
+    task.description = task.description
+      .split("\n")
+      .filter(
+        (line) =>
+          !containsFigmaUrl(line) &&
+          !/^\s*-\s*figma(?:-implement-design)?\b/iu.test(line),
+      )
+      .join("\n")
+      .replace(
+        /^### (?:Relevant references|Required skills\/capabilities)\s*(?=### |\s*$)/gmu,
+        "",
+      )
+      .replace(/\n{3,}/gu, "\n\n")
+      .trim();
+    task.acceptanceCriteria = task.acceptanceCriteria.filter(
+      (criterion) =>
+        !containsFigmaUrl(criterion) &&
+        !(
+          /\bfigma\b/iu.test(criterion) &&
+          /\b(?:match|fidelity|pixel|visual)\b/iu.test(criterion)
+        ),
+    );
+    if (task.acceptanceCriteria.length === 0) {
+      task.acceptanceCriteria = [defaultAcceptanceCriterion(task.description)];
+    }
+  }
+  return output;
 }
 
 /**
@@ -1118,9 +1654,61 @@ export async function runPlannerDeconstruct(
   onWarn: (msg: string) => void = () => {},
   signal?: AbortSignal,
   onInvocation?: PlannerInvocationSink,
-): Promise<{ output: PlanOutput; costUsd: number }> {
+  cachedVerifiedFigmaReferences?: VerifiedFigmaReference[],
+  onVerifiedFigmaReferences?: (references: VerifiedFigmaReference[]) => void,
+  figmaVerification: "live" | "attachments" = "live",
+): Promise<{
+  output: PlanOutput;
+  costUsd: number;
+  verifiedFigmaReferences?: VerifiedFigmaReference[];
+}> {
+  const intake = extractFigmaReferences(messages);
+  const useFigmaAttachmentFallback =
+    figmaVerification === "attachments" &&
+    (intake.nodes.length > 0 || intake.invalidNodeCount > 0);
+  if (!useFigmaAttachmentFallback && intake.overLimit) {
+    throw new FigmaVerificationError(
+      makeFigmaIssue("figma_reference_limit", plannerModel),
+    );
+  }
+  if (!useFigmaAttachmentFallback && intake.invalidNodeCount > 0) {
+    throw new FigmaVerificationError(
+      makeFigmaIssue("figma_invalid_node", plannerModel),
+    );
+  }
+
+  let verifiedFigmaReferences: VerifiedFigmaReference[] | undefined;
+  let verificationCostUsd = 0;
+  if (intake.nodes.length > 0 && !useFigmaAttachmentFallback) {
+    verifiedFigmaReferences =
+      cachedFigmaReferences(
+        intake.nodes,
+        plannerModel,
+        cachedVerifiedFigmaReferences,
+      ) ?? undefined;
+    if (!verifiedFigmaReferences) {
+      const verification = await verifyFigmaReferences(
+        intake.nodes,
+        cwd,
+        plannerModel,
+        signal,
+        onInvocation,
+      );
+      verifiedFigmaReferences = verification.references;
+      verificationCostUsd = verification.costUsd;
+      onVerifiedFigmaReferences?.(verifiedFigmaReferences);
+    }
+  }
+
   const schema = plannerModel.runner === "codex" ? DECONSTRUCT_JSON_SCHEMA : undefined;
-  const prompt = buildDeconstructPrompt(messages, projectName, priorContext, attachments);
+  const prompt = buildDeconstructPrompt(
+    messages,
+    projectName,
+    priorContext,
+    attachments,
+    verifiedFigmaReferences,
+    useFigmaAttachmentFallback,
+  );
   const { text, costUsd } = await runPlannerJson(
     prompt,
     cwd,
@@ -1131,7 +1719,17 @@ export async function runPlannerDeconstruct(
     onInvocation,
   );
   try {
-    return { output: parsePlanOutput(text, projectName, "", onWarn), costUsd };
+    const parsedOutput = parsePlanOutput(text, projectName, "", onWarn);
+    const output = useFigmaAttachmentFallback
+      ? removeUnverifiedFigmaTaskClaims(parsedOutput)
+      : parsedOutput;
+    return {
+      output: verifiedFigmaReferences
+        ? ensureVerifiedFigmaTaskHandoff(output, verifiedFigmaReferences)
+        : output,
+      costUsd: verificationCostUsd + costUsd,
+      verifiedFigmaReferences,
+    };
   } catch (err) {
     // B31 layer 3: one re-ask retry before giving up. Each CLI call gets its
     // own invocation row; `costUsd` still accumulates for the API response.
@@ -1147,9 +1745,16 @@ export async function runPlannerDeconstruct(
       "deconstructor",
       onInvocation,
     );
+    const parsedOutput = parsePlanOutput(retry.text, projectName, "", onWarn);
+    const output = useFigmaAttachmentFallback
+      ? removeUnverifiedFigmaTaskClaims(parsedOutput)
+      : parsedOutput;
     return {
-      output: parsePlanOutput(retry.text, projectName, "", onWarn),
-      costUsd: costUsd + retry.costUsd,
+      output: verifiedFigmaReferences
+        ? ensureVerifiedFigmaTaskHandoff(output, verifiedFigmaReferences)
+        : output,
+      costUsd: verificationCostUsd + costUsd + retry.costUsd,
+      verifiedFigmaReferences,
     };
   }
 }

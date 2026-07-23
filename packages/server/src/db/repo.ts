@@ -14,6 +14,7 @@ import type {
   Run,
   Settings,
   Task,
+  VerifiedFigmaReference,
 } from "@orc/types";
 import type { Db } from "./index";
 import { normalizeSettings } from "../config";
@@ -164,6 +165,8 @@ export function savePlanningSession(
     /** F38: AGENTS.md draft from the last deconstruct, cleared at
      *  /plan/commit like `prd`. */
     agentsMd?: string | null;
+    /** F52: small verified exact-node list, retained on failed retries. */
+    verifiedFigmaReferences?: VerifiedFigmaReference[] | null;
     /** F28: the archived markdown session file this session is being
      *  written to. `null` clears it (done at /plan/commit, so the next
      *  chat turn mints a fresh file for the next session). */
@@ -176,6 +179,14 @@ export function savePlanningSession(
   if (opts.prd !== undefined) { sets.push("planning_prd = ?"); vals.push(opts.prd ?? null); }
   if (opts.draftTasks !== undefined) { sets.push("planning_draft_tasks = ?"); vals.push(opts.draftTasks ? JSON.stringify(opts.draftTasks) : null); }
   if (opts.agentsMd !== undefined) { sets.push("planning_agents_md = ?"); vals.push(opts.agentsMd ?? null); }
+  if (opts.verifiedFigmaReferences !== undefined) {
+    sets.push("planning_figma_refs = ?");
+    vals.push(
+      opts.verifiedFigmaReferences
+        ? JSON.stringify(opts.verifiedFigmaReferences)
+        : null,
+    );
+  }
   if (opts.sessionFile !== undefined) { sets.push("planning_session_file = ?"); vals.push(opts.sessionFile ?? null); }
   if (sets.length === 0) return;
   vals.push(projectId);
@@ -190,11 +201,12 @@ export function getPlanningSession(
   prd?: string;
   draftTasks?: DraftTask[];
   agentsMd?: string;
+  verifiedFigmaReferences?: VerifiedFigmaReference[];
   sessionFile?: string;
 } {
   const row = db
     .prepare(
-      "SELECT planning_messages, planning_prd, planning_draft_tasks, planning_agents_md, planning_session_file FROM projects WHERE id = ?",
+      "SELECT planning_messages, planning_prd, planning_draft_tasks, planning_agents_md, planning_figma_refs, planning_session_file FROM projects WHERE id = ?",
     )
     .get(projectId) as
     | {
@@ -202,6 +214,7 @@ export function getPlanningSession(
         planning_prd: string | null;
         planning_draft_tasks: string | null;
         planning_agents_md: string | null;
+        planning_figma_refs: string | null;
         planning_session_file: string | null;
       }
     | undefined;
@@ -211,6 +224,9 @@ export function getPlanningSession(
     prd: row.planning_prd ?? undefined,
     draftTasks: row.planning_draft_tasks ? (JSON.parse(row.planning_draft_tasks) as DraftTask[]) : undefined,
     agentsMd: row.planning_agents_md ?? undefined,
+    verifiedFigmaReferences: row.planning_figma_refs
+      ? (JSON.parse(row.planning_figma_refs) as VerifiedFigmaReference[])
+      : undefined,
     sessionFile: row.planning_session_file ?? undefined,
   };
 }

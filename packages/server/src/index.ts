@@ -42,6 +42,7 @@ import * as repo from "./db/repo";
 import { WsHub } from "./ws-hub";
 import { EngineRunner } from "./engine-runner";
 import {
+  FigmaVerificationError,
   plannerModelLabel,
   resolvePlannerModel,
   runPlanner,
@@ -107,6 +108,7 @@ import type {
   DraftTask,
   Notification,
   PlanChatMessage,
+  PlanDeconstructRequest,
   Settings as SettingsType,
 } from "@orc/types";
 
@@ -1639,10 +1641,17 @@ async function main() {
     const lockErr = planningLockError(project);
     if (lockErr) return reply.code(409).send({ error: lockErr });
 
-    const body = req.body as { messages?: PlanChatMessage[] } | undefined;
+    const body = req.body as Partial<PlanDeconstructRequest> | undefined;
     const messages = body?.messages ?? [];
     if (messages.length === 0) {
       return reply.code(400).send({ error: "messages required" });
+    }
+    if (
+      body?.figmaVerification !== undefined &&
+      body.figmaVerification !== "live" &&
+      body.figmaVerification !== "attachments"
+    ) {
+      return reply.code(400).send({ error: "invalid figmaVerification mode" });
     }
 
     const settings = repo.getSettings(db) ?? defaultSettings();
@@ -1664,7 +1673,16 @@ async function main() {
       const attachmentNames = listAttachments(attachmentsDir(project, ENV.mock)).map(
         (a) => a.name,
       );
-      const { output, costUsd } = await runPlannerDeconstruct(
+      if (
+        body?.figmaVerification === "attachments" &&
+        attachmentNames.length === 0
+      ) {
+        return reply.code(400).send({
+          error: "attach at least one screenshot before using the Figma attachment fallback",
+        });
+      }
+      const planningSession = repo.getPlanningSession(db, id);
+      const { output, costUsd, verifiedFigmaReferences } = await runPlannerDeconstruct(
         messages,
         project.name,
         cwd,
@@ -1674,6 +1692,12 @@ async function main() {
         (msg) => app.log.warn(msg),
         cancellation.signal,
         (event) => recordModelInvocation(event, id),
+        planningSession.verifiedFigmaReferences,
+        (references) =>
+          repo.savePlanningSession(db, id, {
+            verifiedFigmaReferences: references,
+          }),
+        body?.figmaVerification ?? "live",
       );
       const tasks = withAssignedModels(output, settings);
       // Persist draft tasks + PRD + AGENTS.md (F38) so the Plan tab can
@@ -1683,6 +1707,7 @@ async function main() {
         prd: output.prdMarkdown,
         draftTasks: tasks,
         agentsMd: output.agentsMd,
+        verifiedFigmaReferences: verifiedFigmaReferences ?? null,
       });
       recordPlanDeconstruct(
         db,
@@ -1694,8 +1719,21 @@ async function main() {
         plannerModelLabel(plannerModel),
         (msg) => app.log.warn(msg),
       );
-      return { prdMarkdown: output.prdMarkdown, tasks, costUsd, agentsMd: output.agentsMd };
+      return {
+        prdMarkdown: output.prdMarkdown,
+        tasks,
+        costUsd,
+        agentsMd: output.agentsMd,
+        verifiedFigmaReferences,
+      };
     } catch (err) {
+      if (err instanceof FigmaVerificationError) {
+        return reply.code(409).send({
+          error: err.message,
+          code: "FIGMA_VERIFICATION_FAILED",
+          details: { issue: err.issue, costUsd: err.costUsd },
+        });
+      }
       return reply.code(502).send({
         error: `deconstruction failed: ${err instanceof Error ? err.message : String(err)}`,
       });
@@ -1726,7 +1764,7 @@ async function main() {
       db.prepare(
         `SELECT COALESCE(SUM(cost_usd), 0) AS total
          FROM model_invocations
-         WHERE project_id = ? AND stage IN ('planner', 'deconstructor')`,
+         WHERE project_id = ? AND stage IN ('planner', 'deconstructor', 'health')`,
       ).get(id) as { total: number }
     ).total;
     return { ...session, planCostUsd };

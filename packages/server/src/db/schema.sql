@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS projects (
   planning_prd          TEXT,   -- PRD markdown from last deconstruct
   planning_draft_tasks  TEXT,   -- JSON DraftTask[] from last deconstruct (user-editable)
   planning_agents_md    TEXT,   -- AGENTS.md draft from last deconstruct (F38, user-editable)
+  planning_figma_refs   TEXT,   -- JSON VerifiedFigmaReference[] (F52, small session scratch)
   config                TEXT,   -- JSON ProjectConfig (F9): gate/retry/merge-policy overrides
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL

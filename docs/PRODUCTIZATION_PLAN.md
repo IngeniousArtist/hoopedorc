@@ -6411,12 +6411,12 @@ deployment.
 
 ---
 
-### Phase 17 — Part 12: focused context handoff and Figma fidelity — APPROVED; NOT STARTED
+### Phase 17 — Part 12: focused context handoff and Figma fidelity — APPROVED; IN PROGRESS
 
 | Item | Status | PR |
 |---|---|---|
 | F51 — lean task references and runner-accurate skills | ✅ implementation complete; local full gate passed 2026-07-23 | [#157](https://github.com/IngeniousArtist/hoopedorc/pull/157) |
-| F52 — direct Figma nodes and planning verification | approved; depends on F51 | — |
+| F52 — direct Figma nodes and planning verification | ✅ implementation complete; local full gate passed 2026-07-23; delivery in progress | [#158](https://github.com/IngeniousArtist/hoopedorc/pull/158) |
 | B42 — recoverable Figma capability blocks | approved; depends on F52 | — |
 | F53 — automatic visual-fidelity QA task | approved; depends on B42 | — |
 
@@ -6506,6 +6506,39 @@ accurately cover Claude Code, Codex, and OpenCode without claiming identical
 discovery semantics.
 
 ### F52. Direct Figma nodes and planning verification
+
+**Status (2026-07-23):** implemented and locally verified on
+`f52-direct-figma-nodes`
+([#158](https://github.com/IngeniousArtist/hoopedorc/pull/158)); delivery and
+independent merged verification are in progress. The implementation keeps
+exact-node intake in the existing planning chat/deconstruction path, adds one
+nullable planning-session JSON field, and does not add a task field, generic
+capability registry, raw Figma cache, or parallel orchestration path.
+
+Exact user-supplied `design`/`file`/`proto` node URLs are allowlisted,
+canonicalized, deduplicated, and bounded. The routed real Claude Code, Codex,
+or OpenCode CLI receives a fixed live-node probe through its sanitized
+environment; the result is accounted as a bounded `health` invocation and
+must return one-to-one real node metadata. Verified refs survive browser
+reload and failed deconstruction, but rerouting or restarting the server
+forces a fresh capability probe. Typed 409 failures preserve all planning
+scratch and explain the stage/model/runner/node and recovery actions.
+PlanView supports same-session retry or an explicit attachment-only fallback
+that cannot pass unverified live-node claims to later execution.
+
+Local verification passed: typecheck, production build, lint, 164 engine
+tests, 12 adapter tests, 190 server tests, 23 web interaction tests, 15
+Playwright tests, and `git diff --check`. Playwright covered typed
+failure/draft retention/retry and verified-card behavior across
+360/390/768/1280/1440 widths; focused real-browser inspection found no
+document overflow or console errors on the desktop and phone Plan views.
+
+The deployment check that opens an owner-supplied real Figma frame through
+the EC2 Codex configuration remains outstanding because no owner Figma node
+or deployment MCP configuration was supplied during this item. Claude Code
+and OpenCode live checks remain conditional on their Figma MCP setup, as
+approved below. These are recorded live-environment checks, not substituted
+with mocks.
 
 **Problem:** a Figma link in planning chat is currently unstructured text.
 Hoopedorc cannot distinguish an exact screen frame from a whole file, prove the

@@ -1,6 +1,8 @@
 import type {
   Difficulty,
   DraftTask,
+  FigmaCapabilityIssue,
+  FigmaVerificationFailureDetails,
   GetProjectResponse,
   GetSettingsResponse,
   ListPlanAttachmentsResponse,
@@ -15,9 +17,10 @@ import type {
   PlanningSessionResponse,
   PlanSessionArchive,
   Project,
+  VerifiedFigmaReference,
 } from "@orc/types";
 import { useEffect, useRef, useState } from "react";
-import { api, apiUpload } from "../api/client";
+import { ApiRequestError, api, apiUpload } from "../api/client";
 import { ModelSelect } from "../components/ModelSelect";
 import { useToast } from "../hooks/useToast";
 import { useWS } from "../hooks/useWS";
@@ -50,6 +53,23 @@ function extractPlanComplete(text: string): { content: string; ready: boolean } 
 }
 
 const newKey = () => crypto.randomUUID();
+
+function figmaFailureDetails(value: unknown): FigmaVerificationFailureDetails | null {
+  if (!value || typeof value !== "object") return null;
+  const details = value as Partial<FigmaVerificationFailureDetails>;
+  if (
+    !details.issue ||
+    typeof details.issue !== "object" ||
+    typeof details.issue.message !== "string" ||
+    !Array.isArray(details.issue.actions)
+  ) {
+    return null;
+  }
+  return {
+    issue: details.issue as FigmaCapabilityIssue,
+    costUsd: typeof details.costUsd === "number" ? details.costUsd : 0,
+  };
+}
 
 function uiTasksFromDraft(drafts: DraftTask[]): UiTask[] {
   const keys: string[] = drafts.map(() => newKey());
@@ -139,6 +159,10 @@ export function PlanView({
   // commit/no-draft).
   const [agentsMd, setAgentsMd] = useState<string | null>(null);
   const [tasks, setTasks] = useState<UiTask[] | null>(null);
+  const [verifiedFigmaReferences, setVerifiedFigmaReferences] = useState<
+    VerifiedFigmaReference[]
+  >([]);
+  const [figmaIssue, setFigmaIssue] = useState<FigmaCapabilityIssue | null>(null);
   const [deconstructing, setDeconstructing] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [committed, setCommitted] = useState<PlanCommitResponse | null>(null);
@@ -152,6 +176,7 @@ export function PlanView({
     setLoading(true);
     setCommitted(null);
     setError(null);
+    setFigmaIssue(null);
     setPlannerReady(false);
     Promise.all([
       api<GetProjectResponse>("getProject", { params: { id: projectId } }),
@@ -182,6 +207,7 @@ export function PlanView({
         });
         setMessages(cleaned);
         setPlanCost(sessionRes.planCostUsd);
+        setVerifiedFigmaReferences(sessionRes.verifiedFigmaReferences ?? []);
         if (sessionRes.draftTasks && sessionRes.draftTasks.length > 0) {
           setTasks(uiTasksFromDraft(sessionRes.draftTasks));
           setPrd(sessionRes.prd ?? null);
@@ -290,21 +316,40 @@ export function PlanView({
     }
   }
 
-  async function generateTable() {
+  async function generateTable(
+    figmaVerification: "live" | "attachments" = "live",
+  ) {
     if (!projectId || deconstructing || running) return;
     setDeconstructing(true);
     setError(null);
     try {
       const res = await api<PlanDeconstructResponse>("planDeconstruct", {
         params: { id: projectId },
-        body: { messages },
+        body: {
+          messages,
+          ...(figmaVerification === "attachments"
+            ? { figmaVerification }
+            : {}),
+        },
       });
       setPlanCost((c) => c + res.costUsd);
       setPrd(res.prdMarkdown);
       setAgentsMd(res.agentsMd ?? null);
       setTasks(uiTasksFromDraft(res.tasks));
+      setVerifiedFigmaReferences(res.verifiedFigmaReferences ?? []);
+      setFigmaIssue(null);
     } catch (e) {
-      setError(String(e));
+      const details =
+        e instanceof ApiRequestError &&
+        e.code === "FIGMA_VERIFICATION_FAILED"
+          ? figmaFailureDetails(e.details)
+          : null;
+      if (details) {
+        setPlanCost((cost) => cost + details.costUsd);
+        setFigmaIssue(details.issue);
+      } else {
+        setError(String(e));
+      }
     } finally {
       setDeconstructing(false);
     }
@@ -374,6 +419,8 @@ export function PlanView({
       setCommitted(res);
       setTasks(null);
       setAgentsMd(null);
+      setVerifiedFigmaReferences([]);
+      setFigmaIssue(null);
       // The commit just finalized this session's archive file — refresh the
       // history list so the conversation stays visible right away.
       api<ListPlanSessionArchivesResponse>("planSessionArchives", {
@@ -440,6 +487,115 @@ export function PlanView({
         <div className="rounded border border-red-800 bg-red-950/50 px-4 py-2 text-sm text-red-400">
           {error}
         </div>
+      )}
+
+      {figmaIssue && (
+        <div
+          role="alert"
+          className="space-y-3 rounded-lg border border-amber-700/70 bg-amber-950/30 p-4 text-sm text-amber-100"
+        >
+          <div>
+            <p className="font-medium">Figma verification needs attention</p>
+            <p className="mt-1 text-xs text-amber-200">{figmaIssue.message}</p>
+          </div>
+          <dl className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+            <div>
+              <dt className="text-amber-400">Stage</dt>
+              <dd>Deconstruction</dd>
+            </div>
+            <div>
+              <dt className="text-amber-400">Model / runner</dt>
+              <dd>
+                {figmaIssue.model} / {figmaIssue.runner}
+              </dd>
+            </div>
+            {figmaIssue.nodeId && (
+              <div className="sm:col-span-2">
+                <dt className="text-amber-400">Reference</dt>
+                <dd className="break-all">node {figmaIssue.nodeId}</dd>
+              </div>
+            )}
+          </dl>
+          <div className="text-xs">
+            <p className="text-amber-400">Try:</p>
+            <ol className="ml-5 mt-1 list-decimal space-y-1">
+              {figmaIssue.actions.map((action) => (
+                <li key={action}>{action}</li>
+              ))}
+            </ol>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => generateTable()}
+              disabled={deconstructing || running}
+              className="min-h-10 rounded bg-amber-600 px-4 py-2 text-xs font-medium text-neutral-950 hover:bg-amber-500 focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
+            >
+              {deconstructing ? "Retrying…" : "Retry verification"}
+            </button>
+            <button
+              type="button"
+              onClick={() => generateTable("attachments")}
+              disabled={
+                deconstructing || running || attachments.length === 0
+              }
+              title={
+                attachments.length === 0
+                  ? "Attach at least one screenshot in planning chat first"
+                  : "Use uploaded attachments without claiming live Figma verification"
+              }
+              className="min-h-10 rounded border border-amber-700 px-4 py-2 text-xs hover:bg-amber-900/40 focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
+            >
+              Use attachments instead
+            </button>
+            <a
+              href="#/settings"
+              className="inline-flex min-h-10 items-center rounded border border-amber-700 px-4 py-2 text-xs hover:bg-amber-900/40 focus-visible:ring-2 focus-visible:ring-amber-300"
+            >
+              Open model settings
+            </a>
+          </div>
+        </div>
+      )}
+
+      {verifiedFigmaReferences.length > 0 && (
+        <section className="space-y-3 rounded-lg border border-violet-800/70 bg-violet-950/20 p-4">
+          <div>
+            <h3 className="text-sm font-medium text-violet-200">
+              Verified Figma screens
+            </h3>
+            <p className="mt-1 text-xs text-neutral-400">
+              Opened by the routed deconstructor; these exact selections are
+              restored with this planning session.
+            </p>
+          </div>
+          <ul className="grid gap-2 sm:grid-cols-2">
+            {verifiedFigmaReferences.map((reference) => (
+              <li
+                key={`${reference.fileKey}:${reference.nodeId}`}
+                className="min-w-0 rounded border border-violet-900/80 bg-neutral-950/50 p-3 text-xs"
+              >
+                <a
+                  href={reference.canonicalUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium text-violet-200 underline decoration-violet-700 underline-offset-2"
+                >
+                  {reference.name}
+                </a>
+                <p className="mt-1 break-all text-neutral-400">
+                  node {reference.nodeId}
+                  {reference.width && reference.height
+                    ? ` · ${reference.width}×${reference.height}`
+                    : ""}
+                </p>
+                <p className="mt-1 text-neutral-500">
+                  {reference.verifiedModel} / {reference.verifiedRunner}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       {/* ── Committed banner ── */}
@@ -609,7 +765,7 @@ export function PlanView({
                 </div>
               )}
               <button
-                onClick={generateTable}
+                onClick={() => generateTable()}
                 disabled={deconstructing}
                 className={
                   "rounded px-4 py-2 text-xs font-medium text-white disabled:opacity-50 " +

@@ -1,4 +1,4 @@
-import { ROUTES, type RouteKey } from "@orc/types";
+import { ROUTES, type ApiError, type RouteKey } from "@orc/types";
 
 const TOKEN_STORAGE_KEY = "hoopedorc.apiToken";
 
@@ -68,6 +68,31 @@ export interface ApiCallOptions {
   signal?: AbortSignal;
 }
 
+export class ApiRequestError extends Error {
+  override name = "ApiRequestError";
+
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly details?: unknown,
+  ) {
+    super(message);
+  }
+}
+
+async function requestError(res: Response): Promise<ApiRequestError> {
+  const body = (await res
+    .json()
+    .catch(() => ({ error: `${res.status}` }))) as ApiError;
+  return new ApiRequestError(
+    body.error || `${res.status} ${res.statusText}`,
+    res.status,
+    body.code,
+    body.details,
+  );
+}
+
 function doFetch(
   key: RouteKey,
   opts: ApiCallOptions,
@@ -112,8 +137,7 @@ export async function api<T>(
   }
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: `${res.status}` }));
-    throw new Error(err.error || `${res.status} ${res.statusText}`);
+    throw await requestError(res);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -168,8 +192,7 @@ export async function apiUpload<T>(
   }
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: `${res.status}` }));
-    throw new Error(err.error || `${res.status} ${res.statusText}`);
+    throw await requestError(res);
   }
   return res.json();
 }
