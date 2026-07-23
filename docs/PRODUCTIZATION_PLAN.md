@@ -2,7 +2,8 @@
 
 **Audience: the implementing model.** This doc was produced by a full read of
 the codebase (all of `packages/*` and `apps/web`) plus the existing docs (PRD,
-ARCHITECTURE, NEXT_STEPS, CONTRACT). It has ten parts:
+ARCHITECTURE, NEXT_STEPS, CONTRACT). It is an evolving evidence archive; later
+parts were appended after the original ten:
 
 - **Part 1 — Fix first**: real bugs and security issues found in the current code,
   ordered by severity, each with a concrete fix. Do these before any Part 2 feature.
@@ -80,6 +81,18 @@ ARCHITECTURE, NEXT_STEPS, CONTRACT). It has ten parts:
   and a full responsive pass. The EC2 instance remains the Linux/web scheduled-
   run host and a separate Hoopedorc installation on the owner's Mac handles
   Xcode/Apple projects. Multi-host delegation is explicitly out of scope.
+- **Part 11 — Contributor workflow and remote self-update** (added
+  2026-07-16 after the first EC2 dogfooding cycle): adds the concise
+  contributor guide and a fail-closed UI-triggered updater that survives the
+  serving service's restart. Implementation is complete; its real EC2 update
+  smoke remains separately tracked.
+- **Part 12 — Focused context handoff and Figma fidelity** (approved
+  2026-07-23 after reviewing the actual repository against a broader draft):
+  keeps the existing planning/orchestration architecture, adds lean
+  task-reference handoff, verifies exact Figma screen nodes through whichever
+  selected runner is configured, makes capability failures recoverable, and
+  adds one automatic visual-QA task through the existing DAG/gate/validator
+  pipeline. Full design: `docs/HOOPEDORC_CONTEXT_INTAKE_UPGRADE.md`.
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
@@ -1674,7 +1687,7 @@ split (`-r -f`) and long-form (`--recursive --force`) spellings evaded
 it; replaced with a flag tokenizer covering all three spellings, same
 target rules.
 
-### Phase 15 — Part 10: reliability, portability, and mobile-control wave — IN PROGRESS
+### Phase 15 — Part 10: reliability, portability, and mobile-control wave — ✅ DONE
 
 | Item | Status | PR |
 |---|---|---|
@@ -1689,14 +1702,15 @@ target rules.
 | B39 — planning and git durability | ✅ done, Fable-validated 2026-07-15 | [#146](https://github.com/IngeniousArtist/hoopedorc/pull/146) |
 | B40 — complete model-invocation accounting | ✅ done, Fable-validated 2026-07-15 | [#148](https://github.com/IngeniousArtist/hoopedorc/pull/148) |
 | B41 — graceful shutdown and runtime recovery | ✅ done, Fable-validated 2026-07-15 | [#149](https://github.com/IngeniousArtist/hoopedorc/pull/149) |
-| F49 — Telegram reliability and phone-control hardening | ✅ Fable-validated 2026-07-15; owner live private-chat smoke pending | [#150](https://github.com/IngeniousArtist/hoopedorc/pull/150) |
+| F49 — Telegram reliability and phone-control hardening | ✅ Fable-validated 2026-07-15; owner live private-chat smoke passed 2026-07-23 | [#150](https://github.com/IngeniousArtist/hoopedorc/pull/150) |
 | T2 — frontend unit/E2E test foundation | ✅ done, Fable-validated 2026-07-15 | [#151](https://github.com/IngeniousArtist/hoopedorc/pull/151) |
-| U19 — full responsive UX pass | ✅ Fable-validated 2026-07-15; owner real-phone smoke pending | [#152](https://github.com/IngeniousArtist/hoopedorc/pull/152) |
+| U19 — full responsive UX pass | ✅ Fable-validated 2026-07-15; owner real-phone smoke passed 2026-07-23 | [#152](https://github.com/IngeniousArtist/hoopedorc/pull/152) |
 
-The owner approved this wave on 2026-07-14. Implementation proceeds in
-the dependency order specified in Part 10 below, with Fable independently
-reviewing the merged work. No item is complete until its acceptance evidence
-is recorded here or in its item note and linked PR.
+The owner approved this wave on 2026-07-14. All implementation and independent
+review evidence is recorded below. On 2026-07-23 the owner reported both
+remaining deployment-only checks passed: the live Telegram private-chat smoke
+and the real-phone smoke over the deployed Tailscale route. This closes Phase
+15 without changing the already-merged implementation.
 
 **Fable post-merge validation (2026-07-15), covering PRs #139–#146 (B34, B35,
 S9, B36, S10, B37+F48, B38, B39):** all merged work re-verified independently
@@ -1759,9 +1773,10 @@ stranded (U19).
 One nit, not a blocker: `@playwright/test` is `^1.61.1` in
 `apps/web/package.json`, so the "pinned" browser claim holds through
 `package-lock.json` (which `npm ci` honors) rather than an exact version.
-Remaining Phase 15 acceptance before `v0.7.0`: the owner's live Telegram
-private-chat smoke test (F49) and the owner's real-phone smoke over the deployed
-Tailscale route (U19).
+
+**Owner live acceptance (reported 2026-07-23):** F49's Telegram private-chat
+buttons/commands and U19's real-phone experience over the deployed Tailscale
+route both passed. Those were the final two Phase 15 acceptance lines.
 
 ---
 
@@ -3880,6 +3895,11 @@ one-line self-description prominently; a deliberately mis-mapped model
 or its error; mock mode unaffected.
 
 ### F34. Skills strategy: docs + per-project skill hints in prompts
+
+**Current-runtime note (2026-07-23):** The bullets below preserve the behavior
+verified when F34 shipped on 2026-07-08. Current Codex and OpenCode runtimes
+support skills; F51 owns the runner-accurate correction in live documentation
+and generated guidance.
 
 **Owner's ask:** "Figure out a way to efficiently use skills in our
 projects by the agents… It might be different in different projects. Or
@@ -6112,9 +6132,9 @@ errors. Automated coverage includes command registration, private chat and user
 identity rejection, project-prefix ambiguity, surfaced command errors,
 `retry_after` handling, timeouts, chunking, permanent approval-delivery failure,
 pending-approval resend after restart, and unified Start/Pause/Stop All actions.
-The live private-chat smoke test is deliberately still outstanding because it
-requires the owner's configured bot and an intentional external Telegram message;
-Fable review remains the independent post-merge validation.
+Fable review remains the independent post-merge validation. The owner completed
+the remaining live private-chat smoke against the configured bot on 2026-07-23
+and reported the buttons and commands passed.
 
 ### T2. Frontend unit and end-to-end test foundation
 
@@ -6191,9 +6211,9 @@ approval, an injected editable planning draft, model-effort editing/save, setup
 re-entry, and confirmed project deletion. The final browser run passes 14/14 in
 19.7s. The complete regression gate passes: typecheck, build, lint, 159 engine,
 159 server, 12 adapter, 14 web unit tests, and 14 Playwright tests. The owner's
-real-device smoke over the deployed Tailscale route remains intentionally open;
-desktop Chromium emulation is evidence for the implementation, not a substitute
-for that final device/network check.
+real-device smoke over the deployed Tailscale route passed on 2026-07-23,
+closing the final device/network acceptance line that desktop Chromium
+emulation could not substitute for.
 
 ### Phase 15 PR order
 
@@ -6242,13 +6262,14 @@ for that final device/network check.
 | 12 | B28, U15–U18, F36–F39, F13-P1, B29 | Referential-integrity fix first (B28 — an autonomy footgun), the four small UX items together (U15–U18), then the wave in dependency order: Codex runner (F36) → swappable planner (F37, needs F36's adapter) → AGENTS.md pipeline (F38, planner-produced so it benefits from F37 landing first) → gates sandbox (F13-P1) → EC2 deploy checklist (F39 — the ship gate) → B29 (found live-verifying F36, fixed last). Tagged `v0.4.0`; the owner deploys to EC2 right after. | ✅ done |
 | 13 | B30, F40–F43 | Remote-supervision wave, built while the owner's EC2 deploy happens: approval re-arm on restart first (B30 — F40's `/pending` leans on its mechanism), then the Telegram commands (F40), then the three small ones (F41 hold-dispatch option, F43 sandbox UI toggle, F42 bootstrap script) in any order. Tagged `v0.5.0`. F42's live-on-real-EC2 half is still owed (no EC2 box/Docker daemon available in this environment). | ✅ done |
 | 14 | B31–B33, S8, F44–F47 | Autonomy-hardening wave from the owner's first real dogfooding runs: B31+F46+F47 first (one PR — all in `planner.ts`; B31 unblocks planning outright and F45 depends on it), then B32 (the autonomous-stall fix), then S8 (destructive-change rail — before more autonomous runs happen), then B33, F44, F45 in any order. Tag `v0.6.0` at the end. | ✅ done |
-| 15 | B34–B41, S9–S10, F48–F49, T2, U19 | Reliability/portability/mobile wave from the v0.6.0 Codex audit and owner decisions: execution ownership → process cancellation → fail-closed safety → rollback PR → credential boundary → live settings/effort → portable setup/cache → durability/accounting → shutdown/Telegram → web tests → responsive UX. Tag `v0.7.0` only after cross-platform/live acceptance. | in progress |
+| 15 | B34–B41, S9–S10, F48–F49, T2, U19 | Reliability/portability/mobile wave from the v0.6.0 Codex audit and owner decisions: execution ownership → process cancellation → fail-closed safety → rollback PR → credential boundary → live settings/effort → portable setup/cache → durability/accounting → shutdown/Telegram → web tests → responsive UX. Final owner Telegram and real-phone checks passed 2026-07-23. | ✅ done |
 | 16 | D1, F50 | Make the established contribution workflow cheap to load, then add a fixed-command, fail-closed EC2 update path that survives the serving unit's restart. | implementation complete; live EC2 smoke pending |
+| 17 | F51, F52, B42, F53 | Focused context/Figma wave: lean task references and current runner skill facts → exact Figma-node planning verification → recoverable capability blocks → automatic visual-fidelity QA through the existing DAG/gate/validator pipeline. Full spec: `docs/HOOPEDORC_CONTEXT_INTAKE_UPGRADE.md`. | approved; not started |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
 
-Phases 1–13 (Parts 1–8) are **done** — Phases 1–6 tagged `v0.1.0`, Phases
+Phases 1–15 are **done** — Phases 1–6 tagged `v0.1.0`, Phases
 7–8 plus the post-plan audit fixes tagged `v0.2.0` (package.json's own
 `version` field, previously stale at `0.1.0`, was corrected to match as
 part of F24), Phase 9 (A1–A5, U1–U10) closed out Parts 1–4, Phase 10
@@ -6256,8 +6277,11 @@ part of F24), Phase 9 (A1–A5, U1–U10) closed out Parts 1–4, Phase 10
 F27–F35) closed out Part 6 tagged `v0.3.0`, Phase 12 (B28, U15–U18,
 F36–F39, F13-P1, B29) closed out Part 7 tagged `v0.4.0` — audited by
 Fable 2026-07-09, no defects found — and Phase 13 (B30, F40–F43) closed
-out Part 8, tagged `v0.5.0`, and Phase 14 (B31–B33, S8, F44–F47) closed
-out Part 9, tagged `v0.6.0`. F13's phase 1 (gates-only sandbox) shipped
+out Part 8, tagged `v0.5.0`, Phase 14 (B31–B33, S8, F44–F47) closed
+out Part 9, tagged `v0.6.0`, and Phase 15 (B34–B41, S9–S10, F48–F49,
+T2, U19) closed Part 10 after the owner reported its final Telegram and
+real-phone deployment checks passed on 2026-07-23. F13's phase 1
+(gates-only sandbox) shipped
 in Part 7; phases 2–3 (agents in the sandbox) remain the headline
 candidate for the next wave, per docs/specs/sandbox.md. **F42's live
 half is still owed**: verified shellcheck-clean and via `--dry-run`
@@ -6273,9 +6297,7 @@ underlying logic is otherwise fully verified (real git plumbing, real
 CLIs, real unit/integration tests; see each item's own done-note above).
 Fable independently re-verifies each wave after merge; verification
 evidence is in each item's PR description and in this doc's Progress
-section above. Phase 15 (Part 10) is now active; its approved item specs,
-PR order, acceptance criteria, owner decisions, and explicit non-goals are
-recorded above. F13 phases 2–3 remain deferred until a separate design can
+section above. F13 phases 2–3 remain deferred until a separate design can
 isolate agents without breaking same-user CLI OAuth/keychain access or the
 Mac/Xcode execution model. Phase 16's D1/F50 implementation is complete; the
 owner's first update from the deployed Setup page remains the required live
@@ -6386,3 +6408,162 @@ environment is macOS and has no real `hoopedorc.service`, so the acceptance
 line proving the detached updater survives an actual EC2 restart and returns
 healthy through Tailscale remains intentionally assigned to the owner after
 deployment.
+
+---
+
+### Phase 17 — Part 12: focused context handoff and Figma fidelity — APPROVED; NOT STARTED
+
+| Item | Status | PR |
+|---|---|---|
+| F51 — lean task references and runner-accurate skills | approved; not started | — |
+| F52 — direct Figma nodes and planning verification | approved; depends on F51 | — |
+| B42 — recoverable Figma capability blocks | approved; depends on F52 | — |
+| F53 — automatic visual-fidelity QA task | approved; depends on B42 | — |
+
+The owner approved this focused wave on 2026-07-23 after the original context
+proposal was compared with the merged code and found to overstate the missing
+architecture. The complete implementation brief, exact owner decisions,
+failure/resume contract, non-goals, per-item acceptance criteria, tests, and
+live checks are in `docs/HOOPEDORC_CONTEXT_INTAKE_UPGRADE.md`.
+
+No implementation is part of the planning PR that introduces this roadmap.
+Each item follows the normal clean-main → scoped branch → focused checks → full
+repository gate → pushed PR → green CI → diff/check review → merge →
+independent merged verification workflow before the next item starts.
+
+---
+
+## Part 12 — Focused context handoff and Figma fidelity
+
+### Decisions and scope
+
+Hoopedorc already has interactive dashboard planning, repository inspection,
+attachments, archived sessions, durable PRD/AGENTS commits, editable flat task
+DAGs, project skill hints, restart-safe scheduling, objective gates,
+independent validation, bounded retry/fallback, notifications, and exact
+model-call accounting. Part 12 extends those paths rather than creating a
+parallel context platform.
+
+Approved behavior:
+
+- The owner pastes one exact Figma selection/node URL per canonical
+  screen/state into planning chat.
+- A selected top-level frame is an enforceable fidelity source; a whole
+  file/page link without a node remains discovery context and prompts for the
+  canonical frames.
+- Codex, Claude Code, and OpenCode remain available in existing selectors.
+  Figma eligibility is proven against the selected runner's real configured
+  MCP boundary, never inferred from runner name.
+- A preflight failure explains the model, runner, node, problem, and available
+  repair actions; it preserves state and consumes no author attempt.
+- Fixing MCP, rerouting a model, or using an uploaded screenshot lets the owner
+  resume the same plan/task without recreating prior work.
+- Unrelated ready work continues while one Figma-dependent task is blocked.
+- At least one verified screen node adds one automatic visual-QA draft task by
+  default. It compares/repairs through the normal author → gate → independent
+  validator → merge path.
+- No-Figma projects remain unchanged and make no design probe.
+
+Explicitly rejected for this wave: a `.agent/` memory hierarchy, automatic
+long-term memory, global skill/capability registries, a dashboard skill
+marketplace, project profiles, generic context-source adapters, a Figma
+compiler/cache, per-screen Markdown packages, design sync, raw pixel-diff
+gating, a generic Critic role, or a second orchestration lifecycle.
+
+### F51. Lean task references and runner-accurate skills
+
+**Problem:** task descriptions are not required to identify the exact PRD
+heading, attachment, repository spec, or design source an author and validator
+must consult. F34's historical documentation also incorrectly describes skills
+as Claude-Code-only and OpenCode as having no skill mechanism.
+
+**Implementation:** establish small `Relevant references` and `Required
+skills/capabilities` subsections inside applicable task descriptions. Require
+self-contained tasks, name only operator-approved skills, and tell both author
+and validator to inspect those pointers. Keep `ProjectConfig.skillHints` as the
+project-wide baseline and do not add a Task/API/SQLite context schema. Correct
+the runner docs against actual installed CLI behavior while keeping skill
+installation separate from MCP configuration/authentication.
+
+**Acceptance:** relevant file/heading/attachment pointers reach author and
+validator; absent references add no prompt noise; well-formed existing plan
+output remains compatible; no-Figma behavior is unchanged; skill docs
+accurately cover Claude Code, Codex, and OpenCode without claiming identical
+discovery semantics.
+
+### F52. Direct Figma nodes and planning verification
+
+**Problem:** a Figma link in planning chat is currently unstructured text.
+Hoopedorc cannot distinguish an exact screen frame from a whole file, prove the
+selected planner/deconstructor can read it, restore a verified reference list
+after reload, or guarantee the correct nodes reach draft tasks.
+
+**Implementation:** recognize bounded allowlisted Figma selection URLs, require
+a node id for canonical fidelity, canonicalize the stored link, and invoke the
+actual selected CLI/MCP boundary to inspect it. Return and persist only a small
+planning-session record (node id, real frame name, available viewport/file
+metadata, verification model/time), show verified or actionable error state in
+PlanView, and map relevant nodes into task descriptions/criteria. Whole
+file/page links stay conversational context. Preserve the full planning scratch
+on every failure and clear the verified scratch only through the existing
+durable plan-commit transaction.
+
+**Acceptance:** exact frame links verify against real identities; file/page
+links do not silently become fidelity acceptance; auth/MCP/file/node/timeout/
+malformed-output failures are actionable and secret-safe; reroute/fix/retry
+uses the same session without duplicate tasks, commits, archives, or costs;
+reload restores references; no-Figma planning makes no probe.
+
+### B42. Recoverable Figma capability blocks
+
+**Problem:** losing Figma access before or during an author call would currently
+look like an ordinary model/no-changes failure, waste attempts, and potentially
+stop the wrong amount of work.
+
+**Implementation:** before a Figma-dependent author attempt, probe the actual
+assigned model against a representative referenced node using the normal
+sanitized runner environment. A failure happens before attempt/worktree/PR
+creation, blocks only that task with actionable `statusReason`, creates one
+deduplicated web/Telegram notification, and leaves unrelated scheduling active.
+Recognize a stable capability-unavailable marker if MCP disappears after
+preflight. Reuse existing model reassignment and Retry to resume; short-lived
+positive results may be reused only within the planning session/current run or
+a small TTL.
+
+**Acceptance:** failed preflight leaves attempts unchanged and creates no
+worktree, branch, commit, PR, gate, or validator call; independent tasks
+continue; fix + Retry and reroute + Retry resume the same task; restart
+preserves the block explanation; mid-call loss is not misreported as “no
+changes”; notifications are deduplicated/redacted; no-Figma tasks bypass the
+hook.
+
+### F53. Automatic visual-fidelity QA task
+
+**Problem:** the current validator reviews acceptance and the code diff but does
+not guarantee a browser-based comparison with supplied Figma screens.
+
+**Implementation:** use a pure server helper analogous to `ensureDocsTask` to
+insert exactly one visible/editable visual-QA draft task when verified nodes
+exist. It depends on all non-doc implementation tasks; the standing docs task
+remains last. Assign a verified Figma-capable frontend model, include every
+screen/state/viewport plus route/fixture/auth/startup context, and have the
+author run the real app, capture the supplied viewports, compare material
+layout/typography/spacing/color/component/state behavior, repair discrepancies,
+and continue through normal gates and independent validation. Removing the
+visible draft task is the explicit opt-out; commit does not silently re-add it.
+
+**Acceptance:** verified nodes create exactly one idempotent QA task and
+no-Figma plans create none; dependencies and docs ordering are correct;
+desktop/mobile/state references remain distinct; a missing mobile design is
+not presented as mobile fidelity; Figma/browser failure blocks and resumes via
+B42; the task repairs a real scratch UI against owner-supplied frames and
+merges through the existing pipeline; no Critic loop or alternate merge path
+is introduced.
+
+### Phase 17 execution order
+
+1. F51 — small prompt/documentation foundation, no contract migration.
+2. F52 — typed planning contract + minimal planning-session persistence + UI.
+3. B42 — scheduler/runtime refusal and resume behavior using F52 references.
+4. F53 — automatic visual-QA draft task built on verified references and B42.
+5. Final live EC2/Figma/browser acceptance and roadmap evidence update.
