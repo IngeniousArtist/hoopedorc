@@ -145,6 +145,20 @@ test.describe.serial("critical operator workflows", () => {
                 acceptanceCriteria: ["Closely matches the verified frame"],
                 dependsOn: [],
               },
+              {
+                title: "Visual fidelity QA",
+                description:
+                  "Run the real app and compare the verified login node in a browser.",
+                difficulty: "hard",
+                role: "frontend",
+                assignedModel: "glm",
+                scopePaths: ["apps/web/**"],
+                acceptanceCriteria: [
+                  "Capture and repair the login screen at 1440×900.",
+                  "Do not claim mobile Figma fidelity.",
+                ],
+                dependsOn: [0],
+              },
             ],
             costUsd: 0.04,
             verifiedFigmaReferences: [
@@ -178,8 +192,77 @@ test.describe.serial("critical operator workflows", () => {
       page.getByRole("heading", { name: "Verified Figma screens" }),
     ).toBeVisible();
     await expect(page.getByText("node 10:20 · 1440×900")).toBeVisible();
+    await expect(page.getByLabel("Task 2 title")).toHaveValue(
+      "Visual fidelity QA",
+    );
+    await page
+      .getByLabel("Assigned model for Visual fidelity QA")
+      .selectOption("deepseek-pro");
+    await expect(
+      page.getByLabel("Assigned model for Visual fidelity QA"),
+    ).toHaveValue("deepseek-pro");
+    await page
+      .getByRole("button", { name: "Remove Visual fidelity QA" })
+      .click();
+    await expect(
+      page.locator('input[value="Visual fidelity QA"]'),
+    ).toHaveCount(0);
     await expect(page.getByRole("alert")).toHaveCount(0);
     expect(attempts).toBe(2);
+  });
+
+  test("no-Figma plan review contains no automatic visual QA task", async ({
+    page,
+  }) => {
+    await page.route(`**/api/projects/${projectId}`, async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      const body = (await response.json()) as {
+        project: Record<string, unknown>;
+      };
+      await route.fulfill({
+        response,
+        json: { project: { ...body.project, status: "paused" } },
+      });
+    });
+    await page.route(`**/api/projects/${projectId}/plan/session`, (route) =>
+      route.fulfill({
+        json: {
+          messages: [
+            { role: "user", content: "Add an API health endpoint." },
+            { role: "assistant", content: "Ready. [PLAN_COMPLETE]" },
+          ],
+          prd: "# API health",
+          draftTasks: [
+            {
+              title: "Add health endpoint",
+              description: "Implement the endpoint and tests.",
+              difficulty: "medium",
+              assignedModel: "deepseek-pro",
+              scopePaths: ["packages/server/**"],
+              acceptanceCriteria: ["The endpoint reports health."],
+              dependsOn: [],
+            },
+          ],
+          planCostUsd: 0,
+          verifiedFigmaReferences: [],
+        },
+      }),
+    );
+
+    await page.goto(`/#/p/${projectId}/plan`);
+    await expect(page.getByLabel("Task 1 title")).toHaveValue(
+      "Add health endpoint",
+    );
+    await expect(
+      page.locator('input[value="Visual fidelity QA"]'),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "Verified Figma screens" }),
+    ).toHaveCount(0);
   });
 
   test("phone navigation is usable without accidental document overflow", async ({ page }) => {

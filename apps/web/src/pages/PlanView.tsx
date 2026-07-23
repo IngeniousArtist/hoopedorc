@@ -17,6 +17,7 @@ import type {
   PlanningSessionResponse,
   PlanSessionArchive,
   Project,
+  Role,
   VerifiedFigmaReference,
 } from "@orc/types";
 import { useEffect, useRef, useState } from "react";
@@ -34,6 +35,7 @@ interface UiTask {
   title: string;
   description: string;
   difficulty: Difficulty;
+  role?: Role;
   assignedModel: ModelId;
   scopePaths: string[];
   acceptanceCriteria: string[];
@@ -78,6 +80,7 @@ function uiTasksFromDraft(drafts: DraftTask[]): UiTask[] {
     title: t.title,
     description: t.description,
     difficulty: t.difficulty,
+    role: t.role,
     assignedModel: t.assignedModel,
     scopePaths: t.scopePaths,
     acceptanceCriteria: t.acceptanceCriteria,
@@ -93,6 +96,7 @@ function draftTasksFromUi(tasks: UiTask[]): DraftTask[] {
     title: t.title,
     description: t.description,
     difficulty: t.difficulty,
+    role: t.role,
     acceptanceCriteria: t.acceptanceCriteria.filter((c) => c.trim()),
     dependsOn: t.dependsOnKeys
       .map((k) => keyIndex.get(k))

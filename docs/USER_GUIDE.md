@@ -508,6 +508,32 @@ as failed, blocks the task with the same recovery guidance, and does not
 misreport it as a successful run with no changes. This mid-call case did use
 one author attempt because the model actually ran.
 
+When deconstruction successfully verifies one or more exact Figma screens, the
+editable task table also contains one **Visual fidelity QA** task. It is a
+normal frontend task, visible before approval, ordered after implementation and
+before project documentation. Its screen/state matrix lists every exact node,
+source dimensions, and the route/auth/data/fixture context carried by the
+implementation handoff.
+
+Review it like any other draft task:
+
+1. Confirm each screen/state and supplied viewport is represented separately.
+2. Edit the assigned model if another runner should perform the browser pass.
+   B42 checks that final selected model's Figma access when execution reaches
+   the task.
+3. Remove the task before approval to opt out for that planning session.
+   Auto-save and **Approve & Create Tasks** preserve the removal; Hoopedorc
+   does not add it again during commit.
+
+During autorun the task starts the app with real repository scripts, opens each
+implemented route/state in a real browser, captures the supplied viewport,
+compares material layout, typography, spacing, color, components, and state,
+repairs discrepancies, then continues through the normal gates and independent
+validator. A desktop-only frame is never presented as mobile Figma fidelity.
+If Figma access fails, the task uses the blocked/reassign/Retry flow above. If
+the app or browser cannot start, the task must report the exact failure and use
+the normal task Retry path rather than claiming a comparison ran.
+
 ## Using skills with your agents
 
 Claude Code, Codex, and OpenCode can all expose skills, but discovery and

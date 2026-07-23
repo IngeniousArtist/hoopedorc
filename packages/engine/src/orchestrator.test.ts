@@ -3170,6 +3170,64 @@ test("B42: a mid-author capability marker is a failed run and blocks before comm
   assert.doesNotMatch(blocked.statusReason ?? "", /no changes/i);
 });
 
+test("F53: a generated visual task receives real-browser guidance and uses the normal verified pipeline", async () => {
+  let prompt = "";
+  const merged: number[] = [];
+  const visual = task("visual-qa", [], {
+    title: "Visual fidelity QA",
+    role: "frontend",
+    description:
+      "Start the real app, capture the implemented login screen in a browser, compare it with " +
+      "https://www.figma.com/design/abc123/App?node-id=1-2, and repair material differences.\n\n" +
+      "### Relevant references\n" +
+      "- Login desktop — https://www.figma.com/design/abc123/App?node-id=1-2\n\n" +
+      "### Required skills/capabilities\n" +
+      "- Figma MCP/tool access\n" +
+      "- Real browser automation or Playwright",
+    acceptanceCriteria: [
+      "Capture and repair the real login route at 1440×900.",
+    ],
+  });
+
+  await new Orchestrator(
+    fakeDeps(
+      {
+        preflightFigma: async () => ({
+          required: true,
+          context: {
+            runner: "opencode",
+            canonicalUrl:
+              "https://www.figma.com/design/abc123/App?node-id=1-2",
+            nodeId: "1:2",
+          },
+        }),
+        adapterFor: () => ({
+          runner: "opencode",
+          async run(options) {
+            prompt = options.prompt;
+            return {
+              ok: true,
+              exitReason: "completed",
+              costUsd: 0,
+              tokensIn: 0,
+              tokensOut: 0,
+              summary: "Compared the running app and repaired the screen.",
+            };
+          },
+        }),
+      },
+      merged,
+    ),
+  ).start(PROJECT, [visual]);
+
+  assert.equal(visual.status, "done");
+  assert.equal(merged.length, 1);
+  assert.match(prompt, /Start the real app/);
+  assert.match(prompt, /Real browser automation or Playwright/);
+  assert.match(prompt, /Open and inspect every item under `Relevant references`/);
+  assert.match(prompt, /Figma capability continuity/);
+});
+
 test("B42: no-Figma tasks add no continuity prompt, and blocked tasks stay blocked on restart", async () => {
   let ordinaryPrompt = "";
   let verifierCalls = 0;

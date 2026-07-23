@@ -71,6 +71,41 @@ test("F52: verified references are never lost from every task handoff", () => {
   assert.match(output.tasks[0]!.acceptanceCriteria.at(-1)!, /1440×900/);
 });
 
+test("F53: deconstruction keeps route/state context in implementation tasks and leaves visual-QA insertion to the server", () => {
+  const prompt = buildDeconstructPrompt(
+    [
+      {
+        role: "user",
+        content:
+          "The login screen is /login in the signed-out state with the invalid-password fixture.",
+      },
+    ],
+    "visual QA",
+    undefined,
+    undefined,
+    [
+      {
+        canonicalUrl:
+          "https://www.figma.com/design/File123/Login?node-id=10-20",
+        fileKey: "File123",
+        nodeId: "10:20",
+        name: "Login desktop",
+        width: 1440,
+        height: 900,
+        verifiedModel: "codex",
+        verifiedRunner: "codex",
+        verifiedAt: "2026-07-23T12:00:00.000Z",
+      },
+    ],
+  );
+
+  assert.match(
+    prompt,
+    /route plus auth\/data\/interaction state and fixture/,
+  );
+  assert.match(prompt, /do not create a separate visual-QA task/);
+});
+
 test("F51: deconstruction requests self-contained task references without adding fields", () => {
   const prompt = buildDeconstructPrompt(
     [

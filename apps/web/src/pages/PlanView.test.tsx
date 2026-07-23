@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRequestError, api } from "../api/client";
@@ -33,6 +33,17 @@ const draft = {
   difficulty: "medium" as const,
   acceptanceCriteria: ["Login works."],
   dependsOn: [],
+  scopePaths: ["apps/web/**"],
+  assignedModel: "codex",
+};
+const visualDraft = {
+  title: "Visual fidelity QA",
+  description:
+    `Run the real app and compare ${reference.canonicalUrl} in a browser.`,
+  difficulty: "hard" as const,
+  role: "frontend" as const,
+  acceptanceCriteria: ["Capture and repair the verified screen."],
+  dependsOn: [0],
   scopePaths: ["apps/web/**"],
   assignedModel: "codex",
 };
@@ -157,5 +168,108 @@ describe("PlanView Figma verification", () => {
     expect(await screen.findByText("Verified Figma screens")).toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(deconstructCalls).toBe(2);
+  });
+
+  it("shows the generated visual task and preserves its role when the model is edited", async () => {
+    let committedTasks: Array<Record<string, unknown>> = [];
+    apiMock.mockImplementation(async (key, options) => {
+      if (key === "getSettings") {
+        const settings = settingsFixture();
+        settings.models.push({
+          ...settings.models[0]!,
+          id: "glm",
+          displayName: "GLM",
+          runner: "opencode",
+          opencodeModel: "zai/glm-5.1",
+        });
+        return { settings };
+      }
+      if (key === "planSession") {
+        return {
+          messages: [],
+          prd: "# Visual plan",
+          draftTasks: [draft, visualDraft],
+          planCostUsd: 0,
+          verifiedFigmaReferences: [reference],
+        };
+      }
+      if (key === "planSaveDraft") return { ok: true };
+      if (key === "planCommit") {
+        committedTasks = (options?.body as { tasks: Array<Record<string, unknown>> })
+          .tasks;
+        return {
+          project: { ...project, status: "planned" },
+          tasks: [],
+          prdMarkdown: "# Visual plan",
+        };
+      }
+      return baseApi(key);
+    });
+    const user = userEvent.setup();
+    renderPlan();
+
+    expect(
+      await screen.findByDisplayValue("Visual fidelity QA"),
+    ).toBeVisible();
+    await user.selectOptions(
+      screen.getByLabelText("Assigned model for Visual fidelity QA"),
+      "glm",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Approve & Create Tasks" }),
+    );
+
+    await waitFor(() => expect(committedTasks).toHaveLength(2));
+    expect(committedTasks[1]).toMatchObject({
+      title: "Visual fidelity QA",
+      role: "frontend",
+      assignedModel: "glm",
+    });
+  });
+
+  it("keeps explicit visual-QA removal through commit instead of re-adding it", async () => {
+    let committedTasks: Array<Record<string, unknown>> = [];
+    apiMock.mockImplementation(async (key, options) => {
+      if (key === "planSession") {
+        return {
+          messages: [],
+          prd: "# Visual plan",
+          draftTasks: [draft, visualDraft],
+          planCostUsd: 0,
+          verifiedFigmaReferences: [reference],
+        };
+      }
+      if (key === "planSaveDraft") return { ok: true };
+      if (key === "planCommit") {
+        committedTasks = (options?.body as { tasks: Array<Record<string, unknown>> })
+          .tasks;
+        return {
+          project: { ...project, status: "planned" },
+          tasks: [],
+          prdMarkdown: "# Visual plan",
+        };
+      }
+      return baseApi(key);
+    });
+    const user = userEvent.setup();
+    renderPlan();
+
+    expect(
+      await screen.findByDisplayValue("Visual fidelity QA"),
+    ).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: "Remove Visual fidelity QA" }),
+    );
+    expect(
+      screen.queryByDisplayValue("Visual fidelity QA"),
+    ).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Approve & Create Tasks" }),
+    );
+
+    await waitFor(() => expect(committedTasks).toHaveLength(1));
+    expect(
+      committedTasks.some((task) => task.title === "Visual fidelity QA"),
+    ).toBe(false);
   });
 });

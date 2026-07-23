@@ -6264,7 +6264,7 @@ emulation could not substitute for.
 | 14 | B31–B33, S8, F44–F47 | Autonomy-hardening wave from the owner's first real dogfooding runs: B31+F46+F47 first (one PR — all in `planner.ts`; B31 unblocks planning outright and F45 depends on it), then B32 (the autonomous-stall fix), then S8 (destructive-change rail — before more autonomous runs happen), then B33, F44, F45 in any order. Tag `v0.6.0` at the end. | ✅ done |
 | 15 | B34–B41, S9–S10, F48–F49, T2, U19 | Reliability/portability/mobile wave from the v0.6.0 Codex audit and owner decisions: execution ownership → process cancellation → fail-closed safety → rollback PR → credential boundary → live settings/effort → portable setup/cache → durability/accounting → shutdown/Telegram → web tests → responsive UX. Final owner Telegram and real-phone checks passed 2026-07-23. | ✅ done |
 | 16 | D1, F50 | Make the established contribution workflow cheap to load, then add a fixed-command, fail-closed EC2 update path that survives the serving unit's restart. | implementation complete; live EC2 smoke pending |
-| 17 | F51, F52, B42, F53 | Focused context/Figma wave: lean task references and current runner skill facts → exact Figma-node planning verification → recoverable capability blocks → automatic visual-fidelity QA through the existing DAG/gate/validator pipeline. Full spec: `docs/HOOPEDORC_CONTEXT_INTAKE_UPGRADE.md`. | in progress; F51–F52 complete |
+| 17 | F51, F52, B42, F53 | Focused context/Figma wave: lean task references and current runner skill facts → exact Figma-node planning verification → recoverable capability blocks → automatic visual-fidelity QA through the existing DAG/gate/validator pipeline. Full spec: `docs/HOOPEDORC_CONTEXT_INTAKE_UPGRADE.md`. | in progress; F51–F52 and B42 complete; F53 implemented and locally verified |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
@@ -6417,8 +6417,8 @@ deployment.
 |---|---|---|
 | F51 — lean task references and runner-accurate skills | ✅ implementation complete; local full gate passed 2026-07-23 | [#157](https://github.com/IngeniousArtist/hoopedorc/pull/157) |
 | F52 — direct Figma nodes and planning verification | ✅ done; merged and independently verified 2026-07-23 | [#158](https://github.com/IngeniousArtist/hoopedorc/pull/158) |
-| B42 — recoverable Figma capability blocks | ✅ implementation complete; local full gate passed 2026-07-23; review in progress | [#159](https://github.com/IngeniousArtist/hoopedorc/pull/159) |
-| F53 — automatic visual-fidelity QA task | approved; depends on B42 | — |
+| B42 — recoverable Figma capability blocks | ✅ done; merged and independently verified 2026-07-23 | [#159](https://github.com/IngeniousArtist/hoopedorc/pull/159) |
+| F53 — automatic visual-fidelity QA task | ✅ implementation complete; local full gate passed 2026-07-23; delivery in progress | — |
 
 The owner approved this focused wave on 2026-07-23 after the original context
 proposal was compared with the merged code and found to overstate the missing
@@ -6625,6 +6625,17 @@ errors; no-Figma tasks bypass the hook and make no extra model call.
 
 ### F53. Automatic visual-fidelity QA task
 
+**Status (2026-07-23):** implementation complete on
+`f53-automatic-visual-qa` from clean merged B42 commit `8fc7bb6`. The local
+full gate passed: typecheck, build, lint, 171 engine tests, 12 adapter tests,
+202 server tests, 25 web tests, 16 Playwright scenarios across 360, 390, 768,
+1280, and 1440px, and `git diff --check`. Playwright required the approved
+unsandboxed command after the managed sandbox refused the local mock/Vite
+listener with `EPERM`; the tests themselves passed. PR delivery remains in
+progress. The owner-supplied live plan → autorun → visual-QA check on a scratch
+UI and EC2 runner remains outstanding because no real owner desktop/mobile
+frames, scratch UI, or EC2 configuration were supplied in this environment.
+
 **Problem:** the current validator reviews acceptance and the code diff but does
 not guarantee a browser-based comparison with supplied Figma screens.
 
@@ -6638,11 +6649,21 @@ layout/typography/spacing/color/component/state behavior, repair discrepancies,
 and continue through normal gates and independent validation. Removing the
 visible draft task is the explicit opt-out; commit does not silently re-add it.
 
+The bounded verified-node record has identity and dimensions but no invented
+route/fixture schema, so the helper copies that context from the existing
+self-contained implementation handoffs. It prefers the still-enabled model
+that performed live verification only when that preserves an independent
+validator, otherwise normal frontend routing; B42 re-proves whichever model
+the owner leaves selected before execution. Figma capability loss uses B42.
+Browser/startup failure stays an explicit normal author/gate failure and Retry
+rather than expanding B42 into a generic capability platform.
+
 **Acceptance:** verified nodes create exactly one idempotent QA task and
 no-Figma plans create none; dependencies and docs ordering are correct;
 desktop/mobile/state references remain distinct; a missing mobile design is
-not presented as mobile fidelity; Figma/browser failure blocks and resumes via
-B42; the task repairs a real scratch UI against owner-supplied frames and
+not presented as mobile fidelity; Figma failure blocks and resumes via B42;
+browser/startup failure is visible and retryable without a false comparison
+claim; the task repairs a real scratch UI against owner-supplied frames and
 merges through the existing pipeline; no Critic loop or alternate merge path
 is introduced.
 
