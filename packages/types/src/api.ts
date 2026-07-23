@@ -136,6 +136,11 @@ export interface PlanChatResponse {
  */
 export interface DraftTask {
   title: string;
+  /**
+   * Self-contained implementation handoff. F51 may include optional
+   * `### Relevant references` and `### Required skills/capabilities`
+   * subsections; they remain Markdown inside this existing field.
+   */
   description: string;
   difficulty: Difficulty;
   role?: Role;

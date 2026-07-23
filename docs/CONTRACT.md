@@ -263,6 +263,24 @@ task's worktree actually has one; F30's per-task documenter is also
 allowed to touch `AGENTS.md` (added to `DOCS_ALLOWED_SCOPE`), only when a
 merged change actually alters the project's structure/commands/conventions.
 
+F51 keeps task context inside the existing `description` string rather than
+adding REST or SQLite fields. The deconstructor produces a self-contained
+description and may append `### Relevant references` and
+`### Required skills/capabilities` Markdown subsections when the agreed plan
+has applicable pointers. References preserve exact PRD headings, repository
+paths, attachment names, and owner-supplied links; skills are limited to
+operator-named skills or fixed capabilities required by the agreed workflow.
+Empty subsections are omitted. `DraftTask.description` is still edited,
+submitted, materialized, and persisted unchanged as `Task.description`.
+
+The author and validator both call
+`guidelines.ts`'s `buildTaskHandoffBlock(description)`. It adds an explicit
+inspect/use instruction only when one of those exact headings exists and
+returns an empty string for all older/manual tasks without them. Project-wide
+`ProjectConfig.skillHints` remain a separate author-prompt baseline.
+Hoopedorc forwards skill names but does not install them, infer that a runner
+has them, or treat skill presence as proof that an MCP/tool is configured.
+
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.
 

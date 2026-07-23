@@ -408,37 +408,69 @@ daily run fires within a few minutes of its set time; if the server was
 boot — an unattended machine starting a paid model run at an unexpected
 hour would be worse than skipping a night.
 
+## Task references carried into execution
+
+Deconstruction makes each task description a self-contained implementation
+handoff. When a task depends on something specific from planning, its
+description can end with either of these optional sections:
+
+```markdown
+### Relevant references
+- docs/PRD.md — Authentication / Login
+- docs/specs/auth.md — Session rotation
+- context/attachments/login-copy.md
+
+### Required skills/capabilities
+- frontend-design-guidelines — use before building the login UI
+- browser verification — exercise the real login flow
+```
+
+Only sources relevant to that task belong there. The planner preserves exact
+paths, document headings, attachment names, and owner-supplied external links
+instead of copying whole source files into every task. It omits either heading
+when there is nothing to list and never invents a skill name. The sections stay
+inside the existing editable task description; they do not create a second
+context object or database record.
+
+When either heading is present, both the author and independent validator are
+explicitly told to inspect the listed sources and to report an unavailable
+capability instead of pretending it was used. Existing tasks without the
+headings keep the previous prompt shape.
+
 ## Using skills with your agents
 
-"Skills" are a **Claude Code** feature — a folder of instructions (and
-optionally scripts) that Claude Code discovers on its own and reaches for
-when a task matches the skill's description. They come from two places:
+Claude Code, Codex, and OpenCode can all expose skills, but discovery and
+installation are runner-owned rather than standardized by Hoopedorc:
 
-- **User-level** (`~/.claude/skills/` on the machine running Hoopedorc) —
-  available to every project on that box. Install here anything you want
-  *every* agent, on *every* repo, to have access to (e.g. a general code
-  review or security-audit skill). This is a one-time setup step on the
-  deployment machine, not something Hoopedorc manages.
-- **Repo-level** (`<target repo>/.claude/skills/`) — committed to the
-  project's own repository, like code. Use this for anything specific to
-  that project (its own design system, its own release process). Anyone —
-  human or agent — running Claude Code in that repo gets it.
+- **Claude Code** discovers user skills under `~/.claude/skills/`, repo skills
+  under `<target repo>/.claude/skills/`, and skills supplied by installed
+  plugins. `claude plugin list` shows installed plugins.
+- **Codex** uses the skill/plugin catalog installed for its own runtime
+  (commonly `$CODEX_HOME/skills/`, defaulting under `~/.codex`, plus
+  plugin-provided skills). `codex plugin list` shows its plugin catalog.
+- **OpenCode** discovers project skills under `.opencode/skill/` or
+  `.opencode/skills/`, global skills under
+  `~/.config/opencode/skill/` or `~/.config/opencode/skills/`, and compatible
+  external skills under `~/.claude/skills/` and `~/.agents/skills/`. It can
+  also use configured `skills.paths`/`skills.urls`; `opencode debug skill`
+  shows what the installed CLI actually found.
 
-**`opencode` models have no skills mechanism.** They don't discover
-`.claude/skills/` at all — the equivalent lever is plain instructions in the
-prompt (or that project's own `AGENTS.md`, if it has one — see the next
-section).
+Install only the small set relevant to the projects that run on a machine.
+For EC2, install/copy them under the same OS user that runs
+`hoopedorc.service`; a skill available on a developer Mac is not automatically
+available on EC2.
 
-Discovery alone isn't reliable for a headless agent: it only reaches for a
-skill when the task at hand clearly matches the skill's description.
-Hoopedorc's job is to **nudge** — a project's **Advanced** settings has a
-**"Skill hints for the author model"** textarea (one per line, `skill name —
-when to use it`, e.g. `frontend-design-guidelines — read before building any
-UI component`). Every hint is appended to the author's prompt under a
-`## Skills` heading: Claude Code treats it as a strong signal to invoke the
-named skill; other runners just see it as ordinary instructions (harmless,
-often still useful). Hints are per-project because relevant skills vary by
-repo — a design-heavy frontend and a backend service need different nudges.
+Hoopedorc does not install skills or assume matching discovery behavior. A
+project's **Advanced** settings still has a **"Skill hints for the author
+model"** textarea (one per line, `skill name — when to use it`, e.g.
+`frontend-design-guidelines — read before building any UI component`). These
+project-wide hints are appended to every author prompt. A skill named for only
+one task during planning belongs in that task's
+`Required skills/capabilities` section instead.
+
+Skill availability and MCP/tool availability are separate. Copying a Figma
+implementation skill to EC2 does not install, configure, or authenticate a
+Figma MCP server for Claude Code, Codex, or OpenCode.
 
 ## AGENTS.md — the project context file
 

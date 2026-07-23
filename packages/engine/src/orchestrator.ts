@@ -23,6 +23,7 @@ import {
   buildAgentsMdBlock,
   buildEngineeringStandardsBlock,
   buildSkillsBlock,
+  buildTaskHandoffBlock,
   SAFETY_GUARDRAILS_BLOCK,
   WORKING_DIRECTORY_BLOCK,
 } from "./guidelines.js";
@@ -2330,6 +2331,7 @@ export class Orchestrator implements Scheduler {
     fixInstructions?: string,
   ): string {
     let prompt = `## Task: ${task.title}\n\n${task.description}\n\n`;
+    prompt += buildTaskHandoffBlock(task.description);
     prompt +=
       `## Acceptance Criteria\n${task.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}\n\n`;
     prompt += WORKING_DIRECTORY_BLOCK;

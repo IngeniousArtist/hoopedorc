@@ -155,6 +155,11 @@ export interface Task {
   id: string;
   projectId: string;
   title: string;
+  /**
+   * Self-contained implementation handoff. Optional F51 reference and
+   * skill/capability subsections are persisted as Markdown here rather than
+   * in a parallel context schema.
+   */
   description: string;
   difficulty: Difficulty;
   status: TaskStatus;
@@ -305,13 +310,13 @@ export interface ProjectConfig {
    */
   perTaskDocs?: boolean;
   /**
-   * F34: free-text nudges naming skills the author model should reach for
+   * F34/F51: free-text nudges naming skills the author model should reach for
    * in this project — each line is "skill name — when to use it" (e.g.
    * "frontend-design-guidelines — read before building any UI component").
-   * Only `claude` (Claude Code) has a real skills mechanism (discovered from
-   * `~/.claude/skills/` or the target repo's own `.claude/skills/`); for
-   * other runners this just reads as ordinary prompt instructions. Bounded
-   * like other free-text prompt inputs: each entry <=200 chars, <=20 entries.
+   * Claude Code, Codex, and OpenCode can expose skills through their own
+   * runner-specific discovery/configuration paths. Hoopedorc forwards the
+   * hints but does not install skills or infer availability. Bounded like
+   * other free-text prompt inputs: each entry <=200 chars, <=20 entries.
    */
   skillHints?: string[];
   /**

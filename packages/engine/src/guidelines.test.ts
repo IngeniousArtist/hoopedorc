@@ -8,6 +8,7 @@ import {
   buildAgentsMdBlock,
   buildEngineeringStandardsBlock,
   buildSkillsBlock,
+  buildTaskHandoffBlock,
 } from "./guidelines.js";
 
 test("buildEngineeringStandardsBlock: undefined guidelines produces nothing", () => {
@@ -107,6 +108,41 @@ test("buildSkillsBlock: renders each hint as a bullet under a Skills header", ()
   assert.match(block, /## Skills/);
   assert.match(block, /- frontend-design-guidelines — read before building any UI component/);
   assert.match(block, /- security-review — run before touching auth code/);
+});
+
+// ── F51: lean task handoff ──
+
+test("buildTaskHandoffBlock: ordinary descriptions produce no prompt noise", () => {
+  assert.equal(buildTaskHandoffBlock("Implement the endpoint and its tests."), "");
+  assert.equal(buildTaskHandoffBlock("Relevant references: docs/spec.md"), "");
+});
+
+test("buildTaskHandoffBlock: reference and capability headings add only their applicable instructions", () => {
+  const references = buildTaskHandoffBlock(
+    "Implement login.\n\n### Relevant references\n- docs/PRD.md — Login",
+  );
+  assert.match(references, /## Task handoff/);
+  assert.match(references, /Open and inspect every item under `Relevant references`/);
+  assert.doesNotMatch(references, /Required skills\/capabilities/);
+
+  const capabilities = buildTaskHandoffBlock(
+    "Implement login.\n\n### Required skills/capabilities\n- browser verification — test login",
+  );
+  assert.match(capabilities, /## Task handoff/);
+  assert.match(capabilities, /Use each applicable item under `Required skills\/capabilities`/);
+  assert.doesNotMatch(capabilities, /Open and inspect every item/);
+
+  const both = buildTaskHandoffBlock(
+    [
+      "Implement login.",
+      "### Relevant references",
+      "- docs/PRD.md — Login",
+      "### Required skills/capabilities",
+      "- browser verification — test login",
+    ].join("\n"),
+  );
+  assert.match(both, /Open and inspect every item/);
+  assert.match(both, /if one is unavailable/);
 });
 
 // ── F38: AGENTS.md nudge ──
