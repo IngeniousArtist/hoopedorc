@@ -352,6 +352,25 @@ task, and stops before commit, gates, validator, or PR rather than falling
 through to the ordinary no-change/fallback path. Any prior remote task branch
 is cleaned best-effort so a later Retry cannot collide with it.
 
+F53 does not add a task or persistence field. When deconstruction returns one
+or more `verifiedFigmaReferences`, the server inserts exactly one ordinary,
+visible `DraftTask` titled `Visual fidelity QA` before returning and saving the
+draft. It has `role: "frontend"`, hard difficulty, every exact node in its
+description and distinct acceptance criteria, context copied from the
+implementation task(s) that carry each node, and dependencies on all non-doc
+implementation tasks. The standing docs task depends on it and remains last.
+Existing dependencies are reindexed when an early planner-authored docs task
+is moved behind visual QA.
+
+The suggested author is the enabled live-verification model when it differs
+from the hard-task validator; otherwise normal frontend routing is used. The
+owner may edit the model or remove the task in the existing Plan table. Neither
+`plan/save-draft` nor `plan/commit` calls the insertion helper, so removal is
+the explicit durable opt-out and commit does not silently re-add it. Repeated
+fresh deconstruction replaces any reserved-title draft rather than duplicating
+it; a response with no verified nodes contains no reserved visual-QA task.
+The existing B42 check proves the final selected author before execution.
+
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.
 

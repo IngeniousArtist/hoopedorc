@@ -483,8 +483,12 @@ ${list}
 Map each screen only to tasks that implement or verify it. Put its canonical URL in that task's
 \`### Relevant references\` section, require the author and validator to inspect it in
 \`### Required skills/capabilities\`, and add a concrete acceptance criterion for close visual
-fidelity at the verified viewport when dimensions are available. Do not attach a screen to an
-unrelated backend/docs task.
+fidelity at the verified viewport when dimensions are available. Make the implementation handoff
+self-contained about the route plus auth/data/interaction state and fixture needed to reproduce
+the screen; if the conversation/repository does not establish one of those facts, require the
+author to derive and record it instead of inventing it. Do not attach a screen to an unrelated
+backend/docs task, and do not create a separate visual-QA task — Hoopedorc inserts one
+deterministically after deconstruction so the owner can review or remove it.
 `;
 }
 

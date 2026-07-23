@@ -1,6 +1,7 @@
 # Hoopedorc — Focused Context Handoff and Figma Fidelity Upgrade
 
-**Status:** implementation in progress; F51 implemented and locally verified
+**Status:** implementation in progress; F51, F52, and B42 merged and
+independently verified; F53 implemented and locally verified
 
 **Approved:** 2026-07-23
 
@@ -794,6 +795,17 @@ degrading fidelity during autorun.
 
 ### Phase 17.4 — F53: automatic visual-fidelity QA task
 
+**Status (2026-07-23):** implementation complete on
+`f53-automatic-visual-qa` after B42 merged and passed the full repository gate
+independently as `8fc7bb6`. The local full gate passed: typecheck, build, lint,
+171 engine tests, 12 adapter tests, 202 server tests, 25 web tests, 16
+Playwright scenarios across 360, 390, 768, 1280, and 1440px, and
+`git diff --check`. Playwright required the approved unsandboxed command after
+the managed sandbox refused the local mock/Vite listener with `EPERM`; the
+tests themselves passed. Delivery is under review in
+[#160](https://github.com/IngeniousArtist/hoopedorc/pull/160); the
+owner-supplied live EC2/Figma/browser check remains.
+
 **Goal:** Make close Figma fidelity the default execution outcome whenever
 verified screen nodes are supplied.
 
@@ -811,11 +823,17 @@ verified screen nodes are supplied.
 - Deterministically insert one visual-QA draft task when verified nodes exist.
 - Order it after implementation and before the standing docs task.
 - Include every verified node, relevant route/state/fixture, required
-  capabilities, and material fidelity criteria.
-- Assign a verified Figma-capable frontend model while leaving the field
-  editable.
+  capabilities, and material fidelity criteria. Reuse the self-contained
+  implementation handoffs for route/state/fixture context because the bounded
+  verified-node record deliberately contains only identity and dimensions.
+- Assign the model that performed the live Figma verification when it remains
+  enabled and differs from the configured independent validator; otherwise
+  use normal frontend routing. Leave the field editable, and let B42 prove the
+  actual selected author again at execution time.
 - Run comparison and repair through the normal author/gate/validator pipeline.
-- Use B42 for Figma/browser capability blocks.
+- Use B42 for Figma capability blocks. Browser/startup failure stays a visible
+  normal author/gate failure and retry; do not create a generic browser
+  capability registry or claim that a comparison ran when it did not.
 - Do not re-add a visual-QA task the owner explicitly removes before commit.
 
 **Acceptance:**
@@ -829,7 +847,8 @@ verified screen nodes are supplied.
 - The task starts the real app, inspects each reachable state, repairs material
   differences, runs gates, receives independent validation, and merges through
   the existing path.
-- Figma/browser failure blocks and resumes through B42.
+- Figma failure blocks and resumes through B42; browser/startup failure is
+  explicit and retryable through the existing task path.
 - There is no generic critic loop or alternate merge path.
 
 **Tests:**

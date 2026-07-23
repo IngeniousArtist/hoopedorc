@@ -92,6 +92,16 @@ This reuses the existing scheduler, Task `statusReason`, Retry/reassignment,
 notification, and invocation-ledger paths; there is no generic capability
 registry or second orchestration lifecycle.
 
+Verified Figma planning also has one deterministic downstream consumer:
+`packages/server/src/visual-qa-task.ts` assembles a normal frontend
+`DraftTask` named `Visual fidelity QA` from the bounded verified-node records
+and the self-contained implementation task handoffs. It reindexes the draft
+DAG, puts implementation tasks first, then visual QA, then docs, and prefers a
+verified author only when that preserves an independent validator. The Plan UI
+uses its existing task editor/model picker/removal controls; save and commit
+never regenerate the task. Execution is the ordinary B42-protected
+author → gates → validator → merge path, not a critic loop.
+
 ## Why this split
 - **One language (TS)** so the parallel agents share `@orc/types` and can't drift.
 - **OpenCode as the single gateway** for all API-billed models — one CLI

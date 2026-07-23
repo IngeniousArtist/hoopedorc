@@ -33,6 +33,7 @@ import {
   mergeSettingsUpdate,
 } from "./config";
 import { ensureDocsTask } from "./docs-task";
+import { ensureVisualQaTask } from "./visual-qa-task";
 import { seed } from "./mock";
 import type { Db } from "./db/index";
 import { initDb } from "./db/index";
@@ -110,6 +111,7 @@ import type {
   PlanChatMessage,
   PlanDeconstructRequest,
   Settings as SettingsType,
+  VerifiedFigmaReference,
 } from "@orc/types";
 
 type RouteParams = { id: string };
@@ -229,6 +231,7 @@ function buildDocsTaskDraft(settings: SettingsType): DraftTask {
 function withAssignedModels(
   output: PlanOutput,
   settings: SettingsType,
+  verifiedFigmaReferences: VerifiedFigmaReference[] = [],
 ): DraftTask[] {
   const tasks = output.tasks.map((t) => ({
     title: t.title,
@@ -244,7 +247,12 @@ function withAssignedModels(
   // this way it shows up in the Plan tab's editable review table, where the
   // user can remove it if they don't want it for a given project. Re-adding
   // it at commit time would silently override that choice.
-  return ensureDocsTask(tasks, buildDocsTaskDraft(settings));
+  const tasksWithVisualQa = ensureVisualQaTask(
+    tasks,
+    verifiedFigmaReferences,
+    settings,
+  );
+  return ensureDocsTask(tasksWithVisualQa, buildDocsTaskDraft(settings));
 }
 
 const gitForPlanning = new GitServiceImpl();
@@ -1699,7 +1707,11 @@ async function main() {
           }),
         body?.figmaVerification ?? "live",
       );
-      const tasks = withAssignedModels(output, settings);
+      const tasks = withAssignedModels(
+        output,
+        settings,
+        verifiedFigmaReferences,
+      );
       // Persist draft tasks + PRD + AGENTS.md (F38) so the Plan tab can
       // restore them on reload.
       repo.savePlanningSession(db, id, {

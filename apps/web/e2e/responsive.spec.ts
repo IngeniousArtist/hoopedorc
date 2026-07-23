@@ -70,6 +70,20 @@ async function seedEditablePlan(page: Page) {
             acceptanceCriteria: ["Works at every target viewport"],
             dependsOn: [],
           },
+          {
+            title: "Visual fidelity QA",
+            description:
+              "Run the real app and compare the verified operator screen.",
+            difficulty: "hard",
+            role: "frontend",
+            assignedModel: "glm",
+            scopePaths: ["apps/web/**"],
+            acceptanceCriteria: [
+              "Capture and repair the operator screen at 1440×900.",
+              "Do not claim mobile Figma fidelity.",
+            ],
+            dependsOn: [0],
+          },
         ],
         planCostUsd: 0.0123,
         verifiedFigmaReferences: [
@@ -163,7 +177,9 @@ for (const viewport of TARGET_VIEWPORTS) {
       await expect(planningMessage).toHaveCSS("resize", "vertical");
       expect((await planningMessage.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(100);
       await expect(page.getByLabel("Task 1 title")).toHaveValue("Responsive editing pass");
+      await expect(page.getByLabel("Task 2 title")).toHaveValue("Visual fidelity QA");
       await expect(page.getByLabel("Assigned model for Responsive editing pass")).toBeVisible();
+      await expect(page.getByLabel("Assigned model for Visual fidelity QA")).toBeVisible();
       await expect(page.getByRole("heading", { name: "Verified Figma screens" })).toBeVisible();
       await expect(page.getByText("node 10:20 · 1440×900")).toBeVisible();
       await expectResponsivePage(page, viewport.width < 640);
