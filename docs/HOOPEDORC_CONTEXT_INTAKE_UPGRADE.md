@@ -720,6 +720,15 @@ verified, durable planning reference list.
 
 ### Phase 17.3 — B42: recoverable Figma capability blocks
 
+**Status (2026-07-23):** implementation complete and locally verified on
+`b42-recoverable-figma-blocks`
+([#159](https://github.com/IngeniousArtist/hoopedorc/pull/159)); review is in
+progress. The full repository gate passes: typecheck, build, lint, 170 engine
+tests, 12 adapter tests, 196 server tests, 23 web tests, 15 Playwright tests at
+the required five widths, and `git diff --check`. The real scratch-project
+disable/fix-or-reroute/Retry check remains assigned to the owner because no
+EC2 runner configuration and owner Figma node were supplied for this branch.
+
 **Goal:** Prevent missing design access from wasting attempts or silently
 degrading fidelity during autorun.
 
@@ -735,13 +744,19 @@ degrading fidelity during autorun.
 
 **Implementation:**
 
-- Probe the actual assigned model before a Figma-dependent author attempt.
-- Reuse a planning/run-scoped positive result within bounds.
+- Probe one representative exact node per distinct referenced file using the
+  actual assigned model and its sanitized runner before worktree creation.
+- Reuse positive results only within the current orchestrator runtime, keyed
+  by assigned runner/model configuration and file. Restart, reroute,
+  configuration changes, and new files re-probe.
+- Account every actual probe as a project/task `health` invocation.
 - Detect a stable capability-unavailable author marker after a mid-call loss.
 - Block only the affected task with actionable `statusReason`.
-- Notify once, preserve attempts and DAG state, and keep unrelated scheduling
-  active.
+- Notify once with durable restart-safe deduplication, preserve DAG state, and
+  keep unrelated scheduling active.
 - Reuse model reassignment and Retry to resume.
+- Keep the project paused while capability-blocked work remains.
+- Do not introduce a generic capability registry or a second execution path.
 
 **Acceptance:**
 
@@ -754,8 +769,13 @@ degrading fidelity during autorun.
 - Reassigning to another verified model and Retry resumes the same task.
 - Restart while blocked preserves the explanation and does not auto-consume an
   attempt.
-- A mid-author capability loss is not misreported as “no changes.”
-- Notifications are deduplicated and secrets are redacted.
+- A mid-author capability loss is a failed author run and is not misreported
+  as “no changes”; it creates no commit, gate, validator, or PR.
+- Notifications are durably deduplicated across runtimes and raw runner
+  failures/secrets are never persisted or sent.
+- One runtime may reuse a positive probe for the same model/file; a different
+  model, file, or runtime must probe again.
+- No-Figma tasks make no additional model call.
 
 **Tests:**
 

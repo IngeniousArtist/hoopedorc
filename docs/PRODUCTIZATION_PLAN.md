@@ -6264,7 +6264,7 @@ emulation could not substitute for.
 | 14 | B31–B33, S8, F44–F47 | Autonomy-hardening wave from the owner's first real dogfooding runs: B31+F46+F47 first (one PR — all in `planner.ts`; B31 unblocks planning outright and F45 depends on it), then B32 (the autonomous-stall fix), then S8 (destructive-change rail — before more autonomous runs happen), then B33, F44, F45 in any order. Tag `v0.6.0` at the end. | ✅ done |
 | 15 | B34–B41, S9–S10, F48–F49, T2, U19 | Reliability/portability/mobile wave from the v0.6.0 Codex audit and owner decisions: execution ownership → process cancellation → fail-closed safety → rollback PR → credential boundary → live settings/effort → portable setup/cache → durability/accounting → shutdown/Telegram → web tests → responsive UX. Final owner Telegram and real-phone checks passed 2026-07-23. | ✅ done |
 | 16 | D1, F50 | Make the established contribution workflow cheap to load, then add a fixed-command, fail-closed EC2 update path that survives the serving unit's restart. | implementation complete; live EC2 smoke pending |
-| 17 | F51, F52, B42, F53 | Focused context/Figma wave: lean task references and current runner skill facts → exact Figma-node planning verification → recoverable capability blocks → automatic visual-fidelity QA through the existing DAG/gate/validator pipeline. Full spec: `docs/HOOPEDORC_CONTEXT_INTAKE_UPGRADE.md`. | in progress; F51 complete |
+| 17 | F51, F52, B42, F53 | Focused context/Figma wave: lean task references and current runner skill facts → exact Figma-node planning verification → recoverable capability blocks → automatic visual-fidelity QA through the existing DAG/gate/validator pipeline. Full spec: `docs/HOOPEDORC_CONTEXT_INTAKE_UPGRADE.md`. | in progress; F51–F52 complete |
 
 Each phase = one or a few PRs. Keep PRs scoped to items; reference the item IDs
 (S1, B4, F3…) in commit messages so the audit trail maps back to this plan.
@@ -6416,8 +6416,8 @@ deployment.
 | Item | Status | PR |
 |---|---|---|
 | F51 — lean task references and runner-accurate skills | ✅ implementation complete; local full gate passed 2026-07-23 | [#157](https://github.com/IngeniousArtist/hoopedorc/pull/157) |
-| F52 — direct Figma nodes and planning verification | ✅ implementation complete; local full gate passed 2026-07-23; delivery in progress | [#158](https://github.com/IngeniousArtist/hoopedorc/pull/158) |
-| B42 — recoverable Figma capability blocks | approved; depends on F52 | — |
+| F52 — direct Figma nodes and planning verification | ✅ done; merged and independently verified 2026-07-23 | [#158](https://github.com/IngeniousArtist/hoopedorc/pull/158) |
+| B42 — recoverable Figma capability blocks | ✅ implementation complete; local full gate passed 2026-07-23; review in progress | [#159](https://github.com/IngeniousArtist/hoopedorc/pull/159) |
 | F53 — automatic visual-fidelity QA task | approved; depends on B42 | — |
 
 The owner approved this focused wave on 2026-07-23 after the original context
@@ -6507,10 +6507,10 @@ discovery semantics.
 
 ### F52. Direct Figma nodes and planning verification
 
-**Status (2026-07-23):** implemented and locally verified on
-`f52-direct-figma-nodes`
-([#158](https://github.com/IngeniousArtist/hoopedorc/pull/158)); delivery and
-independent merged verification are in progress. The implementation keeps
+**Status (2026-07-23):** merged and independently verified as
+`52a935f` through
+[#158](https://github.com/IngeniousArtist/hoopedorc/pull/158). The
+implementation keeps
 exact-node intake in the existing planning chat/deconstruction path, adds one
 nullable planning-session JSON field, and does not add a task field, generic
 capability registry, raw Figma cache, or parallel orchestration path.
@@ -6532,6 +6532,7 @@ Playwright tests, and `git diff --check`. Playwright covered typed
 failure/draft retention/retry and verified-card behavior across
 360/390/768/1280/1440 widths; focused real-browser inspection found no
 document overflow or console errors on the desktop and phone Plan views.
+The same complete gate passed again from merged `main`.
 
 The deployment check that opens an owner-supplied real Figma frame through
 the EC2 Codex configuration remains outstanding because no owner Figma node
@@ -6563,6 +6564,37 @@ reload restores references; no-Figma planning makes no probe.
 
 ### B42. Recoverable Figma capability blocks
 
+**Status (2026-07-23):** implemented and locally verified on
+`b42-recoverable-figma-blocks`
+([#159](https://github.com/IngeniousArtist/hoopedorc/pull/159)); review is in
+progress. Execution now reuses F52's exact-node parser and bounded real-runner
+verifier before worktree creation. One representative node per file is checked
+through the assigned author model, with project/task `health` accounting and a
+positive cache limited to that orchestrator runtime, runner/model
+configuration, and file.
+
+Failed preflight blocks only the affected task with durable actionable
+context, consumes no attempt, creates no execution artifacts, leaves unrelated
+scheduling active, and causes the project to end paused. A stable mid-author
+marker is normalized to a failed run and stops before commit/gates/validator.
+Existing blocked-task reassignment and Retry remain the only resume path;
+remote state is cleaned best-effort when a later fallback/mid-author block
+would otherwise collide with Retry. Web/Telegram capability alerts use a
+secret-free persisted key and deduplicate across runtimes/restarts.
+
+The full local gate passes: typecheck, production build, lint, 170 engine
+tests, 12 adapter tests, 196 server tests, 23 web interaction tests, 15
+Playwright tests across 360/390/768/1280/1440 widths, and
+`git diff --check`. Playwright's local Vite/mock-server bind required the
+approved unsandboxed test command after the filesystem/process sandbox
+returned `EPERM`; all 15 browser tests then passed.
+
+The owner/deployment live check remains outstanding: on a scratch project,
+disable or misconfigure the assigned model's real Figma MCP, observe the
+zero-attempt block and one alert, restore access or reassign the model, Retry,
+and confirm the same task proceeds. No owner Figma node plus EC2 runner
+configuration was available during local implementation.
+
 **Problem:** losing Figma access before or during an author call would currently
 look like an ordinary model/no-changes failure, waste attempts, and potentially
 stop the wrong amount of work.
@@ -6574,15 +6606,22 @@ creation, blocks only that task with actionable `statusReason`, creates one
 deduplicated web/Telegram notification, and leaves unrelated scheduling active.
 Recognize a stable capability-unavailable marker if MCP disappears after
 preflight. Reuse existing model reassignment and Retry to resume; short-lived
-positive results may be reused only within the planning session/current run or
-a small TTL.
+positive results are reused only inside the current orchestrator runtime,
+keyed by logical model, runner/model configuration, and Figma file. Probe one
+representative exact node per distinct file; a new runtime, server restart,
+model reassignment, runner configuration change, or different file must prove
+access again. Record every actual probe through the existing model-invocation
+ledger as a `health` call associated with the project and task. This remains a
+Figma-specific execution guard, not a generic capability platform.
 
 **Acceptance:** failed preflight leaves attempts unchanged and creates no
 worktree, branch, commit, PR, gate, or validator call; independent tasks
 continue; fix + Retry and reroute + Retry resume the same task; restart
-preserves the block explanation; mid-call loss is not misreported as “no
-changes”; notifications are deduplicated/redacted; no-Figma tasks bypass the
-hook.
+preserves the block explanation without consuming an attempt; a Figma block
+leaves the project paused rather than falsely complete; mid-call loss is
+recorded as a failed author run and is not misreported as “no changes”;
+notifications are durably deduplicated across restarts and redact raw runner
+errors; no-Figma tasks bypass the hook and make no extra model call.
 
 ### F53. Automatic visual-fidelity QA task
 

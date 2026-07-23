@@ -9,6 +9,7 @@
 // Depend ONLY on @orc/types and @orc/adapters — never on @orc/server.
 
 import type {
+  FigmaCapabilityIssue,
   GateResult,
   LogEvent,
   MergeDecision,
@@ -16,6 +17,7 @@ import type {
   Project,
   RollbackJob,
   Run,
+  RunnerKind,
   Settings,
   Task,
 } from "@orc/types";
@@ -75,6 +77,20 @@ export interface RollbackPreparation {
   sourceParentCount: number;
 }
 
+export interface FigmaAuthorCapabilityContext {
+  runner: RunnerKind;
+  canonicalUrl: string;
+  nodeId: string;
+}
+
+export type FigmaAuthorPreflightResult =
+  | { required: false }
+  | {
+      required: true;
+      context: FigmaAuthorCapabilityContext;
+      issue?: FigmaCapabilityIssue;
+    };
+
 /** Callbacks the engine uses to report progress + ask humans for decisions. */
 export interface EngineEvents {
   onLog: (e: Omit<LogEvent, "id">) => void;
@@ -107,6 +123,12 @@ export interface EngineEvents {
     model: ModelId;
     event: "rate_limit_wait" | "fallback" | "exhausted" | "quota_wait";
     detail: string;
+  }) => void;
+  /** B42: one actionable, structured task-local Figma capability block. */
+  onFigmaCapabilityBlocked?: (info: {
+    taskId: string;
+    taskTitle: string;
+    issue: FigmaCapabilityIssue;
   }) => void;
 }
 
@@ -335,6 +357,17 @@ export interface SchedulerDeps {
    * still blocks only its own task, exactly as before F41.
    */
   getPendingApproval?: (projectId: string) => { title: string } | undefined;
+  /**
+   * B42: verifies the exact Figma references in a task through the model that
+   * is about to author it. Production keeps any positive cache inside the
+   * current orchestrator runtime; ordinary tasks return `required: false`.
+   */
+  preflightFigma?: (args: {
+    project: Project;
+    task: Task;
+    model: ModelId;
+    signal?: AbortSignal;
+  }) => Promise<FigmaAuthorPreflightResult>;
   /**
    * Returns a reason string if running `modelId` would exceed a budget cap, or
    * `null` if within budget. Consulted before dispatching each task and before

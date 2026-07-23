@@ -245,6 +245,46 @@ test("retryTask: an unknown task id is rejected", async () => {
   assert.match(!result.ok ? result.error : "", /task not found/);
 });
 
+test("B42: a blocked task keeps a repaired/reassigned model and Retry clears stale execution state", async () => {
+  const db = setup();
+  project(db, "p1");
+  task(db, "figma-task", "p1", "blocked");
+  repo.updateTask(db, "figma-task", {
+    assignedModel: "deepseek-pro",
+    attempts: 1,
+    branch: "orc/figma-task",
+    worktreePath: "/tmp/figma-task",
+    prNumber: 42,
+    statusReason: "Fix Figma MCP, then Retry.",
+  });
+  const dispatches: string[] = [];
+  const engine = {
+    async dispatchOne(_project: unknown, taskId: string) {
+      dispatches.push(taskId);
+      return repo.getTask(db, taskId)!;
+    },
+  } as unknown as EngineRunner;
+
+  const result = await retryTask(
+    db,
+    engine,
+    () => {},
+    "figma-task",
+    "human",
+  );
+
+  assert.equal(result.ok, true);
+  const reset = repo.getTask(db, "figma-task")!;
+  assert.equal(reset.assignedModel, "deepseek-pro");
+  assert.equal(reset.status, "backlog");
+  assert.equal(reset.attempts, 0);
+  assert.equal(reset.branch, undefined);
+  assert.equal(reset.worktreePath, undefined);
+  assert.equal(reset.prNumber, undefined);
+  assert.equal(reset.statusReason, undefined);
+  assert.deepEqual(dispatches, ["figma-task"]);
+});
+
 test("stopAllProjects: updates status, broadcasts, and audit-logs only for whatever the engine reports as actually stopped", async () => {
   const db = setup();
   project(db, "p1");

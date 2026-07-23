@@ -1,5 +1,6 @@
 import type {
   Difficulty,
+  FigmaCapabilityIssue,
   GateResult,
   LogEvent,
   LogLevel,
@@ -30,10 +31,30 @@ import {
 import { SelfReviewError } from "./validator.js";
 import type {
   EngineEvents,
+  FigmaAuthorCapabilityContext,
   OrchestratorStartOptions,
   Scheduler,
   SchedulerDeps,
 } from "./index.js";
+
+export const FIGMA_CAPABILITY_UNAVAILABLE_MARKER =
+  "[HOOPEDORC_CAPABILITY_UNAVAILABLE:figma]";
+
+const FIGMA_AUTHOR_RECOVERY_ACTIONS = [
+  "Fix or re-authenticate Figma MCP for this runner, then Retry the task.",
+  "Reassign the task to another Figma-capable model, then Retry it.",
+];
+
+export function figmaCapabilityStatusReason(
+  issue: FigmaCapabilityIssue,
+): string {
+  const reference = issue.canonicalUrl ?? issue.nodeId ?? "referenced Figma node";
+  const stage = issue.stage.replaceAll("_", " ");
+  return (
+    `${issue.message} Stage: ${stage}; model: ${issue.model}; runner: ${issue.runner}; ` +
+    `reference: ${reference}. Recovery: ${issue.actions.join(" ")}`
+  );
+}
 
 /**
  * Reduce a glob pattern to its static (non-wildcard) prefix, trailing slash
@@ -344,6 +365,15 @@ export class Orchestrator implements Scheduler {
    *  winding down. Reset the moment dispatch succeeds again, so a later,
    *  separate stall still gets its own notification. */
   private quotaWaitNotified = false;
+  /** B42: populated only after the assigned runner proves exact Figma access. */
+  private readonly figmaCapabilityByTask = new Map<
+    string,
+    FigmaAuthorCapabilityContext
+  >();
+  /** Ordinary tasks are classified once; Figma tasks reconsult the server cache. */
+  private readonly noFigmaReferenceTasks = new Set<string>();
+  /** Capability-blocked executions need the same remote retry cleanup as failures. */
+  private readonly figmaBlockedTasks = new Set<string>();
 
   constructor(private readonly deps: SchedulerDeps) {}
 
@@ -397,6 +427,90 @@ export class Orchestrator implements Scheduler {
       model,
       Math.max(0, (this.localModelActiveCount.get(model) ?? 0) - 1),
     );
+  }
+
+  private blockForFigmaCapability(
+    task: Task,
+    issue: FigmaCapabilityIssue,
+    unstartedAttempt = false,
+  ): void {
+    if (unstartedAttempt) {
+      task.attempts = Math.max(0, task.attempts - 1);
+    }
+    task.status = "blocked";
+    task.statusReason = figmaCapabilityStatusReason(issue);
+    if (task.branch || task.prNumber != null) {
+      this.figmaBlockedTasks.add(task.id);
+    }
+    this.emit("warn", "engine", task.statusReason, task.id);
+    this.deps.events.onTaskUpdated(task);
+    this.deps.events.onFigmaCapabilityBlocked?.({
+      taskId: task.id,
+      taskTitle: task.title,
+      issue,
+    });
+  }
+
+  private async preflightFigma(
+    project: Project,
+    task: Task,
+    model: ModelId,
+    signal: AbortSignal,
+    unstartedAttempt = false,
+  ): Promise<boolean> {
+    if (!this.deps.preflightFigma) return true;
+    if (this.noFigmaReferenceTasks.has(task.id)) return true;
+    const config = this.settings().models.find((candidate) => candidate.id === model);
+    if (!config?.enabled) return true;
+
+    try {
+      const result = await this.deps.preflightFigma({
+        project,
+        task,
+        model,
+        signal,
+      });
+      if (
+        signal.aborted &&
+        (this.paused || this.stopRequested.has(task.id))
+      ) {
+        if (this.stopRequested.has(task.id)) {
+          this.bailIfStopRequested(task);
+        }
+        return false;
+      }
+      if (!result.required) {
+        this.figmaCapabilityByTask.delete(task.id);
+        this.noFigmaReferenceTasks.add(task.id);
+        return true;
+      }
+      if (result.issue) {
+        this.blockForFigmaCapability(task, result.issue, unstartedAttempt);
+        return false;
+      }
+      this.figmaCapabilityByTask.set(task.id, result.context);
+      return true;
+    } catch {
+      if (
+        signal.aborted &&
+        (this.paused || this.stopRequested.has(task.id))
+      ) {
+        if (this.stopRequested.has(task.id)) {
+          this.bailIfStopRequested(task);
+        }
+        return false;
+      }
+      const issue: FigmaCapabilityIssue = {
+        stage: "author_preflight",
+        code: "figma_unavailable",
+        model,
+        runner: config.runner,
+        message: "The assigned runner could not complete the Figma access check.",
+        actions: FIGMA_AUTHOR_RECOVERY_ACTIONS,
+      };
+      this.blockForFigmaCapability(task, issue, unstartedAttempt);
+      return false;
+    }
   }
 
   /** Move a task's concurrency accounting from its old model to a new one
@@ -1062,6 +1176,12 @@ export class Orchestrator implements Scheduler {
     let currentModel = startModel;
 
     try {
+      // B42: this first proof is deliberately before worktree creation and
+      // before the attempt loop mutates `attempts`.
+      if (!(await this.preflightFigma(project, task, currentModel, signal))) {
+        return;
+      }
+
       const { branch, path } = await this.deps.worktrees.create(
         project,
         task,
@@ -1174,6 +1294,21 @@ export class Orchestrator implements Scheduler {
           return;
         }
 
+        // The initial model hits the per-runtime positive cache populated
+        // above. A later fallback model must prove its own access before its
+        // author attempt begins; if it cannot, do not count that attempt.
+        if (
+          !(await this.preflightFigma(
+            project,
+            task,
+            currentModel,
+            signal,
+            true,
+          ))
+        ) {
+          return;
+        }
+
         const attemptEffort =
           this.settings().models.find((model) => model.id === currentModel)?.effort ??
           "default";
@@ -1195,6 +1330,26 @@ export class Orchestrator implements Scheduler {
         if (authorResult === null) return; // paused
 
         if (!authorResult.ok) {
+          const figmaContext = this.figmaCapabilityByTask.get(task.id);
+          if (
+            figmaContext &&
+            (authorResult.summary ?? "").includes(
+              FIGMA_CAPABILITY_UNAVAILABLE_MARKER,
+            )
+          ) {
+            this.blockForFigmaCapability(task, {
+              stage: "author",
+              code: "figma_unavailable",
+              model: currentModel,
+              runner: figmaContext.runner,
+              message:
+                "Figma access disappeared during the author run; no implementation result was accepted.",
+              actions: FIGMA_AUTHOR_RECOVERY_ACTIONS,
+              canonicalUrl: figmaContext.canonicalUrl,
+              nodeId: figmaContext.nodeId,
+            });
+            return;
+          }
           this.emit(
             "error",
             "agent",
@@ -1620,6 +1775,8 @@ export class Orchestrator implements Scheduler {
       }
       this.stopRequested.delete(task.id);
       this.rateLimitWaits.delete(task.id);
+      this.figmaCapabilityByTask.delete(task.id);
+      this.noFigmaReferenceTasks.delete(task.id);
       try {
         await this.deps.worktrees.remove(project, task);
       } catch (err) {
@@ -1630,10 +1787,10 @@ export class Orchestrator implements Scheduler {
           task.id,
         );
       }
-      // A terminally-failed task's remote branch + open PR would otherwise
-      // sit on the target repo forever (merged tasks already clean up via
-      // `gh pr merge --delete-branch`).
-      if (task.status === "failed") {
+      // A terminal failure, or a B42 block after an earlier attempt already
+      // pushed, must not leave a remote branch that makes Retry fail with a
+      // non-fast-forward. Initial preflight blocks never reach this call.
+      if (task.status === "failed" || this.figmaBlockedTasks.has(task.id)) {
         try {
           await this.deps.git.cleanupTaskBranch(project, task);
         } catch (err) {
@@ -1645,6 +1802,7 @@ export class Orchestrator implements Scheduler {
           );
         }
       }
+      this.figmaBlockedTasks.delete(task.id);
     }
   }
 
@@ -2084,19 +2242,33 @@ export class Orchestrator implements Scheduler {
         return stuckResult;
       }
 
+      // B42: the prompt requires this stable marker if Figma disappears after
+      // preflight. Normalize it before emitting the run so it cannot be
+      // persisted as a pass and later mistaken for a no-change result.
+      const figmaContext = this.figmaCapabilityByTask.get(task.id);
+      const normalizedResult =
+        figmaContext &&
+        (result.summary ?? "").includes(FIGMA_CAPABILITY_UNAVAILABLE_MARKER)
+          ? {
+              ...result,
+              ok: false,
+              exitReason: "error" as const,
+            }
+          : result;
+
       // adapter.run() can resolve with ok:false (e.g. exitReason "killed" from
       // an internal timeout) without throwing — label the run row to match,
       // not unconditionally "passed".
       this.emitRunEvent(
         task,
-        result,
-        result.ok ? "passed" : "failed",
+        normalizedResult,
+        normalizedResult.ok ? "passed" : "failed",
         model,
         startedAt,
         undefined,
         effort,
       );
-      return result;
+      return normalizedResult;
     } catch (err: unknown) {
       if (
         (err as Error).name === "AbortError" ||
@@ -2348,6 +2520,15 @@ export class Orchestrator implements Scheduler {
     prompt += SAFETY_GUARDRAILS_BLOCK;
     prompt += buildSkillsBlock(project.config?.skillHints);
     if (task.worktreePath) prompt += buildAgentsMdBlock(task.worktreePath);
+    if (this.figmaCapabilityByTask.has(task.id)) {
+      prompt +=
+        `\n## Figma capability continuity\n` +
+        `The assigned runner proved access to this task's exact Figma reference before this ` +
+        `attempt. Use the configured Figma MCP/tool for the implementation. If that access ` +
+        `disappears, stop instead of guessing or claiming inspection, and end your final ` +
+        `response with this exact marker on its own line:\n` +
+        `${FIGMA_CAPABILITY_UNAVAILABLE_MARKER}\n`;
+    }
 
     if (fixInstructions) {
       prompt += `\n## Issues to Fix\n${fixInstructions}\n`;

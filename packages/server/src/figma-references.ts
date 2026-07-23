@@ -121,6 +121,17 @@ export function extractFigmaReferences(
   };
 }
 
+/**
+ * B42: task descriptions are already the durable handoff for exact design
+ * references. Reuse the same user-input parser rather than teaching execution
+ * a second, looser interpretation of Figma URLs.
+ */
+export function extractFigmaReferencesFromText(
+  text: string,
+): FigmaReferenceIntake {
+  return extractFigmaReferences([{ role: "user", content: text }]);
+}
+
 function safeMetadataText(value: unknown, max: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.replace(/[\r\n\t]+/gu, " ").trim();

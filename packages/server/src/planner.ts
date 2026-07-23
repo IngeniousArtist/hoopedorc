@@ -1047,6 +1047,16 @@ const FIGMA_ACTIONS = [
   "Attach screenshots, then continue with attachment-only visual context.",
 ];
 
+export const FIGMA_AUTHOR_ACTIONS = [
+  "Fix or re-authenticate Figma MCP for this runner, then Retry the task.",
+  "Reassign the task to another Figma-capable model, then Retry it.",
+];
+
+export interface FigmaVerificationIssueContext {
+  stage?: FigmaCapabilityIssue["stage"];
+  actions?: readonly string[];
+}
+
 function issueMessage(code: FigmaCapabilityIssueCode): string {
   switch (code) {
     case "figma_invalid_node":
@@ -1074,14 +1084,15 @@ function makeFigmaIssue(
   code: FigmaCapabilityIssueCode,
   plannerModel: PlannerModel,
   reference?: FigmaNodeReferenceInput,
+  context: FigmaVerificationIssueContext = {},
 ): FigmaCapabilityIssue {
   return {
-    stage: "deconstruction",
+    stage: context.stage ?? "deconstruction",
     code,
     model: plannerModel.id ?? plannerModel.model ?? "unknown",
     runner: plannerModel.runner,
     message: issueMessage(code),
-    actions: FIGMA_ACTIONS,
+    actions: [...(context.actions ?? FIGMA_ACTIONS)],
     canonicalUrl: reference?.canonicalUrl,
     nodeId: reference?.nodeId,
   };
@@ -1178,12 +1189,13 @@ function cachedFigmaReferences(
     : null;
 }
 
-async function verifyFigmaReferences(
+export async function verifyFigmaReferences(
   requested: FigmaNodeReferenceInput[],
   cwd: string,
   plannerModel: PlannerModel,
   signal?: AbortSignal,
   onInvocation?: PlannerInvocationSink,
+  issueContext: FigmaVerificationIssueContext = {},
 ): Promise<{ references: VerifiedFigmaReference[]; costUsd: number }> {
   let result: ClaudeJsonResult;
   try {
@@ -1202,7 +1214,12 @@ async function verifyFigmaReferences(
     );
   } catch (err) {
     throw new FigmaVerificationError(
-      makeFigmaIssue(classifyFigmaFailure(err), plannerModel, requested[0]),
+      makeFigmaIssue(
+        classifyFigmaFailure(err),
+        plannerModel,
+        requested[0],
+        issueContext,
+      ),
     );
   }
 
@@ -1215,7 +1232,12 @@ async function verifyFigmaReferences(
     parsed = parseJsonWithRepair(result.text) as typeof parsed;
   } catch {
     throw new FigmaVerificationError(
-      makeFigmaIssue("figma_malformed_response", plannerModel, requested[0]),
+      makeFigmaIssue(
+        "figma_malformed_response",
+        plannerModel,
+        requested[0],
+        issueContext,
+      ),
       result.costUsd,
     );
   }
@@ -1231,6 +1253,7 @@ async function verifyFigmaReferences(
         rawIssueCode(parsed.issue?.code),
         plannerModel,
         requested[referenceIndex] ?? requested[0],
+        issueContext,
       ),
       result.costUsd,
     );
@@ -1238,14 +1261,24 @@ async function verifyFigmaReferences(
 
   if (parsed.issue?.code !== "none") {
     throw new FigmaVerificationError(
-      makeFigmaIssue("figma_malformed_response", plannerModel, requested[0]),
+      makeFigmaIssue(
+        "figma_malformed_response",
+        plannerModel,
+        requested[0],
+        issueContext,
+      ),
       result.costUsd,
     );
   }
 
   if (!Array.isArray(parsed.references)) {
     throw new FigmaVerificationError(
-      makeFigmaIssue("figma_malformed_response", plannerModel, requested[0]),
+      makeFigmaIssue(
+        "figma_malformed_response",
+        plannerModel,
+        requested[0],
+        issueContext,
+      ),
       result.costUsd,
     );
   }
@@ -1258,7 +1291,12 @@ async function verifyFigmaReferences(
   );
   if (!normalized) {
     throw new FigmaVerificationError(
-      makeFigmaIssue("figma_malformed_response", plannerModel, requested[0]),
+      makeFigmaIssue(
+        "figma_malformed_response",
+        plannerModel,
+        requested[0],
+        issueContext,
+      ),
       result.costUsd,
     );
   }

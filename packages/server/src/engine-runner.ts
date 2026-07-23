@@ -13,6 +13,7 @@ import {
 } from "@orc/engine";
 import { makeAdapter, type AgentAdapter } from "@orc/adapters";
 import type {
+  FigmaCapabilityIssue,
   ModelId,
   ModelInvocation,
   Project,
@@ -30,6 +31,13 @@ import { manualCostUsd } from "./pricing";
 import { planningPersistenceError } from "./planning-commit";
 import { persistInvocationEvent } from "./invocation-ledger";
 import type { ServerNotifier } from "./telegram";
+import {
+  FIGMA_AUTHOR_ACTIONS,
+  FigmaVerificationError,
+  verifyFigmaReferences,
+  type PlannerModel,
+} from "./planner.js";
+import { extractFigmaReferencesFromText } from "./figma-references.js";
 
 function fmtDurationMs(ms: number): string {
   const totalSeconds = Math.round(ms / 1000);
@@ -106,6 +114,8 @@ export interface EngineRunnerOptions {
   shutdownDeadlineMs?: number;
   /** Test seam for the persisted rollback state machine. */
   rollbackDepsFactory?: (project: Project) => RollbackExecutionDeps;
+  /** B42 test seam; production probes through the real selected CLI/MCP. */
+  figmaVerifier?: typeof verifyFigmaReferences;
 }
 
 export interface RollbackExecutionDeps {
@@ -346,6 +356,10 @@ export class EngineRunner {
     // Orchestrator, so one noisy task cannot bypass the dedupe by changing how
     // it was dispatched.
     const modelTroubleNotified = new Set<string>();
+    // B42: positive access facts live no longer than this project runtime.
+    // The exact runner model and file are both part of the key.
+    const figmaAccessCache = new Set<string>();
+    const figmaVerifier = this.options.figmaVerifier ?? verifyFigmaReferences;
 
     const adapterFor = (modelId: ModelId): AgentAdapter => {
       const cfg = liveSettings().models.find((m) => m.id === modelId);
@@ -381,6 +395,93 @@ export class EngineRunner {
           .getNotifications(this.db, projectId)
           .find((n) => n.requiresApproval && !n.respondedWith);
         return pending ? { title: pending.title } : undefined;
+      },
+      preflightFigma: async ({ task, model, signal }) => {
+        const intake = extractFigmaReferencesFromText(
+          [task.description, ...task.acceptanceCriteria].join("\n"),
+        );
+        if (intake.nodes.length === 0) return { required: false };
+
+        const config = liveSettings().models.find((candidate) => candidate.id === model);
+        if (!config) {
+          throw new Error(`model ${model} is not configured`);
+        }
+        const representatives = [
+          ...new Map(
+            intake.nodes.map((reference) => [reference.fileKey, reference]),
+          ).values(),
+        ];
+        const first = representatives[0]!;
+        const context = {
+          runner: config.runner,
+          canonicalUrl: first.canonicalUrl,
+          nodeId: first.nodeId,
+        };
+        const configuredRunnerModel =
+          config.runner === "codex"
+            ? config.codexModel
+            : config.runner === "opencode"
+              ? config.opencodeModel
+              : config.claudeModel;
+        const accessKey = (fileKey: string) =>
+          [
+            model,
+            config.runner,
+            configuredRunnerModel ?? "cli-default",
+            fileKey,
+          ].join("\u0000");
+        const uncached = representatives.filter(
+          (reference) => !figmaAccessCache.has(accessKey(reference.fileKey)),
+        );
+        if (uncached.length === 0) {
+          return { required: true, context };
+        }
+
+        const plannerModel: PlannerModel = {
+          id: model,
+          runner: config.runner,
+          model: configuredRunnerModel,
+          effort: config.effort,
+          opencodeBaseUrl:
+            config.runner === "opencode" ? ENV.opencodeBaseUrl : undefined,
+        };
+        try {
+          await figmaVerifier(
+            uncached,
+            project.localPath,
+            plannerModel,
+            signal,
+            (event) =>
+              this.recordInvocation({
+                ...event,
+                projectId: project.id,
+                taskId: task.id,
+              }),
+            {
+              stage: "author_preflight",
+              actions: FIGMA_AUTHOR_ACTIONS,
+            },
+          );
+          for (const reference of uncached) {
+            figmaAccessCache.add(accessKey(reference.fileKey));
+          }
+          return { required: true, context };
+        } catch (error) {
+          if (error instanceof FigmaVerificationError) {
+            return { required: true, context, issue: error.issue };
+          }
+          const issue: FigmaCapabilityIssue = {
+            stage: "author_preflight",
+            code: "figma_unavailable",
+            model,
+            runner: config.runner,
+            message: "The assigned runner could not complete the Figma access check.",
+            actions: [...FIGMA_AUTHOR_ACTIONS],
+            canonicalUrl: first.canonicalUrl,
+            nodeId: first.nodeId,
+          };
+          return { required: true, context, issue };
+        }
       },
       checkBudget: (modelId) =>
         checkBudget(this.db, project.id, modelId, liveSettings()),
@@ -576,6 +677,54 @@ export class EngineRunner {
               detail: info.detail,
             });
           }
+        },
+        onFigmaCapabilityBlocked: (info) => {
+          const capabilityKey = [
+            "figma",
+            info.issue.stage,
+            info.issue.model,
+            info.issue.runner,
+            info.issue.code,
+            info.issue.canonicalUrl ?? info.issue.nodeId ?? "unknown",
+          ].join("|");
+          if (
+            repo.getNotificationByCapabilityKey(
+              this.db,
+              info.taskId,
+              capabilityKey,
+            )
+          ) {
+            return;
+          }
+
+          const persistedTask = repo.getTask(this.db, info.taskId);
+          const message = persistedTask?.statusReason ?? info.issue.message;
+          const notification = repo.createNotification(this.db, {
+            projectId: project.id,
+            taskId: info.taskId,
+            severity: "warn",
+            title: `${info.taskTitle} — Figma access blocked`,
+            message,
+            requiresApproval: false,
+            context: { capabilityKey },
+          });
+          repo.createAuditEntry(this.db, {
+            projectId: project.id,
+            taskId: info.taskId,
+            kind: "capability_blocked",
+            actor: "engine",
+            summary: notification.title,
+            detail: {
+              stage: info.issue.stage,
+              code: info.issue.code,
+              model: info.issue.model,
+              runner: info.issue.runner,
+              reference: info.issue.canonicalUrl ?? info.issue.nodeId,
+              actions: info.issue.actions,
+            },
+          });
+          this.hub.broadcast({ type: "notification", payload: notification });
+          this.notifier?.info(`⚠️ ${notification.title}\n${message}`);
         },
         requestApproval: (args) => {
           // F5/F22: give the human enough to decide without opening the app
@@ -857,7 +1006,8 @@ export class EngineRunner {
         t.status === "backlog" ||
         t.status === "ready" ||
         t.status === "in_progress" ||
-        t.status === "in_review",
+        t.status === "in_review" ||
+        t.status === "blocked",
     );
     const anyFailed = finalTasks.some((t) => t.status === "failed");
     const finalStatus = allDone

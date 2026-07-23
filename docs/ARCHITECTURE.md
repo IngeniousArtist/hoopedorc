@@ -83,6 +83,15 @@ never branch before its planning context is present on the remote default
 branch. A retry always pushes a prior local no-diff commit before finalizing DB
 state.
 
+Exact Figma task references also cross one explicit execution boundary.
+`EngineRunner` owns the Figma-specific parser, real runner probe, short-lived
+model/file cache, invocation accounting, and durable notification dedupe.
+`@orc/engine` asks for that proof before worktree creation, blocks only the
+affected task on failure, and recognizes one stable mid-author loss marker.
+This reuses the existing scheduler, Task `statusReason`, Retry/reassignment,
+notification, and invocation-ledger paths; there is no generic capability
+registry or second orchestration lifecycle.
+
 ## Why this split
 - **One language (TS)** so the parallel agents share `@orc/types` and can't drift.
 - **OpenCode as the single gateway** for all API-billed models — one CLI
