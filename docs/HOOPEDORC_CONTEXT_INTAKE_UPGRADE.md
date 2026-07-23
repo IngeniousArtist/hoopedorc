@@ -721,12 +721,13 @@ verified, durable planning reference list.
 ### Phase 17.3 — B42: recoverable Figma capability blocks
 
 **Status (2026-07-23):** implementation complete and locally verified on
-`b42-recoverable-figma-blocks`; delivery is in progress. The full repository
-gate passes: typecheck, build, lint, 170 engine tests, 12 adapter tests, 196
-server tests, 23 web tests, 15 Playwright tests at the required five widths,
-and `git diff --check`. The real scratch-project disable/fix-or-reroute/Retry
-check remains assigned to the owner because no EC2 runner configuration and
-owner Figma node were supplied for this branch.
+`b42-recoverable-figma-blocks`
+([#159](https://github.com/IngeniousArtist/hoopedorc/pull/159)); review is in
+progress. The full repository gate passes: typecheck, build, lint, 170 engine
+tests, 12 adapter tests, 196 server tests, 23 web tests, 15 Playwright tests at
+the required five widths, and `git diff --check`. The real scratch-project
+disable/fix-or-reroute/Retry check remains assigned to the owner because no
+EC2 runner configuration and owner Figma node were supplied for this branch.
 
 **Goal:** Prevent missing design access from wasting attempts or silently
 degrading fidelity during autorun.

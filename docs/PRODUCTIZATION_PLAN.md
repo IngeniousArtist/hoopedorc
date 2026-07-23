@@ -6417,7 +6417,7 @@ deployment.
 |---|---|---|
 | F51 — lean task references and runner-accurate skills | ✅ implementation complete; local full gate passed 2026-07-23 | [#157](https://github.com/IngeniousArtist/hoopedorc/pull/157) |
 | F52 — direct Figma nodes and planning verification | ✅ done; merged and independently verified 2026-07-23 | [#158](https://github.com/IngeniousArtist/hoopedorc/pull/158) |
-| B42 — recoverable Figma capability blocks | ✅ implementation complete; local full gate passed 2026-07-23; delivery in progress | — |
+| B42 — recoverable Figma capability blocks | ✅ implementation complete; local full gate passed 2026-07-23; review in progress | [#159](https://github.com/IngeniousArtist/hoopedorc/pull/159) |
 | F53 — automatic visual-fidelity QA task | approved; depends on B42 | — |
 
 The owner approved this focused wave on 2026-07-23 after the original context
@@ -6565,11 +6565,13 @@ reload restores references; no-Figma planning makes no probe.
 ### B42. Recoverable Figma capability blocks
 
 **Status (2026-07-23):** implemented and locally verified on
-`b42-recoverable-figma-blocks`; delivery is in progress. Execution now reuses
-F52's exact-node parser and bounded real-runner verifier before worktree
-creation. One representative node per file is checked through the assigned
-author model, with project/task `health` accounting and a positive cache
-limited to that orchestrator runtime, runner/model configuration, and file.
+`b42-recoverable-figma-blocks`
+([#159](https://github.com/IngeniousArtist/hoopedorc/pull/159)); review is in
+progress. Execution now reuses F52's exact-node parser and bounded real-runner
+verifier before worktree creation. One representative node per file is checked
+through the assigned author model, with project/task `health` accounting and a
+positive cache limited to that orchestrator runtime, runner/model
+configuration, and file.
 
 Failed preflight blocks only the affected task with durable actionable
 context, consumes no attempt, creates no execution artifacts, leaves unrelated
