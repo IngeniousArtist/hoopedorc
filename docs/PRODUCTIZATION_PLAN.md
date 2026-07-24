@@ -6759,7 +6759,7 @@ The repository workflow is part of the remediation, not optional ceremony:
 
 | Order | Item | Phase | Proposed branch / PR boundary | Status |
 |---|---|---|---|---|
-| 1 | D2 — protected-main and merge-evidence guardrails | 18A | `chore/protect-main-workflow` plus the explicit GitHub setting change | pending |
+| 1 | D2 — protected-main and merge-evidence guardrails | 18A | `chore/protect-main-workflow` plus the explicit GitHub setting change | implemented; [#165](https://github.com/IngeniousArtist/hoopedorc/pull/165) |
 | 2 | B44 — Docker-safe package-manager environment | 18B | `fix/docker-npm-cache-boundary` | blocker; diagnosed |
 | 3 | B45 — persisted Coding Plan default migration | 18C | `fix/persisted-glm-provider-migration` | pending |
 | 4 | B46 — fail-closed Figma preflight and cache invalidation | 18D | `fix/figma-preflight-integrity` | pending; live Figma input required |
@@ -6768,6 +6768,21 @@ The repository workflow is part of the remediation, not optional ceremony:
 | 7 | Phase 18 final acceptance and evidence | 18E | documentation-only evidence PR if earlier PRs cannot record every live check | pending |
 
 ### D2. Protected-main and merge-evidence guardrails — HIGH (workflow)
+
+**Status (2026-07-24):** implemented through
+[#165](https://github.com/IngeniousArtist/hoopedorc/pull/165). `main` now
+requires a current pull request with the exact `build-and-test` check, applies
+the rule to administrators, and rejects force-pushes and branch deletion. The
+repository-owned PR template records the roadmap item, focused and full gate,
+live/deferred evidence, and data-handling considerations.
+
+**Acceptance evidence (2026-07-24):** GitHub's protection API read-back
+reported `strict: true`, required context `build-and-test`, administrator
+enforcement, zero required approvals, and disabled force-push/deletion. This
+PR was `BLOCKED` while its required check was in progress and became clean only
+after that check passed. The complete local gate passed: typecheck, build,
+lint, 173 engine tests, 12 adapter tests, 203 server tests, 25 web tests, 16
+Playwright scenarios, and `git diff --check`.
 
 **Confirmed problem:** `main` currently has no GitHub branch protection. PR
 [#162](https://github.com/IngeniousArtist/hoopedorc/pull/162) merged at
