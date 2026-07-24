@@ -6723,3 +6723,288 @@ unit assertion transiently missed its async readiness on a parallel full-suite
 run; its focused rerun and the following full 25-test web rerun both passed.
 Post-deployment Retry of the preserved failed task remains the required live
 acceptance check after merge.
+
+## Part 13 — Production-boundary and audit-integrity remediation (2026-07-24 incident audit)
+
+### Phase 18 status and operating rules
+
+**Status (2026-07-24):** diagnosis complete; implementation not started. This
+wave preserves the historical B42/F53/B43 evidence above and records the
+follow-up work discovered while investigating the live blackjack project.
+`hoopedorc.service` is active, but the project is paused: its scaffold task
+merged, then three dependency-bearing tasks failed together before an author
+attempt with the same Docker/npm setup error. No task was retried and no
+project data, worktree, dependency cache, source file, or operator change was
+deleted during the audit.
+
+The repository workflow is part of the remediation, not optional ceremony:
+
+1. Merge this roadmap addition as a documentation-only PR after green CI.
+2. Complete D2 before merging another runtime change. Start every item from a
+   clean, current `main`, use one named branch and one reviewable PR, wait for
+   the required check, inspect the final diff, then merge.
+3. Implement B44 alone and deploy it before retrying any of the three failed
+   blackjack tasks. Prove one preserved task crosses dependency setup before
+   resuming the rest.
+4. Continue in the order below. Do not combine unrelated items to save a PR.
+   A later item starts only after the prior merged commit and its required live
+   boundary have been independently verified.
+5. Every PR records focused regression evidence plus the complete repository
+   gate. Mock tests do not replace the specified systemd, Docker, GitHub,
+   installed-CLI, or real-Figma checks.
+6. Preserve persisted settings, planning drafts, task/run history, dirty
+   project files, branches, and untracked operator content. No reset, stash,
+   force-push, broad cleanup, task replacement, or deletion is authorized by
+   this plan.
+
+| Order | Item | Phase | Proposed branch / PR boundary | Status |
+|---|---|---|---|---|
+| 1 | D2 — protected-main and merge-evidence guardrails | 18A | `chore/protect-main-workflow` plus the explicit GitHub setting change | pending |
+| 2 | B44 — Docker-safe package-manager environment | 18B | `fix/docker-npm-cache-boundary` | blocker; diagnosed |
+| 3 | B45 — persisted Coding Plan default migration | 18C | `fix/persisted-glm-provider-migration` | pending |
+| 4 | B46 — fail-closed Figma preflight and cache invalidation | 18D | `fix/figma-preflight-integrity` | pending; live Figma input required |
+| 5 | B47 — collision-safe, viewport-correct visual QA generation | 18D | `fix/visual-qa-task-generation` | pending; live Figma input required |
+| 6 | B48 — validator empty-reasons audit correctness | 18E | `fix/validator-empty-reasons` | pending |
+| 7 | Phase 18 final acceptance and evidence | 18E | documentation-only evidence PR if earlier PRs cannot record every live check | pending |
+
+### D2. Protected-main and merge-evidence guardrails — HIGH (workflow)
+
+**Confirmed problem:** `main` currently has no GitHub branch protection. PR
+[#162](https://github.com/IngeniousArtist/hoopedorc/pull/162) merged at
+09:02:46 UTC while its only `build-and-test` check was still running; that
+check did not complete successfully until 09:05:14 UTC. Its change later
+passed, but the merge violated the repository's branch → PR → green checks →
+merge invariant and showed that documentation alone does not enforce it.
+
+**Implementation:** configure GitHub to require a pull request and the exact
+`build-and-test` status check from `.github/workflows/ci.yml` before `main` can
+advance. Require the branch to be current with `main`, prevent the normal
+administrator/bypass path from silently skipping the rule, and keep force
+pushes and branch deletion disabled. Add a small repository-owned PR template
+or equivalent review checklist only if it materially records the roadmap ID,
+focused tests, full gate, live checks, and deferred evidence without duplicating
+`AGENTS.md`. Keep the version-controlled workflow and GitHub rule names aligned.
+
+**Likely files/settings:** GitHub branch protection or ruleset for `main`,
+`.github/workflows/ci.yml` only if the stable check name needs clarification,
+an optional `.github/pull_request_template.md`, `AGENTS.md`, and this roadmap.
+Do not add a second CI workflow or weaken the existing full test job.
+
+**Acceptance:** the GitHub API reports `main` protected; a scratch PR with
+`build-and-test` pending or failing cannot merge through the normal or
+administrator path; the same PR becomes mergeable after the required current
+head commit passes; a direct non-fast-forward/force push remains refused. The
+PR description names its roadmap item, focused/full verification, deployment
+checks, and anything still pending. Record screenshots or API output without
+tokens or repository secrets.
+
+### B44. Docker-safe package-manager environment — BLOCKER
+
+**Confirmed problem:** production starts the server through npm, which supplies
+`npm_config_cache=/home/ubuntu/.npm`. `safeNpmConfigEnv` forwards `cache`, and
+the Docker gate/setup sandbox copies that host-only absolute path even though
+it mounts only the worktree and sets its own container home. The container
+runs as the host UID and cannot create `/home/ubuntu`, so the first shared
+frozen install exits with `EACCES`. Three tasks with the same dependency
+fingerprint correctly awaited that one failed installation and all stopped
+with `attempts = 0`; this was not a model failure or three concurrent `npm ci`
+races.
+
+**Implementation:** establish an explicit container-local package-manager
+environment at the sandbox ownership boundary. Host npm routing behavior that
+is safe and meaningful inside the container may remain allowlisted, but
+host-only path values such as the npm cache must be omitted, translated to a
+writable container path, or mounted through an intentional least-privilege
+contract. Audit the other path-bearing npm settings, especially `cafile`,
+rather than fixing only the observed string. Preserve B38's frozen-lock,
+fingerprint, single-publisher, atomic-cache, host-UID ownership, cancellation,
+and failure-cleanup guarantees.
+
+**Likely files:** `packages/adapters/src/env.ts`,
+`packages/engine/src/sandbox.ts`, their focused tests,
+`packages/engine/src/worktree-manager.test.ts`,
+`docs/specs/sandbox.md`, `docs/USER_GUIDE.md`, and this roadmap.
+`deploy/hoopedorc.service` changes only if the owning-layer fix proves that the
+service contract itself is wrong.
+
+**Non-goals:** do not run task containers as root, mount the operator's whole
+home directory, expose npm credentials, switch production away from prebuilt
+startup merely to hide the inherited setting, relax frozen installs, clear
+the host npm cache, or replace the existing failed tasks/project.
+
+**Acceptance:** first add a regression that launches setup with
+`npm_config_cache=/home/ubuntu/.npm` and proves Docker receives no unusable
+host path. A real minimal locked Node repository must complete frozen install
+inside the same Docker image as the service UID, with a writable container
+home/cache and host-owned materialized artifacts. Registry/proxy and approved
+certificate behavior still work; credential-bearing npm settings remain
+absent. Concurrent identical fingerprints still perform one publish,
+different fingerprints remain independent, cancellation settles, a failed
+install publishes no cache, and retry succeeds after the environmental cause
+is removed.
+
+**Live acceptance:** deploy through the canonical update path and inspect the
+actual systemd child environment without printing secrets. Retry exactly one
+preserved failed blackjack task; it must cross dependency setup and begin its
+first author attempt without recreating the project or plan. Verify cache and
+worktree ownership, then allow the scheduler to resume the other preserved
+tasks. A live check run directly from an interactive shell is insufficient.
+
+### B45. Persisted Coding Plan default migration — HIGH (billing boundary)
+
+**Confirmed problem:** B43 changed the fresh default GLM slug to
+`zai-coding-plan/glm-5.2`, but `normalizeSettings` retains any persisted
+`models` array wholesale. The upgraded production database therefore still
+routes the stock `glm` model through `zai/glm-5.2`. The fresh-default unit test
+passes while an existing installation misses the subscription-safe provider
+change.
+
+**Implementation:** add a narrow, idempotent settings migration for the exact
+historical stock GLM entry. Move that legacy default to
+`zai-coding-plan/glm-5.2` without rewriting custom model IDs, renamed models,
+other Z.AI slugs, or deliberately configured providers. If existing
+persistence cannot distinguish the stock legacy value from an explicit
+operator choice safely, introduce an explicit one-time confirmation/notice
+instead of guessing. Continue to expose general `zai/` catalog models for
+operators who intentionally select usage-priced access.
+
+**Likely files:** `packages/server/src/config.ts` and tests, the settings
+persistence/migration owner under `packages/server/src/db/` if needed, Setup
+health/UI tests only if confirmation is required, `docs/USER_GUIDE.md`, and
+this roadmap. Any new persisted/API field must follow the complete shared
+contract and SQLite checklist in `AGENTS.md`.
+
+**Acceptance:** fresh settings use Coding Plan; an exact legacy stock setting
+migrates once and remains stable across restart; custom/general-provider
+settings do not change; malformed settings still fail precisely; catalog
+discovery shows both intended provider families without silently changing
+billing semantics. The installed OpenCode catalog must confirm the exact slug.
+After deployment, production reports the selected Coding Plan provider or an
+explicit unresolved operator choice—never a silent legacy default.
+
+### B46. Fail-closed Figma preflight and cache invalidation — HIGH
+
+**Confirmed problems:** B42's positive access cache is keyed by logical model,
+runner, configured model slug, and Figma file, but not the effective MCP/runner
+configuration that the specification says must trigger a new proof. A
+same-process MCP configuration change can therefore reuse stale success. The
+verification wrapper also converts every `runPlannerJson` exception into a
+recoverable Figma capability issue; because invocation-ledger callbacks execute
+inside that boundary, a persistence/accounting failure can be mislabeled as
+“Figma unavailable.” Finally, every selected fallback must prove access before
+an execution worktree or attempt exists, including when the initially assigned
+model is disabled or missing.
+
+**Implementation:** make positive reuse conditional on a bounded, non-secret
+effective capability revision, or remove reuse where that identity cannot be
+proved safely. Never hash, persist, return, or log auth tokens. Separate runner
+capability failures from invocation-ledger/durability failures: capability
+loss follows B42's actionable zero-attempt block, while accounting failure
+fails closed through the owning runtime error path. Ensure preflight ordering
+holds for assigned and fallback models before worktree/branch/attempt creation.
+
+**Likely files:** `packages/server/src/engine-runner.ts`,
+`packages/server/src/planner.ts`, `packages/engine/src/orchestrator.ts`, their
+focused tests, `docs/HOOPEDORC_CONTEXT_INTAKE_UPGRADE.md`,
+`docs/ARCHITECTURE.md`, and this roadmap.
+
+**Acceptance:** unchanged effective configuration reuses only the approved
+bounded result; model, runner, model slug, Figma file, MCP configuration
+revision, or server runtime change causes a fresh accounted probe. A simulated
+ledger write failure does not create a Figma notification/block or consume an
+author attempt and cannot be reported as successful accounting. Disabled,
+missing, rerouted, and fallback candidates create no worktree until the actual
+candidate passes preflight. No-Figma tasks still make no probe.
+
+**Live acceptance:** use an owner-supplied scratch Figma frame. Prove access,
+change or disable the assigned runner's Figma MCP in the same server runtime,
+and confirm Retry re-probes and blocks with zero attempts and one secret-free
+notification. Restore/reassign access, Retry the same task, and confirm it
+continues without duplicate tasks, branches, invocations, or alerts.
+
+### B47. Collision-safe, viewport-correct visual QA generation — HIGH
+
+**Confirmed problems:** F53 identifies an owned generated task only by the
+case-insensitive title `Visual fidelity QA`. During fresh deconstruction it
+removes every task with that title even when no verified Figma reference
+exists, so a legitimate planner/user task can disappear. It also classifies
+every width `<= 768` as mobile: a 768×1024 tablet is presented as mobile
+evidence and suppresses the missing-mobile warning. Finally, generated QA scope
+is only the union of matched implementation scopes even though the task is
+required to add/update real-browser coverage and may need test, fixture,
+startup, or configuration files outside those globs.
+
+**Implementation:** give Hoopedorc's generated draft task explicit,
+collision-safe ownership metadata or an equally typed identity; never infer
+ownership from editable title text alone. Preserve a manually authored task
+with the same title and keep visible deletion of only the generated task as the
+explicit opt-out. Classify phone, tablet, desktop, and unknown references using
+the repository's responsive verification widths, with 768 represented as
+tablet rather than proof of phone fidelity. Compute the narrowest honest scope
+that includes the referenced implementation plus required browser tests,
+fixtures, and startup/config paths; do not default to unrestricted scope when
+specific paths are available.
+
+**Likely files:** `packages/server/src/visual-qa-task.ts` and tests,
+`packages/types/src/api.ts` plus contract/mock/UI consumers only if draft
+metadata changes, `docs/HOOPEDORC_CONTEXT_INTAKE_UPGRADE.md`, and this roadmap.
+
+**Acceptance:** no-Figma input returns every ordinary/manual task unchanged,
+including a title collision. Repeated deconstruction creates exactly one owned
+generated QA task; renaming, editing, or deleting it follows the documented
+visible-draft behavior without deleting unrelated work. Fixtures at 390, 768,
+and 1440 classify as phone, tablet, and desktop; tablet-only input still warns
+that phone fidelity is unproved. Generated scope permits its required
+Playwright/test/fixture/startup edits while retaining normal destructive-change
+and validator rails. Dependencies and docs-last ordering remain stable.
+
+**Live acceptance:** with owner-supplied desktop and phone Figma frames,
+complete plan → autorun → browser comparison → repair → gates → independent
+validation on a scratch UI. Repeat with tablet-only input and confirm the
+result never claims phone fidelity. Removing the visible generated draft task
+before commit remains an explicit opt-out and commit does not recreate it.
+
+### B48. Validator empty-reasons audit correctness — LOW
+
+**Confirmed problem:** a validator response containing valid JSON with
+`verdict: "approve"`, a numeric confidence, and `reasons: []` parses
+successfully, but `parseDecision` retains its initialized
+`"could not parse validator output"` reason because it only replaces that
+default when the array is non-empty. The scaffold approval was valid; its
+persisted explanation was false and makes later incident review misleading.
+
+**Implementation:** distinguish “JSON did not parse” from “valid decision with
+an empty reasons array.” Preserve the actual empty list or a truthful explicit
+policy message according to the validator contract. Malformed output, invalid
+verdicts, and out-of-range confidence must retain the existing fail-closed
+behavior; this item must not make approval easier.
+
+**Likely files:** `packages/engine/src/validator.ts`,
+`packages/engine/src/validator.test.ts`, and this roadmap. Update shared
+contract/docs only if the allowed reasons shape changes.
+
+**Acceptance:** focused tests cover valid approve/request-changes/escalate with
+empty and non-empty reasons, fenced/surrounded valid JSON, no JSON, malformed
+JSON, invalid verdict, and confidence clamping. No successfully parsed response
+is labeled a parse failure, and malformed output cannot become an approval.
+Existing persisted decisions remain untouched unless a separate explicit data
+repair is reviewed and authorized.
+
+### Phase 18 PR and verification order
+
+1. Merge this Part 13 plan as a documentation-only PR after the complete gate.
+2. D2 — protect `main` and prove pending/failed CI prevents merge.
+3. B44 — fix the Docker/npm boundary; deploy and retry one preserved task.
+4. B45 — migrate or explicitly resolve the persisted GLM provider boundary.
+5. B46 — make Figma preflight cache/accounting/fallback behavior fail closed.
+6. B47 — correct generated visual-QA identity, viewport semantics, and scope.
+7. B48 — correct validator audit text without weakening validation.
+8. Run the complete repository gate on every branch:
+   `npm run typecheck`, `npm run build`, `npm run lint`,
+   `npm test -w @orc/engine`, `npm test -w @orc/adapters`,
+   `npm test -w @orc/server`, `npm run test:web`, `npm run test:e2e`, and
+   `git diff --check`.
+9. After the final merge, independently verify merged `main`, the deployed
+   service boundary, the preserved blackjack project, provider selection, and
+   the owner-supplied Figma flow. Record exact commits/PRs, test counts, and any
+   genuinely unavailable owner check here without substituting a mock.
