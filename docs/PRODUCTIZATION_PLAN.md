@@ -6679,7 +6679,7 @@ is introduced.
 ### B43. First-project bootstrap and subscription-safe GLM defaults — HIGH
 
 **Status (2026-07-24):** implemented and locally verified on
-`fix/npm12-bootstrap-zai`.
+`fix/npm12-bootstrap-zai` ([#163](https://github.com/IngeniousArtist/hoopedorc/pull/163)).
 
 **Confirmed problems:** the first live blackjack scaffold stopped before its
 first author attempt because Hoopedorc's dependency setup required a lockfile
