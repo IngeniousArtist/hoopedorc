@@ -6763,7 +6763,7 @@ The repository workflow is part of the remediation, not optional ceremony:
 | 2 | B44 — Docker-safe package-manager environment | 18B | `fix/docker-npm-cache-boundary` | implemented; [#166](https://github.com/IngeniousArtist/hoopedorc/pull/166) |
 | 3 | B45 — persisted Coding Plan default migration | 18C | `fix/persisted-glm-provider-migration` | implemented; [#168](https://github.com/IngeniousArtist/hoopedorc/pull/168) |
 | 4 | B46 — fail-closed Figma preflight and cache invalidation | 18D | `fix/figma-preflight-integrity` | implemented and deployed; [#170](https://github.com/IngeniousArtist/hoopedorc/pull/170). Live acceptance deferred indefinitely (owner choice, 2026-07-24) — no owner-supplied Figma input |
-| 5 | B47 — collision-safe, viewport-correct visual QA generation | 18D | `fix/visual-qa-task-generation` | code implemented, pending PR; live acceptance deferred indefinitely (owner choice, 2026-07-24) |
+| 5 | B47 — collision-safe, viewport-correct visual QA generation | 18D | `fix/visual-qa-task-generation` | implemented and deployed; [#172](https://github.com/IngeniousArtist/hoopedorc/pull/172). Live acceptance deferred indefinitely (owner choice, 2026-07-24) |
 | 6 | B48 — validator empty-reasons audit correctness | 18E | `fix/validator-empty-reasons` | pending |
 | 7 | Phase 18 final acceptance and evidence | 18E | documentation-only evidence PR if earlier PRs cannot record every live check | pending |
 
@@ -7100,11 +7100,16 @@ continues without duplicate tasks, branches, invocations, or alerts.
 
 ### B47. Collision-safe, viewport-correct visual QA generation — HIGH
 
-**Status (2026-07-24):** implemented on branch
-`fix/visual-qa-task-generation`, PR pending. Live acceptance needs
-owner-supplied Figma frames; per the owner's 2026-07-24 decision to defer
-B46's live Figma check indefinitely, this item's live acceptance is deferred
-the same way — code-level acceptance is fully verified independent of it.
+**Status (2026-07-24):** implemented and merged
+([#172](https://github.com/IngeniousArtist/hoopedorc/pull/172), commit
+`c3e8c46`), deployed through `scripts/update.sh --non-interactive
+--require-main --require-systemd-restart` from `/opt/hoopedorc`
+(`7a1575d..c3e8c46`). `GET /api/health` reported `{ok: true, version:
+"0.6.0", state: "running", degraded: []}` post-restart. Live acceptance
+needs owner-supplied Figma frames; per the owner's 2026-07-24 decision to
+defer B46's live Figma check indefinitely, this item's live acceptance is
+deferred the same way — code-level acceptance is fully verified independent
+of it.
 
 **Acceptance evidence (2026-07-24):**
 
