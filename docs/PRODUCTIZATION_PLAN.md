@@ -6761,7 +6761,7 @@ The repository workflow is part of the remediation, not optional ceremony:
 |---|---|---|---|---|
 | 1 | D2 — protected-main and merge-evidence guardrails | 18A | `chore/protect-main-workflow` plus the explicit GitHub setting change | implemented; [#165](https://github.com/IngeniousArtist/hoopedorc/pull/165) |
 | 2 | B44 — Docker-safe package-manager environment | 18B | `fix/docker-npm-cache-boundary` | implemented; [#166](https://github.com/IngeniousArtist/hoopedorc/pull/166) |
-| 3 | B45 — persisted Coding Plan default migration | 18C | `fix/persisted-glm-provider-migration` | implemented; pending PR |
+| 3 | B45 — persisted Coding Plan default migration | 18C | `fix/persisted-glm-provider-migration` | implemented; [#168](https://github.com/IngeniousArtist/hoopedorc/pull/168) |
 | 4 | B46 — fail-closed Figma preflight and cache invalidation | 18D | `fix/figma-preflight-integrity` | pending; live Figma input required |
 | 5 | B47 — collision-safe, viewport-correct visual QA generation | 18D | `fix/visual-qa-task-generation` | pending; live Figma input required |
 | 6 | B48 — validator empty-reasons audit correctness | 18E | `fix/validator-empty-reasons` | pending |
@@ -6933,12 +6933,16 @@ sandbox's process-spawn latency, unrelated to this item and untouched by
 it), 205 server tests (up from 203; +2 for this item), 25 web tests, 16
 Playwright scenarios, and `git diff --check`.
 
-**Live acceptance (pending):** deploy through `scripts/update.sh`, confirm
-production's persisted `glm` entry reads `zai-coding-plan/glm-5.2` after the
-restarted service's boot-time re-normalization, and confirm the other five
-production models (`claude-sonnet-5`, `deepseek-pro`, `deepseek-flash`,
-`grok`, `gpt-5.6-sol` — all deliberately customized ids/slugs already, per
-the live DB read during diagnosis) are byte-for-byte unchanged.
+**Live acceptance (2026-07-24):** deployed through `scripts/update.sh
+--non-interactive --require-main --require-systemd-restart` from
+`/opt/hoopedorc`, fast-forwarding `8d5317a..8c73efc`. `GET /api/health`
+reported `{ok: true, version: "0.6.0", state: "running", degraded: []}`
+post-restart. A direct read of the production SQLite settings row confirmed
+the persisted `glm` entry now reads `displayName: "GLM 5.2"`,
+`opencodeModel: "zai-coding-plan/glm-5.2"` (migrated from `zai/glm-5.2`
+pre-deploy), and the other five production models — `claude-sonnet-5`,
+`deepseek-pro`, `deepseek-flash`, `grok`, `gpt-5.6-sol` — are byte-for-byte
+unchanged from the pre-deploy read.
 
 **Confirmed problem:** B43 changed the fresh default GLM slug to
 `zai-coding-plan/glm-5.2`, but `normalizeSettings` retains any persisted
