@@ -26,6 +26,82 @@ test("B43: the default GLM uses the dedicated Z.AI Coding Plan provider", () => 
   assert.equal(glm.opencodeModel, "zai-coding-plan/glm-5.2");
 });
 
+test("B45: an exact legacy stock GLM entry migrates to the Coding Plan slug", () => {
+  const legacyVariants: Array<{ displayName: string; opencodeModel: string }> = [
+    { displayName: "GLM 5.1", opencodeModel: "zhipuai/glm-5.1" },
+    { displayName: "GLM 5.1", opencodeModel: "zai/glm-5.1" },
+    { displayName: "GLM 5.2", opencodeModel: "zai/glm-5.2" },
+  ];
+
+  for (const legacy of legacyVariants) {
+    const base = defaultSettings();
+    const persisted = {
+      ...base,
+      models: base.models.map((model) =>
+        model.id === "glm" ? { ...model, ...legacy } : model,
+      ),
+    };
+
+    const migrated = normalizeSettings(persisted);
+    const glm = migrated.models.find((model) => model.id === "glm")!;
+    assert.equal(glm.displayName, "GLM 5.2");
+    assert.equal(glm.opencodeModel, "zai-coding-plan/glm-5.2");
+
+    // Stable across a second pass (e.g. a restart re-running the same
+    // persisted blob) instead of drifting or re-triggering.
+    const renormalized = normalizeSettings(migrated);
+    const glmAgain = renormalized.models.find((model) => model.id === "glm")!;
+    assert.equal(glmAgain.opencodeModel, "zai-coding-plan/glm-5.2");
+  }
+});
+
+test("B45: a renamed or re-identified GLM entry is left untouched", () => {
+  const base = defaultSettings();
+
+  const renamed = normalizeSettings({
+    ...base,
+    models: base.models.map((model) =>
+      model.id === "glm"
+        ? { ...model, displayName: "GLM (usage-priced)", opencodeModel: "zai/glm-5.2" }
+        : model,
+    ),
+  });
+  assert.equal(
+    renamed.models.find((model) => model.id === "glm")!.opencodeModel,
+    "zai/glm-5.2",
+  );
+
+  const reIdentified = normalizeSettings({
+    ...base,
+    models: base.models.map((model) =>
+      model.id === "glm"
+        ? { ...model, id: "glm-usage", displayName: "GLM 5.2", opencodeModel: "zai/glm-5.2" }
+        : model,
+    ),
+    routing: {
+      ...base.routing,
+      byDifficulty: { ...base.routing.byDifficulty, hard: "glm-usage" },
+      byRole: { ...base.routing.byRole, frontend: "glm-usage" },
+      fallbacks: base.routing.fallbacks?.map((id) => (id === "glm" ? "glm-usage" : id)),
+    },
+  });
+  assert.equal(
+    reIdentified.models.find((model) => model.id === "glm-usage")!.opencodeModel,
+    "zai/glm-5.2",
+  );
+
+  const otherSlug = normalizeSettings({
+    ...base,
+    models: base.models.map((model) =>
+      model.id === "glm" ? { ...model, opencodeModel: "zai/glm-4.5" } : model,
+    ),
+  });
+  assert.equal(
+    otherSlug.models.find((model) => model.id === "glm")!.opencodeModel,
+    "zai/glm-4.5",
+  );
+});
+
 test("B37: historical settings are deep-normalized without sharing mutable defaults", () => {
   const base = defaultSettings();
   const legacy = {

@@ -379,6 +379,47 @@ function normalizeModel(value: unknown, index: number): ModelConfig {
 }
 
 /**
+ * B45: before B43, the shipped default for the reserved "glm" model routed
+ * through the general Z.AI catalog (`zhipuai/glm-5.1`, then `zai/glm-5.1`);
+ * OpenCode's own catalog has since renamed that entry forward to
+ * `zai/glm-5.2` on installations that never touched it. Any of those exact,
+ * unmodified stock entries should have followed B43 onto the
+ * subscription-priced Coding Plan slug but didn't, because
+ * `normalizeSettings` previously kept persisted `models` verbatim. Only the
+ * exact reserved id, stock display name, and a known pre-Coding-Plan slug
+ * qualify — a renamed display name or a different id means the operator has
+ * customized that entry, and it is left untouched.
+ */
+const LEGACY_GLM_STOCK_DISPLAY_NAMES = new Set(["GLM 5.1", "GLM 5.2"]);
+const LEGACY_GLM_OPENCODE_MODELS = new Set([
+  "zhipuai/glm-5.1",
+  "zai/glm-5.1",
+  "zai/glm-5.2",
+]);
+const CODING_PLAN_GLM_OPENCODE_MODEL = "zai-coding-plan/glm-5.2";
+const CODING_PLAN_GLM_DISPLAY_NAME = "GLM 5.2";
+
+function migrateLegacyGlmProvider(modelsRaw: unknown[]): unknown[] {
+  return modelsRaw.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    const model = entry as Record<string, unknown>;
+    const isStockGlmEntry =
+      model.id === "glm" &&
+      model.runner === "opencode" &&
+      typeof model.displayName === "string" &&
+      LEGACY_GLM_STOCK_DISPLAY_NAMES.has(model.displayName) &&
+      typeof model.opencodeModel === "string" &&
+      LEGACY_GLM_OPENCODE_MODELS.has(model.opencodeModel);
+    if (!isStockGlmEntry) return entry;
+    return {
+      ...model,
+      displayName: CODING_PLAN_GLM_DISPLAY_NAME,
+      opencodeModel: CODING_PLAN_GLM_OPENCODE_MODEL,
+    };
+  });
+}
+
+/**
  * B37's single settings contract. Missing fields are migrated from the current
  * defaults; present invalid fields fail with a precise path. Every settings
  * read/write path calls this function, so HTTP, Telegram, boot migration and
@@ -391,7 +432,7 @@ export function normalizeSettings(value: unknown): Settings {
   if (!Array.isArray(modelsRaw) || modelsRaw.length === 0) {
     throw new SettingsValidationError("models", "must be a non-empty array");
   }
-  const models = modelsRaw.map(normalizeModel);
+  const models = migrateLegacyGlmProvider(modelsRaw).map(normalizeModel);
   const ids = new Set<string>();
   for (const model of models) {
     if (ids.has(model.id)) {
