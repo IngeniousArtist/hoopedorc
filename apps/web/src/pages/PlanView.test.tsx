@@ -180,7 +180,7 @@ describe("PlanView Figma verification", () => {
           id: "glm",
           displayName: "GLM",
           runner: "opencode",
-          opencodeModel: "zai/glm-5.1",
+          opencodeModel: "zai-coding-plan/glm-5.2",
         });
         return { settings };
       }

@@ -183,6 +183,56 @@ test("B38: packageManager wins, each supported manager uses a frozen install, an
   );
 });
 
+test("bootstrap: a dependency-free seed manifest needs no lockfile, but real dependencies still do", () => {
+  const seed = tmpDir("seed-without-lock");
+  writeFileSync(
+    join(seed, "package.json"),
+    JSON.stringify({ name: "new-project", private: true, version: "0.0.0" }),
+  );
+  assert.equal(inspectNodeDependencies(seed), null);
+
+  const selectedManager = tmpDir("seed-with-manager-without-lock");
+  writeFileSync(
+    join(selectedManager, "package.json"),
+    JSON.stringify({
+      name: "new-project",
+      private: true,
+      version: "0.0.0",
+      packageManager: "npm@12.0.0",
+    }),
+  );
+  assert.throws(
+    () => inspectNodeDependencies(selectedManager),
+    /packageManager selects npm, but its lockfile is missing/i,
+  );
+
+  const app = tmpDir("dependencies-without-lock");
+  writeFileSync(
+    join(app, "package.json"),
+    JSON.stringify({
+      name: "app",
+      private: true,
+      dependencies: { react: "^18.3.1" },
+    }),
+  );
+  assert.throws(() => inspectNodeDependencies(app), /No supported lockfile found/i);
+
+  const workspace = tmpDir("workspace-dependencies-without-lock");
+  writeFileSync(
+    join(workspace, "package.json"),
+    JSON.stringify({ name: "workspace", private: true, workspaces: ["apps/*"] }),
+  );
+  mkdirSync(join(workspace, "apps", "web"), { recursive: true });
+  writeFileSync(
+    join(workspace, "apps", "web", "package.json"),
+    JSON.stringify({ name: "web", devDependencies: { vite: "^7.0.0" } }),
+  );
+  assert.throws(
+    () => inspectNodeDependencies(workspace),
+    /No supported lockfile found/i,
+  );
+});
+
 test("B38/B29: worktree inputs produce immutable caches without touching primary manifests", async () => {
   const primary = tmpDir("wt-primary");
   const worktree1 = tmpDir("wt-1");

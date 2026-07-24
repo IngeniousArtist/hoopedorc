@@ -144,6 +144,7 @@ process.stdout.write(JSON.stringify({
     opencode,
     `#!/usr/bin/env node
 process.stdout.write([
+  "zai-coding-plan/glm-coding-test",
   "zai/glm-test",
   "xai/grok-test",
   "deepseek/deepseek-test",
@@ -181,7 +182,12 @@ process.stdout.write([
     );
     assert.deepEqual(
       openCodeCatalog?.models.map((model) => model.slug),
-      ["deepseek/deepseek-test", "xai/grok-test", "zai/glm-test"],
+      [
+        "deepseek/deepseek-test",
+        "xai/grok-test",
+        "zai/glm-test",
+        "zai-coding-plan/glm-coding-test",
+      ],
     );
   } finally {
     if (savedPath === undefined) delete process.env.PATH;

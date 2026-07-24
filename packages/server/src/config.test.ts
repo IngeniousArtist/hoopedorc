@@ -18,6 +18,14 @@ function expectField(value: unknown, field: RegExp): void {
   );
 }
 
+test("B43: the default GLM uses the dedicated Z.AI Coding Plan provider", () => {
+  const glm = defaultSettings().models.find((model) => model.id === "glm");
+  assert.ok(glm);
+  assert.equal(glm.displayName, "GLM 5.2");
+  assert.equal(glm.runner, "opencode");
+  assert.equal(glm.opencodeModel, "zai-coding-plan/glm-5.2");
+});
+
 test("B37: historical settings are deep-normalized without sharing mutable defaults", () => {
   const base = defaultSettings();
   const legacy = {

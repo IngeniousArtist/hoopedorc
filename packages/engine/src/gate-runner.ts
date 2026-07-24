@@ -32,6 +32,10 @@ const REAL_SANDBOX_DEPS: SandboxDeps = {
   exec: sandboxedExecFile,
 };
 
+function processOutput(stdout: string, stderr?: string): string {
+  return [stdout, stderr].filter((value) => value && value.trim()).join("\n");
+}
+
 /**
  * Whether `cwd`'s package.json declares a non-empty npm script named
  * `script`. `npm run <script> --if-present` exits 0 whether or not the
@@ -221,8 +225,8 @@ export class GateRunnerImpl implements GateRunner {
     if (!cmd) return { passed: true, ran: false, output: "empty testCommand" };
     return this.withCleanWorktree(task, `command "${command}"`, async () => {
       try {
-        const { stdout } = await this.exec(ctx, cwd, cmd, args, signal);
-        return { passed: true, ran: true, output: stdout };
+        const { stdout, stderr } = await this.exec(ctx, cwd, cmd, args, signal);
+        return { passed: true, ran: true, output: processOutput(stdout, stderr) };
       } catch (err: unknown) {
         if (signal?.aborted) throw err;
         const e = err as { stderr?: string; stdout?: string; message?: string; killed?: boolean };
@@ -247,8 +251,14 @@ export class GateRunnerImpl implements GateRunner {
     }
     return this.withCleanWorktree(task, `script "${script}"`, async () => {
       try {
-        const { stdout } = await this.exec(ctx, cwd, "npm", ["run", script, "--if-present"], signal);
-        return { passed: true, ran: true, output: stdout };
+        const { stdout, stderr } = await this.exec(
+          ctx,
+          cwd,
+          "npm",
+          ["run", script, "--if-present"],
+          signal,
+        );
+        return { passed: true, ran: true, output: processOutput(stdout, stderr) };
       } catch (err: unknown) {
         if (signal?.aborted) throw err;
         const e = err as {

@@ -18,7 +18,7 @@ One operator (the owner). Not a multi-tenant product.
 | Model | Runner | Role |
 |---|---|---|
 | Claude (Pro sub) | Claude Code | Planning, PRD, task breakdown; optional final reviewer |
-| GLM 5.1 | OpenCode | Frontend tasks; frontend reviewer |
+| GLM 5.2 | OpenCode | Frontend tasks; frontend reviewer |
 | Deepseek v4 Pro | OpenCode | Hard tasks; **primary validator/merger** |
 | Deepseek v4 Flash | OpenCode | Medium tasks |
 | Grok 4.3 | OpenCode | Status summaries / Telegram updates |

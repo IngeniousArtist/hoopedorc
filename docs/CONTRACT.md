@@ -59,7 +59,10 @@ B38's Node setup selects `package.json#packageManager` first, otherwise one
 unambiguous root lockfile (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`,
 `bun.lock`, or `bun.lockb`). It runs npm `ci`, pnpm/Bun
 `install --frozen-lockfile`, Yarn 2+ `install --immutable`, or Yarn 1
-`install --frozen-lockfile`. The immutable cache key covers all monorepo
+`install --frozen-lockfile`. A dependency-free seed manifest with no selected
+package manager may proceed without a lockfile so the initial scaffold task can
+create the application; any declared dependency or explicit package manager
+restores the lockfile requirement. The immutable cache key covers all monorepo
 `package.json` files, the selected lock, declared and detected manager
 versions, Node version, platform, and architecture. A cache entry becomes
 visible only by atomic rename after a successful install; worktrees receive
@@ -410,7 +413,7 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 | `GET /api/setup/self-update` | → `SelfUpdateStatusResponse` (deployment availability, temporary blockers, and current/last update phase) |
 | `POST /api/setup/self-update` | no body → `StartSelfUpdateResponse` (202; launches only the fixed guarded updater in a separate systemd unit) |
 | `GET /api/setup/models` | → `ModelRosterResponse` |
-| `GET /api/setup/model-catalog` | → `ModelCatalogResponse` (installed Codex catalog, Claude Code aliases/current IDs, and OpenCode `zai/`/`xai/`/`deepseek/` models) |
+| `GET /api/setup/model-catalog` | → `ModelCatalogResponse` (installed Codex catalog, Claude Code aliases/current IDs, and OpenCode `zai/`/`zai-coding-plan/`/`xai/`/`deepseek/` models) |
 | `GET /api/setup/model-health` | → `ModelHealthResponse` |
 
 ## WebSocket (`@orc/types/ws.ts`, `WS_PATH = /ws`)

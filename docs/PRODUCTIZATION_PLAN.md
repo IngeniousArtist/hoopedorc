@@ -6675,3 +6675,51 @@ is introduced.
 3. B42 — scheduler/runtime refusal and resume behavior using F52 references.
 4. F53 — automatic visual-QA draft task built on verified references and B42.
 5. Final live EC2/Figma/browser acceptance and roadmap evidence update.
+
+### B43. First-project bootstrap and subscription-safe GLM defaults — HIGH
+
+**Status (2026-07-24):** implemented and locally verified on
+`fix/npm12-bootstrap-zai`.
+
+**Confirmed problems:** the first live blackjack scaffold stopped before its
+first author attempt because Hoopedorc's dependency setup required a lockfile
+for the intentionally dependency-free seed `package.json`; successful npm 12
+gate notices were written to stderr and discarded from gate details; and the
+default GLM slug used the general `zai/` provider even when the operator had a
+Z.AI Coding Plan subscription, which uses a distinct endpoint and provider.
+The local browser gate also reused an unrelated Vite server and proxied its E2E
+requests into the token-protected production service.
+
+**Fix:** allow only a dependency-free, package-manager-free Node seed to pass
+setup without an install. Any dependency in any workspace manifest, or an
+explicit `packageManager`, retains B38's reproducible-lock requirement. Preserve
+non-empty stdout and stderr from successful gate commands. Move the default GLM
+model and catalog discovery to `zai-coding-plan/glm-5.2`, while continuing to
+show general `zai/` models for operators who intentionally use that provider;
+document the Coding Plan endpoint and billing boundary. Give Playwright
+dedicated strict web/API ports and an in-memory mock database, with no reuse of
+an arbitrary already-running server.
+
+**Acceptance:** a real empty seed reaches author dispatch without setup work;
+root or workspace dependencies without a lock still fail actionably; an
+explicit manager without its lock still fails; successful gate stderr appears
+in persisted details; the installed OpenCode catalog confirms the exact GLM
+slug; model-catalog/server and affected web tests pass; all repository gates
+remain green. After merge and deployment, Retry resumes the existing failed
+blackjack scaffold without replacing its project or task plan. E2E remains
+isolated while the live service and a developer Vite process are both running.
+
+**Verification evidence (2026-07-24):** the production SQLite record confirmed
+the persisted blackjack seed has no dependencies and failed setup with zero
+author attempts. `opencode models zai-coding-plan` listed
+`zai-coding-plan/glm-5.2`. The complete local gate passed: typecheck,
+production build, lint, 12/12 adapter tests, 173/173 engine tests, 203/203
+server tests, 25/25 web Vitest interactions, 16/16 Playwright scenarios across
+360, 390, 768, 1280, and 1440px, and `git diff --check`. The first browser run
+reproduced the test-server collision against the production token dialog; the
+isolated-port rerun passed while `hoopedorc.service` remained active and the
+unrelated Vite process remained on its original port. One unrelated SetupView
+unit assertion transiently missed its async readiness on a parallel full-suite
+run; its focused rerun and the following full 25-test web rerun both passed.
+Post-deployment Retry of the preserved failed task remains the required live
+acceptance check after merge.

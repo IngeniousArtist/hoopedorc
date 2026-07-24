@@ -360,13 +360,19 @@ async function codexCatalog(signal?: AbortSignal): Promise<RunnerModelCatalog> {
   }
 }
 
-const OPENCODE_CATALOG_PROVIDERS = ["zai", "xai", "deepseek"] as const;
+const OPENCODE_CATALOG_PROVIDERS = [
+  "zai",
+  "zai-coding-plan",
+  "xai",
+  "deepseek",
+] as const;
 
 async function openCodeCatalog(signal?: AbortSignal): Promise<RunnerModelCatalog> {
   const base: Omit<RunnerModelCatalog, "models"> = {
     runner: "opencode",
     label: "OpenCode",
-    source: "opencode models (filtered to zai/, xai/, and deepseek/)",
+    source:
+      "opencode models (filtered to zai/, zai-coding-plan/, xai/, and deepseek/)",
   };
   try {
     const allowed = new Set<string>(OPENCODE_CATALOG_PROVIDERS);
