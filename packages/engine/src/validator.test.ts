@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { AgentAdapter, AgentRunResult } from "@orc/adapters";
-import type { GateResult, ModelInvocation, Project, Settings, Task } from "@orc/types";
+import type { GateResult, MergeDecision, ModelInvocation, Project, Settings, Task } from "@orc/types";
 import { ValidatorImpl } from "./validator.js";
 
 const PROJECT: Project = {
@@ -367,5 +367,176 @@ test("B37: an in-flight review survives a settings change but applies the live c
     assert.match(decision.reasons[0]!, /below threshold 0\.9/);
   } finally {
     rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+function adapterReturning(summary: string): AgentAdapter {
+  return {
+    runner: "claude-code",
+    async run(): Promise<AgentRunResult> {
+      return {
+        ok: true,
+        exitReason: "completed",
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        summary,
+      };
+    },
+  };
+}
+
+// B48's decision-parsing behavior is easiest to isolate from a real diff, so
+// these tests use an actual git repo (same setup as the B37 live-settings
+// test above) rather than PROJECT's deliberately-not-a-repo /tmp path,
+// which forces every decision to escalate via the diff-acquisition guard.
+function decisionForFactory(): {
+  decisionFor: (summary: string) => Promise<MergeDecision>;
+  cleanup: () => void;
+} {
+  const repo = mkdtempSync(join(tmpdir(), "orc-validator-decision-"));
+  execFileSync("git", ["init", "--quiet"], { cwd: repo });
+  execFileSync("git", ["config", "user.email", "tests@hoopedorc.local"], { cwd: repo });
+  execFileSync("git", ["config", "user.name", "HoopedOrc Tests"], { cwd: repo });
+  execFileSync("git", ["commit", "--allow-empty", "--message", "base", "--quiet"], { cwd: repo });
+  execFileSync("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: repo });
+  const project: Project = { ...PROJECT, localPath: repo };
+  return {
+    decisionFor: (summary: string) => {
+      const validator = new ValidatorImpl(() => adapterReturning(summary), baseSettings());
+      return validator.review(project, task(), GATE, "deepseek-flash");
+    },
+    cleanup: () => rmSync(repo, { recursive: true, force: true }),
+  };
+}
+
+test("B48: a valid approve with an explicit empty reasons array is never labeled a parse failure", async () => {
+  const { decisionFor, cleanup } = decisionForFactory();
+  try {
+    const decision = await decisionFor(
+      JSON.stringify({ verdict: "approve", reasons: [], confidence: 0.95 }),
+    );
+    assert.equal(decision.verdict, "approve");
+    assert.deepEqual(decision.reasons, []);
+    assert.equal(decision.confidence, 0.95);
+  } finally {
+    cleanup();
+  }
+});
+
+test("B48: valid request_changes and escalate verdicts with empty reasons are preserved as empty, not the parse-failure placeholder", async () => {
+  const { decisionFor, cleanup } = decisionForFactory();
+  try {
+    for (const verdict of ["request_changes", "escalate"] as const) {
+      const decision = await decisionFor(
+        JSON.stringify({ verdict, reasons: [], confidence: 0.4 }),
+      );
+      assert.equal(decision.verdict, verdict);
+      assert.deepEqual(decision.reasons, []);
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test("B48: valid JSON with non-empty reasons is unaffected (regression)", async () => {
+  const { decisionFor, cleanup } = decisionForFactory();
+  try {
+    const decision = await decisionFor(
+      JSON.stringify({
+        verdict: "request_changes",
+        reasons: ["missing test coverage", "scope creep"],
+        confidence: 0.6,
+      }),
+    );
+    assert.equal(decision.verdict, "request_changes");
+    assert.deepEqual(decision.reasons, ["missing test coverage", "scope creep"]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("B48: fenced/surrounded valid JSON still parses and an empty reasons array survives", async () => {
+  const { decisionFor, cleanup } = decisionForFactory();
+  try {
+    const decision = await decisionFor(
+      "Here is my review:\n```json\n" +
+        JSON.stringify({ verdict: "approve", reasons: [], confidence: 1 }) +
+        "\n```\nDone.",
+    );
+    assert.equal(decision.verdict, "approve");
+    assert.deepEqual(decision.reasons, []);
+  } finally {
+    cleanup();
+  }
+});
+
+test("B48: a response with no JSON object fails closed with the raw text as the reason, never approve", async () => {
+  const { decisionFor, cleanup } = decisionForFactory();
+  try {
+    const decision = await decisionFor("The gates failed so I cannot review this properly.");
+    assert.equal(decision.verdict, "escalate");
+    assert.deepEqual(decision.reasons, [
+      "The gates failed so I cannot review this properly.",
+    ]);
+    assert.equal(decision.confidence, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("B48: malformed JSON fails closed with the raw text as the reason, never approve", async () => {
+  const { decisionFor, cleanup } = decisionForFactory();
+  try {
+    const decision = await decisionFor('{"verdict": "approve", "reasons": [oops]}');
+    assert.equal(decision.verdict, "escalate");
+    assert.match(decision.reasons[0]!, /"verdict": "approve"/);
+    assert.equal(decision.confidence, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("B48: an invalid verdict string fails closed to escalate even though the JSON parsed cleanly", async () => {
+  const { decisionFor, cleanup } = decisionForFactory();
+  try {
+    const decision = await decisionFor(
+      JSON.stringify({ verdict: "looks-fine-i-guess", reasons: [], confidence: 0.9 }),
+    );
+    assert.equal(decision.verdict, "escalate");
+    assert.deepEqual(decision.reasons, []);
+  } finally {
+    cleanup();
+  }
+});
+
+test("B48: valid JSON missing a reasons array gets a truthful explicit message, not the generic parse-failure text and not a crash", async () => {
+  const { decisionFor, cleanup } = decisionForFactory();
+  try {
+    const decision = await decisionFor(
+      JSON.stringify({ verdict: "approve", confidence: 0.9 }),
+    );
+    assert.equal(decision.verdict, "approve");
+    assert.deepEqual(decision.reasons, [
+      "validator response parsed but included no reasons array",
+    ]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("B48: confidence is still clamped into [0, 1] on valid JSON (regression)", async () => {
+  const { decisionFor, cleanup } = decisionForFactory();
+  try {
+    const over = await decisionFor(
+      JSON.stringify({ verdict: "approve", reasons: [], confidence: 5 }),
+    );
+    assert.equal(over.confidence, 1);
+    const under = await decisionFor(
+      JSON.stringify({ verdict: "approve", reasons: [], confidence: -3 }),
+    );
+    assert.equal(under.confidence, 0);
+  } finally {
+    cleanup();
   }
 });
