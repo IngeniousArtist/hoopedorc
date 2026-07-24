@@ -6762,7 +6762,7 @@ The repository workflow is part of the remediation, not optional ceremony:
 | 1 | D2 — protected-main and merge-evidence guardrails | 18A | `chore/protect-main-workflow` plus the explicit GitHub setting change | implemented; [#165](https://github.com/IngeniousArtist/hoopedorc/pull/165) |
 | 2 | B44 — Docker-safe package-manager environment | 18B | `fix/docker-npm-cache-boundary` | implemented; [#166](https://github.com/IngeniousArtist/hoopedorc/pull/166) |
 | 3 | B45 — persisted Coding Plan default migration | 18C | `fix/persisted-glm-provider-migration` | implemented; [#168](https://github.com/IngeniousArtist/hoopedorc/pull/168) |
-| 4 | B46 — fail-closed Figma preflight and cache invalidation | 18D | `fix/figma-preflight-integrity` | code implemented, pending PR; live acceptance blocked on owner-supplied Figma input |
+| 4 | B46 — fail-closed Figma preflight and cache invalidation | 18D | `fix/figma-preflight-integrity` | implemented and deployed; [#170](https://github.com/IngeniousArtist/hoopedorc/pull/170). Live acceptance deferred indefinitely (owner choice, 2026-07-24) — no owner-supplied Figma input |
 | 5 | B47 — collision-safe, viewport-correct visual QA generation | 18D | `fix/visual-qa-task-generation` | pending; live Figma input required |
 | 6 | B48 — validator empty-reasons audit correctness | 18E | `fix/validator-empty-reasons` | pending |
 | 7 | Phase 18 final acceptance and evidence | 18E | documentation-only evidence PR if earlier PRs cannot record every live check | pending |
@@ -6976,10 +6976,15 @@ explicit unresolved operator choice—never a silent legacy default.
 
 ### B46. Fail-closed Figma preflight and cache invalidation — HIGH
 
-**Status (2026-07-24):** implemented on branch `fix/figma-preflight-integrity`,
-PR pending. Code-level acceptance is fully verified; live acceptance is
-blocked on an owner-supplied scratch Figma frame (see below) and remains
-outstanding.
+**Status (2026-07-24):** implemented and merged
+([#170](https://github.com/IngeniousArtist/hoopedorc/pull/170), commit
+`a4464d8`), deployed through `scripts/update.sh --non-interactive
+--require-main --require-systemd-restart` from `/opt/hoopedorc`
+(`47cd520..a4464d8`). `GET /api/health` reported `{ok: true, version:
+"0.6.0", state: "running", degraded: []}` post-restart. Code-level acceptance
+is fully verified; live acceptance (below) is **deferred indefinitely by
+owner choice** — no scratch Figma frame will be supplied for this item at
+this time.
 
 **Acceptance evidence (2026-07-24):**
 
@@ -7044,15 +7049,16 @@ pre-existing, unrelated sandbox-only timing flake in
 `managed-process.test.ts` noted on B45's PR (passes clean on GitHub's CI
 runner).
 
-**Live acceptance (blocked, pending owner input):** the spec requires an
+**Live acceptance (deferred indefinitely, 2026-07-24):** the spec requires an
 owner-supplied scratch Figma frame to: prove access, change/disable the
 assigned runner's Figma MCP in the same live server runtime, confirm Retry
 re-probes and blocks with zero attempts and one secret-free notification,
 then restore access and confirm Retry continues cleanly. This cannot be
 synthesized locally — it needs a real Figma file and a real runner CLI's MCP
-config to toggle live. Requesting this from the project owner before this
-item can be marked fully accepted; the code-level fix and its regression
-coverage are complete and ready for review independent of that live check.
+config to toggle live. The project owner elected to skip/defer this check
+indefinitely rather than supply one now; the code-level fix and its
+regression coverage are merged and deployed independent of that live check.
+Revisit this live check only if the owner later supplies a scratch frame.
 
 **Confirmed problems:** B42's positive access cache is keyed by logical model,
 runner, configured model slug, and Figma file, but not the effective MCP/runner
