@@ -54,6 +54,15 @@ merge — rather than either babysitting every diff or trusting a black box.
   whichever you don't have from Settings → Models, and re-point the routing
   at what's left (Settings → Routing, or the onboarding wizard's routing
   step).
+  - **B45:** an installation that never edited the default GLM entry (still
+    `id: "glm"` with its stock display name) is migrated automatically on the
+    next boot from a pre-B43 general Z.AI slug to `zai-coding-plan/glm-5.2`.
+    Nothing else about your model roster changes, and the migration runs once
+    — a GLM entry you renamed or repointed at a different Z.AI slug is left
+    exactly as you configured it. If you see the roster still reads the
+    general `zai/` slug after updating, you deliberately customized that
+    entry and can move it to `zai-coding-plan/glm-5.2` yourself from
+    Settings → Models.
 - **Codex (optional)** — if you'd rather have a model run through OpenAI's
   own [Codex CLI](https://developers.openai.com/codex) than pay per-token
   through OpenCode, install it and log in with your ChatGPT plan:

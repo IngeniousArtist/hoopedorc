@@ -6761,7 +6761,7 @@ The repository workflow is part of the remediation, not optional ceremony:
 |---|---|---|---|---|
 | 1 | D2 — protected-main and merge-evidence guardrails | 18A | `chore/protect-main-workflow` plus the explicit GitHub setting change | implemented; [#165](https://github.com/IngeniousArtist/hoopedorc/pull/165) |
 | 2 | B44 — Docker-safe package-manager environment | 18B | `fix/docker-npm-cache-boundary` | implemented; [#166](https://github.com/IngeniousArtist/hoopedorc/pull/166) |
-| 3 | B45 — persisted Coding Plan default migration | 18C | `fix/persisted-glm-provider-migration` | pending |
+| 3 | B45 — persisted Coding Plan default migration | 18C | `fix/persisted-glm-provider-migration` | implemented; pending PR |
 | 4 | B46 — fail-closed Figma preflight and cache invalidation | 18D | `fix/figma-preflight-integrity` | pending; live Figma input required |
 | 5 | B47 — collision-safe, viewport-correct visual QA generation | 18D | `fix/visual-qa-task-generation` | pending; live Figma input required |
 | 6 | B48 — validator empty-reasons audit correctness | 18E | `fix/validator-empty-reasons` | pending |
@@ -6894,6 +6894,51 @@ worktree ownership, then allow the scheduler to resume the other preserved
 tasks. A live check run directly from an interactive shell is insufficient.
 
 ### B45. Persisted Coding Plan default migration — HIGH (billing boundary)
+
+**Status (2026-07-24):** implemented on branch
+`fix/persisted-glm-provider-migration`, PR pending. Live production evidence
+confirmed the exact drift this item describes: `hoopedorc.db`'s persisted
+`glm` entry reads `displayName: "GLM 5.2"`, `opencodeModel: "zai/glm-5.2"` —
+the stock id/display name untouched, but still on the general Z.AI catalog
+namespace rather than `zai-coding-plan/`. (OpenCode's own catalog had already
+renamed the pre-B43 default `zai/glm-5.1` forward to `zai/glm-5.2`; the app
+never rewrote the persisted slug's namespace because B43 only changed the
+in-code default.)
+
+**Acceptance evidence (2026-07-24):** `normalizeSettings` now runs persisted
+`models` through a narrow `migrateLegacyGlmProvider` step before validation.
+It rewrites an entry only when `id === "glm"`, `runner === "opencode"`,
+`displayName` is an exact stock value (`"GLM 5.1"` or `"GLM 5.2"`), and
+`opencodeModel` is an exact known pre-Coding-Plan slug (`zhipuai/glm-5.1`,
+`zai/glm-5.1`, or `zai/glm-5.2`) — to `displayName: "GLM 5.2"`,
+`opencodeModel: "zai-coding-plan/glm-5.2"`. A renamed display name, a
+different id, or any other Z.AI slug is returned unchanged. Because
+`db/index.ts`'s existing B37 boot step already re-normalizes and writes every
+persisted settings blob back on startup, no separate SQLite migration was
+needed — the rewritten value persists after the first boot post-deploy and
+stays stable on every later boot (the migrated slug no longer matches the
+legacy set, so it does not re-trigger).
+
+Focused regression (`packages/server/src/config.test.ts`) covers: all three
+known legacy slugs migrate to the Coding Plan slug and stay stable across a
+second `normalizeSettings` pass; a renamed display name, a re-identified
+model id, and an unrelated Z.AI slug (`zai/glm-4.5`) are all left untouched;
+the existing B43 fresh-default test and the full malformed-settings rejection
+suite still pass unmodified. Full local gate: typecheck, build, lint, 174
+engine tests, 12 adapter tests (11 pass; 1 pre-existing environment-timing
+failure in `managed-process.test.ts` reproduced identically with this
+branch's changes stashed out against unmodified `main` — a nested
+child-process spawn missing a hard 2-second PID-report deadline under this
+sandbox's process-spawn latency, unrelated to this item and untouched by
+it), 205 server tests (up from 203; +2 for this item), 25 web tests, 16
+Playwright scenarios, and `git diff --check`.
+
+**Live acceptance (pending):** deploy through `scripts/update.sh`, confirm
+production's persisted `glm` entry reads `zai-coding-plan/glm-5.2` after the
+restarted service's boot-time re-normalization, and confirm the other five
+production models (`claude-sonnet-5`, `deepseek-pro`, `deepseek-flash`,
+`grok`, `gpt-5.6-sol` — all deliberately customized ids/slugs already, per
+the live DB read during diagnosis) are byte-for-byte unchanged.
 
 **Confirmed problem:** B43 changed the fresh default GLM slug to
 `zai-coding-plan/glm-5.2`, but `normalizeSettings` retains any persisted

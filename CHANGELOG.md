@@ -5,6 +5,14 @@ All notable changes to Hoopedorc are recorded here. Format loosely follows
 
 ## Unreleased
 
+### Phase 18 — production-boundary and audit-integrity remediation
+
+- B45: a persisted "glm" model entry that still carries its stock display
+  name and a pre-B43 general Z.AI slug (`zhipuai/glm-5.1`, `zai/glm-5.1`, or
+  `zai/glm-5.2`) migrates once, on boot, to the subscription-priced
+  `zai-coding-plan/glm-5.2` slug. Renamed or re-identified GLM entries, and
+  every other Z.AI slug, are left untouched.
+
 ### npm 12, new-project bootstrap, and Z.AI Coding Plan
 
 - Gate details now preserve successful stderr output, including npm 12's script
