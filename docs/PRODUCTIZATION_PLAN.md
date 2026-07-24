@@ -6764,8 +6764,8 @@ The repository workflow is part of the remediation, not optional ceremony:
 | 3 | B45 — persisted Coding Plan default migration | 18C | `fix/persisted-glm-provider-migration` | implemented; [#168](https://github.com/IngeniousArtist/hoopedorc/pull/168) |
 | 4 | B46 — fail-closed Figma preflight and cache invalidation | 18D | `fix/figma-preflight-integrity` | implemented and deployed; [#170](https://github.com/IngeniousArtist/hoopedorc/pull/170). Live acceptance deferred indefinitely (owner choice, 2026-07-24) — no owner-supplied Figma input |
 | 5 | B47 — collision-safe, viewport-correct visual QA generation | 18D | `fix/visual-qa-task-generation` | implemented and deployed; [#172](https://github.com/IngeniousArtist/hoopedorc/pull/172). Live acceptance deferred indefinitely (owner choice, 2026-07-24) |
-| 6 | B48 — validator empty-reasons audit correctness | 18E | `fix/validator-empty-reasons` | code implemented, pending PR |
-| 7 | Phase 18 final acceptance and evidence | 18E | documentation-only evidence PR if earlier PRs cannot record every live check | pending |
+| 6 | B48 — validator empty-reasons audit correctness | 18E | `fix/validator-empty-reasons` | implemented, deployed, live-verified; [#174](https://github.com/IngeniousArtist/hoopedorc/pull/174) |
+| 7 | Phase 18 final acceptance and evidence | 18E | documentation-only evidence PR if earlier PRs cannot record every live check | done — see closing note after the Phase 18 PR and verification order below |
 
 ### D2. Protected-main and merge-evidence guardrails — HIGH (workflow)
 
@@ -7204,9 +7204,15 @@ before commit remains an explicit opt-out and commit does not recreate it.
 
 ### B48. Validator empty-reasons audit correctness — LOW
 
-**Status (2026-07-24):** implemented on branch
-`fix/validator-empty-reasons`, PR pending. No live Figma dependency — full
-acceptance, including live verification, is achievable without owner input.
+**Status (2026-07-24):** implemented, merged
+([#174](https://github.com/IngeniousArtist/hoopedorc/pull/174), commit
+`a96d9c8`), and deployed through `scripts/update.sh --non-interactive
+--require-main --require-systemd-restart` from `/opt/hoopedorc`
+(`c3e8c46..a96d9c8`, after resolving one merge conflict in this roadmap's
+order table against B47's just-merged evidence update). `GET /api/health`
+reported `{ok: true, version: "0.6.0", state: "running", degraded: []}`
+post-restart. No live Figma dependency — full acceptance, including live
+verification, was achievable without owner input.
 
 **Acceptance evidence (2026-07-24):** `packages/engine/src/validator.ts`'s
 `parseDecision` now tracks JSON-parse success as its own signal, separate
@@ -7240,11 +7246,11 @@ Full local gate: typecheck, build, lint, 184 engine tests (up from 175; +9),
 pre-existing, unrelated sandbox-only timing flake noted on B45–B47's PRs
 (passes clean on GitHub's CI runner).
 
-**Live acceptance (2026-07-24):** no owner-supplied Figma input is required
-for this item (it touches only validator JSON-parsing, not Figma). Deploy
-through `scripts/update.sh` and independently confirm on merged `main` —
-tracked as the final step of this item rather than a separate blocked
-checkbox.
+**Live acceptance (2026-07-24):** confirmed — deployed through
+`scripts/update.sh` and independently verified: the merged commit's engine
+suite (184/184) was re-run directly against `main` before deploy, and the
+restarted production service reported healthy afterward. No owner-supplied
+Figma input was needed.
 
 **Confirmed problem:** a validator response containing valid JSON with
 `verdict: "approve"`, a numeric confidence, and `reasons: []` parses
@@ -7288,3 +7294,22 @@ repair is reviewed and authorized.
    service boundary, the preserved blackjack project, provider selection, and
    the owner-supplied Figma flow. Record exact commits/PRs, test counts, and any
    genuinely unavailable owner check here without substituting a mock.
+
+**Closing status (2026-07-24):** items 1–4 and 7–8 are complete for every
+item, each independently verified on merged `main` and the live deployed
+service (PRs [#164](https://github.com/IngeniousArtist/hoopedorc/pull/164),
+[#165](https://github.com/IngeniousArtist/hoopedorc/pull/165),
+[#166](https://github.com/IngeniousArtist/hoopedorc/pull/166),
+[#168](https://github.com/IngeniousArtist/hoopedorc/pull/168),
+[#170](https://github.com/IngeniousArtist/hoopedorc/pull/170),
+[#172](https://github.com/IngeniousArtist/hoopedorc/pull/172),
+[#174](https://github.com/IngeniousArtist/hoopedorc/pull/174), plus their
+evidence-recording follow-ups). Item 9's "owner-supplied Figma flow" clause
+covers B46 and B47's live-acceptance checks specifically; the project owner
+explicitly elected to defer both indefinitely rather than supply a scratch
+Figma frame, so that clause is intentionally not satisfied and this closing
+note stands in its place — not a mock, an explicit recorded deferral. Every
+other genuinely available check (deploy, health, independent re-run of the
+affected test suites, and for B45/B48 a full live-data/live-behavior
+confirmation) is complete. Revisit B46/B47's live acceptance only if the
+owner later supplies Figma input.
