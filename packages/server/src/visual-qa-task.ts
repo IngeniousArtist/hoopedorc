@@ -7,10 +7,16 @@ import {
 
 export const VISUAL_QA_TASK_TITLE = "Visual fidelity QA";
 
-function isVisualQaTask(task: Pick<DraftTask, "title">): boolean {
-  return (
-    task.title.trim().toLowerCase() === VISUAL_QA_TASK_TITLE.toLowerCase()
-  );
+/**
+ * B47: ownership is the typed `generatedTaskKind` marker, never the
+ * (user-editable, LLM-proposable) title text — a planner/user task that
+ * happens to share this exact title is a different task and must survive a
+ * fresh deconstruction pass untouched.
+ */
+function isGeneratedVisualQaTask(
+  task: Pick<DraftTask, "generatedTaskKind">,
+): boolean {
+  return task.generatedTaskKind === "visual-qa";
 }
 
 function containsReference(
@@ -71,22 +77,38 @@ function implementationContext(
   };
 }
 
+type ViewportClass = "phone" | "tablet" | "desktop" | "unknown";
+
+// B47: mirrors AGENTS.md's own responsive verification widths (360/390
+// phone, 768 tablet, 1280/1440 desktop) — 768 must classify as tablet, never
+// as proof of phone fidelity.
+const PHONE_MAX_WIDTH = 599;
+const TABLET_MAX_WIDTH = 1023;
+
+function classifyViewport(reference: VerifiedFigmaReference): ViewportClass {
+  if (!reference.width) return "unknown";
+  if (reference.width <= PHONE_MAX_WIDTH) return "phone";
+  if (reference.width <= TABLET_MAX_WIDTH) return "tablet";
+  return "desktop";
+}
+
 function viewportLabel(reference: VerifiedFigmaReference): string {
   if (!reference.width || !reference.height) {
     return "dimensions unavailable — record the source viewport before capture";
   }
-  const kind =
-    reference.width <= 768
-      ? "mobile-sized source"
-      : reference.width >= 1024
-        ? "desktop-sized source"
-        : "supplied source";
-  return `${reference.width}×${reference.height} ${kind}`;
+  const kind = classifyViewport(reference);
+  const kindLabel =
+    kind === "phone"
+      ? "phone-sized source"
+      : kind === "tablet"
+        ? "tablet-sized source"
+        : "desktop-sized source";
+  return `${reference.width}×${reference.height} ${kindLabel}`;
 }
 
-function mobileReference(reference: VerifiedFigmaReference): boolean {
+function phoneReference(reference: VerifiedFigmaReference): boolean {
   return (
-    (reference.width !== undefined && reference.width <= 768) ||
+    classifyViewport(reference) === "phone" ||
     /\b(?:mobile|phone|iphone|android)\b/iu.test(reference.name)
   );
 }
@@ -112,6 +134,28 @@ function visualQaModel(
   );
 }
 
+// B47: the task's own acceptance criteria require it to add/update
+// real-browser coverage (Playwright/e2e specs, fixtures) and to actually
+// start the app (startup/build scripts, framework config) — paths that sit
+// outside whatever implementation task(s) it references. Included
+// unconditionally alongside the matched implementation scope rather than
+// only as a last-resort fallback, since the task always needs these
+// regardless of match quality, and kept far narrower than "**/*".
+const VISUAL_QA_SUPPORT_GLOBS = [
+  "**/*.spec.ts",
+  "**/*.spec.tsx",
+  "**/*.test.ts",
+  "**/*.test.tsx",
+  "**/e2e/**",
+  "**/tests/**",
+  "**/test/**",
+  "**/fixtures/**",
+  "**/playwright.config.*",
+  "**/vitest.config.*",
+  "**/jest.config.*",
+  "package.json",
+];
+
 function visualQaScopes(
   tasks: DraftTask[],
   references: VerifiedFigmaReference[],
@@ -125,8 +169,8 @@ function visualQaScopes(
     matched.length > 0
       ? matched
       : tasks.filter((task) => task.role === "frontend");
-  const paths = sources.flatMap((task) => task.scopePaths);
-  return paths.length > 0 ? [...new Set(paths)] : ["**/*"];
+  const implementationPaths = sources.flatMap((task) => task.scopePaths);
+  return [...new Set([...implementationPaths, ...VISUAL_QA_SUPPORT_GLOBS])];
 }
 
 function buildVisualQaTask(
@@ -189,16 +233,17 @@ function buildVisualQaTask(
       ...perScreenCriteria,
       "Use only real startup/build/test commands present in the repository; record an actionable failure instead of inventing a command or claiming an unavailable browser ran.",
       "Each fidelity claim is limited to its listed verified node and source viewport; responsive behavior may be tested separately but is not presented as Figma fidelity without a matching verified frame.",
-      ...(references.some(mobileReference)
+      ...(references.some(phoneReference)
         ? []
         : [
-            "Do not claim mobile Figma fidelity: no distinct verified mobile-sized screen was supplied.",
+            "Do not claim phone Figma fidelity: no distinct verified phone-sized screen was supplied (a tablet-sized reference does not prove phone fidelity).",
           ]),
       "Run the repository gates and relevant browser tests after repairs; leave the task ready for the existing independent validator and merge policy.",
     ],
     dependsOn: [],
     scopePaths: visualQaScopes(tasks, references),
     assignedModel: visualQaModel(settings, references),
+    generatedTaskKind: "visual-qa",
   };
 }
 
@@ -215,7 +260,7 @@ export function ensureVisualQaTask(
 ): DraftTask[] {
   const retained = tasks
     .map((task, oldIndex) => ({ task, oldIndex }))
-    .filter(({ task }) => !isVisualQaTask(task));
+    .filter(({ task }) => !isGeneratedVisualQaTask(task));
   const insert = references.length > 0;
   const ordered = insert
     ? [

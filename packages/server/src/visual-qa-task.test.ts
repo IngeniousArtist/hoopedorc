@@ -114,12 +114,15 @@ test("F53: verified nodes insert one visual task after implementation and before
   assert.deepEqual(visual.dependsOn, [0, 1, 2]);
   assert.deepEqual(output[2]!.dependsOn, [0]);
   assert.deepEqual(output[4]!.dependsOn, [0, 1, 2, 3]);
-  assert.deepEqual(visual.scopePaths, ["apps/web/**"]);
+  assert.ok(visual.scopePaths.includes("apps/web/**"));
+  assert.ok(visual.scopePaths.includes("**/e2e/**"));
+  assert.ok(visual.scopePaths.includes("**/playwright.config.*"));
+  assert.equal(visual.generatedTaskKind, "visual-qa");
   assert.match(visual.description, /Login desktop/);
   assert.match(visual.description, /1440×900 desktop-sized source/);
   assert.match(visual.description, /signed-out fixture/);
   assert.match(visual.description, /Login mobile error state/);
-  assert.match(visual.description, /390×844 mobile-sized source/);
+  assert.match(visual.description, /390×844 phone-sized source/);
   assert.match(visual.description, /invalid-password fixture/);
   assert.equal(
     visual.acceptanceCriteria.filter((criterion) =>
@@ -135,13 +138,13 @@ test("F53: verified nodes insert one visual task after implementation and before
   );
   assert.equal(
     visual.acceptanceCriteria.some((criterion) =>
-      /Do not claim mobile Figma fidelity/.test(criterion),
+      /Do not claim phone Figma fidelity/.test(criterion),
     ),
     false,
   );
 });
 
-test("F53: a desktop-only source never becomes a mobile fidelity claim", () => {
+test("F53: a desktop-only source never becomes a phone fidelity claim", () => {
   const output = ensureVisualQaTask(
     implementationTasks().filter(
       (task) => task.title !== "Build mobile login error",
@@ -153,13 +156,42 @@ test("F53: a desktop-only source never becomes a mobile fidelity claim", () => {
 
   assert.ok(
     visual.acceptanceCriteria.some((criterion) =>
-      /Do not claim mobile Figma fidelity/.test(criterion),
+      /Do not claim phone Figma fidelity/.test(criterion),
     ),
   );
   assert.ok(
     visual.acceptanceCriteria.some((criterion) =>
       /Each fidelity claim is limited/.test(criterion),
     ),
+  );
+});
+
+test("B47: a tablet-sized (768px) source is classified as tablet, not phone, and still warns phone fidelity is unproved", () => {
+  const tablet: VerifiedFigmaReference = {
+    canonicalUrl:
+      "https://www.figma.com/design/File123/Login?node-id=50-60",
+    fileKey: "File123",
+    nodeId: "50:60",
+    name: "Login tablet",
+    width: 768,
+    height: 1024,
+    verifiedModel: "claude",
+    verifiedRunner: "claude-code",
+    verifiedAt: "2026-07-23T12:00:00.000Z",
+  };
+  const output = ensureVisualQaTask(
+    implementationTasks(),
+    [desktop, tablet],
+    defaultSettings(),
+  );
+  const visual = output.find((task) => task.title === VISUAL_QA_TASK_TITLE)!;
+
+  assert.match(visual.description, /768×1024 tablet-sized source/);
+  assert.ok(
+    visual.acceptanceCriteria.some((criterion) =>
+      /Do not claim phone Figma fidelity/.test(criterion),
+    ),
+    "a 768px tablet source must not silently satisfy the phone-fidelity requirement",
   );
 });
 
@@ -190,6 +222,63 @@ test("F53: insertion is idempotent and no verified nodes remove the reserved tas
     withoutFigma.every((task) =>
       task.dependsOn.every((dependency) => dependency < withoutFigma.length),
     ),
+  );
+});
+
+test("B47: a planner/user task that happens to share the reserved title is never deleted", () => {
+  const settings = defaultSettings();
+  // Organically titled the same as the reserved generated task, but never
+  // produced by ensureVisualQaTask — no generatedTaskKind marker.
+  const organicTask: DraftTask = {
+    title: VISUAL_QA_TASK_TITLE,
+    description: "A manually planned QA pass unrelated to F53's generator.",
+    difficulty: "medium",
+    role: "frontend",
+    acceptanceCriteria: ["Manually written QA checklist runs."],
+    dependsOn: [],
+    scopePaths: ["apps/web/**"],
+    assignedModel: "glm",
+  };
+  const tasksWithOrganicDuplicate = [...implementationTasks(), organicTask];
+
+  // With Figma references present, the organic task survives alongside a
+  // separately generated one (two same-titled tasks — the generated one is
+  // still identifiable by its marker; the collision is visible, not lossy).
+  const withFigma = ensureVisualQaTask(
+    tasksWithOrganicDuplicate,
+    [desktop],
+    settings,
+  );
+  const sameTitle = withFigma.filter(
+    (task) => task.title === VISUAL_QA_TASK_TITLE,
+  );
+  assert.equal(sameTitle.length, 2);
+  assert.equal(
+    sameTitle.filter((task) => task.generatedTaskKind === "visual-qa").length,
+    1,
+  );
+  assert.ok(
+    sameTitle.some((task) => task.generatedTaskKind !== "visual-qa"),
+    "the organic task must survive untouched even though the title collides",
+  );
+
+  // Without any Figma references — the exact regression scenario: nothing
+  // gets (re)generated, so a title-based filter would have deleted the
+  // organic task outright with nothing to replace it.
+  const withoutFigma = ensureVisualQaTask(
+    tasksWithOrganicDuplicate,
+    [],
+    settings,
+  );
+  assert.equal(
+    withoutFigma.filter((task) => task.title === VISUAL_QA_TASK_TITLE).length,
+    1,
+    "the organic same-titled task must survive when nothing is generated",
+  );
+  assert.equal(
+    withoutFigma.find((task) => task.title === VISUAL_QA_TASK_TITLE)
+      ?.description,
+    organicTask.description,
   );
 });
 

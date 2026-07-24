@@ -355,24 +355,39 @@ task, and stops before commit, gates, validator, or PR rather than falling
 through to the ordinary no-change/fallback path. Any prior remote task branch
 is cleaned best-effort so a later Retry cannot collide with it.
 
-F53 does not add a task or persistence field. When deconstruction returns one
-or more `verifiedFigmaReferences`, the server inserts exactly one ordinary,
-visible `DraftTask` titled `Visual fidelity QA` before returning and saving the
-draft. It has `role: "frontend"`, hard difficulty, every exact node in its
-description and distinct acceptance criteria, context copied from the
-implementation task(s) that carry each node, and dependencies on all non-doc
-implementation tasks. The standing docs task depends on it and remains last.
-Existing dependencies are reindexed when an early planner-authored docs task
-is moved behind visual QA.
+When deconstruction returns one or more `verifiedFigmaReferences`, the server
+inserts exactly one ordinary, visible `DraftTask` titled `Visual fidelity QA`
+before returning and saving the draft. It has `role: "frontend"`, hard
+difficulty, every exact node in its description and distinct acceptance
+criteria, context copied from the implementation task(s) that carry each
+node, and dependencies on all non-doc implementation tasks. The standing docs
+task depends on it and remains last. Existing dependencies are reindexed when
+an early planner-authored docs task is moved behind visual QA.
+
+B47: `DraftTask.generatedTaskKind?: "visual-qa"` is the one persistence field
+this adds — set only on the task this helper builds, never inferred from or
+matched against title text. A repeated fresh deconstruction pass replaces
+only a draft carrying this marker; an ordinary planner/user task that happens
+to share the literal title `Visual fidelity QA` is a different task (no
+marker) and survives untouched, including when the response has no verified
+nodes to regenerate against. Reference viewport classification uses the
+repository's own responsive-check widths (phone ≤599px, tablet 600–1023px —
+768px included, desktop ≥1024px); a tablet-only reference set still adds the
+"no phone fidelity proven" acceptance criterion. `scopePaths` is the union of
+the matched implementation task(s)' own scope plus a fixed set of test/e2e/
+fixture/config globs the task's own acceptance criteria require touching
+(`**/*.spec.*`, `**/*.test.*`, `**/e2e/**`, `**/tests?/**`, `**/fixtures/**`,
+`**/playwright.config.*`, `**/vitest.config.*`, `**/jest.config.*`,
+`package.json`) — never the unrestricted `**/*` fallback when narrower paths
+are available.
 
 The suggested author is the enabled live-verification model when it differs
 from the hard-task validator; otherwise normal frontend routing is used. The
 owner may edit the model or remove the task in the existing Plan table. Neither
 `plan/save-draft` nor `plan/commit` calls the insertion helper, so removal is
-the explicit durable opt-out and commit does not silently re-add it. Repeated
-fresh deconstruction replaces any reserved-title draft rather than duplicating
-it; a response with no verified nodes contains no reserved visual-QA task.
-The existing B42 check proves the final selected author before execution.
+the explicit durable opt-out and commit does not silently re-add it. A
+response with no verified nodes contains no generated visual-QA task. The
+existing B42 check proves the final selected author before execution.
 
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.

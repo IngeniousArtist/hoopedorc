@@ -149,6 +149,16 @@ export interface DraftTask {
   scopePaths: string[];
   /** Suggested author model (resolved from routing); editable before commit. */
   assignedModel: ModelId;
+  /**
+   * B47: set only by Hoopedorc's own generated draft tasks (e.g. the visual
+   * QA task) so a later deconstruction pass can recognize and safely
+   * replace its own prior insertion without matching on editable title
+   * text — which risks silently deleting an unrelated planner/user task
+   * that happens to share the same title. The raw planner LLM output is
+   * never copied through with this field set; only the generator itself
+   * sets it.
+   */
+  generatedTaskKind?: "visual-qa";
 }
 
 export interface PlanDeconstructRequest {

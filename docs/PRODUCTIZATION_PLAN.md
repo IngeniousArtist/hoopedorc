@@ -6763,7 +6763,7 @@ The repository workflow is part of the remediation, not optional ceremony:
 | 2 | B44 — Docker-safe package-manager environment | 18B | `fix/docker-npm-cache-boundary` | implemented; [#166](https://github.com/IngeniousArtist/hoopedorc/pull/166) |
 | 3 | B45 — persisted Coding Plan default migration | 18C | `fix/persisted-glm-provider-migration` | implemented; [#168](https://github.com/IngeniousArtist/hoopedorc/pull/168) |
 | 4 | B46 — fail-closed Figma preflight and cache invalidation | 18D | `fix/figma-preflight-integrity` | implemented and deployed; [#170](https://github.com/IngeniousArtist/hoopedorc/pull/170). Live acceptance deferred indefinitely (owner choice, 2026-07-24) — no owner-supplied Figma input |
-| 5 | B47 — collision-safe, viewport-correct visual QA generation | 18D | `fix/visual-qa-task-generation` | pending; live Figma input required |
+| 5 | B47 — collision-safe, viewport-correct visual QA generation | 18D | `fix/visual-qa-task-generation` | code implemented, pending PR; live acceptance deferred indefinitely (owner choice, 2026-07-24) |
 | 6 | B48 — validator empty-reasons audit correctness | 18E | `fix/validator-empty-reasons` | pending |
 | 7 | Phase 18 final acceptance and evidence | 18E | documentation-only evidence PR if earlier PRs cannot record every live check | pending |
 
@@ -7099,6 +7099,63 @@ notification. Restore/reassign access, Retry the same task, and confirm it
 continues without duplicate tasks, branches, invocations, or alerts.
 
 ### B47. Collision-safe, viewport-correct visual QA generation — HIGH
+
+**Status (2026-07-24):** implemented on branch
+`fix/visual-qa-task-generation`, PR pending. Live acceptance needs
+owner-supplied Figma frames; per the owner's 2026-07-24 decision to defer
+B46's live Figma check indefinitely, this item's live acceptance is deferred
+the same way — code-level acceptance is fully verified independent of it.
+
+**Acceptance evidence (2026-07-24):**
+
+- *Collision-safe ownership:* added `DraftTask.generatedTaskKind?: "visual-qa"`
+  (`packages/types/src/api.ts`) — set only by `buildVisualQaTask`, never
+  producible by the raw planner LLM output (`parsePlanOutput`/
+  `withAssignedModels` in `planner.ts`/`index.ts` construct each `DraftTask`
+  field-by-field with no passthrough of unrecognized keys, confirmed by
+  reading both). `isGeneratedVisualQaTask` replaces the old
+  case-insensitive-title check; `ensureVisualQaTask` now removes only a task
+  carrying the marker. A planner/user task that happens to share the exact
+  title survives untouched — including the previously-lossy case where no
+  Figma references exist that round, so nothing would have been generated to
+  replace it.
+- *Viewport classification:* added an explicit `phone`/`tablet`/`desktop`/
+  `unknown` classifier keyed to this repo's own responsive-check widths
+  (phone ≤599px, tablet 600–1023px — 768 included, desktop ≥1024px) in place
+  of the old single `<=768` split. The "no phone fidelity proven" acceptance
+  criterion (previously "no mobile fidelity") now keys off this classifier,
+  so a 768px tablet-only reference set no longer silently satisfies it.
+- *Scope:* `visualQaScopes` now unions the matched implementation scope with
+  a fixed set of test/e2e/fixture/config globs
+  (`**/*.spec.*`, `**/*.test.*`, `**/e2e/**`, `**/tests?/**`,
+  `**/fixtures/**`, `**/playwright.config.*`, `**/vitest.config.*`,
+  `**/jest.config.*`, `package.json`) unconditionally, rather than falling
+  back to unrestricted `**/*` only when no implementation matched.
+
+Focused regression (`packages/server/src/visual-qa-task.test.ts`): a
+planner/user task sharing the reserved title survives both when a generated
+task is also inserted alongside it and when no Figma references exist that
+round (verified this test fails on the pre-fix title-matching code and
+passes after the fix, same before/after check used for B46); a 768px
+reference classifies as tablet in the description text and still adds the
+phone-fidelity warning; every prior F53 test updated for the renamed
+phone/tablet wording and widened scope assertions, all passing. `docs/CONTRACT.md`'s
+F53 section updated to describe the marker field, viewport thresholds, and
+scope globs instead of the now-stale title-matching/no-persistence-field
+claims.
+
+Full local gate: typecheck, build, lint, 175 engine tests (unaffected), 211
+server tests (up from 209; +2), 25 web tests, 16 Playwright scenarios, and
+`git diff --check`. `npm test -w @orc/adapters` reproduces the same
+pre-existing, unrelated sandbox-only timing flake noted on B45/B46's PRs
+(passes clean on GitHub's CI runner).
+
+**Live acceptance (deferred indefinitely, 2026-07-24):** owner-supplied
+desktop and phone Figma frames are required to run plan → autorun → browser
+comparison → repair → gates → independent validation on a scratch UI, and to
+confirm tablet-only input never claims phone fidelity live. Deferred per the
+same 2026-07-24 owner decision recorded on B46; revisit only if the owner
+later supplies Figma input.
 
 **Confirmed problems:** F53 identifies an owned generated task only by the
 case-insensitive title `Visual fidelity QA`. During fresh deconstruction it
