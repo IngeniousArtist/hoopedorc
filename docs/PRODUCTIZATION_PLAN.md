@@ -6760,7 +6760,7 @@ The repository workflow is part of the remediation, not optional ceremony:
 | Order | Item | Phase | Proposed branch / PR boundary | Status |
 |---|---|---|---|---|
 | 1 | D2 — protected-main and merge-evidence guardrails | 18A | `chore/protect-main-workflow` plus the explicit GitHub setting change | implemented; [#165](https://github.com/IngeniousArtist/hoopedorc/pull/165) |
-| 2 | B44 — Docker-safe package-manager environment | 18B | `fix/docker-npm-cache-boundary` | blocker; diagnosed |
+| 2 | B44 — Docker-safe package-manager environment | 18B | `fix/docker-npm-cache-boundary` | implemented; [#166](https://github.com/IngeniousArtist/hoopedorc/pull/166) |
 | 3 | B45 — persisted Coding Plan default migration | 18C | `fix/persisted-glm-provider-migration` | pending |
 | 4 | B46 — fail-closed Figma preflight and cache invalidation | 18D | `fix/figma-preflight-integrity` | pending; live Figma input required |
 | 5 | B47 — collision-safe, viewport-correct visual QA generation | 18D | `fix/visual-qa-task-generation` | pending; live Figma input required |
@@ -6814,6 +6814,34 @@ checks, and anything still pending. Record screenshots or API output without
 tokens or repository secrets.
 
 ### B44. Docker-safe package-manager environment — BLOCKER
+
+**Status (2026-07-24):** implemented through
+[#166](https://github.com/IngeniousArtist/hoopedorc/pull/166) and deployed as
+`8d5317a`. The sandbox now replaces inherited host npm cache configuration
+with its container-local `/tmp/.npm` cache. It preserves safe registry/proxy
+configuration; a bounded regular PEM bundle configured through `cafile` or
+`NODE_EXTRA_CA_CERTS` crosses only as one fixed read-only mount. Host agent
+environment behavior remains unchanged.
+
+**Acceptance evidence (2026-07-24):** the focused regression proved
+`NPM_CONFIG_CACHE=/home/ubuntu/.npm` cannot reach Docker, certificate bundles
+are rewritten to fixed internal mount paths, and missing/device paths plus
+credentials remain absent. A real locked `is-number@7.0.0` fixture completed
+`npm ci --ignore-scripts` through the actual sandbox function with the service
+UID and host cache value; materialized `node_modules` was owned by `1000:1000`.
+The full local gate passed: typecheck, build, lint, 174 engine tests, 12
+adapter tests, 203 server tests, 25 web tests, 16 Playwright scenarios, and
+`git diff --check`. Protected-main CI passed on the final PR head.
+
+The production update ran through `scripts/update.sh --non-interactive
+--require-main --require-systemd-restart` while blackjack was paused. The
+restarted systemd-owned Node process still inherited
+`npm_config_cache=/home/ubuntu/.npm`, proving the real service boundary, then
+Retry of the preserved rules-engine task crossed dependency setup and began
+author attempt 1 without replacing the project or task plan. Its worktree and
+published dependency cache are owned by `1000:1000`; the service remains
+active. The project stays paused and its other two failed tasks remain
+untouched while the verified author attempt runs.
 
 **Confirmed problem:** production starts the server through npm, which supplies
 `npm_config_cache=/home/ubuntu/.npm`. `safeNpmConfigEnv` forwards `cache`, and
