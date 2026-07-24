@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
   _resetDockerDetectionForTests,
@@ -96,9 +99,14 @@ test('resolveSandboxMode("required") throws instead of silently falling back whe
 });
 
 test("sandbox forwards safe npm/runtime settings but no CLI or registry credentials", async () => {
+  const certificateDir = mkdtempSync(join(tmpdir(), "hoopedorc-sandbox-cert-"));
+  const certificatePath = join(certificateDir, "corporate.pem");
+  writeFileSync(certificatePath, "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n");
   const keys = [
     "npm_config_registry",
     "npm_config_https_proxy",
+    "NPM_CONFIG_CACHE",
+    "npm_config_cafile",
     "npm_config__authToken",
     "NPM_CONFIG_PASSWORD",
     "NODE_ENV",
@@ -112,10 +120,12 @@ test("sandbox forwards safe npm/runtime settings but no CLI or registry credenti
   Object.assign(process.env, {
     npm_config_registry: "https://registry.example",
     npm_config_https_proxy: "http://proxy.example",
+    NPM_CONFIG_CACHE: "/home/ubuntu/.npm",
+    npm_config_cafile: certificatePath,
     npm_config__authToken: "npm-secret",
     NPM_CONFIG_PASSWORD: "npm-password",
     NODE_ENV: "test",
-    NODE_EXTRA_CA_CERTS: "/etc/corporate.pem",
+    NODE_EXTRA_CA_CERTS: certificatePath,
     NODE_AUTH_TOKEN: "node-secret",
     ANTHROPIC_API_KEY: "provider-secret",
     GH_TOKEN: "github-secret",
@@ -135,22 +145,41 @@ test("sandbox forwards safe npm/runtime settings but no CLI or registry credenti
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    rmSync(certificateDir, { recursive: true, force: true });
   }
 
   const forwarded = dockerArgs
     .flatMap((arg, index) => (arg === "-e" ? [dockerArgs[index + 1] ?? ""] : []))
-    .map((entry) => entry.slice(0, entry.indexOf("=")))
-    .filter(Boolean);
+    .reduce<Record<string, string>>((entries, entry) => {
+      const separator = entry.indexOf("=");
+      if (separator > 0) entries[entry.slice(0, separator)] = entry.slice(separator + 1);
+      return entries;
+    }, {});
   for (const expected of [
     "HOME",
     "PATH",
     "npm_config_registry",
     "npm_config_https_proxy",
+    "npm_config_cache",
+    "npm_config_cafile",
     "NODE_ENV",
     "NODE_EXTRA_CA_CERTS",
   ]) {
-    assert.ok(forwarded.includes(expected), expected);
+    assert.ok(forwarded[expected] !== undefined, expected);
   }
+  assert.equal(forwarded.npm_config_cache, "/tmp/.npm");
+  assert.equal(forwarded.NPM_CONFIG_CACHE, undefined);
+  assert.equal(forwarded.npm_config_cafile, "/run/hoopedorc-certs/npm-cafile.pem");
+  assert.equal(
+    forwarded.NODE_EXTRA_CA_CERTS,
+    "/run/hoopedorc-certs/node-extra-ca-certs.pem",
+  );
+  const mounts = dockerArgs
+    .flatMap((arg, index) => (arg === "-v" ? [dockerArgs[index + 1] ?? ""] : []));
+  assert.ok(mounts.includes(`${certificatePath}:/run/hoopedorc-certs/npm-cafile.pem:ro`));
+  assert.ok(
+    mounts.includes(`${certificatePath}:/run/hoopedorc-certs/node-extra-ca-certs.pem:ro`),
+  );
   for (const forbidden of [
     "npm_config__authToken",
     "NPM_CONFIG_PASSWORD",
@@ -159,8 +188,41 @@ test("sandbox forwards safe npm/runtime settings but no CLI or registry credenti
     "GH_TOKEN",
     "TELEGRAM_BOT_TOKEN",
   ]) {
-    assert.equal(forwarded.includes(forbidden), false, forbidden);
+    assert.equal(forwarded[forbidden], undefined, forbidden);
   }
+});
+
+test("sandbox drops certificate paths that are not regular host files", async () => {
+  const keys = ["npm_config_cafile", "NODE_EXTRA_CA_CERTS"] as const;
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  Object.assign(process.env, {
+    npm_config_cafile: "/definitely-not-a-certificate.pem",
+    NODE_EXTRA_CA_CERTS: "/dev/null",
+  });
+  let dockerArgs: readonly string[] = [];
+  const runner = (async (_command: string, args: readonly string[]) => {
+    dockerArgs = args;
+    return { stdout: "", stderr: "" };
+  }) as Parameters<typeof sandboxedExecFile>[5];
+
+  try {
+    await sandboxedExecFile("node:22", "/tmp", "npm", ["test"], {}, runner);
+  } finally {
+    for (const key of keys) {
+      const value = saved[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+
+  const forwarded = dockerArgs
+    .flatMap((arg, index) => (arg === "-e" ? [dockerArgs[index + 1] ?? ""] : []));
+  assert.equal(forwarded.some((entry) => entry.startsWith("npm_config_cafile=")), false);
+  assert.equal(forwarded.some((entry) => entry.startsWith("NODE_EXTRA_CA_CERTS=")), false);
+  assert.equal(
+    dockerArgs.some((arg) => arg.includes("definitely-not-a-certificate.pem") || arg.includes("/dev/null")),
+    false,
+  );
 });
 
 test("sandbox force-removes its uniquely named container when docker run is aborted", async () => {
