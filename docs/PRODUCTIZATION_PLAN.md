@@ -6764,7 +6764,7 @@ The repository workflow is part of the remediation, not optional ceremony:
 | 3 | B45 — persisted Coding Plan default migration | 18C | `fix/persisted-glm-provider-migration` | implemented; [#168](https://github.com/IngeniousArtist/hoopedorc/pull/168) |
 | 4 | B46 — fail-closed Figma preflight and cache invalidation | 18D | `fix/figma-preflight-integrity` | implemented and deployed; [#170](https://github.com/IngeniousArtist/hoopedorc/pull/170). Live acceptance deferred indefinitely (owner choice, 2026-07-24) — no owner-supplied Figma input |
 | 5 | B47 — collision-safe, viewport-correct visual QA generation | 18D | `fix/visual-qa-task-generation` | code implemented, pending PR; live acceptance deferred indefinitely (owner choice, 2026-07-24) |
-| 6 | B48 — validator empty-reasons audit correctness | 18E | `fix/validator-empty-reasons` | pending |
+| 6 | B48 — validator empty-reasons audit correctness | 18E | `fix/validator-empty-reasons` | code implemented, pending PR |
 | 7 | Phase 18 final acceptance and evidence | 18E | documentation-only evidence PR if earlier PRs cannot record every live check | pending |
 
 ### D2. Protected-main and merge-evidence guardrails — HIGH (workflow)
@@ -7198,6 +7198,48 @@ result never claims phone fidelity. Removing the visible generated draft task
 before commit remains an explicit opt-out and commit does not recreate it.
 
 ### B48. Validator empty-reasons audit correctness — LOW
+
+**Status (2026-07-24):** implemented on branch
+`fix/validator-empty-reasons`, PR pending. No live Figma dependency — full
+acceptance, including live verification, is achievable without owner input.
+
+**Acceptance evidence (2026-07-24):** `packages/engine/src/validator.ts`'s
+`parseDecision` now tracks JSON-parse success as its own signal, separate
+from the individual fields it yields. On a cleanly parsed response:
+`reasons` becomes the actual `parsed.reasons` array whenever it's a real
+array — including an explicit `[]` — and only falls back to a truthful
+explicit message (`"validator response parsed but included no reasons
+array"`) when `reasons` itself is missing or not an array. The generic
+`"could not parse validator output"` placeholder is gone entirely; the
+genuinely-unparseable paths (no `{...}` found, or `JSON.parse` throws) keep
+their existing behavior of using the raw response text (truncated to 500
+chars) as the reason. Verdict validation, its fail-closed fallback to
+`"escalate"` for an invalid/missing verdict string, and confidence clamping
+into `[0, 1]` are unchanged.
+
+Focused regression (`packages/engine/src/validator.test.ts`, via a real git
+repo fixture so the diff-acquisition guard doesn't itself force every
+decision to escalate) covers: approve/request-changes/escalate each with an
+explicit empty `reasons: []` (all previously showed the false placeholder,
+confirmed by verifying these tests fail on the pre-fix code and pass after —
+same before/after check used for B45–B47); non-empty reasons unaffected
+(regression); fenced/surrounded valid JSON; no JSON object at all; malformed
+JSON; an invalid verdict string (still fails closed to escalate); JSON
+missing the `reasons` field entirely (truthful message, no crash); and
+confidence clamping on both ends. All 9 new tests pass; the full existing
+suite is unaffected.
+
+Full local gate: typecheck, build, lint, 184 engine tests (up from 175; +9),
+211 server tests (unaffected), 25 web tests, 16 Playwright scenarios, and
+`git diff --check`. `npm test -w @orc/adapters` reproduces the same
+pre-existing, unrelated sandbox-only timing flake noted on B45–B47's PRs
+(passes clean on GitHub's CI runner).
+
+**Live acceptance (2026-07-24):** no owner-supplied Figma input is required
+for this item (it touches only validator JSON-parsing, not Figma). Deploy
+through `scripts/update.sh` and independently confirm on merged `main` —
+tracked as the final step of this item rather than a separate blocked
+checkbox.
 
 **Confirmed problem:** a validator response containing valid JSON with
 `verdict: "approve"`, a numeric confidence, and `reasons: []` parses

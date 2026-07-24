@@ -289,34 +289,43 @@ Respond with ONLY a JSON object (no markdown, no explanation):
     validatorModel: string,
   ): MergeDecision {
     let verdict: MergeDecision["verdict"] = "escalate";
-    let reasons: string[] = ["could not parse validator output"];
+    let reasons: string[];
     let confidence = 0;
 
-    try {
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]) as {
-          verdict?: string;
-          reasons?: string[];
-          confidence?: number;
-        };
-        if (
-          parsed.verdict === "approve" ||
-          parsed.verdict === "request_changes" ||
-          parsed.verdict === "escalate"
-        ) {
-          verdict = parsed.verdict;
-        }
-        if (Array.isArray(parsed.reasons) && parsed.reasons.length > 0) {
-          reasons = parsed.reasons;
-        }
-        if (typeof parsed.confidence === "number") {
-          confidence = Math.max(0, Math.min(1, parsed.confidence));
-        }
-      } else {
-        reasons = [raw.trim().slice(0, 500)];
+    // B48: track parse success separately from the fields it yields. A
+    // response whose JSON parses cleanly is never a parse failure, even
+    // when its own `reasons` array is empty or missing — that must read as
+    // "the validator returned this," not as "we couldn't read the output."
+    type ParsedDecision = {
+      verdict?: string;
+      reasons?: string[];
+      confidence?: number;
+    };
+    let parsed: ParsedDecision | undefined;
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        parsed = JSON.parse(jsonMatch[0]) as ParsedDecision;
+      } catch {
+        parsed = undefined;
       }
-    } catch {
+    }
+
+    if (parsed) {
+      if (
+        parsed.verdict === "approve" ||
+        parsed.verdict === "request_changes" ||
+        parsed.verdict === "escalate"
+      ) {
+        verdict = parsed.verdict;
+      }
+      reasons = Array.isArray(parsed.reasons)
+        ? parsed.reasons
+        : ["validator response parsed but included no reasons array"];
+      if (typeof parsed.confidence === "number") {
+        confidence = Math.max(0, Math.min(1, parsed.confidence));
+      }
+    } else {
       reasons = [raw.trim().slice(0, 500)];
     }
 
