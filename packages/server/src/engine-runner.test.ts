@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { Orchestrator, OrchestratorStartOptions, SchedulerDeps } from "@orc/engine";
+import { InvocationLedgerError } from "@orc/types";
 import type {
   FigmaCapabilityIssue,
   GateResult,
@@ -445,6 +446,87 @@ test("B42: author preflight probes one node per file, records health accounting,
     model: sameFiles.assignedModel,
   });
   assert.equal(probeBatches.length, 4, "new runtime must prove access again");
+});
+
+test("B46: a positive Figma access result expires after its TTL within the same runtime", async () => {
+  const db = setup();
+  const proj = project(db, "figma-ttl", { localPath: "/tmp/figma-ttl" });
+  const task = seedTask(db, proj.id, "task", {
+    description: "Use https://www.figma.com/design/FileOne/App?node-id=1-2",
+  });
+  const probeBatches: string[][] = [];
+  let clock = 0;
+  const engine = new EngineRunner(db, new WsHub(), {
+    now: () => clock,
+    figmaVerifier: async (requested) => {
+      probeBatches.push(requested.map((reference) => reference.fileKey));
+      const references: VerifiedFigmaReference[] = requested.map((reference) => ({
+        ...reference,
+        name: reference.nodeId,
+        verifiedModel: "deepseek-flash",
+        verifiedRunner: "opencode",
+        verifiedAt: new Date().toISOString(),
+      }));
+      return { references, costUsd: 0 };
+    },
+  });
+  const deps = buildDeps(engine, proj);
+
+  await deps.preflightFigma!({ project: proj, task, model: task.assignedModel });
+  assert.equal(probeBatches.length, 1);
+
+  // Just under the TTL: still fresh, no re-probe.
+  clock += 4 * 60 * 1000;
+  await deps.preflightFigma!({ project: proj, task, model: task.assignedModel });
+  assert.equal(probeBatches.length, 1, "a result inside its TTL must be reused");
+
+  // Past the TTL: a Retry must prove access again even within the same
+  // project runtime (e.g. after an operator fixes the runner's Figma MCP
+  // mid-runtime — B46's live-acceptance scenario).
+  clock += 2 * 60 * 1000;
+  await deps.preflightFigma!({ project: proj, task, model: task.assignedModel });
+  assert.equal(probeBatches.length, 2, "an expired result must be proven again");
+});
+
+test("B46: a ledger failure during Figma preflight propagates instead of a false unavailable block", async () => {
+  const db = setup();
+  const proj = project(db, "figma-ledger-failure", { localPath: "/tmp/figma-ledger-failure" });
+  const task = seedTask(db, proj.id, "task", {
+    description: "Use https://www.figma.com/design/FileOne/App?node-id=1-2",
+  });
+  const engine = new EngineRunner(db, new WsHub(), {
+    figmaVerifier: async (_requested, _cwd, plannerModel, _signal, onInvocation) => {
+      // Mirrors what a real recordInvocation failure looks like from the
+      // verifier's perspective: the accounting sink itself throws.
+      onInvocation?.({
+        id: "health-ledger-fail",
+        stage: "health",
+        model: plannerModel.id!,
+        runner: plannerModel.runner,
+        effort: plannerModel.effort ?? "default",
+        startedAt: new Date().toISOString(),
+        outcome: "running",
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        tokensCached: 0,
+      });
+      throw new Error("unreachable: onInvocation above must throw first");
+    },
+  });
+  const deps = buildDeps(engine, proj);
+  db.exec("DROP TABLE model_invocations");
+
+  await assert.rejects(
+    deps.preflightFigma!({ project: proj, task, model: task.assignedModel }),
+    (error: unknown) => {
+      assert.ok(
+        error instanceof InvocationLedgerError,
+        `expected InvocationLedgerError, got ${error instanceof Error ? error.constructor.name : String(error)}`,
+      );
+      return true;
+    },
+  );
 });
 
 test("B42: preflight failures keep structured author-stage recovery context", async () => {

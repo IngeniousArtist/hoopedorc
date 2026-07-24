@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { InvocationStage, ModelInvocation, Project, Task } from "@orc/types";
+import {
+  InvocationLedgerError,
+  type InvocationStage,
+  type ModelInvocation,
+  type Project,
+  type Task,
+} from "@orc/types";
 import { checkModelQuota } from "./budget.js";
 import { defaultSettings } from "./config.js";
 import { initDb } from "./db/index.js";
@@ -123,6 +129,32 @@ test("B40: every stage counts in one ledger and terminal billing is exactly once
   assert.match(
     checkModelQuota(db, "deepseek-flash", quotaSettings) ?? "",
     /6\/6 calls/,
+  );
+});
+
+test("B46: a genuine ledger write failure surfaces as InvocationLedgerError, not a silent/generic error", () => {
+  const db = initDb(":memory:");
+  repo.upsertSettings(db, defaultSettings());
+  seedProject(db);
+  db.exec("DROP TABLE model_invocations");
+
+  assert.throws(
+    () => persistInvocationEvent(db, invocation("broken-start", "health")),
+    (error: unknown) =>
+      error instanceof InvocationLedgerError &&
+      /broken-start/.test(error.message),
+  );
+
+  // The terminal-event path (getInvocation/terminalizeInvocation) fails the
+  // same way, not just the create-on-start path above.
+  assert.throws(
+    () =>
+      persistInvocationEvent(db, {
+        ...invocation("broken-terminal", "health"),
+        outcome: "completed",
+        exitReason: "completed",
+      }),
+    (error: unknown) => error instanceof InvocationLedgerError,
   );
 });
 

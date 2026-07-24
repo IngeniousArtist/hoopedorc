@@ -2947,6 +2947,66 @@ test("B42: failed Figma preflight blocks before attempt, worktree, author, commi
   assert.match(blocked.statusReason ?? "", /Retry/);
 });
 
+test("B46: manual dispatch of a disabled-assignedModel task resolves its fallback before any worktree exists", async () => {
+  // Orchestrator.start()'s own ready-loop already backlogs a disabled
+  // assignedModel before ever calling executeTask (B28), so this gap only
+  // shows up on the path that has no such earlier guard: manual dispatch
+  // (runTask — what a Retry click drives).
+  const t1 = task("t1", [], {
+    description:
+      "Implement the screen.\n\n### Relevant references\n- https://www.figma.com/design/abc123/App?node-id=1-2",
+  });
+  const callOrder: string[] = [];
+  const preflightModels: string[] = [];
+  const deps = fakeDeps(
+    {
+      settings: {
+        ...settings(),
+        models: settings().models.map((m) =>
+          m.id === "deepseek-flash" ? { ...m, enabled: false } : m,
+        ),
+      },
+      preflightFigma: async ({ model }) => {
+        preflightModels.push(model);
+        callOrder.push(`preflight:${model}`);
+        return {
+          required: true,
+          context: {
+            runner: "opencode",
+            canonicalUrl: "https://www.figma.com/design/abc123/App?node-id=1-2",
+            nodeId: "1:2",
+          },
+        };
+      },
+      worktrees: {
+        async create(_p, t) {
+          callOrder.push(`worktree:${t.id}`);
+          return { branch: `orc/${t.id}`, path: `/tmp/${t.id}` };
+        },
+      },
+    },
+    [],
+  );
+
+  await new Orchestrator(deps).runTask(PROJECT, t1);
+
+  assert.ok(
+    preflightModels.every((model) => model === "deepseek-pro"),
+    `preflight must never run against the disabled starting model, saw: ${JSON.stringify(preflightModels)}`,
+  );
+  assert.equal(
+    callOrder[0],
+    "preflight:deepseek-pro",
+    "the resolved fallback must prove access before anything else happens",
+  );
+  assert.equal(
+    callOrder[1],
+    "worktree:t1",
+    "the worktree must not be created until the actual runnable candidate has passed preflight",
+  );
+  assert.equal(t1.status, "done");
+});
+
 test("B42: Stop during preflight settles as a user block without creating a worktree", async () => {
   let preflightStarted!: () => void;
   const started = new Promise<void>((resolve) => {
