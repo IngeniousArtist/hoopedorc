@@ -185,6 +185,16 @@ Two layers, not one:
   because a container boundary makes an allowlist cheap to maintain — the
   set of things a sandboxed process legitimately needs is small and known.
 
+**B44 package-manager boundary:** the npm cache inherited by a service started
+through npm is a host path and is never forwarded into Docker. Every sandboxed
+gate/setup run instead uses its disposable `$HOME/.npm` cache under `/tmp`.
+Registry and proxy settings remain allowlisted. For a corporate CA, an absolute
+`npm_config_cafile` or `NODE_EXTRA_CA_CERTS` value is accepted only when it
+resolves to a bounded regular PEM certificate bundle; Hoopedorc bind-mounts that one file
+read-only at a fixed container path and rewrites the corresponding setting.
+Missing, relative, directory, or arbitrary host paths do not cross the
+container boundary.
+
 ## Gates in-container
 
 The gates stage (`packages/engine/src/gate-runner.ts` — `runScript`,

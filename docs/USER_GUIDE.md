@@ -385,6 +385,14 @@ No daemon reachable => it transparently falls back to
 running on the host exactly as before, with a one-time log line noting the
 fallback.
 
+Sandboxed npm setup always uses a disposable cache under the container's
+`/tmp` home; it never reuses the host npm cache path inherited by the service.
+Registry and proxy configuration still pass through. If your registry needs a
+corporate CA bundle, set `npm_config_cafile` or `NODE_EXTRA_CA_CERTS` to an
+absolute path to one readable PEM file for the Hoopedorc service user. The
+sandbox mounts only that file read-only at an internal path; missing, relative,
+or directory paths are ignored rather than exposing host filesystem paths.
+
 Three modes (`Settings.sandboxGates`, a select in Settings → Gate Sandbox):
 
 - **`"auto"` (default).** Sandbox when Docker responds to `docker version`,
