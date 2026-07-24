@@ -262,6 +262,21 @@ test("F13-P1: sandboxGates=auto with Docker available dispatches gate scripts th
   );
 });
 
+test("B43: a successful gate preserves stderr notices alongside stdout", async () => {
+  const dir = tmpRepo({ build: 'node -e "process.exit(0)"' });
+  const fakeSandbox: SandboxDeps = {
+    resolveMode: async () => ({ useSandbox: true, detail: "docker (auto)" }),
+    exec: async () => ({
+      stdout: "build output",
+      stderr: "npm notice run build",
+    }),
+  };
+  const runner = new GateRunnerImpl(worktrees, { sandboxGates: "auto" }, fakeSandbox);
+  const result = await runner.run(project(), task(dir));
+  assert.equal(result.build, true);
+  assert.equal(result.details.build, "build output\nnpm notice run build");
+});
+
 test("B38: sandbox gates preserve a legacy external node_modules symlink read-only", async () => {
   const dir = tmpRepo({ build: 'node -e "process.exit(0)"' });
   const cacheNodeModules = join(mkdtempSync(join(tmpdir(), "hoopedorc-deps-cache-")), "node_modules");

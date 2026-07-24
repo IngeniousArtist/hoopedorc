@@ -43,12 +43,17 @@ merge — rather than either babysitting every diff or trusting a black box.
   opencode auth login
   ```
   and follow the prompts for whichever of these you actually hold a
-  subscription/API credits for — the default roster is Z.AI (GLM), DeepSeek
-  (Deepseek Pro/Flash), xAI (Grok), and OpenRouter (Nex, a free-tier model —
-  no paid account needed for that one specifically). You don't need all of
-  them: disable whichever you don't have from Settings → Models, and
-  re-point the routing at what's left (Settings → Routing, or the
-  onboarding wizard's routing step).
+  subscription/API credits for — the default roster is Z.AI Coding Plan
+  (GLM), DeepSeek (Deepseek Pro/Flash), xAI (Grok), and OpenRouter (Nex, a
+  free-tier model — no paid account needed for that one specifically).
+  For GLM, select or configure the **Z.AI Coding Plan** provider (not the
+  general **Z.AI** provider) and use the dedicated
+  `https://api.z.ai/api/coding/paas/v4` endpoint. Model slugs use the
+  `zai-coding-plan/` prefix; the general Z.AI endpoint is billed separately
+  from a Coding Plan subscription. You don't need all providers: disable
+  whichever you don't have from Settings → Models, and re-point the routing
+  at what's left (Settings → Routing, or the onboarding wizard's routing
+  step).
 - **Codex (optional)** — if you'd rather have a model run through OpenAI's
   own [Codex CLI](https://developers.openai.com/codex) than pay per-token
   through OpenCode, install it and log in with your ChatGPT plan:
@@ -67,7 +72,8 @@ merge — rather than either babysitting every diff or trusting a black box.
   count too—not only author attempts.
 - Open **Model Slugs** in the top navigation whenever you need an exact
   runner value. Codex is read from the installed CLI, OpenCode is filtered
-  to `zai/`, `xai/`, and `deepseek/`, and Claude Code shows its short aliases
+  to `zai/`, `zai-coding-plan/`, `xai/`, and `deepseek/`, and Claude Code shows
+  its short aliases
   plus current full IDs. Each slug has a copy button, and the same catalog
   powers the model-field suggestions in onboarding and Settings.
 - Run `npm install && npm run setup` from the repo root — `setup` creates
@@ -325,7 +331,10 @@ For Node projects it reads `package.json#packageManager` first; without that
 field, exactly one supported root lockfile must identify npm, pnpm, Yarn, or
 Bun. Ambiguous locks stop the task with a message telling you to set
 `packageManager`, and a missing selected binary names the host or Docker image
-that needs it. Reproducible modes are mandatory:
+that needs it. A dependency-free seed manifest is intentionally allowed
+without a lockfile so the first scaffold task can create the real application.
+As soon as any workspace manifest declares a dependency—or a package manager is
+selected—the lockfile requirement applies. Reproducible modes are mandatory:
 
 | Selected manager | Required lock | Install command |
 |---|---|---|

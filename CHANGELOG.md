@@ -5,6 +5,19 @@ All notable changes to Hoopedorc are recorded here. Format loosely follows
 
 ## Unreleased
 
+### npm 12, new-project bootstrap, and Z.AI Coding Plan
+
+- Gate details now preserve successful stderr output, including npm 12's script
+  notices, so named-script validation remains observable.
+- Dependency-free seed manifests may reach their first scaffold task without a
+  lockfile; declaring a dependency or package manager still requires one.
+- GLM defaults and discovery now use the dedicated `zai-coding-plan/` OpenCode
+  provider, whose API base URL is covered in the setup guidance so Coding Plan
+  subscriptions are not routed through the separately billed general endpoint.
+- Playwright uses isolated strict test ports and an in-memory mock database, so
+  a running development or production server cannot be mistaken for the E2E
+  fixture and turn browser tests into token-protected live traffic.
+
 ### B39 — planning and Git durability
 
 - Plan commit now saves the exact edited draft first, then awaits one atomic

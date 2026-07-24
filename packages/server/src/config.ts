@@ -29,9 +29,9 @@ export const DEFAULT_MODELS: ModelConfig[] = [
   },
   {
     id: "glm",
-    displayName: "GLM 5.1",
+    displayName: "GLM 5.2",
     runner: "opencode",
-    opencodeModel: "zai/glm-5.1",
+    opencodeModel: "zai-coding-plan/glm-5.2",
     roles: ["frontend", "validator"],
     enabled: true,
     maxConcurrent: 1,

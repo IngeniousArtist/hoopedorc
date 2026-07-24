@@ -204,6 +204,41 @@ function readPackageJson(root: string): Record<string, unknown> {
   }
 }
 
+const NODE_DEPENDENCY_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+  "bundleDependencies",
+  "bundledDependencies",
+] as const;
+
+function hasDeclaredNodeDependencies(root: string): boolean {
+  for (const path of walkFiles(root, (name) => name === "package.json")) {
+    let pkg: Record<string, unknown>;
+    try {
+      pkg = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    } catch (err) {
+      throw new ProjectSetupError(
+        `${slash(relative(root, path))} is not valid JSON: ${(err as Error).message}`,
+      );
+    }
+    for (const field of NODE_DEPENDENCY_FIELDS) {
+      const value = pkg[field];
+      if (Array.isArray(value) && value.length > 0) return true;
+      if (
+        value &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        Object.keys(value).length > 0
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /** Resolve one reproducible Node install strategy from packageManager first,
  * then from exactly one supported root lockfile. */
 export function inspectNodeDependencies(root: string): NodeDependencyPlan | null {
@@ -233,6 +268,13 @@ export function inspectNodeDependencies(root: string): NodeDependencyPlan | null
       MANAGER_LOCKFILES[candidate].some((name) => present.includes(name)),
     );
     if (managers.length === 0) {
+      // New repositories are seeded with a dependency-free package.json so
+      // the first author can scaffold the real app. There is nothing to
+      // install yet, and requiring a lockfile here deadlocks that scaffold
+      // task before it can create one. As soon as any workspace manifest
+      // declares a dependency, the reproducible-lock requirement below
+      // applies normally.
+      if (!hasDeclaredNodeDependencies(root)) return null;
       throw new ProjectSetupError(
         "No supported lockfile found; commit package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock, or bun.lockb for reproducible setup",
       );
