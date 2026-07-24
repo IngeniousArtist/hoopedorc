@@ -6762,7 +6762,7 @@ The repository workflow is part of the remediation, not optional ceremony:
 | 1 | D2 — protected-main and merge-evidence guardrails | 18A | `chore/protect-main-workflow` plus the explicit GitHub setting change | implemented; [#165](https://github.com/IngeniousArtist/hoopedorc/pull/165) |
 | 2 | B44 — Docker-safe package-manager environment | 18B | `fix/docker-npm-cache-boundary` | implemented; [#166](https://github.com/IngeniousArtist/hoopedorc/pull/166) |
 | 3 | B45 — persisted Coding Plan default migration | 18C | `fix/persisted-glm-provider-migration` | implemented; [#168](https://github.com/IngeniousArtist/hoopedorc/pull/168) |
-| 4 | B46 — fail-closed Figma preflight and cache invalidation | 18D | `fix/figma-preflight-integrity` | pending; live Figma input required |
+| 4 | B46 — fail-closed Figma preflight and cache invalidation | 18D | `fix/figma-preflight-integrity` | code implemented, pending PR; live acceptance blocked on owner-supplied Figma input |
 | 5 | B47 — collision-safe, viewport-correct visual QA generation | 18D | `fix/visual-qa-task-generation` | pending; live Figma input required |
 | 6 | B48 — validator empty-reasons audit correctness | 18E | `fix/validator-empty-reasons` | pending |
 | 7 | Phase 18 final acceptance and evidence | 18E | documentation-only evidence PR if earlier PRs cannot record every live check | pending |
@@ -6975,6 +6975,84 @@ After deployment, production reports the selected Coding Plan provider or an
 explicit unresolved operator choice—never a silent legacy default.
 
 ### B46. Fail-closed Figma preflight and cache invalidation — HIGH
+
+**Status (2026-07-24):** implemented on branch `fix/figma-preflight-integrity`,
+PR pending. Code-level acceptance is fully verified; live acceptance is
+blocked on an owner-supplied scratch Figma frame (see below) and remains
+outstanding.
+
+**Acceptance evidence (2026-07-24):**
+
+- *Cache identity:* Hoopedorc never reads or fingerprints the runner CLI's own
+  Figma MCP configuration/auth — it's owned entirely by the external CLI (see
+  `packages/adapters/src/env.ts`'s allow-listed `CLAUDE_CONFIG_DIR`/
+  `CODEX_HOME`/`OPENCODE_CONFIG*` passthrough) — so no bounded, non-secret
+  "effective configuration" identity exists to add to the cache key. Per the
+  spec's explicit fallback ("or remove reuse where that identity cannot be
+  proved safely"), `packages/server/src/engine-runner.ts`'s
+  `figmaAccessCache` became a `Map<string, number>` keyed exactly as before
+  (model/runner/slug/file) but storing the probe timestamp; a result older
+  than `FIGMA_ACCESS_CACHE_TTL_MS` (5 minutes) is treated as a miss. A new
+  `EngineRunnerOptions.now` test seam lets tests advance a fake clock instead
+  of sleeping real time.
+- *Ledger vs. capability failures:* added `InvocationLedgerError` to
+  `packages/types/src/errors.ts` (not `@orc/server`, so `@orc/engine` — which
+  may not depend on `@orc/server` — can `instanceof`-check it too).
+  `packages/server/src/invocation-ledger.ts`'s `persistInvocationEvent` now
+  wraps its real SQLite work and throws this type on any failure. Every catch
+  site that previously reclassified *any* thrown error as a Figma capability
+  issue now rethrows `InvocationLedgerError` first, unclassified:
+  `planner.ts`'s `verifyFigmaReferences`, `engine-runner.ts`'s
+  `preflightFigma` closure, and `orchestrator.ts`'s `preflightFigma` method
+  (whose catch was previously bare — `catch {}` — and swallowed everything
+  unconditionally). Once allowed to propagate, it lands in `executeTask`'s
+  existing outer catch and fails the task with a real error, exactly this
+  codebase's established "owning runtime error path" for a fatal error — no
+  new failure-handling mechanism was needed.
+- *Preflight-before-worktree ordering:* `orchestrator.ts`'s inline
+  disabled/missing-model escalation (previously only run *inside* the attempt
+  loop, after worktree creation) was extracted into a shared
+  `resolveRunnableModel` helper and is now also called once *before* the
+  first Figma preflight and worktree creation in `executeTask`, closing the
+  gap where `task.assignedModel` starting disabled/missing let a worktree get
+  created before any real candidate — let alone its Figma access — was
+  established. `Orchestrator.start()`'s autonomous ready-loop already
+  backlogged a disabled `assignedModel` before ever calling `executeTask`
+  (B28), so this gap was only reachable through `runTask` (manual
+  dispatch/Retry), which has no such earlier guard — confirmed by writing the
+  regression test against `runTask` directly, verifying it failed on the
+  pre-fix code (worktree created before the fallback's preflight), then
+  passed after the fix.
+
+Focused regression: `packages/server/src/invocation-ledger.test.ts` (a
+dropped-table SQLite failure surfaces as `InvocationLedgerError` from both
+the start and terminal persistence paths), `packages/server/src/planner.test.ts`
+(a real `runPlannerDeconstruct` call through a fake CLI binary, with an
+`onInvocation` sink that throws `InvocationLedgerError`, propagates that type
+rather than becoming a `FigmaVerificationError`), `packages/server/src/engine-runner.test.ts`
+(a fake-clock TTL-expiry test proving re-probe after the TTL and reuse within
+it; a ledger-failure-during-preflight test proving `deps.preflightFigma!`
+rejects with `InvocationLedgerError` instead of resolving a `figma_unavailable`
+issue), and `packages/engine/src/orchestrator.test.ts` (manual dispatch of a
+disabled-`assignedModel` task: every preflight call targets only the resolved
+fallback, and preflight precedes worktree creation).
+
+Full local gate: typecheck, build, lint, 175 engine tests (up from 174; +1),
+209 server tests (up from 205; +4), 25 web tests, 16 Playwright scenarios, and
+`git diff --check`. `npm test -w @orc/adapters` reproduces the same
+pre-existing, unrelated sandbox-only timing flake in
+`managed-process.test.ts` noted on B45's PR (passes clean on GitHub's CI
+runner).
+
+**Live acceptance (blocked, pending owner input):** the spec requires an
+owner-supplied scratch Figma frame to: prove access, change/disable the
+assigned runner's Figma MCP in the same live server runtime, confirm Retry
+re-probes and blocks with zero attempts and one secret-free notification,
+then restore access and confirm Retry continues cleanly. This cannot be
+synthesized locally — it needs a real Figma file and a real runner CLI's MCP
+config to toggle live. Requesting this from the project owner before this
+item can be marked fully accepted; the code-level fix and its regression
+coverage are complete and ready for review independent of that live check.
 
 **Confirmed problems:** B42's positive access cache is keyed by logical model,
 runner, configured model slug, and Figma file, but not the effective MCP/runner

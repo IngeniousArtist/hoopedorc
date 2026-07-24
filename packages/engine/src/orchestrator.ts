@@ -1,3 +1,4 @@
+import { InvocationLedgerError } from "@orc/types";
 import type {
   Difficulty,
   FigmaCapabilityIssue,
@@ -490,7 +491,12 @@ export class Orchestrator implements Scheduler {
       }
       this.figmaCapabilityByTask.set(task.id, result.context);
       return true;
-    } catch {
+    } catch (error) {
+      // B46: a ledger/accounting failure is not a Figma capability result —
+      // let it fail closed through the owning runtime error path (the
+      // outer executeTask catch) instead of reporting a false capability
+      // block and losing the attempt/worktree bookkeeping that implies.
+      if (error instanceof InvocationLedgerError) throw error;
       if (
         signal.aborted &&
         (this.paused || this.stopRequested.has(task.id))
@@ -511,6 +517,63 @@ export class Orchestrator implements Scheduler {
       this.blockForFigmaCapability(task, issue, unstartedAttempt);
       return false;
     }
+  }
+
+  /**
+   * B46: resolve `model` to a live, enabled, configured candidate before any
+   * worktree/attempt exists for it — escalating through the fallback chain
+   * exactly like the in-attempt disabled-model check, and requeuing to
+   * backlog (returning undefined) if nothing usable remains. Shared by the
+   * pre-worktree resolution and the in-loop mid-task resolution so both
+   * gate identically instead of drifting.
+   */
+  private resolveRunnableModel(
+    task: Task,
+    model: ModelId,
+    exhaustedModels: Set<ModelId>,
+  ): ModelId | undefined {
+    const config = this.settings().models.find((candidate) => candidate.id === model);
+    if (!config) {
+      this.emit(
+        "error",
+        "engine",
+        `Assigned model "${model}" no longer configured — reassign it`,
+        task.id,
+      );
+      task.status = "backlog";
+      this.deps.events.onTaskUpdated(task);
+      return undefined;
+    }
+    if (!config.enabled) {
+      exhaustedModels.add(model);
+      const fallback = this.nextEnabledFallback(task, exhaustedModels);
+      if (!fallback) {
+        this.emit(
+          "error",
+          "engine",
+          `Model "${model}" is disabled and no enabled fallback remains — reassign it`,
+          task.id,
+        );
+        task.status = "backlog";
+        this.deps.events.onTaskUpdated(task);
+        return undefined;
+      }
+      this.switchRunningModel(task.id, fallback);
+      this.emit(
+        "warn",
+        "engine",
+        `Model disabled before the next attempt — switching to fallback ${fallback}`,
+        task.id,
+      );
+      this.notifyModelTrouble(
+        task,
+        fallback,
+        "fallback",
+        "Previous model was disabled before a new attempt",
+      );
+      return fallback;
+    }
+    return model;
   }
 
   /** Move a task's concurrency accounting from its old model to a new one
@@ -1176,6 +1239,18 @@ export class Orchestrator implements Scheduler {
     let currentModel = startModel;
 
     try {
+      // B46: resolve to a live, enabled candidate — including when
+      // task.assignedModel itself starts disabled/missing — before the
+      // first Figma proof or worktree creation, so neither ever happens
+      // against a model that will not actually run.
+      const runnableStartModel = this.resolveRunnableModel(
+        task,
+        currentModel,
+        exhaustedModels,
+      );
+      if (!runnableStartModel) return;
+      currentModel = runnableStartModel;
+
       // B42: this first proof is deliberately before worktree creation and
       // before the attempt loop mutates `attempts`.
       if (!(await this.preflightFigma(project, task, currentModel, signal))) {
@@ -1210,57 +1285,20 @@ export class Orchestrator implements Scheduler {
         task.status = "in_progress";
         this.deps.events.onTaskUpdated(task);
 
-        // B28: currentModel (task.assignedModel on the first attempt, a
+        // B28/B46: currentModel (task.assignedModel on the first attempt, a
         // fallback-chain entry after an escalation) may no longer be
-        // configured — removed or renamed out from under this task since it
-        // was created/assigned. Requeue-to-backlog here, same shape as the
-        // budget/quota checks below, instead of letting runAuthor's
-        // adapterFor throw surface as a cryptic "Fatal:" failure. Manual
-        // dispatch (runTask) has no earlier dispatch-time guard for this at
-        // all, so this is the only check standing between a dangling
-        // reference and that crash on that path.
-        const currentConfig = this.settings().models.find((m) => m.id === currentModel);
-        if (!currentConfig) {
-          this.emit(
-            "error",
-            "engine",
-            `Assigned model "${currentModel}" no longer configured — reassign it`,
-            task.id,
-          );
-          task.status = "backlog";
-          this.deps.events.onTaskUpdated(task);
-          return;
-        }
-        if (!currentConfig.enabled) {
-          exhaustedModels.add(currentModel);
-          const fallback = this.nextEnabledFallback(task, exhaustedModels);
-          if (fallback) {
-            currentModel = fallback;
-            this.switchRunningModel(task.id, currentModel);
-            this.emit(
-              "warn",
-              "engine",
-              `Model disabled before the next attempt — switching to fallback ${currentModel}`,
-              task.id,
-            );
-            this.notifyModelTrouble(
-              task,
-              currentModel,
-              "fallback",
-              "Previous model was disabled before a new attempt",
-            );
-          } else {
-            this.emit(
-              "error",
-              "engine",
-              `Model "${currentModel}" is disabled and no enabled fallback remains — reassign it`,
-              task.id,
-            );
-            task.status = "backlog";
-            this.deps.events.onTaskUpdated(task);
-            return;
-          }
-        }
+        // configured, or may have been disabled between attempts —
+        // removed/renamed/disabled out from under this task since it was
+        // created/assigned or since the pre-worktree resolution above ran.
+        // Requeue-to-backlog here, same shape as the budget/quota checks
+        // below, instead of letting runAuthor's adapterFor throw surface as
+        // a cryptic "Fatal:" failure. Manual dispatch (runTask) has no
+        // earlier dispatch-time guard for this at all, so this is the only
+        // check standing between a dangling reference and that crash on
+        // that path.
+        const runnableModel = this.resolveRunnableModel(task, currentModel, exhaustedModels);
+        if (!runnableModel) return;
+        currentModel = runnableModel;
 
         // Stop spending mid-task if a budget cap has since been hit. Checked
         // against currentModel (which may be a fallback by this point), not

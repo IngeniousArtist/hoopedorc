@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { ModelInvocation } from "@orc/types";
+import { InvocationLedgerError, type ModelInvocation } from "@orc/types";
 import { ENV, defaultSettings } from "./config.js";
 import {
   buildDeconstructPrompt,
@@ -524,6 +524,59 @@ process.stdin.on("end", () => {
     events.filter((event) => event.outcome === "running").map((event) => event.stage),
     ["health", "deconstructor"],
   );
+});
+
+test("B46: a ledger failure during Figma verification propagates instead of becoming figma_unavailable", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-figma-ledger-"));
+  const fakeCli = `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({ result: "{}", total_cost_usd: 0 }));
+`;
+  const file = join(bin, "claude");
+  writeFileSync(file, fakeCli);
+  chmodSync(file, 0o755);
+
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  try {
+    const messages = [
+      {
+        role: "user" as const,
+        content:
+          "Match https://www.figma.com/design/File123/Login?node-id=10-20",
+      },
+    ];
+    // Simulates a real recordInvocation/persistInvocationEvent failure (e.g.
+    // a SQLite write error), not a Figma-domain verification result.
+    await assert.rejects(
+      runPlannerDeconstruct(
+        messages,
+        "Figma plan",
+        bin,
+        { id: "claude", runner: "claude-code", model: "sonnet" },
+        undefined,
+        undefined,
+        () => {},
+        undefined,
+        () => {
+          throw new InvocationLedgerError("ledger write failed");
+        },
+      ),
+      (error: unknown) => {
+        assert.ok(
+          error instanceof InvocationLedgerError,
+          `expected InvocationLedgerError, got ${error instanceof Error ? error.constructor.name : String(error)}`,
+        );
+        assert.ok(
+          !(error instanceof FigmaVerificationError),
+          "a ledger failure must never be reported as a Figma capability issue",
+        );
+        return true;
+      },
+    );
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
 });
 
 test("F52: an unavailable Figma MCP is actionable and does not run deconstruction", async () => {

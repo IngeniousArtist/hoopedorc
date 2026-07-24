@@ -12,6 +12,7 @@ import {
   type WorktreeManager,
 } from "@orc/engine";
 import { makeAdapter, type AgentAdapter } from "@orc/adapters";
+import { InvocationLedgerError } from "@orc/types";
 import type {
   FigmaCapabilityIssue,
   ModelId,
@@ -38,6 +39,10 @@ import {
   type PlannerModel,
 } from "./planner.js";
 import { extractFigmaReferencesFromText } from "./figma-references.js";
+
+/** B46: how long a positive Figma-access probe stays reusable within one
+ * project runtime before a Retry must prove access again. */
+const FIGMA_ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 function fmtDurationMs(ms: number): string {
   const totalSeconds = Math.round(ms / 1000);
@@ -116,6 +121,9 @@ export interface EngineRunnerOptions {
   rollbackDepsFactory?: (project: Project) => RollbackExecutionDeps;
   /** B42 test seam; production probes through the real selected CLI/MCP. */
   figmaVerifier?: typeof verifyFigmaReferences;
+  /** B46 test seam for the Figma access cache's TTL clock; production uses
+   * the real wall clock. */
+  now?: () => number;
 }
 
 export interface RollbackExecutionDeps {
@@ -356,9 +364,19 @@ export class EngineRunner {
     // Orchestrator, so one noisy task cannot bypass the dedupe by changing how
     // it was dispatched.
     const modelTroubleNotified = new Set<string>();
-    // B42: positive access facts live no longer than this project runtime.
-    // The exact runner model and file are both part of the key.
-    const figmaAccessCache = new Set<string>();
+    // B42/B46: positive access facts live no longer than this project runtime
+    // AND no longer than FIGMA_ACCESS_CACHE_TTL_MS. The exact runner model
+    // and file are both part of the key, but Hoopedorc never reads or
+    // fingerprints the runner CLI's own Figma MCP configuration/auth (it's
+    // owned entirely by the external CLI — see packages/adapters/src/env.ts),
+    // so there is no bounded, non-secret identity for "the effective MCP
+    // configuration" to add to that key. A short TTL bounds how long a stale
+    // positive result can be reused after an operator changes that
+    // out-of-band configuration mid-runtime (e.g. re-authenticating a
+    // runner's Figma MCP) instead of caching it for the runtime's entire
+    // lifetime.
+    const figmaAccessCache = new Map<string, number>();
+    const now = this.options.now ?? Date.now;
     const figmaVerifier = this.options.figmaVerifier ?? verifyFigmaReferences;
 
     const adapterFor = (modelId: ModelId): AgentAdapter => {
@@ -430,8 +448,12 @@ export class EngineRunner {
             configuredRunnerModel ?? "cli-default",
             fileKey,
           ].join("\u0000");
+        const isFresh = (fileKey: string): boolean => {
+          const provenAt = figmaAccessCache.get(accessKey(fileKey));
+          return provenAt !== undefined && now() - provenAt < FIGMA_ACCESS_CACHE_TTL_MS;
+        };
         const uncached = representatives.filter(
-          (reference) => !figmaAccessCache.has(accessKey(reference.fileKey)),
+          (reference) => !isFresh(reference.fileKey),
         );
         if (uncached.length === 0) {
           return { required: true, context };
@@ -463,10 +485,15 @@ export class EngineRunner {
             },
           );
           for (const reference of uncached) {
-            figmaAccessCache.add(accessKey(reference.fileKey));
+            figmaAccessCache.set(accessKey(reference.fileKey), now());
           }
           return { required: true, context };
         } catch (error) {
+          // B46: a ledger/accounting failure recorded during verification
+          // (via the onInvocation sink below) is not a Figma capability
+          // result — let it fail closed through its own owning error path
+          // instead of reporting a false "Figma unavailable" block.
+          if (error instanceof InvocationLedgerError) throw error;
           if (error instanceof FigmaVerificationError) {
             return { required: true, context, issue: error.issue };
           }

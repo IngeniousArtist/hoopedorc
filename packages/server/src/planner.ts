@@ -3,6 +3,7 @@ import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execManagedProcess, modelEffortArgs, sanitizedEnv } from "@orc/adapters";
+import { InvocationLedgerError } from "@orc/types";
 import type {
   Difficulty,
   FigmaCapabilityIssue,
@@ -1217,6 +1218,10 @@ export async function verifyFigmaReferences(
       },
     );
   } catch (err) {
+    // B46: a ledger/accounting failure (thrown by the onInvocation sink
+    // above) is not a Figma verification result — let it propagate through
+    // its own owning error path instead of mislabeling it as unavailable.
+    if (err instanceof InvocationLedgerError) throw err;
     throw new FigmaVerificationError(
       makeFigmaIssue(
         classifyFigmaFailure(err),
