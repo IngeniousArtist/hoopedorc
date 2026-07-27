@@ -8,6 +8,16 @@ against the actual source with file:line evidence; line numbers are accurate
 as of `067e96e` and may drift — **re-verify each finding against current code
 before implementing it.**
 
+**Safety review:** revised 2026-07-28 after a second plan-to-code audit. This
+revision keeps the original O1–O36 identifiers and evidence trail, but corrects
+designs that could create false merge success, infinite retries, lost WebSocket
+state, duplicate Telegram commands, or restart-unsafe bookkeeping. It also
+moves prerequisite regression rails before the behavior they protect and makes
+speculative performance work conditional on measurements. Findings changed by
+this revision were re-verified against `bf38bb3` (`origin/main` on
+2026-07-28); implementation must still re-verify against its own starting
+commit.
+
 ## Goal and non-goals
 
 **Goal:** the same product, running smoother, more efficiently, and more
@@ -15,6 +25,14 @@ robustly. Every feature keeps its current behavior. The optimization removes
 latent bugs, resource leaks, race conditions, missing bounds, and
 verification gaps so the software does not break down or corrupt state during
 long autonomous runs.
+
+**Decision rule:** correctness and recovery beat cleverness. Prefer a local
+guard, conditional write, bounded queue, or existing contract extension over a
+new cross-layer protocol. A performance item does not ship from static
+inspection alone: record a reproducible baseline, make the smallest change that
+addresses the measured bottleneck, and retain the measurement as acceptance
+evidence. If the measured impact is immaterial on the target 1–2 GB host, move
+the item to the deferred section instead of adding maintenance burden.
 
 **Non-goals (explicitly out of scope):**
 
@@ -28,6 +46,12 @@ long autonomous runs.
   strict as today.
 - Preserve all operator data: projects, tasks, planning drafts, settings,
   cost history, and dirty worktrees survive every change and migration.
+- No error-string matching as proof of a durable external outcome. GitHub,
+  Git, systemd, and model invocations must be confirmed through authoritative
+  state.
+- No memory-only replacement for state that currently survives a restart.
+- No boolean dirty flag or skipped event where a monotonic generation,
+  snapshot, conditional write, or forced resynchronization is required.
 
 ## Required workflow (applies to every item)
 
@@ -42,9 +66,11 @@ This is the AGENTS.md workflow, restated so no item skips it:
 4. For a bug, reproduce it in a failing test before or alongside the fix.
    Confirm the new test fails on pre-fix code and passes after (the
    before/after check used throughout Phase 18).
-5. Contract changes (none are expected in this plan) follow the API checklist:
+5. Contract changes follow the API checklist:
    `packages/types/src/api.ts` + `ROUTES` + server + web client + mock +
-   `docs/CONTRACT.md` together.
+   `docs/CONTRACT.md` together. O3 is expected to add a durable planning
+   revision/idempotency identity; O6 is expected to add an authoritative cost
+   snapshot event. Do not disguise either as an implementation-only detail.
 6. SQLite changes ship as idempotent migrations in
    `packages/server/src/db/index.ts` **and** `schema.sql`, preserving old rows.
 7. Before handoff, run **all** repository gates:
@@ -69,6 +95,11 @@ This is the AGENTS.md workflow, restated so no item skips it:
     evidence (PR number, commit, test counts), mirroring the
     `PRODUCTIZATION_PLAN.md` convention. Deployed-behavior items additionally
     get a live smoke through `scripts/update.sh` on the EC2 box.
+11. Performance items additionally record before/after evidence from the same
+    fixture, workload, host class, and build. Render/request counts may be
+    deterministic test assertions; CPU, event-loop delay, memory, and DB-read
+    claims require a repeatable measurement command or script. No
+    measurement, no optimization refactor.
 
 **Verification honesty:** a typecheck is not browser verification; a mock is
 not a live systemd/EC2 smoke; a passing suite that never exercises the failure
@@ -76,36 +107,56 @@ path is not regression coverage.
 
 ---
 
-## Phase 1 — Correctness and security (do these first)
+## Workstream 1 — Correctness and security
+
+Workstreams group related ownership areas; they are not implementation order.
+The prerequisite-aware sequence near the end of this document is
+authoritative.
 
 ### O1. Dependency security remediation — HIGH (security)
 
-**Problem:** `npm audit` reports 8 vulnerabilities (1 low, 7 high). Two are
-runtime-facing on the server: `@fastify/static` 9.1.3
-(`packages/server/package.json:17`) has two HIGH advisories (authorization
-bypass via non-canonical URL paths; route-guard bypass via path traversal) —
-and it is reachable **pre-auth** by design: the token hook at
-`packages/server/src/index.ts:862` only gates `/api/*` and `/ws`, so every
-static path is served unauthenticated to anyone who can reach the port
-(localhost or any tailnet peer via Tailscale Serve). `find-my-way` 9.6.0
-(HTTP/2 DDoS) and `fast-uri` 3.1.2 (host confusion) are Fastify internals
-fixed by a non-major fastify patch bump. The rest (`shell-quote` via
-`concurrently`, `postcss`, `esbuild`, `brace-expansion`) are dev/build-only.
+**Problem:** the lock at the audit commit contains `@fastify/static` 9.1.3,
+`find-my-way` 9.6.0, and `fast-uri` 3.1.2. Published upstream fixes require
+`@fastify/static` 10.1.2 for the newest non-canonical-path advisory,
+`find-my-way` 9.7.0 for the route-lookup crash fixes, and `fast-uri` 3.1.3
+for failed IDN hostname canonicalization. The original audit's vulnerability
+count is a point-in-time registry result and must be regenerated when the item
+starts; do not preserve stale counts in acceptance evidence.
 
-**Fix:** bump `@fastify/static` to ≥10.1.2 (deliberate semver-major; usage is
-only the `register({ root: webDist })` at `index.ts:662` plus one
-`sendFile("index.html")` SPA fallback — re-verify both against the v10 API and
-the fastify 5.8.5 peer range). Then `npm audit fix` for the remaining set
-(dry-run confirms non-major).
+The static plugin is runtime-facing and pre-auth by design, but Hoopedorc
+serves only `apps/web/dist`, with no protected subtree or `allowedPath`
+boundary. That lowers the application-specific exploit impact of the
+route-guard advisories; it does not justify retaining vulnerable code. The
+other audited packages (`shell-quote` via `concurrently`, `postcss`,
+`esbuild`, `brace-expansion`) are dev/build paths and still need remediation
+because they run in trusted build/update workflows.
+
+**Upstream evidence:** GitHub advisories
+[`GHSA-83w8-p2f5-377r`](https://github.com/fastify/fastify-static/security/advisories/GHSA-83w8-p2f5-377r)
+and
+[`GHSA-8pvw-jcv7-9cmj`](https://github.com/fastify/fastify-static/security/advisories/GHSA-8pvw-jcv7-9cmj)
+identify `@fastify/static` 10.1.1 and 10.1.2 as successive fixes;
+[`GHSA-4c8g-83qw-93j6`](https://github.com/fastify/fast-uri/security/advisories/GHSA-4c8g-83qw-93j6)
+identifies `fast-uri` 3.1.3; the upstream
+[`find-my-way` 9.7.0 release](https://github.com/delvedor/find-my-way/releases/tag/v9.7.0)
+lists the route-lookup crash fixes. Recheck all four records when O1 starts.
+
+**Fix:** explicitly update `@fastify/static` to ≥10.1.2 and resolve the lock
+to patched `find-my-way` and `fast-uri` versions. Verify the v10 plugin API and
+Fastify peer range against the installed package, then inspect the lockfile
+diff. Use `npm audit fix --dry-run` only as discovery; do not accept a broad
+`npm audit fix` mutation without reviewing every changed direct/transitive
+version and its dependency path.
 
 **Likely files:** `packages/server/package.json`, `package-lock.json`,
 possibly the static-registration block in `packages/server/src/index.ts`.
 
 **Acceptance:** `npm audit` reports zero high vulnerabilities; the built web
 app serves correctly through the real server (index, assets, SPA fallback
-route, 404 behavior); auth gate behavior on `/api` and `/ws` unchanged; full
-gates green. Live smoke after deploy: `GET /api/health` ok and the dashboard
-loads through Tailscale Serve.
+route, traversal/non-canonical probes remain confined to `webDist`, API/WS 404
+behavior); auth gate behavior on `/api` and `/ws` unchanged; `npm ls` proves
+the patched resolved versions; full gates green. Live smoke after deploy:
+`GET /api/health` ok and the dashboard loads through Tailscale Serve.
 
 **Fix risk:** low-medium (plugin major bump with a tiny usage surface).
 
@@ -119,18 +170,26 @@ loads through Tailscale Serve.
 (`packages/server/src/shutdown.ts:131-137`). A transient SQLITE_BUSY during a
 routine 60-second tick can therefore kill every running project.
 
-**Fix:** add `.catch((err) => app.log.error(...))` to the `checkSchedules`
-chain, matching the `.catch` pattern already used for `backupDb` and
-resume-on-boot in the same file. While there, sweep `index.ts` for any other
-`void <promise>` without `.catch` and give them the same treatment.
+**Fix:** make the scheduler tick an explicitly owned background operation:
+catch and log schedule/start failures with project and schedule context, and
+ensure the tick itself always settles. If multiple startup/timer paths have
+the same shape, add one small `runBackground(label, promise)` helper that
+registers the promise for shutdown settlement and logs its rejection. Do not
+indiscriminately catch correctness-critical persistence or Git promises inside
+request/task flows; those failures must continue to propagate to their owner.
+Sweep server startup, interval, timeout, and event-listener callbacks for
+unowned promises and classify each one as awaited, deliberately owned, or a
+bug.
 
-**Likely files:** `packages/server/src/index.ts`.
+**Likely files:** `packages/server/src/index.ts`, possibly
+`packages/server/src/shutdown.ts` and a focused background-task test.
 
-**Acceptance:** a test (or targeted fault injection in a unit test around the
-scheduler callback) proves a throwing `updateProject`/`broadcast` during a
-scheduled start is logged and does not become an unhandled rejection; grep
-confirms no bare `void promise.then(...)` chains without rejection handling
-remain in server startup/timer paths; full gates green.
+**Acceptance:** fault injection proves rejected `startProject`,
+`updateProject`, and `broadcast` work is logged once with context and never
+becomes an `unhandledRejection`; shutdown waits for any registered background
+operation according to the existing shutdown deadline; an audit table in the
+PR lists every changed bare promise and its owner (grep alone is not proof);
+full gates green.
 
 **Fix risk:** negligible.
 
@@ -147,22 +206,40 @@ client re-POST passes the lock, `materializeTasks` mints fresh UUIDs, and the
 board gets a duplicate task set. The failed-then-retried path is already
 idempotent and tested; this success-resubmit path has no test.
 
-**Fix:** add an idempotency guard at the owning layer keyed on the planning
-draft/session rather than a blanket status check (a plain
-`status !== "planning"` refusal would over-block legitimate follow-up
-iteration commits on a `planned`/`completed` project). Prefer: dedupe on a
-commit token or the draft/session identity so a resubmit of the same draft
-no-op-returns the already-created tasks.
+**Fix:** give each editable planning draft an immutable `revisionId` that is
+created when that draft/revision starts and is reused by every retry. Bind the
+revision to a canonical hash of the exact PRD, task draft, and generated
+guidance so the same token cannot be reused with different content. Add a
+`planning_commits` receipt (or equivalently named table) with a database
+uniqueness constraint on `(project_id, revision_id)`, state, content hash, and
+the created task IDs/result needed to reproduce the successful response.
 
-**Likely files:** `packages/server/src/planning-commit.ts`,
-`packages/server/src/index.ts`, `packages/server/src/planning-commit.test.ts`,
-`docs/CONTRACT.md` only if a request field is added (then the full API
-checklist applies).
+The commit endpoint carries `revisionId`; this is a real shared-contract
+change. Reserve/read the receipt before external effects. If it is already
+successful and the hash matches, return the recorded result without touching
+Git or tasks. If the hash differs, refuse it. Keep the receipt pending across a
+repository/archive failure so the exact saved draft can retry. In the final
+SQLite transaction, materialize tasks, mark the project planned, clear scratch,
+and mark the receipt successful with the created IDs. Thus a crash rolls back
+both tasks and success, while a lost HTTP response replays the receipt. A new
+planning iteration always receives a new revision even when its text happens
+to match an older iteration; content hash alone is not the idempotency key.
 
-**Acceptance:** regression test: successful commit → identical resubmit →
-no new tasks, no new commit, response identifies the existing result; a
-legitimate second iteration (new draft) still creates its tasks; the existing
-failed-retry idempotency test still passes; full gates green.
+**Likely files:** `packages/types/src/api.ts`, `packages/server/src/db/index.ts`,
+`packages/server/src/db/schema.sql`, `packages/server/src/repo.ts`,
+`packages/server/src/planning-commit.ts`, `packages/server/src/index.ts`,
+`packages/server/src/planning-commit.test.ts`,
+`apps/web/src/api/client.ts`, planning UI/mock tests, `docs/CONTRACT.md`.
+
+**Acceptance:** migration preserves existing planning sessions and initializes
+an active revision safely; successful commit → server restart → identical
+resubmit returns the original created task IDs with no new task, archive,
+commit, or push; two concurrent submissions of one revision have one owner and
+one replayable result; reuse of a revision with changed content is refused; a
+new revision with identical content still creates a legitimate second
+iteration; failures before Git, after push, and during finalization remain
+retryable without duplicates; the existing failed-retry cases stay green;
+full API checklist and repository gates green.
 
 **Fix risk:** medium — must not block legitimate v2-iteration commits.
 
@@ -181,20 +258,33 @@ transient `Fatal:` task failures, with the best-effort cleanup paths
 swallowing errors and silently orphaning worktrees/branches
 (`worktree-manager.ts:455,466,472,1058,1063`).
 
-**Fix:** share one per-`localPath` serialization primitive between
-`git-service` and `worktree-manager` (export `withRepoLock` or inject a shared
-lock map through `SchedulerDeps`), wrapping only the primary-clone mutations in
-`create`/`remove` — not the whole `create()` — so independent worktree setup
-stays parallel.
+**Fix:** move the existing serializer into one engine-owned repository lock
+module used by both `git-service` and `worktree-manager`. Derive a canonical
+lock key from the validated repository/common Git directory (not an
+un-normalized caller path), and remove idle chain entries so a long-lived
+server does not retain one entry forever per historical project.
 
-**Likely files:** `packages/engine/src/git-service.ts`,
-`packages/engine/src/worktree-manager.ts`, `packages/engine/src/index.ts`
-(deps wiring), tests for both.
+Lock every mutation of shared Git metadata as one intentional sequence:
+stale remote/local branch cleanup, worktree remove/prune/add, and
+`ensureGitExclude` (it writes the common `.git/info/exclude`). Dependency
+installation and task work inside the new worktree stay outside the shared
+lock. Failure cleanup reacquires the same lock before mutating worktree/branch
+metadata and logs a typed cleanup failure; it must not silently report a clean
+state. `GitServiceImpl` keeps using the same primitive for primary checkout,
+merge, commit, push, and rollback operations.
 
-**Acceptance:** a test dispatches N concurrent `create()` calls (plus one
-`syncPrimary`) against one real temp repo and proves serialized primary-clone
-access with no orphaned worktrees/branches; existing worktree tests unchanged;
-full gates green.
+**Likely files:** a focused module under `packages/engine/src/`,
+`packages/engine/src/git-service.ts`,
+`packages/engine/src/worktree-manager.ts`, exports/wiring, and real-repository
+concurrency tests.
+
+**Acceptance:** a test dispatches N concurrent `create()` calls plus
+`syncPrimary` and cleanup against one real temporary repo and proves shared
+metadata operations never overlap, with no `index.lock`, orphaned worktree, or
+orphaned branch; equivalent paths/symlinks resolve to one lock; cancellation
+while queued never later executes the mutation; a failed cleanup is observable
+and retryable; different repositories still operate concurrently; the lock
+registry returns to its baseline size after settlement; full gates green.
 
 **Fix risk:** low; watch for over-broad locking slowing task bursts.
 
@@ -210,17 +300,22 @@ panic controls. Eight call sites: `apps/web/src/App.tsx:153,211,355`,
 `apps/web/src/components/ProjectHeader.tsx:53`,
 `apps/web/src/components/ModelsEditor.tsx:96`.
 
-**Fix:** replace all eight with the inline-confirm pattern the codebase
-already uses (`ProjectsView.tsx:197-215` delete flow, `SetupView.tsx:392`
-update flow). Keep each action's wording and effect identical; keep 40 px
-touch targets and keyboard focus per AGENTS.md.
+**Fix:** replace all eight with one small accessible confirmation primitive,
+using the existing inline-confirm visual language. It owns initial focus,
+focus containment/return, Escape/cancel, pending/disabled state, and an
+actionable inline error while preserving the caller's input. Keep each
+action's wording and effect identical and retain at least 40 px phone touch
+targets. A shared primitive is justified here because inconsistent keyboard
+and duplicate-submit behavior across eight safety controls is itself a
+failure risk.
 
 **Likely files:** the eight components above; a small shared inline-confirm
 component if extraction avoids duplication; Vitest interaction tests.
 
 **Acceptance:** zero `window.confirm`/`alert(` occurrences in `apps/web/src`;
-interaction tests cover confirm-then-act and confirm-then-cancel for stop,
-stop-all, rollback, and discard-settings; browser check at all five required
+interaction tests cover confirm, cancel/Escape, focus return, duplicate-click
+suppression, and rejected-action error retention for stop, stop-all, rollback,
+and discard-settings; keyboard and touch browser checks at all five required
 widths; full gates green.
 
 **Fix risk:** low-medium (several interaction flows touched — the tests are
@@ -239,19 +334,31 @@ per project (`Board.tsx:134`) then accumulated from `cost.updated` deltas
 mid-run) under-report spend and the budget bar permanently drifts until
 reload.
 
-**Fix:** (a) append unknown task ids, mirroring App/Notifications; (b) re-seed
-`costUsd` from `costAnalytics` on WS reconnect (the `useWS` hub already knows
-reconnects) instead of relying on pure delta accumulation.
+**Fix:** (a) use update-or-insert for unknown task IDs, mirroring
+App/Notifications. (b) Add an authoritative `cost.snapshot` WebSocket event
+containing the current project total. Include it in the synchronous subscribe/
+reconnect catch-up snapshot and send that snapshot before any later deltas for
+the connection. The Board replaces its total on `cost.snapshot` and applies
+only subsequent `cost.updated` deltas. Do not race an asynchronous REST reseed
+against newer WebSocket deltas.
 
-**Likely files:** `apps/web/src/pages/Board.tsx`,
-`apps/web/src/hooks/useWS.ts` (reconnect signal only if not already exposed),
-Vitest interaction tests.
+This is a shared event-contract change: update `packages/types`, the server
+snapshot producer, mock behavior, web consumer, and `docs/CONTRACT.md`
+together. Pair the implementation with O12 so a client disconnected for
+backpressure always returns through this same full-resynchronization path.
 
-**Acceptance:** interaction tests: `task.updated` for an unknown id appears in
-the right column; simulated reconnect re-seeds cost to the server value;
-existing drag/optimistic tests unaffected; full gates green.
+**Likely files:** `packages/types/src/api.ts`,
+`packages/server/src/index.ts`, `packages/server/src/ws-hub.ts`,
+`apps/web/src/pages/Board.tsx`, WebSocket mock/tests, `docs/CONTRACT.md`.
 
-**Fix risk:** low.
+**Acceptance:** an unknown `task.updated` appears in the correct column;
+connect/reconnect snapshot reports the database total; a delta arriving
+immediately after the snapshot is applied exactly once and cannot be
+overwritten by an older REST response; a forced O12 slow-client disconnect
+reconnects to the right task and cost state; existing drag/optimistic behavior
+is unchanged; full API checklist and repository gates green.
+
+**Fix risk:** medium because event ordering is the invariant.
 
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
@@ -263,49 +370,64 @@ PR already merged on GitHub, one transient API flap sends the code into
 a completed task as failed — then failed-branch cleanup acts on an
 already-merged PR.
 
-**Fix:** retry the state read briefly before abandoning the idempotency
-check, and treat `gh pr merge`'s "already merged / not open" error as success.
-Verify the exact error text against the installed `gh` CLI (AGENTS.md: never
-guess CLI behavior).
+**Fix:** centralize an authoritative PR-state probe using structured
+`gh pr view --json state,mergedAt,mergeCommit` output and bounded retry/backoff.
+Probe before merge. After any ambiguous/failed `gh pr merge`, probe again:
+only GitHub state `MERGED` with merge evidence is success; `CLOSED` is a
+failure; an unavailable/unknown state remains a typed retryable failure. Never
+treat `"already merged"`, `"not open"`, or any other CLI error string as
+proof. Preserve the existing local sync/verification after confirmed merge.
 
 **Likely files:** `packages/engine/src/git-service.ts`, its tests.
 
-**Acceptance:** tests: state-read fails twice then reports MERGED → task
-completes without a merge attempt; `gh pr merge` returning the already-merged
-error → treated as success; normal merge and real-failure paths unchanged;
-full gates green.
+**Acceptance:** state reads fail twice then report `MERGED` → no merge attempt;
+the merge command fails but the follow-up probe reports `MERGED` → success;
+the same command error followed by `OPEN`, `CLOSED`, malformed JSON, or probe
+exhaustion is not success; retry/backoff is bounded and cancellation-aware;
+normal merge/local-sync paths are unchanged; full gates green.
 
 **Fix risk:** low.
 
 ### O8. Killed/stuck runs report zero cost — MEDIUM (correctness/accounting)
 
-**Problem:** the stuck-detection abort path fabricates a result with
+**Problem:** the exceptional stuck-detection abort path fabricates a result with
 `costUsd: 0, tokensIn: 0, tokensOut: 0`
 (`packages/engine/src/orchestrator.ts:2324-2333`). A model can burn tokens for
 up to 30 minutes (`STUCK_DETECTION.maxRunMs`) before SIGKILL and report $0,
 violating the "model calls are accounted exactly once" invariant and letting
-budget enforcement drift low.
+budget enforcement drift low. The production streaming adapters normally
+resolve an aborted managed process with accumulated usage, so first determine
+whether this thrown-abort branch can actually follow emitted usage; do not
+expand an interface on a hypothetical path.
 
-**Fix:** surface partial usage on abort — track last-known usage from the
-streamed events in the adapter (or attach it to the thrown
-`ManagedProcessError`) so the stuck emit reports real numbers. The
-resolved-but-aborted path (`:2273-2280`) already spreads the real result; make
-the exception path match.
+**Fix:** start with a production-shaped regression test for each adapter:
+emit usage, hang, trigger stuck cancellation, and observe the terminal ledger.
+If usage already survives, narrow/remove the fabricated-zero fallback without
+changing the adapter contract. If the real CLI emits usable partial usage that
+is currently lost on a thrown path, attach the last parsed usage to a typed
+abort result/error additively. If the upstream CLI emits no usage before
+termination, record usage as unavailable/unknown rather than inventing zero;
+only introduce that contract distinction with the full types/persistence/
+analytics migration it requires.
 
-**Likely files:** `packages/adapters/src/index.ts`,
+**Likely files:** initially adapter and orchestrator tests; only then, if
+reproduced, `packages/adapters/src/index.ts`,
 `packages/adapters/src/managed-process.ts`,
-`packages/engine/src/orchestrator.ts`, tests in both packages.
+`packages/engine/src/orchestrator.ts`, and possibly shared ledger types/schema.
 
-**Acceptance:** test: an author run that streams usage then hangs and is
-aborted records the streamed cost/tokens, not zeros; non-stuck paths byte-for-
-byte unchanged; ledger still records exactly one terminal outcome per
-invocation; full gates green.
+**Acceptance:** the pre-fix production-shaped test demonstrates the actual
+loss before implementation proceeds; every cancelled invocation has exactly
+one terminal ledger row; observed partial usage is preserved, while genuinely
+unreported usage is never presented as a measured zero; normal and
+resolved-abort paths remain byte-for-byte equivalent; full gates green. If the
+loss cannot be reproduced, close O8 with the evidence and no production
+refactor.
 
-**Fix risk:** medium (adapter–engine interface touch); keep it additive.
+**Fix risk:** medium; evidence gates the interface change.
 
 ---
 
-## Phase 2 — Resource bounds and durability
+## Workstream 2 — Resource bounds and durability
 
 ### O9. Adapters retain up to 128 MB of captured output they never read — HIGH on small hosts (efficiency)
 
@@ -349,15 +471,24 @@ while byte-counting/kill still triggers at the cap; engine callers still get
 repo this stalls the single event loop — Fastify, WebSocket, and every other
 project's scheduler — for hundreds of ms to seconds.
 
-**Fix:** convert to `fs/promises` with streamed hashing, preserving the
-deterministic `localeCompare` input ordering so fingerprints stay stable; or
-compute the fingerprint once per project revision instead of per worktree.
+**Fix:** first add a reproducible large-repository fixture/benchmark and
+measure event-loop delay plus worktree-preparation wall time under concurrent
+dispatch. If the synchronous work is material on the target host, convert the
+measured walkers to `fs/promises` with bounded concurrency and streamed
+hashing, preserving deterministic path ordering and exact fingerprint bytes.
+Limit dependency fingerprints to the package manifests and lockfiles that
+actually define installation state; do not recursively hash arbitrary source
+content. Do not add a cross-worktree cache unless its invalidation key is a
+real Git revision plus the relevant setup inputs.
 
 **Likely files:** `packages/engine/src/worktree-manager.ts`, its tests.
 
-**Acceptance:** fingerprints byte-identical to pre-change values for the same
-tree (test with a fixture repo); no `readFileSync`/`readdirSync` remain on the
-`create()`/`ensureDeps` path; full gates green.
+**Acceptance:** the PR records baseline and after measurements from the same
+fixture, concurrency, build, and host class; fingerprints are byte-identical
+for npm/yarn/pnpm and custom-setup fixtures; concurrency is bounded; no
+synchronous traversal remains on the measured hot path; full gates green. If
+the baseline does not cause a meaningful event-loop/request-latency impact,
+defer O10 with the numbers and make no production change.
 
 **Fix risk:** low-moderate (fingerprint stability is the invariant to test).
 
@@ -369,13 +500,18 @@ so `maxOutputBytes` is undefined; only the Figma probe caps output
 (`:1214-1218`, 1 MiB). A runaway CLI turn grows buffered stdout for up to the
 5-minute timeout — an OOM/GC-pressure risk on the main server process.
 
-**Fix:** pass a generous `maxOutputBytes` (a few MiB) to chat/deconstruct,
-matching the probe's pattern; make the cap-hit error message actionable.
+**Fix:** measure the largest representative stored planner/deconstruct outputs
+and choose an explicit cap with a documented generous margin (including
+multibyte JSON), subject to the target-host memory budget. Reuse the managed
+process byte cap and return a typed, actionable limit error; do not silently
+truncate JSON into a misleading parser failure.
 
 **Likely files:** `packages/server/src/planner.ts`, planner tests.
 
-**Acceptance:** test proves the cap terminates a runaway planner subprocess
-with a clear error while normal-size plans are unaffected; full gates green.
+**Acceptance:** the chosen byte value and observed maximum are recorded in the
+PR; exact-boundary, one-byte-over, multibyte, normal-plan, and retry cases are
+tested; cap termination settles the whole process group and reports the limit;
+normal plans are unaffected; full gates green.
 
 **Fix risk:** low (set the cap comfortably above real deconstruct output).
 
@@ -386,70 +522,100 @@ and no per-send error observation (`packages/server/src/ws-hub.ts:86-100`). A
 stalled dashboard tab during a chatty run buffers indefinitely, growing server
 memory per stuck client with no drop/close policy.
 
-**Fix:** skip or disconnect clients whose `bufferedAmount` exceeds a cap (a
-few MB); keep the existing `readyState` guard. On disconnect-for-backpressure,
-close with a distinct code so the web client's reconnect logic treats it as a
-normal reconnect (which, after O6, re-seeds state).
+**Fix:** set a documented per-client `bufferedAmount` ceiling and terminate
+the slow client with a distinct application close code; never skip an event
+while leaving that connection open, because it would silently diverge.
+Observe/catch failure per socket so one broken client cannot abort delivery to
+healthy clients. The browser reconnects with bounded backoff and receives the
+O6 authoritative snapshot before later deltas.
 
 **Likely files:** `packages/server/src/ws-hub.ts`, its tests.
 
-**Acceptance:** test with a mock socket whose `bufferedAmount` is inflated
-proves the cap triggers; healthy clients unaffected; full gates green.
+**Acceptance:** an inflated client is closed once with the documented code
+before the event is skipped; other clients receive the same broadcast even
+when one `send` throws; reconnect restores authoritative task and cost state;
+the ceiling has a measured/documented memory rationale; full gates green.
 
 **Fix risk:** low (only affects clients already failing).
 
 ### O13. Missing SQLite indexes on hot, ever-growing tables + orphaned rows — MEDIUM (efficiency)
 
-**Problem:** (a) `getGlobalMonthlyCost`/`getModelMonthlyCost` filter on
-`started_at` (`packages/server/src/db/repo.ts:1234-1251`) but the only
-`model_invocations` indexes lead with `model`/`project_id`
-(`schema.sql:89-94`) — the per-dispatch budget check (`budget.ts:43,125`) is a
-growing full-table scan and the table is never pruned. (b) `merge_decisions`
-has no index yet `getMergeDecisions` does `WHERE task_id = ? ORDER BY ts DESC`
-(`repo.ts:975-980`). (c) `notifications` has no index yet `getNotifications`
-filters/sorts per project (`repo.ts:1332-1364`) and the capability lookup
-scans by `task_id` (`repo.ts:1300-1319`). (d) `deleteProject`
-(`repo.ts:134-154`) removes every project-scoped table except `budget_alerts`
-rows with `scope = 'project:<id>'` (written at `repo.ts:1506`), leaking rows.
+**Problem:** (a) `getGlobalMonthlyCost` filters only on `started_at`
+(`packages/server/src/db/repo.ts:1244-1251`), while the current indexes lead
+with `model` or `project_id`; the `(model, started_at)` index already covers
+the model-month query and should not be duplicated. (b) `merge_decisions`
+has no index for `WHERE task_id = ? ORDER BY ts DESC`. (c) notifications need
+different support for newest global/project lists, the old-pending-approval
+UNION, and the task-scoped capability lookup. (d) `deleteProject` misses
+`budget_alerts` with `scope = 'project:<id>'` and can miss project-level logs
+whose `task_id` is empty even though `logs.project_id` identifies them.
 
-**Fix:** idempotent migration adding
-`idx_model_invocations_started ON model_invocations(started_at)`,
-`idx_merge_decisions_task ON merge_decisions(task_id, ts)`, and notification
-indexes on `(project_id, created_at)` + `task_id`; add the `budget_alerts`
-delete inside the existing `deleteProject` transaction. Do **not** prune
-`model_invocations` (it backs historical analytics) — prefer the index.
+**Fix:** capture `EXPLAIN QUERY PLAN` and representative row counts before
+choosing indexes. The expected minimal set is
+`model_invocations(started_at)`,
+`merge_decisions(task_id, ts DESC)`,
+`notifications(created_at DESC)`,
+`notifications(project_id, created_at DESC)`, and
+`notifications(task_id, created_at DESC)`, plus partial global/project indexes
+for `requires_approval = 1 AND responded_with IS NULL` only if the UNION plans
+need them. Avoid redundant indexes that increase every insert without serving
+a measured query. Delete logs directly by `project_id` and project-scoped
+budget alerts inside the existing project-deletion transaction. Do **not**
+prune invocation history.
 
 **Likely files:** `packages/server/src/db/index.ts` (migration),
 `packages/server/src/db/schema.sql`, `packages/server/src/db/repo.ts`, repo
 tests.
 
-**Acceptance:** migration is idempotent on an existing DB and fresh
-`schema.sql` matches; `EXPLAIN QUERY PLAN` shows index use for the three
-queries; delete-project test asserts no `budget_alerts` residue; full gates
-green.
+**Acceptance:** migration is idempotent on an existing database and fresh
+schema matches; before/after `EXPLAIN QUERY PLAN` evidence covers global and
+model monthly cost, merge decisions, global/project newest notifications,
+pending approvals, and capability lookup; delete-project tests leave no row
+for the project in logs or budget alerts (including an empty-task-id log) and
+preserve other projects; full gates green.
 
 **Fix risk:** low (additive).
 
 ### O14. Multi-write route sequences run outside transactions — LOW-MEDIUM (robustness)
 
-**Problem:** `POST /api/tasks/:id/stop` performs `markTaskStoppedIfActive` →
-`updateRun(stopped)` → `createAuditEntry` as three separate writes
-(`packages/server/src/index.ts:2149-2178`); `resolveNotification` similarly
-splits its writes (`:886-914`). A crash between writes leaves a task `blocked`
-with its run still `running` — a confusing inconsistent pair that survives
-restart.
+**Problem:** `POST /api/tasks/:id/stop` performs
+`markTaskStoppedIfActive` → `updateRun(stopped)` → `createAuditEntry` as
+separate writes after requesting process cancellation
+(`packages/server/src/index.ts:2149-2178`). `resolveNotification` is more
+dangerous: it calls `engine.resolveApproval` first, which can resume a merge,
+then records the response/audit (`:886-914`). A persistence failure can
+therefore apply a human decision that durable state says never happened.
 
-**Fix:** wrap each related-write sequence in `db.transaction(...)` (the repo
-already does this for `deleteProject` and `terminalizeInvocation`); keep
-broadcasts after commit.
+**Fix:** create focused conditional repository transitions. For Stop, after
+the engine accepts cancellation, atomically transition only the still-active
+task/run pair and write the audit; broadcasts use rows read after commit.
+Document and test the unavoidable crash window between process cancellation
+and the transaction: startup recovery must terminalize the orphaned run and
+must never revive the killed task.
 
-**Likely files:** `packages/server/src/index.ts` (or move the sequences into
-repo-level transactional helpers), tests.
+For approval, use the notification row as a durable inbox/outbox: atomically
+claim the still-pending notification, record the choice/audit, and mark the
+decision pending delivery; only then resolve the in-memory waiter. Mark it
+applied after successful delivery. Startup recovery redelivers a recorded but
+unapplied decision to the recovering task, and the engine-side consumer is
+idempotent so a crash after delivery but before the applied marker cannot
+merge twice. An expired/no-owner response is recorded distinctly and must not
+pretend the choice took effect. Do not hold a SQLite transaction open across
+engine/process/Git work.
 
-**Acceptance:** fault-injection test proves all-or-nothing behavior;
-broadcasts fire only on commit; full gates green.
+**Likely files:** `packages/server/src/db/index.ts`,
+`packages/server/src/db/schema.sql`, `packages/server/src/db/repo.ts`,
+`packages/server/src/index.ts`, `packages/server/src/engine-runner.ts`, engine
+approval recovery tests, and `docs/CONTRACT.md` if response semantics change.
 
-**Fix risk:** low.
+**Acceptance:** fault injection at every boundary proves atomic DB state;
+failed persistence never releases an approval; crash after recorded-before-
+delivery and after delivery-before-applied both recover to one applied
+decision; two channels racing one notification yield one winner; Stop leaves
+task/run/audit consistent and broadcasts only committed rows; no transaction
+spans an external side effect; full gates green.
+
+**Fix risk:** medium; the recovery tests are mandatory.
 
 ### O15. Telegram poll offset is memory-only; commands can re-execute after restart — MEDIUM (robustness)
 
@@ -460,18 +626,35 @@ but slash commands (`/stopall` confirmation, `/start <project>`) can fire
 twice. The offset also advances **before** `processUpdate`, so a crash
 mid-processing silently drops that update.
 
-**Fix:** persist the last-processed offset (small settings/db key) and restore
-it in `start()`; advance it after successful processing (or make the affected
-command handlers idempotent and document the at-least-once window).
+**Fix:** add a durable Telegram inbox keyed by Telegram `update_id`, with a
+unique constraint, payload/command identity, processing state, and timestamps.
+Insert/claim the update before handling it. Database-only command effects and
+the processed marker commit together. Commands that trigger engine/external
+work use a durable pending-action/outbox row keyed by `update_id`; a
+restart resumes that action, and the domain handler accepts the same
+idempotency key so replay cannot start/stop/approve twice. Advance the poll
+offset only over the contiguous range of durably processed updates; on boot,
+finish claimed/pending rows before requesting newer updates. Retain/prune old
+completed inbox rows with a documented window while preserving the high-water
+mark.
+
+Persisting an offset after side effects is only at-least-once and is not
+sufficient: a crash between those two operations duplicates the command.
+Marking it first merely changes the bug into a lost command.
 
 **Likely files:** `packages/server/src/telegram.ts`,
-`packages/server/src/db/repo.ts` (tiny key-value or settings field), tests.
+`packages/server/src/db/index.ts`, `packages/server/src/db/schema.sql`,
+`packages/server/src/db/repo.ts`, command/engine entry points that receive the
+idempotency key, and restart tests.
 
-**Acceptance:** test: restart between receipt and confirmation does not
-re-execute a command twice (or the redelivered command is a provable no-op);
-offset survives restart; full gates green.
+**Acceptance:** crash injection before claim, after claim, after side effect,
+and before offset advance results in exactly one domain action and eventual
+processed state; out-of-order updates do not advance the contiguous offset
+past a gap; two poll loops cannot own one update; approval and confirmation
+single-use behavior remains; migration/retention are idempotent; full gates
+green.
 
-**Fix risk:** low.
+**Fix risk:** medium; this is a durable inbox/outbox, not an offset-only patch.
 
 ### O16. Human-approval waits are not abort-aware — MEDIUM (robustness)
 
@@ -513,17 +696,22 @@ is a flat 2 h (`STALE_UPDATE_MS`, `:30,236-253`); `buildStatus` refuses new
 updates while ACTIVE (`:366-367`). A crash in the pre-launch window, or
 `update.sh` dying before its first progress write, blocks updates for 2 hours.
 
-**Fix:** use a much shorter stale window for pre-progress states
-(`queued`/`checking`), and/or have `status()` check
-`systemctl is-active hoopedorc-self-update.service` before reporting
-in-progress. Keep the long window for `building` (a genuinely long step must
-not be declared failed prematurely).
+**Fix:** use state-specific persisted deadlines: `queued`/`checking` expire
+after five minutes without a progress timestamp; download/install/build/
+restart states retain the existing two-hour allowance. On expiry persist a
+typed failed result explaining the last state, so the next request is
+unblocked. Do not add a `systemctl` probe to normal status reads: that would
+couple tests and non-systemd deployments to a host command while still leaving
+race windows. If production evidence shows five minutes is too short, adjust
+it from measured update-script transitions.
 
 **Likely files:** `packages/server/src/self-update.ts`, its tests.
 
-**Acceptance:** tests cover: early-state staleness expires quickly;
-`building` keeps the long window; a genuinely active unit is still reported
-in-progress; full gates green. Live check on EC2 recorded with the item.
+**Acceptance:** tests cover every state's deadline boundary, clock skew, and
+restart; early stale state becomes an explanatory failure and permits retry;
+fresh early state and long-running build remain active; a live EC2 smoke
+records observed state transition times and successful recovery from a
+deliberately stale fixture; full gates green.
 
 **Fix risk:** low.
 
@@ -557,16 +745,20 @@ accepted (web test suite as the oracle); full gates green.
 a wrong token → the running-project pre-check 401s → `--non-interactive` (the
 UI path) fails closed with "server unreachable". Safe, but a spurious refusal.
 
-**Fix:** strip surrounding quotes/`export ` prefixes (or read the values in a
-subshell). Extend the existing script rather than adding a second updater
-(AGENTS.md).
+**Fix:** parse `.env` with a small Node helper using the already-installed
+`dotenv` parser (or an equally strict non-executing parser) and return only the
+two named values to `update.sh`. Never `source`, `eval`, or execute `.env`
+content. Preserve whitespace, `#`, quotes, and `=` inside values correctly and
+avoid printing the token in logs/errors. Extend the canonical updater rather
+than adding a second update path.
 
-**Likely files:** `scripts/update.sh`.
+**Likely files:** `scripts/update.sh`, a focused helper/test under `scripts/`.
 
-**Acceptance:** shell test (or documented manual matrix) covering unquoted,
-quoted, and `export`-prefixed `.env` values; interactive and non-interactive
-paths still fail closed when the server is genuinely unreachable; live EC2
-UI-update smoke recorded.
+**Acceptance:** automated cases cover unquoted, single/double quoted,
+`export`-prefixed, whitespace, comments, embedded `#`/`=`, empty, malformed,
+and command-substitution-looking values; no input is executed and no token is
+logged; interactive and non-interactive paths still fail closed when the
+server is genuinely unreachable; live EC2 UI-update smoke recorded.
 
 **Fix risk:** low.
 
@@ -580,17 +772,25 @@ inside the try (`packages/server/src/planner.ts:917-926`); if that sink write
 throws, the catch re-records the same invocation as failed/$0 and surfaces a
 successful, paid turn as a failure (`:928-940`).
 
-**Fix:** (a) keep the run-never-breaks guarantee but emit a rate-limited
-error log on repeated flush failure; `unref()` the timer. (b) emit the
-terminal completed event outside the try, or detect sink-originated errors
-and don't re-emit a failed terminal for them.
+**Fix:** (a) keep the run-never-breaks guarantee but emit a rate-limited,
+operator-visible error on repeated flush failure; retain failed buffered logs
+for a bounded retry instead of discarding them, and `unref()`/settle the timer
+during shutdown. (b) separate model execution/parsing from the single terminal
+accounting callback. Once the model result exists, call the completed sink
+outside the execution catch. A sink failure becomes a typed, fail-closed
+accounting-persistence failure: do not invoke the model again, do not emit a
+second failed/$0 terminal, and do not report the invocation as durably
+complete.
 
 **Likely files:** `packages/server/src/engine-runner.ts`,
 `packages/server/src/planner.ts`, tests.
 
-**Acceptance:** tests: repeated flush failure produces an operator-visible
-signal while runs continue; a completed-sink failure neither double-records
-nor converts success to failure; full gates green.
+**Acceptance:** repeated flush failures keep a bounded batch for retry and
+produce a rate-limited signal; recovery flushes it once; shutdown settles the
+timer. A completed-sink failure produces one model execution, one terminal
+callback attempt, no fabricated failed/$0 callback, and a typed failure that
+halts the owning planner flow; exactly-once ledger tests remain green; full
+gates green.
 
 **Fix risk:** low.
 
@@ -605,20 +805,33 @@ writes stage statuses (`:1285,1578`); a late stage write leaves a transient
 `in_review`/`in_progress` task with no live run until the next start's orphan
 recovery.
 
-**Fix:** (a) delete entries in the task pipeline's `finally` (like
-`rateLimitWaits`) and/or clear in `start()`. (b) re-check `this.paused`
-immediately before each status write in `executeTask`.
+**Fix:** (a) clear stale conflict counts at the start of a genuinely new
+project run and when a task reaches a terminal/clean merge outcome. Do **not**
+delete the counter in `executeTask.finally`: a conflict path requeues and then
+runs `finally`, so that would reset every attempt and make the retry cap
+unreachable. Preserve the count across conflict requeues within one run.
+
+(b) funnel transient stage writes through one synchronous
+`publishActiveStage(task, status)` helper that checks paused state and current
+task ownership immediately adjacent to the update, with no `await` gap.
+`pause()` first sets the paused state, then aborts/settles the active pipelines,
+and finally persists backlog only for tasks that remain non-terminal and owned
+by that orchestrator. Terminal writes use their existing explicit paths. This
+avoids a check-then-await TOCTOU without adding a new persistence protocol.
 
 **Likely files:** `packages/engine/src/orchestrator.ts`, tests.
 
-**Acceptance:** tests: conflict counts reset across runs; pause leaves no
-task in a stage status without a live run; full gates green.
+**Acceptance:** O29 lands first. Tests prove conflict 1 → requeue → conflict 2
+reaches the cap; a later new run starts fresh; terminal/clean tasks leave no
+counter. Barrier-controlled tests pause immediately before every transient
+stage publication and prove no task remains in a stage status without a live
+run; drain semantics and approval waits remain unchanged; full gates green.
 
 **Fix risk:** very low / low.
 
 ---
 
-## Phase 3 — Web live-run smoothness
+## Workstream 3 — Web live-run smoothness
 
 ### O22. Board re-renders and refetches on every streamed log line — HIGH (efficiency)
 
@@ -631,19 +844,25 @@ with fresh inline closures per card (`components/TaskCard.tsx:50`,
 (`:268-272`). Sustained CPU/GC churn on exactly the screen an operator
 watches during a run, plus redundant estimate requests server-side.
 
-**Fix:** coalesce `activity` updates (rAF or ~500 ms batch), wrap `TaskCard`
-in `React.memo` with stable `useCallback` handlers, debounce `fetchEstimates`
-(leading+trailing ~1 s), and scope the ticker so it doesn't re-render the full
-tree.
+**Fix:** instrument a representative board fixture with React render counts,
+estimate request counts, and browser main-thread timing during a fixed log
+burst. Then fix only the measured sources: coalesce activity state with a
+bounded trailing update, invalidate estimates only on task fields that affect
+them, and isolate the one-second clock into the smallest consumer. Add
+`React.memo`/stable callbacks only where the profiler proves prop identity is
+causing repeated card renders; blanket memoization adds comparison and
+dependency complexity without proof.
 
 **Likely files:** `apps/web/src/pages/Board.tsx`,
 `apps/web/src/components/TaskCard.tsx`, Vitest interaction tests.
 
-**Acceptance:** interaction tests still pass with identical visible behavior
-(heartbeat text may lag ≤ the throttle interval); a burst of N log events
-causes O(1) board renders per throttle window (assertable via a render
-counter in tests); full gates green plus a real-browser check during a live
-run.
+**Acceptance:** the same scripted fixture records before/after board/card
+renders, request count, and browser main-thread time; a burst of N log events
+causes a bounded number of activity publications and estimate requests while
+the final activity/estimate state is never lost; visible heartbeat lag stays
+within the documented interval; interaction behavior is unchanged; full gates
+and a real live-run browser check pass. If the baseline is immaterial, defer
+the relevant sub-change rather than landing speculative memoization.
 
 **Fix risk:** low.
 
@@ -655,13 +874,20 @@ on four event types (`apps/web/src/pages/AuditView.tsx:131-146`). No debounce,
 no in-flight dedup — an open Costs/Audit tab streams full-table requests
 during a run.
 
-**Fix:** debounce (~1 s trailing) and skip when a request is in flight.
+**Fix:** use one small trailing coalescer per view with three states:
+`inFlight`, monotonic `requestedGeneration`, and
+`completedGeneration`. Events increment the requested generation. If a fetch
+is active, schedule exactly one trailing fetch after it settles; never simply
+skip an event while in flight, which can lose the final state. Pair with O24's
+abort/ownership guard so a stale response cannot win after project/unmount.
 
 **Likely files:** `apps/web/src/pages/CostView.tsx`,
 `apps/web/src/pages/AuditView.tsx`, shared debounce hook if useful, tests.
 
-**Acceptance:** tests prove coalescing under an event burst and a final
-trailing refresh; UI freshness lag ≤ ~1 s; full gates green.
+**Acceptance:** deterministic tests cover a burst before a fetch, during an
+in-flight fetch, and immediately as it settles; requests are bounded, the last
+generation is always fetched, stale responses cannot overwrite it, and UI
+freshness lag is ≤ the documented interval; full gates green.
 
 **Fix risk:** low.
 
@@ -694,44 +920,57 @@ request wins; no setState-after-unmount warnings; full gates green.
 (`apps/web/src/components/LogPanel.tsx:73-89`). Long runs emit thousands of
 lines — unbounded memory and per-render cost while the drawer is open.
 
-**Fix:** cap retained lines (keep last N with a "showing last N" note; full
-history stays available via the server-side `taskLogs` fetch) or windowize.
+**Fix:** keep the latest 1,000 lines in Board state, matching the current
+default `taskLogs` response bound. Apply the same trim after initial load and
+every streamed append, and show an honest "showing latest 1,000" note once
+older lines were omitted. The database remains the durable history; do not add
+a virtualization dependency for a list that is now bounded.
 
 **Likely files:** `apps/web/src/pages/Board.tsx`,
 `apps/web/src/components/LogPanel.tsx`, tests.
 
-**Acceptance:** test proves the cap and the visible note; autoscroll and
-filtering behavior unchanged; full gates green.
+**Acceptance:** initial responses and live bursts retain exactly the newest
+1,000 in order, with no boundary duplicate; the omission note is accurate;
+task switching cannot mix logs; autoscroll/filtering and O24 cancellation are
+unchanged; full gates green.
 
 **Fix risk:** low.
 
-### O26. Web minor robustness/a11y batch — LOW-MEDIUM
+### O26. Web minor robustness/a11y follow-ups — LOW-MEDIUM
 
-One PR, five audited paper-cuts (no behavior changes beyond the fixes):
+These are independently reviewable follow-ups, not a mandatory mixed-purpose
+PR. Land each with its owning item where noted:
 
 - **Toast timers never cleared** (`apps/web/src/hooks/useToast.tsx:37-39`):
   track and clear on unmount.
-- **Dialog semantics** (`components/TaskDrawer.tsx:116`,
+- **Dialog semantics** (pair with O5; `components/TaskDrawer.tsx:116`,
   `components/TokenGate.tsx:44`): add `role="dialog"`, `aria-modal`, Escape
-  handling, and initial/return focus via a small shared helper (AGENTS.md
-  keyboard-focus requirement).
-- **LogPanel autoscroll** (`components/LogPanel.tsx:40-42`): respect
+  handling, focus containment, and initial/return focus via the shared dialog
+  primitive.
+- **LogPanel autoscroll** (pair with O25;
+  `components/LogPanel.tsx:40-42`): respect
   `prefers-reduced-motion` and scroll the container explicitly (as
   `PlanView.tsx:265-274` already does).
 - **Dead "New Project" button** (`pages/PlanView.tsx:455-465`,
   `onClick={() => {}}`): wire it to the New Project page or remove the
   misleading control.
-- **`useWS` single-project invariant** (`hooks/useWS.ts:161-166`): document at
-  the export and upgrade the silent `console.warn` to a dev-only throw.
+- **`useWS` project ownership** (pair with O6/O12;
+  `hooks/useWS.ts:161-166`): replace the warning-only invariant with a
+  reference-counted connection manager keyed by project ID, still sharing one
+  socket among same-project subscribers. A dev-only throw would leave
+  production silently wrong and is not a fix.
 
-**Acceptance:** interaction tests for Escape/focus-trap and toast cleanup;
-keyboard walkthrough in a real browser; full gates green.
+**Acceptance:** timers are cleared; dialog interaction tests cover
+Escape/focus containment/return; reduced-motion scrolling is non-animated;
+New Project has one real outcome; simultaneous different-project subscribers
+receive only their own events while same-project subscribers share one socket;
+keyboard walkthrough and full gates green for each owning PR.
 
 **Fix risk:** minimal.
 
 ---
 
-## Phase 4 — Verification depth (tests, CI, lint, docs)
+## Workstream 4 — Verification depth (tests, CI, lint, docs)
 
 ### O27. Server HTTP route tests + extraction of the untested security validators — HIGH (testing)
 
@@ -745,22 +984,31 @@ keyboard walkthrough in a real browser; full gates green.
 the recursive `rmSync` in `DELETE /api/projects/:id` (`index.ts:1435`) and
 token auth. A regression here ships green today.
 
-**Fix:** extract the pure path/config/token validators into a
-`project-validation.ts` module (the one clearly-justified extraction from the
-2,700-line `index.ts` — it shrinks the file *and* makes security logic
-testable) and add: unit tests for every validator, plus a Fastify
-`app.inject` suite covering auth on/off, 401 + loopback behavior, project
-create/delete refusal paths, and the O18 validation cases.
+**Fix:** first create an explicit `buildApp`/`createApp` seam that accepts
+dependencies and returns a Fastify instance without listening, installing
+process-global handlers, or starting unowned timers. Keep `main()` as the
+small production composition root that builds, starts background services,
+listens, and closes them through one lifecycle owner. This is a behavior-
+sensitive refactor because `index.ts` currently defines and invokes `main()`;
+do not fake `app.inject` around the live singleton.
 
-**Likely files:** `packages/server/src/index.ts`, new
-`packages/server/src/project-validation.ts` (+ tests), new route test file.
+Then extract the pure path/config/token validators into
+`project-validation.ts` and add unit tests plus an injected-route suite for
+auth on/off, 401 and loopback behavior, project create/delete refusals, and
+O18 validation. Injected apps must close cleanly with no Telegram, scheduler,
+backup, pruning, WebSocket, or self-update timer left running.
 
-**Acceptance:** all listed helpers have success/refusal/error coverage
-(AGENTS.md test standard); delete-refusal paths proven (dirty path, wrong
-path, non-managed path); behavior byte-identical (extraction only moves
-code); full gates green.
+**Likely files:** `packages/server/src/index.ts`, a small app/lifecycle module,
+new `packages/server/src/project-validation.ts`, and focused tests.
 
-**Fix risk:** low (move + test, no logic change).
+**Acceptance:** all listed helpers have success/refusal/error coverage;
+delete refusal covers dirty, wrong, non-managed, symlink, and nested-repository
+paths; `app.inject` can build/close repeatedly without open handles or
+process-handler accumulation; a real `main()` smoke still starts and shuts
+down gracefully; extraction preserves route behavior; full gates green.
+
+**Fix risk:** medium; land the app seam separately from validator behavior if
+the diff ceases to be easily reviewable.
 
 ### O28. Deterministic fix for the flaky adapters process-tree test — MEDIUM (testing)
 
@@ -831,21 +1079,27 @@ green.
 Adapters/engine/server/types — the bulk of the runtime logic — get no
 `no-floating-promises`-class checks (exactly the O2 bug class).
 
-**Fix:** extend `eslint.config.js` to `packages/*/src/**/*.ts` with a
-type-checked Node config; update the root `lint` script. Introduce
-rules-as-warnings first, then ratchet the backlog to errors in a follow-up so
-one PR isn't a thousand-line lint sweep.
+**Fix:** extend `eslint.config.js` to backend/types sources with a type-aware
+Node configuration and update the root script. Capture the existing violation
+baseline by rule/workspace in a checked, reviewable form and make CI fail if
+the count increases; warnings with no baseline/ratchet merely accumulate.
+Promote safety-critical rules such as unhandled/floating promises to errors in
+new or touched code immediately, then pay down the recorded legacy backlog in
+small mechanical PRs before turning the rule globally to error. Exclude
+generated/build output explicitly.
 
 **Likely files:** `eslint.config.js`, root `package.json`, hoisted
 typescript-eslint dev deps, then targeted fixes.
 
-**Acceptance:** `npm run lint` covers all five workspaces;
-`no-floating-promises` (or equivalent) is at least a warning on the backend;
-CI runs it; full gates green.
+**Acceptance:** `npm run lint` covers all five workspaces; a newly introduced
+floating promise fails CI; the checked baseline cannot increase and reaches
+zero before global promotion; config/test files receive the correct
+Node/browser globals without blanket disables; CI runs the same root command;
+full gates green.
 
 **Fix risk:** low-medium (staged rollout controls the blast radius).
 
-### O32. CI omissions: `git diff --check`, audit gate, Playwright cache — LOW (testing/efficiency)
+### O32. CI omissions: `git diff --check`, audit signal, Playwright cache — LOW (testing/efficiency)
 
 **Problem:** `.github/workflows/ci.yml` omits `git diff --check` (a declared
 repository gate), has no `npm audit` signal, re-downloads the Playwright
@@ -853,15 +1107,27 @@ browser every run (`:24`, `~/.cache/ms-playwright` never cached), duplicates
 type-package builds between the `typecheck` and `build` steps, and has no
 `concurrency` group to cancel superseded PR runs.
 
-**Fix:** add the missing steps (`git diff --check`; `npm audit
---audit-level=high` — advisory at first if noise is a concern), cache
-`~/.cache/ms-playwright` keyed on the `@playwright/test` version, and add a
-`concurrency` group.
+**Fix:** add `git diff --check` as a required deterministic gate. Add PR-only
+concurrency keyed by workflow+PR/branch with `cancel-in-progress: true`; do not
+let a new main run cancel verification of a different merged commit. Cache
+Playwright browsers with a key derived from OS plus the lockfile/installed
+Playwright version and retain the normal install fallback on a cache miss.
+
+Keep registry-backed `npm audit --audit-level=high` as a scheduled/advisory
+security job initially, with its report artifact and a named owner. Registry
+availability and mutable advisory data make it a poor deterministic merge
+gate. Promote it only after an explicit policy defines lockfile exceptions,
+outage behavior, and a reproducible failure decision. O1 remains responsible
+for resolving the known high findings.
 
 **Likely files:** `.github/workflows/ci.yml`.
 
-**Acceptance:** CI enforces the full documented gate list; a whitespace error
-fails CI; repeat runs restore the browser from cache; full gates green.
+**Acceptance:** CI enforces every deterministic documented gate and a
+whitespace error fails it; superseded PR runs cancel while separate main runs
+do not; a warm run proves browser cache restoration and a miss still installs;
+the audit job publishes a visible high-severity result without making network
+failure indistinguishable from vulnerability failure; workflow lint plus full
+repository gates green.
 
 **Fix risk:** none/low.
 
@@ -874,9 +1140,11 @@ mention in the contract doc: `updateProject`, `planSessionArchives`,
 CONTRACT.md a source of truth; agents planning changes to diff/retry/rollback/
 analytics work from an incomplete contract.
 
-**Fix:** document the 11 endpoints (shapes already exist in `api.ts`); add a
-small test asserting every `ROUTES` key appears in CONTRACT.md so it can't
-regress (pairs with O30).
+**Fix:** document the 11 endpoints from their shared request/response types.
+Add a machine-readable route marker/table row for every `ROUTES` key and test
+that exact keys/methods/paths are covered. Do not use a loose substring search
+that can pass on prose, examples, or similarly named routes. Pair this with
+O30 after O27 provides the app seam.
 
 **Likely files:** `docs/CONTRACT.md`, the O30 test file.
 
@@ -887,10 +1155,10 @@ fails when a route is added undocumented; full gates green.
 
 ---
 
-## Phase 5 — Structural maintainability and efficiency (careful changes last)
+## Workstream 5 — Structural maintainability and efficiency
 
-These are the highest-payoff long-term items but the most behavior-sensitive;
-they intentionally come after Phases 1–4 so the new tests protect them.
+These are behavior-sensitive and proceed only after the relevant regression
+rails and measurements in the execution sequence below.
 
 ### O34. Consolidate `executeTask`'s duplicated escalation logic — MEDIUM (maintainability)
 
@@ -905,17 +1173,28 @@ the **persisted, user-facing** `maxAttempts` as control-flow bookkeeping
 (`:1427,1446,1531,1636,1711`), so the board shows creeping "attempt 3/7"
 budgets.
 
-**Fix:** extract a single `escalateOrFail(...)` helper used by all four
-sites; move the wait/fallback "free retry" bookkeeping into an in-memory
-counter so the persisted `maxAttempts` stays stable. Land **after** O29's
-tests exist; keep the pipeline structure otherwise intact.
+**Fix:** split this into two decisions/PRs after O29:
+
+1. Extract a pure `escalateOrFail(...)` result helper used by all four sites,
+   with no persistence or retry-semantic change. Golden/table tests cover
+   every stage, fallback available/exhausted, and status reason.
+2. Separately specify retry accounting. Do not move persisted bookkeeping to
+   memory: restart recovery must know the attempt budget already consumed.
+   Keep `maxAttempts` as the immutable user policy, and add/repurpose an
+   explicitly named durable counter for effective attempts/escalations scoped
+   to the logical task run. Update it transactionally with the requeue/fallback
+   decision and reset it only at the documented new-run boundary. If the
+   current schema can express that unambiguously, demonstrate it; otherwise
+   add an idempotent migration and focused design note before code.
 
 **Likely files:** `packages/engine/src/orchestrator.ts`, orchestrator tests.
 
-**Acceptance:** all existing + O29 orchestrator tests pass unchanged except
-where attempt-count expectations become saner (each such change justified in
-the PR); persisted `maxAttempts` no longer changes during a run; fallback
-order/exhaustion behavior byte-identical; full gates green.
+**Acceptance:** the extraction PR produces byte-identical persisted
+transitions and messages. The accounting PR proves stop/restart at every
+fallback boundary resumes with the same remaining budget, concurrent retry
+requests cannot double-increment, `maxAttempts` never mutates, and a genuine
+new logical run resets only the intended counter; board/API labels distinguish
+policy maximum from consumed effective attempts; full gates green for each PR.
 
 **Fix risk:** medium — behavior-sensitive; the test suite is the rail.
 
@@ -928,42 +1207,60 @@ plus map rebuilds per second even when nothing changes. The poll also drives
 cooldown/quota re-checks and mid-run task pickup, so it cannot be naively
 slowed.
 
-**Fix:** gate `reconcileTasks`/`getTasks` behind a cheap "tasks changed"
-signal (the server owns all writes and can flip a dirty flag/event), keeping
-the fast poll only while actively dispatching and preserving the
-cooldown/quota wake-ups exactly.
+**Fix:** measure steady idle DB reads, CPU, and task-pickup latency with
+realistic project/task counts first. If material, replace full reconciliation
+polling with a monotonic task-generation value incremented in the same
+transaction as every task mutation. The scheduler remembers the last seen
+generation and waits on a same-process notification **plus a deadline** for
+cooldown/quota/time-based wakeups; after any wake/restart it compares the
+persisted generation before reconciling. Never use a boolean dirty flag:
+clear-vs-write races lose wakeups. Every task write path, including planning,
+retry, recovery, and manual edits, must use the generation-owning repository
+helper.
 
 **Likely files:** `packages/engine/src/orchestrator.ts`,
 `packages/engine/src/index.ts` (deps), `packages/server/src/engine-runner.ts`
 (signal source), tests.
 
-**Acceptance:** existing scheduler/cooldown/quota tests pass unchanged; a new
-test proves an external task edit still gets picked up promptly; measured
-steady-state DB reads drop (assert via a counting stub); full gates green.
+**Acceptance:** before/after results use the same task counts/host; steady
+full-table reads materially drop without increasing p95 dispatch latency
+beyond the documented bound. Tests cover a write immediately before wait,
+during waiter registration, during reconciliation, multiple writes collapsed
+to one latest generation, restart, manual dispatch, cooldown, quota, pause,
+and drain; no wakeup is lost and time-based deadlines still fire; full gates
+green. If baseline CPU/latency is immaterial, defer O35 with evidence and add
+no signaling protocol.
 
 **Fix risk:** medium — wake-up semantics are the invariant; do not merge
 without the cooldown tests passing untouched.
 
-### O36. Server and engine hot-path micro-efficiency batch — LOW-MEDIUM (efficiency)
+### O36. Server and engine measured micro-efficiency follow-ups — LOW-MEDIUM
 
-One PR of small, independently safe reductions in redundant work:
+These are independent candidates, not one mixed PR. Re-verify and measure
+each, then land it with the owning work:
 
 - **`liveSettings()` re-read per event** — read once per handler invocation
   instead of multiple times (`packages/server/src/engine-runner.ts:514-601,698`);
   keeps per-event freshness (no cross-event caching).
-- **WS catch-up snapshot N+1** — add `getRunsForProject(projectId)` (one
+- **WS catch-up snapshot N+1** (pair with O6/O13) — add
+  `getRunsForProject(projectId)` (one
   indexed query + group in memory) replacing per-task `getRuns`
-  (`packages/server/src/index.ts:2617-2622`); index `runs(project_id)` if
-  missing (fold into O13's migration if convenient).
+  (`packages/server/src/index.ts:2617-2622`), but only after `EXPLAIN` verifies
+  the existing run indexes and a counting test reproduces N+1.
 - **Settings-save full scan** — replace the projects×tasks warning loop
-  (`packages/server/src/index.ts:2406-2420`) with one join query.
+  (`packages/server/src/index.ts:2406-2420`) with one indexed existence/join
+  query if measured at realistic scale.
 - **Redundant git diffs per merge decision** — reuse the
-  `changedFilesWithStatus` result instead of re-running `git diff` at
-  `packages/engine/src/orchestrator.ts:2706` (four-plus subprocess diffs per
-  attempt today; `:2631-2634`, `validator.ts:199-203`, `gate-runner.ts:123`).
+  `changedFilesWithStatus` result only when tests prove the compared refs,
+  rename/deletion semantics, and timing are identical; otherwise keep the
+  separate safety inspection. Never trade destructive-change accuracy for a
+  subprocess reduction.
 
-**Acceptance:** behavior identical (existing tests unchanged); the N+1 and
-re-read paths provably collapsed (counting stubs); full gates green.
+**Acceptance:** each PR contains its own counting/timing baseline and removes
+only duplicated work demonstrated by that evidence; settings freshness,
+snapshot completeness/order, and destructive-change inspection remain
+identical; full gates green. Unmeasured or immaterial candidates are closed as
+deferred without code.
 
 **Fix risk:** low.
 
@@ -991,24 +1288,79 @@ re-read paths provably collapsed (counting stubs); full gates green.
 
 ## Execution order
 
-Each numbered item is one PR unless noted. Within a phase, order is the
-listed order; the phases exist because later work depends on earlier rails
-(Phase 4's tests protect Phase 5's refactors; O6 pairs with O12's
-close-on-backpressure).
+The workstreams above are ownership groupings. This dependency-aware sequence
+is authoritative. Default to one item per PR; combine only the pairs named
+below because they share one invariant and would be unsafe to split.
 
-1. Merge this plan as a documentation-only PR after the complete gate.
-2. Phase 1: O1 → O2 → O3 → O4 → O5 → O6 → O7 → O8.
-3. Phase 2: O9 → O10 → O11 → O12 → O13 → O14 → O15 → O16 → O17 → O18 → O19 →
-   O20 → O21.
-4. Phase 3: O22 → O23 → O24 → O25 → O26.
-5. Phase 4: O27 → O28 → O29 → O30 → O31 → O32 → O33 (O30+O33 may share a
-   branch; O18's route tests may land inside O27).
-6. Phase 5: O34 → O35 → O36 — each only after the full Phase 4 gates are in
-   place and green.
-7. After each merge: update this document's item with status + evidence
-   (PR, commit, test counts). After each phase: run the complete repository
-   gate on `main` and, for deploy-affecting phases (1, 2), a live
-   `scripts/update.sh` smoke on the EC2 box with `GET /api/health` evidence.
+1. **Plan baseline:** merge this revision as a documentation-only PR after the
+   complete repository gate.
+2. **Immediate exposure and fatal-path stability:** O1 → O2 → O28. O1 removes
+   known vulnerable dependencies; O2 removes the server-wide rejection path;
+   O28 makes the required adapter gate deterministic.
+3. **Regression rails before behavior-sensitive work:**
+   - O27 app-construction seam, then validator/route refusal tests.
+   - O30 + O33 may share one documentation-contract enforcement PR after the
+     app seam exists.
+   - O29 must merge before O21 or O34.
+   - O31 and O32 land as separate lint/CI policy PRs; neither should bury
+     production behavior changes.
+4. **Durable correctness and recovery:**
+   - O3 planning revision receipts.
+   - O4 shared Git serialization.
+   - O7 authoritative PR merge confirmation.
+   - O13 query/delete migration.
+   - O16 abort-aware approval ownership → O14 durable approval/Stop
+     transitions → O15 Telegram inbox/outbox. This order gives Telegram a
+     durable, idempotent approval consumer to call.
+   - O18 route validation (using O27's injection rails).
+   - O20 accounting/log persistence.
+   - O21 lifecycle cleanup only after O29.
+   - O17 and O19 updater hardening, each followed by the required live EC2
+     smoke.
+5. **Bounded resources and safe UI:**
+   - O9 and O11 independently bound process memory.
+   - O5 + O26 dialog semantics may share one accessible-confirmation PR.
+   - O6 + O12 + O26 WebSocket ownership form one contract/snapshot/
+     backpressure PR; partial delivery of that trio would preserve a
+     divergence window.
+   - O24 request ownership before O23 request coalescing.
+   - O25 + O26 reduced-motion log behavior may share one bounded-log PR.
+   - O8 starts as a reproduction/evidence PR and changes production only if
+     the usage-loss path is demonstrated.
+6. **Measured optimization only:** benchmark O10, O22, O35, and each O36
+   candidate. Implement only candidates with material evidence. O36's
+   WebSocket query candidate is evaluated with O6/O13; its Git candidate
+   waits for the relevant engine rails. Record immaterial candidates as
+   deferred rather than adding signaling, caching, or memoization machinery.
+7. **Structural cleanup:** O34 helper extraction after O29/O21, followed by
+   its separate durable-accounting design/PR if still justified.
+8. **After every merge:** update the item with status, PR, merge commit, exact
+   gate/test counts, and outstanding live evidence. After each numbered wave,
+   independently run the complete gate on merged `main`; deploy-affecting
+   waves also use `scripts/update.sh` and record `GET /api/health` plus the
+   item-specific smoke.
+
+## Per-PR go/no-go review
+
+Before implementation starts, the PR description or roadmap update must answer
+all of these:
+
+- What exact failure, unsafe state, or measured bottleneck is reproduced?
+- Which layer owns the invariant, and can the fix stay entirely there?
+- What new state, timer, queue, cache, retry, or migration is introduced?
+  Who owns cleanup, bounds, cancellation, restart recovery, and observability?
+- What happens if the process crashes immediately before and after every
+  external side effect or durable write?
+- Which concurrent calls can race, and what database constraint, generation,
+  serializer, or idempotency key selects one outcome?
+- What is the smallest safe rollback? Can old data and mixed pre/post-migration
+  rows still start?
+- Which acceptance test fails before the fix, and which live check cannot be
+  represented locally?
+
+Stop or defer an item when the answer requires a broader protocol than the
+measured/reproduced problem justifies. A smaller explicit failure is preferable
+to a complex path that can silently claim success.
 
 ## Definition of done (whole plan)
 
@@ -1017,6 +1369,9 @@ close-on-backpressure).
 - `npm audit` reports zero high-severity vulnerabilities.
 - Every repository gate green on `main`, including the new route tests,
   backend lint, and the de-flaked adapters suite (20 consecutive local runs).
+- Every performance item has reproducible before/after evidence or an explicit
+  no-change deferral; no optimization is accepted on render/CPU/DB assumptions
+  alone.
 - Feature-parity spot-check on the deployed instance: plan → commit →
   autorun → gates → validate → merge; Telegram approval; rollback; settings
   save; self-update from the UI; dashboard live during a run at phone width.
