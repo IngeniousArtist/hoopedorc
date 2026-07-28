@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -102,6 +102,7 @@ test("sandbox forwards safe npm/runtime settings but no CLI or registry credenti
   const certificateDir = mkdtempSync(join(tmpdir(), "hoopedorc-sandbox-cert-"));
   const certificatePath = join(certificateDir, "corporate.pem");
   writeFileSync(certificatePath, "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n");
+  const canonicalCertificatePath = realpathSync(certificatePath);
   const keys = [
     "npm_config_registry",
     "npm_config_https_proxy",
@@ -176,9 +177,13 @@ test("sandbox forwards safe npm/runtime settings but no CLI or registry credenti
   );
   const mounts = dockerArgs
     .flatMap((arg, index) => (arg === "-v" ? [dockerArgs[index + 1] ?? ""] : []));
-  assert.ok(mounts.includes(`${certificatePath}:/run/hoopedorc-certs/npm-cafile.pem:ro`));
   assert.ok(
-    mounts.includes(`${certificatePath}:/run/hoopedorc-certs/node-extra-ca-certs.pem:ro`),
+    mounts.includes(`${canonicalCertificatePath}:/run/hoopedorc-certs/npm-cafile.pem:ro`),
+  );
+  assert.ok(
+    mounts.includes(
+      `${canonicalCertificatePath}:/run/hoopedorc-certs/node-extra-ca-certs.pem:ro`,
+    ),
   );
   for (const forbidden of [
     "npm_config__authToken",

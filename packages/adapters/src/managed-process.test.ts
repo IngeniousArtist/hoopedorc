@@ -2,33 +2,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { abortableDelay, execManagedProcess, spawnManagedProcess } from "./managed-process.js";
 
-function processExists(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
-
-async function waitForExit(pid: number): Promise<void> {
-  const deadline = Date.now() + 2_000;
-  while (processExists(pid) && Date.now() < deadline) {
-    await abortableDelay(20);
-  }
-}
-
 test(
   "abort terminates a SIGTERM-resistant parent and its child process",
-  { skip: process.platform === "win32" },
-  async () => {
+  { skip: process.platform === "win32", timeout: 10_000 },
+  async (t) => {
+    // The grandchild holds the managed stdout pipe open. ChildProcess "close"
+    // (and therefore managed.settled) cannot fire until that inherited fd is
+    // closed, which proves the process group exited without consulting a
+    // zombie-sensitive PID table.
     const childProgram =
-      'process.on("SIGTERM",()=>{});setInterval(()=>{},1000);';
+      'process.on("SIGTERM",()=>{});process.stdout.write("ready\\n");setInterval(()=>{},1000);';
     const parentProgram = [
       'const {spawn}=require("node:child_process");',
-      `const child=spawn(process.execPath,["-e",${JSON.stringify(childProgram)}],{stdio:"ignore"});`,
-      "console.log(child.pid);",
       'process.on("SIGTERM",()=>{});',
+      `spawn(process.execPath,["-e",${JSON.stringify(childProgram)}],{stdio:["ignore","inherit","ignore"]});`,
       "setInterval(()=>{},1000);",
     ].join("");
     const controller = new AbortController();
@@ -36,26 +23,25 @@ test(
       signal: controller.signal,
       killGraceMs: 100,
     });
-    const parentPid = managed.child.pid!;
-    const childPid = await new Promise<number>((resolve, reject) => {
+    t.after(async () => {
+      controller.abort();
+      await managed.settled;
+    });
+    await new Promise<void>((resolve) => {
       let output = "";
-      const timer = setTimeout(() => reject(new Error("child pid was not reported")), 2_000);
-      managed.child.stdout.on("data", (chunk: Buffer) => {
+      const onData = (chunk: Buffer) => {
         output += chunk.toString("utf8");
-        const pid = Number.parseInt(output, 10);
-        if (Number.isFinite(pid)) {
-          clearTimeout(timer);
-          resolve(pid);
-        }
-      });
+        if (!output.includes("ready\n")) return;
+        managed.child.stdout.off("data", onData);
+        resolve();
+      };
+      managed.child.stdout.on("data", onData);
     });
 
     controller.abort();
     const result = await managed.settled;
     assert.equal(result.aborted, true);
-    await Promise.all([waitForExit(parentPid), waitForExit(childPid)]);
-    assert.equal(processExists(parentPid), false);
-    assert.equal(processExists(childPid), false);
+    assert.equal(result.signal, "SIGKILL");
   },
 );
 
