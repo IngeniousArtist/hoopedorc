@@ -9,7 +9,6 @@ import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
-import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import type {
@@ -105,6 +104,7 @@ import { persistInvocationEvent } from "./invocation-ledger";
 import { ShutdownCoordinator, installShutdownHandlers } from "./shutdown";
 import { buildRuntimeHealth } from "./runtime-health";
 import { SelfUpdater, SelfUpdateRefusedError } from "./self-update";
+import { registerBuiltWebApp } from "./web-static";
 import type {
   DraftTask,
   Notification,
@@ -659,14 +659,7 @@ async function main() {
   ).version;
   const webDist = resolve(repoRoot, "apps/web/dist");
   if (existsSync(webDist)) {
-    await app.register(fastifyStatic, { root: webDist });
-    app.setNotFoundHandler((req, reply) => {
-      const url = req.raw.url ?? "";
-      const isApiOrWs =
-        url.startsWith("/api/") || url === WS_PATH || url.startsWith(`${WS_PATH}?`);
-      if (isApiOrWs) return reply.code(404).send({ error: "not found" });
-      return reply.type("text/html").sendFile("index.html");
-    });
+    await registerBuiltWebApp(app, webDist);
     app.log.info(`serving built web app from ${webDist}`);
   }
 

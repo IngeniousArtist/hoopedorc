@@ -30,7 +30,7 @@
     "start:prebuilt": "npm run start -w @orc/server"
   },
   "devDependencies": {
-    "concurrently": "^9.1.0",
+    "concurrently": "^9.2.4",
     "typescript": "^5.6.3"
   },
   "allowScripts": {
