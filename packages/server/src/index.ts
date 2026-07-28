@@ -37,7 +37,12 @@ import { seed } from "./mock";
 import type { Db } from "./db/index";
 import { initDb } from "./db/index";
 import { runBackup } from "./db/backup";
-import { isScheduleDue } from "./scheduler";
+import { checkSchedules } from "./scheduler";
+import {
+  runBackgroundOperation,
+  type BackgroundFailureReporter,
+  type BackgroundOperation,
+} from "./background-operations";
 import * as repo from "./db/repo";
 import { WsHub } from "./ws-hub";
 import { EngineRunner } from "./engine-runner";
@@ -671,8 +676,20 @@ async function main() {
   const hub = new WsHub();
   const engine = new EngineRunner(db, hub);
   const maintenanceTimers: ReturnType<typeof setInterval>[] = [];
-  const backgroundMaintenance = new Set<Promise<void>>();
+  const backgroundOperations = new Set<Promise<void>>();
   const requestControllers = new Set<AbortController>();
+  const reportBackgroundFailure: BackgroundFailureReporter = (label, error) => {
+    app.log.error(
+      `${label} failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+    );
+  };
+  function runBackground(
+    label: string,
+    operation: BackgroundOperation,
+    reportFailure: BackgroundFailureReporter = reportBackgroundFailure,
+  ): void {
+    runBackgroundOperation(backgroundOperations, label, operation, reportFailure);
+  }
 
   // ensure settings exist
   if (!repo.getSettings(db)) {
@@ -726,20 +743,23 @@ async function main() {
   // a mock/in-memory boot (nothing durable to protect). A failed backup
   // must never crash the server — log a warning and move on.
   function backupDb(): void {
-    const backup = runBackup(
-      db,
-      ENV.mock ? ":memory:" : ENV.dbPath,
-      ENV.dbBackupDir,
-      ENV.dbBackupKeep,
-    )
-      .then((result) => {
+    runBackground(
+      "DB backup",
+      async () => {
+        const result = await runBackup(
+          db,
+          ENV.mock ? ":memory:" : ENV.dbPath,
+          ENV.dbBackupDir,
+          ENV.dbBackupKeep,
+        );
         if (!result.skipped) app.log.info(`DB backup written: ${result.file}`);
-      })
-      .catch((err) => {
-        app.log.warn(`DB backup failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
-    backgroundMaintenance.add(backup);
-    void backup.finally(() => backgroundMaintenance.delete(backup));
+      },
+      (label, error) => {
+        app.log.warn(
+          `${label} failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      },
+    );
   }
   backupDb();
   const backupTimer = setInterval(backupDb, ONE_DAY_MS);
@@ -754,36 +774,19 @@ async function main() {
   // throws, which is caught and skipped here (same as the /start route)
   // rather than treated as a real failure.
   const SCHEDULE_CHECK_MS = 60 * 1000;
-  function checkSchedules(): void {
-    for (const project of repo.getProjects(db)) {
-      if (!isScheduleDue(project.config?.schedule, project.lastScheduledRunAt)) continue;
-      // Only stamp lastScheduledRunAt on an actual successful kickoff — if
-      // engine.start() throws (a manual dispatch is in flight), this cycle
-      // doesn't count, so the next check can retry instead of silently
-      // losing the schedule slot until the next interval/day.
-      void startProject(db, engine, broadcast, project.id)
-        .then((result) => {
-          if (!result.ok) {
-            app.log.info(
-              `scheduled start skipped for "${project.name}": ${result.error}`,
-            );
-            return;
-          }
-          // Mirror the /start route: mark the project running and tell open
-          // tabs the run began. Without this the UI kept showing the
-          // pre-run status (completed/paused/created) for the whole
-          // scheduled run, only correcting itself when the run's
-          // finally-block wrote the final status.
-          const updated = repo.updateProject(db, project.id, {
-            status: "running",
-            lastScheduledRunAt: new Date().toISOString(),
-          });
-          if (updated) broadcast({ type: "project.updated", payload: updated });
-          app.log.info(`scheduled start: ${project.name}`);
-        });
-    }
+  function checkScheduleTimer(): void {
+    checkSchedules({
+      getProjects: () => repo.getProjects(db),
+      startProject: (projectId) =>
+        startProject(db, engine, broadcast, projectId),
+      updateProject: (projectId, updates) =>
+        repo.updateProject(db, projectId, updates),
+      broadcast,
+      runBackground,
+      logInfo: (message) => app.log.info(message),
+    });
   }
-  const scheduleTimer = setInterval(checkSchedules, SCHEDULE_CHECK_MS);
+  const scheduleTimer = setInterval(checkScheduleTimer, SCHEDULE_CHECK_MS);
   scheduleTimer.unref();
   maintenanceTimers.push(scheduleTimer);
 
@@ -1185,7 +1188,7 @@ async function main() {
     },
     flushLogs: async () => {
       engine.flushPendingLogs();
-      await Promise.allSettled([...backgroundMaintenance]);
+      await Promise.allSettled([...backgroundOperations]);
     },
     recordAudit: (reason, result) => {
       for (const projectId of result.stoppedProjectIds) {
@@ -2675,11 +2678,10 @@ async function main() {
     for (const p of repo.getProjects(db)) {
       if (p.status === "running" && !engine.hasActivity(p.id)) {
         app.log.info(`resuming project ${p.name} (${p.id}) after restart`);
-        void engine.start(p).catch((err) => {
-          app.log.error(
-            `failed to resume ${p.id}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        });
+        runBackground(
+          `resume project "${p.name}" (${p.id})`,
+          () => engine.start(p),
+        );
       }
     }
     for (const p of repo.getProjects(db)) {

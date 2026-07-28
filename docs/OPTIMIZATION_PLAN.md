@@ -251,8 +251,22 @@ Sweep server startup, interval, timeout, and event-listener callbacks for
 unowned promises and classify each one as awaited, deliberately owned, or a
 bug.
 
-**Likely files:** `packages/server/src/index.ts`, possibly
-`packages/server/src/shutdown.ts` and a focused background-task test.
+**Implementation decision (2026-07-29):** reuse the existing shutdown-tracked
+background-operation set behind one helper that attaches its rejection handler
+synchronously, logs a contextual label exactly once, and removes the settled
+operation. Use that owner for DB backups, scheduled starts, and resume-on-boot
+starts rather than maintaining separate fire-and-forget patterns. Extract the
+schedule iteration into `scheduler.ts` with injected start/update/broadcast
+boundaries so each rejection point is fault-testable without booting the
+server. Shutdown first clears the timers and begins the existing bounded
+engine shutdown, then awaits the registered wrappers before closing SQLite.
+Do not change request, planning, Git, task-run, Telegram-delivery, or
+orchestrator error policy in this item.
+
+**Likely files:** `packages/server/src/index.ts`,
+`packages/server/src/scheduler.ts`, and a focused background-operation
+module/test; `packages/server/src/shutdown.ts` only if the existing coordinator
+cannot await the shared owner cleanly.
 
 **Acceptance:** fault injection proves rejected `startProject`,
 `updateProject`, and `broadcast` work is logged once with context and never
