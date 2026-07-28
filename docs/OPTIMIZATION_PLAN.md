@@ -277,6 +277,36 @@ full gates green.
 
 **Fix risk:** negligible.
 
+**Status:** completed in
+[#184](https://github.com/IngeniousArtist/hoopedorc/pull/184)
+(`3e4c793`). One background-operation owner now starts work without changing
+call ordering, attaches rejection handling synchronously, reports a contextual
+failure once, unregisters on settlement, and is awaited during shutdown. DB
+backups, per-project schedule starts, and resume-on-boot starts share that
+owner. The PR audit classifies the remaining startup, timer, framework, and
+fatal-handler callbacks without widening request, Git, task, Telegram, or
+orchestrator error policy.
+
+Fault injection covers rejected scheduled Start, expected Start refusal,
+`SQLITE_BUSY` while stamping the scheduled run, broadcast failure, success,
+immediate ordering, and shutdown settlement. Focused O2/scheduler tests passed
+20/20. Full local verification passed typecheck, build, lint, engine 184/184,
+adapters 12/12, server 220/220, web 25/25, E2E 16/16, `git diff --check`, and a
+real prebuilt-server smoke covering health, dashboard, API auth, and graceful
+SIGTERM exit 0. Linux `build-and-test` CI passed in 2m16s.
+
+Post-merge deployment on 2026-07-29 used `scripts/update.sh` to fast-forward
+the clean, idle production checkout from `d03f0a0` to `3e4c793`, install,
+build, and restart the exact matching `hoopedorc.service`. The deployed
+checkout remained clean; health reported running with no degradation; the
+dashboard and hashed asset returned HTTP 200 through loopback and Tailscale
+Serve. Its one project had no enabled schedule, so the live item-specific check
+did not mutate operator configuration: across a complete scheduler interval
+the service kept PID 264382, systemd reported zero restarts, health stayed 200,
+and the journal contained zero warnings or `unhandledRejection` entries. The
+due-project rejection boundary is therefore proven by deterministic fault
+injection rather than a fabricated production failure.
+
 ### O3. Re-committing an already-successful plan duplicates tasks — HIGH (correctness)
 
 **Problem:** violates the AGENTS.md invariant "retries must not create
@@ -1441,11 +1471,12 @@ below because they share one invariant and would be unsafe to split.
    merged in [#180](https://github.com/IngeniousArtist/hoopedorc/pull/180)
    (`0e9d0e5`) with green Linux CI and restored the complete local gate without
    production changes.
-2. **Address immediate exposure and fatal-path stability:** O1 merged in
+2. **Immediate exposure and fatal-path stability — merged:** O1 merged in
    [#182](https://github.com/IngeniousArtist/hoopedorc/pull/182)
-   (`d03f0a0`) with green CI and live EC2/Tailscale verification. O2 is next
-   and removes the server-wide rejection path.
-3. **Regression rails before behavior-sensitive work:**
+   (`d03f0a0`) and O2 merged in
+   [#184](https://github.com/IngeniousArtist/hoopedorc/pull/184)
+   (`3e4c793`), both with green CI and live EC2/Tailscale verification.
+3. **Regression rails before behavior-sensitive work — O27 is next:**
    - O27 app-construction seam, then validator/route refusal tests.
    - O30 + O33 may share one documentation-contract enforcement PR after the
      app seam exists.
