@@ -1101,6 +1101,17 @@ changes; full gates green.
 
 **Fix risk:** low (test-only).
 
+**Status:** completed in
+[#180](https://github.com/IngeniousArtist/hoopedorc/pull/180)
+(`0e9d0e5`). The process-tree test now uses inherited stdout closure as the
+descendant-exit proof and asserts the intended SIGKILL escalation; the sandbox
+fixture assertion uses its canonical real path. Production code was unchanged.
+Local verification passed 20 consecutive adapter-suite runs under one-core CPU
+load, typecheck, build, lint, engine 184/184, adapters 12/12, server 211/211,
+web 25/25, E2E 16/16, and `git diff --check`. Linux `build-and-test` CI passed
+in 2m05s, and the merged commit was independently confirmed as local and
+`origin/main` at `0e9d0e52db604c7f5f1d5febb7d0f8d096bfb701`.
+
 ### O29. Merge-conflict retry/approval path has zero orchestrator coverage — MEDIUM (testing)
 
 **Problem:** every orchestrator test stubs `syncBranchWithMain()` to
@@ -1371,11 +1382,11 @@ below because they share one invariant and would be unsafe to split.
    (`a24e637`), and the original-author response merged in
    [#178](https://github.com/IngeniousArtist/hoopedorc/pull/178)
    (`cb226e6`), both with green Linux CI. The 2026-07-29 follow-up local gate
-   found and recorded O28(b)'s macOS-only canonical-path assertion; fix O28
-   before any production item so the complete local gate is trustworthy.
-2. **Restore a trustworthy local gate, then address immediate exposure and
-   fatal-path stability:** O28 → O1 → O2. O28 removes the two known
-   environment-dependent test failures without production changes; O1 removes
+   found and recorded O28(b)'s macOS-only canonical-path assertion. O28 then
+   merged in [#180](https://github.com/IngeniousArtist/hoopedorc/pull/180)
+   (`0e9d0e5`) with green Linux CI and restored the complete local gate without
+   production changes.
+2. **Address immediate exposure and fatal-path stability:** O1 → O2. O1 removes
    known vulnerable dependencies; O2 removes the server-wide rejection path.
 3. **Regression rails before behavior-sensitive work:**
    - O27 app-construction seam, then validator/route refusal tests.
