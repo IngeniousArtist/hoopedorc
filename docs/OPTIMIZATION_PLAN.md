@@ -31,8 +31,17 @@ conflict path requeues before the pipeline's `finally` runs, so the original
 unreachable — an infinite conflict-retry loop (O21). The original fixes for
 O6, O12, O23, O34, and O35 had the ordering, lost-event, or restart flaws
 this revision describes; the corrected designs and the revised execution
-order stand. One proportionality question is recorded inline at O15 for its
-go/no-go review.
+order stand. One proportionality question was recorded inline at O15 and is
+resolved by the follow-up below.
+
+**Follow-up resolution (2026-07-29):** a full pass over the current Telegram
+and lifecycle paths resolved that question in favor of the safety revision.
+The offset-only O15 alternative cannot prove exactly-once domain effects across
+the post-side-effect/pre-offset crash window without a durable per-update
+receipt, which is the core of the proposed inbox/outbox. The pass also
+clarified O16/O21's terminology: `drain: true` is the graceful **Pause** that
+keeps active approval waits alive; `drain: false` is the hard **Stop** that
+aborts and settles them. The item text below is authoritative.
 
 ## Goal and non-goals
 
@@ -82,13 +91,17 @@ This is the AGENTS.md workflow, restated so no item skips it:
 4. For a bug, reproduce it in a failing test before or alongside the fix.
    Confirm the new test fails on pre-fix code and passes after (the
    before/after check used throughout Phase 18).
-5. Contract changes follow the API checklist:
-   `packages/types/src/api.ts` + `ROUTES` + server + web client + mock +
-   `docs/CONTRACT.md` together. O3 is expected to add a durable planning
-   revision/idempotency identity; O6 is expected to add an authoritative cost
-   snapshot event. Do not disguise either as an implementation-only detail.
+5. Contract changes follow the matching contract checklist. REST
+   route/payload changes update `packages/types/src/api.ts` + `ROUTES` + server
+   + web client + mock + `docs/CONTRACT.md` together. WebSocket event changes
+   update `packages/types/src/ws.ts` + server snapshot/broadcast behavior + web
+   consumer + mock + `docs/CONTRACT.md` together; they do not invent a fake
+   REST route. O3 is expected to add a durable planning revision/idempotency
+   identity; O6 is expected to add an authoritative cost snapshot event. Do
+   not disguise either as an implementation-only detail.
 6. SQLite changes ship as idempotent migrations in
-   `packages/server/src/db/index.ts` **and** `schema.sql`, preserving old rows.
+   `packages/server/src/db/index.ts` **and**
+   `packages/server/src/db/schema.sql`, preserving old rows.
 7. Before handoff, run **all** repository gates:
 
    ```bash
@@ -242,7 +255,7 @@ planning iteration always receives a new revision even when its text happens
 to match an older iteration; content hash alone is not the idempotency key.
 
 **Likely files:** `packages/types/src/api.ts`, `packages/server/src/db/index.ts`,
-`packages/server/src/db/schema.sql`, `packages/server/src/repo.ts`,
+`packages/server/src/db/schema.sql`, `packages/server/src/db/repo.ts`,
 `packages/server/src/planning-commit.ts`, `packages/server/src/index.ts`,
 `packages/server/src/planning-commit.test.ts`,
 `apps/web/src/api/client.ts`, planning UI/mock tests, `docs/CONTRACT.md`.
@@ -363,7 +376,7 @@ snapshot producer, mock behavior, web consumer, and `docs/CONTRACT.md`
 together. Pair the implementation with O12 so a client disconnected for
 backpressure always returns through this same full-resynchronization path.
 
-**Likely files:** `packages/types/src/api.ts`,
+**Likely files:** `packages/types/src/ws.ts`,
 `packages/server/src/index.ts`, `packages/server/src/ws-hub.ts`,
 `apps/web/src/pages/Board.tsx`, WebSocket mock/tests, `docs/CONTRACT.md`.
 
@@ -372,7 +385,8 @@ connect/reconnect snapshot reports the database total; a delta arriving
 immediately after the snapshot is applied exactly once and cannot be
 overwritten by an older REST response; a forced O12 slow-client disconnect
 reconnects to the right task and cost state; existing drag/optimistic behavior
-is unchanged; full API checklist and repository gates green.
+is unchanged; the full WebSocket contract checklist and repository gates are
+green.
 
 **Fix risk:** medium because event ordering is the invariant.
 
@@ -658,19 +672,18 @@ Persisting an offset after side effects is only at-least-once and is not
 sufficient: a crash between those two operations duplicates the command.
 Marking it first merely changes the bug into a lost command.
 
-**Go/no-go question (original author, 2026-07-29):** the finding stands — a
-memory-only offset is a bug under either design — but weigh this protocol
-against the plan's decision rule before building it. Only two redeliveries
-are dangerous (`/start <project>` and the `/stopall` confirmation), and this
-design already requires the domain handlers to accept an idempotency key, so
-handler-level replay safety is needed under either option. If a persisted
-offset advanced after processing, combined with those same idempotent
-handlers (`/start` refused while a run is already in flight; a single-use
-nonce on the `/stopall` confirmation), makes both commands provably
-replay-safe under equivalent crash-injection coverage (exactly one domain
-action per update across a restart), prefer that smaller design and document
-the at-least-once window. Build the full inbox/outbox only if the simpler
-design demonstrably cannot pass those tests.
+**Go/no-go resolution (original-author follow-up, 2026-07-29):** build the
+durable inbox/outbox design. A persisted offset advanced after processing
+still leaves a crash window after the domain side effect and before the offset
+write. Refusing `/start` only while a run is active does not close that window:
+the first run can finish or recovery can settle before the same update is
+replayed. A memory-only or merely single-use `/stopall` nonce also does not
+survive restart. The inbound mutation surface is broader than the two commands
+named in the earlier question: `/retry`, project start/pause callbacks, and
+settings-changing commands must all be classified and proven idempotent too.
+A smaller implementation is acceptable only if it retains a durable
+per-`update_id` receipt and passes the same crash/concurrency tests; that is the
+same safety invariant as this inbox, not an offset-only alternative.
 
 **Likely files:** `packages/server/src/telegram.ts`,
 `packages/server/src/db/index.ts`, `packages/server/src/db/schema.sql`,
@@ -691,30 +704,37 @@ green.
 **Problem:** two halves of one gap. Engine: `EngineEvents.requestApproval`
 takes no signal (`packages/engine/src/index.ts:101-106`), and the awaits at
 `orchestrator.ts:1921,1970,2015,2122,2136` only check stop *after* the human
-answers — a Pause issued mid-wait is observed post-answer, and the subsequent
-`mergePr(..., signal)` then throws on the aborted signal, silently discarding
-the just-given approval. Server: the non-rollback resolver is a bare promise
-kept in `pendingApprovals` forever (`packages/server/src/engine-runner.ts:793`)
-— unlike `requestRollbackApproval` (`:906-921`), which correctly rejects and
-cleans up on abort — so a hard Stop leaks the resolver and its async frame
-until process exit.
+answers. The user-facing hard **Stop** (`drain: false`) aborts the task
+controller, but the approval promise stays pending; if the human answers
+later, the subsequent `mergePr(..., signal)` throws on the already-aborted
+signal and silently discards the choice. The graceful **Pause**
+(`drain: true`) deliberately does not abort active controllers and may keep
+waiting for that approval. Server: the non-rollback resolver is a bare promise
+kept in `pendingApprovals` forever
+(`packages/server/src/engine-runner.ts:793`) — unlike
+`requestRollbackApproval` (`:906-921`), which correctly rejects and cleans up
+on abort — so a hard Stop leaks the resolver and its async frame until process
+exit.
 
-**Fix:** thread the task's abort signal into `requestApproval` end-to-end,
-mirroring the rollback-approval wiring: hard Stop settles/removes the pending
-resolver; a pause/drain must **not** reject a pending approval (approvals are
-intentionally allowed to wait across a pause) — only re-check pause state
-after resolution so an answered approval is honored or safely requeued, never
-silently lost.
+**Fix:** thread the task's hard-stop abort signal into `requestApproval`
+end-to-end, mirroring the rollback-approval wiring. A hard Stop settles/removes
+the pending resolver and transitions its notification to an explicit
+cancelled/expired outcome, so a late UI/Telegram choice cannot claim it was
+recorded or resume a merge. A `drain: true` Pause does **not** abort the signal:
+the approval remains live, and after resolution the active pipeline may finish
+normally as part of the drain. Preserve this distinction through O14's later
+durable decision-delivery work.
 
 **Likely files:** `packages/engine/src/index.ts`,
 `packages/engine/src/orchestrator.ts`,
-`packages/server/src/engine-runner.ts`, tests in both.
+`packages/server/src/engine-runner.ts`, the focused notification transition in
+`packages/server/src/db/repo.ts`, and tests in both packages.
 
-**Acceptance:** tests: Stop during a pending approval settles the wait and
-removes the resolver; approval answered just after Pause is not discarded
-(task requeues with the decision recorded or the merge proceeds —
-whichever current documented semantics say — but never a lost decision);
-rollback-approval behavior unchanged; full gates green.
+**Acceptance:** tests: hard Stop during a pending approval settles the wait,
+removes the resolver, marks the notification non-pending, and never merges;
+a late choice gets an honest expired/cancelled response. A `drain: true` Pause
+keeps the same approval live, applies one answer, and lets the drain settle
+normally. Rollback-approval behavior is unchanged; full gates green.
 
 **Fix risk:** low-medium (must respect the pause-vs-stop semantic split).
 
@@ -727,13 +747,13 @@ updates while ACTIVE (`:366-367`). A crash in the pre-launch window, or
 `update.sh` dying before its first progress write, blocks updates for 2 hours.
 
 **Fix:** use state-specific persisted deadlines: `queued`/`checking` expire
-after five minutes without a progress timestamp; download/install/build/
-restart states retain the existing two-hour allowance. On expiry persist a
-typed failed result explaining the last state, so the next request is
-unblocked. Do not add a `systemctl` probe to normal status reads: that would
-couple tests and non-systemd deployments to a host command while still leaving
-race windows. If production evidence shows five minutes is too short, adjust
-it from measured update-script transitions.
+after five minutes without a progress timestamp; `pulling`/`installing`/
+`building`/`restarting` retain the existing two-hour allowance. On expiry
+persist a typed failed result explaining the last state, so the next request
+is unblocked. Do not add a `systemctl` probe to normal status reads: that would
+couple tests and non-systemd deployments to a host command while still
+leaving race windows. If production evidence shows five minutes is too short,
+adjust it from measured update-script transitions.
 
 **Likely files:** `packages/server/src/self-update.ts`, its tests.
 
@@ -844,10 +864,13 @@ unreachable. Preserve the count across conflict requeues within one run.
 (b) funnel transient stage writes through one synchronous
 `publishActiveStage(task, status)` helper that checks paused state and current
 task ownership immediately adjacent to the update, with no `await` gap.
-`pause()` first sets the paused state, then aborts/settles the active pipelines,
-and finally persists backlog only for tasks that remain non-terminal and owned
-by that orchestrator. Terminal writes use their existing explicit paths. This
-avoids a check-then-await TOCTOU without adding a new persistence protocol.
+Hard `pause(..., { drain: false })` first sets the paused state, then
+aborts/settles the active pipelines, and finally persists backlog only for
+tasks that remain non-terminal and owned by that orchestrator. Graceful
+`drain: true` behavior remains unchanged: it does not set `paused`, abort
+controllers, or rewrite active status. Terminal writes use their existing
+explicit paths. This avoids a check-then-await TOCTOU without adding a new
+persistence protocol.
 
 **Likely files:** `packages/engine/src/orchestrator.ts`, tests.
 
@@ -1040,9 +1063,11 @@ down gracefully; extraction preserves route behavior; full gates green.
 **Fix risk:** medium; land the app seam separately from validator behavior if
 the diff ceases to be easily reviewable.
 
-### O28. Deterministic fix for the flaky adapters process-tree test — MEDIUM (testing)
+### O28. Deterministic fixes for local-only test failures — MEDIUM (testing)
 
-**Problem:** the known local-only flake in
+**Problem:** two tests can fail locally while Linux CI stays green:
+
+(a) The known adapters flake in
 `packages/adapters/src/managed-process.test.ts:21-60` ("abort terminates a
 SIGTERM-resistant parent and its child") infers process death from
 `process.kill(pid, 0)` under fixed 2 s wall-clock deadlines (`:5-19,40,56-58`).
@@ -1050,15 +1075,29 @@ SIGTERM-resistant parent and its child") infers process death from
 reaped promptly, but in a local/sandboxed environment the orphaned
 grandchild's PID entry can outlive the deadline even though it was killed.
 
-**Fix:** observe death via fd closure instead of PID-table absence — have the
-grandchild hold an inherited pipe and await pipe EOF (or assert a heartbeat
-*stops*); remove the fixed wall-clock deadlines and let the runner's per-test
-timeout be the only backstop. Production code unchanged.
+(b) `packages/engine/src/sandbox.test.ts` creates a certificate below
+`tmpdir()` and expects Docker's read-only mount source to equal that lexical
+path. On macOS, `tmpdir()` can return `/var/folders/...` while production
+`certificateMount()` deliberately uses `realpathSync`, yielding
+`/private/var/folders/...`; the mount is correct but the string assertion
+fails. This was reproduced on 2026-07-29 by the plan-review gate: 183/184
+engine tests passed, and the focused test failed identically; the same commit's
+Linux CI was green.
 
-**Likely files:** `packages/adapters/src/managed-process.test.ts`.
+**Fix:** for (a), observe death via fd closure instead of PID-table absence —
+have the grandchild hold an inherited pipe and await pipe EOF (or assert a
+heartbeat *stops*); remove the fixed wall-clock deadlines and let the runner's
+per-test timeout be the only backstop. For (b), assert the canonical
+`realpathSync(certificatePath)` mount source while retaining the container
+target and read-only assertions. Production code is unchanged.
 
-**Acceptance:** the suite passes ≥20 consecutive local runs including under
-CPU load, and still passes on CI; no production changes; full gates green.
+**Likely files:** `packages/adapters/src/managed-process.test.ts`,
+`packages/engine/src/sandbox.test.ts`.
+
+**Acceptance:** the adapters suite passes ≥20 consecutive local runs including
+under CPU load; the engine certificate test passes on macOS with a canonical
+source and still rejects non-files; both suites pass on Linux CI; no production
+changes; full gates green.
 
 **Fix risk:** low (test-only).
 
@@ -1217,7 +1256,12 @@ budgets.
    current schema can express that unambiguously, demonstrate it; otherwise
    add an idempotent migration and focused design note before code.
 
-**Likely files:** `packages/engine/src/orchestrator.ts`, orchestrator tests.
+**Likely files:** the extraction PR stays in
+`packages/engine/src/orchestrator.ts` and orchestrator tests. The accounting
+PR additionally touches the canonical `Task` contract in
+`packages/types/src/domain.ts`, the SQLite schema/migration/repository under
+`packages/server/src/db/`, engine/server wiring, the board/task attempt labels,
+and `docs/CONTRACT.md`; do not introduce a UI-only counter shape.
 
 **Acceptance:** the extraction PR produces byte-identical persisted
 transitions and messages. The accounting PR proves stop/restart at every
@@ -1322,11 +1366,17 @@ The workstreams above are ownership groupings. This dependency-aware sequence
 is authoritative. Default to one item per PR; combine only the pairs named
 below because they share one invariant and would be unsafe to split.
 
-1. **Plan baseline:** merge this revision as a documentation-only PR after the
-   complete repository gate.
-2. **Immediate exposure and fatal-path stability:** O1 → O2 → O28. O1 removes
-   known vulnerable dependencies; O2 removes the server-wide rejection path;
-   O28 makes the required adapter gate deterministic.
+1. **Plan baseline — merged:** the safety revision merged in
+   [#177](https://github.com/IngeniousArtist/hoopedorc/pull/177)
+   (`a24e637`), and the original-author response merged in
+   [#178](https://github.com/IngeniousArtist/hoopedorc/pull/178)
+   (`cb226e6`), both with green Linux CI. The 2026-07-29 follow-up local gate
+   found and recorded O28(b)'s macOS-only canonical-path assertion; fix O28
+   before any production item so the complete local gate is trustworthy.
+2. **Restore a trustworthy local gate, then address immediate exposure and
+   fatal-path stability:** O28 → O1 → O2. O28 removes the two known
+   environment-dependent test failures without production changes; O1 removes
+   known vulnerable dependencies; O2 removes the server-wide rejection path.
 3. **Regression rails before behavior-sensitive work:**
    - O27 app-construction seam, then validator/route refusal tests.
    - O30 + O33 may share one documentation-contract enforcement PR after the
@@ -1398,7 +1448,8 @@ to a complex path that can silently claim success.
   deferred section with a reason.
 - `npm audit` reports zero high-severity vulnerabilities.
 - Every repository gate green on `main`, including the new route tests,
-  backend lint, and the de-flaked adapters suite (20 consecutive local runs).
+  backend lint, the de-flaked adapters suite (20 consecutive local runs), and
+  the canonical-path engine sandbox test on macOS and Linux.
 - Every performance item has reproducible before/after evidence or an explicit
   no-change deferral; no optimization is accepted on render/CPU/DB assumptions
   alone.
