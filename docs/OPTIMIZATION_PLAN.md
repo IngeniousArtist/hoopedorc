@@ -146,19 +146,23 @@ authoritative.
 
 **Problem:** the lock at the audit commit contains `@fastify/static` 9.1.3,
 `find-my-way` 9.6.0, and `fast-uri` 3.1.2. Published upstream fixes require
-`@fastify/static` 10.1.2 for the newest non-canonical-path advisory,
-`find-my-way` 9.7.0 for the route-lookup crash fixes, and `fast-uri` 3.1.3
-for failed IDN hostname canonicalization. The original audit's vulnerability
-count is a point-in-time registry result and must be regenerated when the item
-starts; do not preserve stale counts in acceptance evidence.
+`@fastify/static` 10.1.2 for the newest non-canonical-path advisory and
+`find-my-way` 9.7.0 for the route-lookup crash fixes. The original review
+identified `fast-uri` 3.1.3 as the fix for failed IDN hostname
+canonicalization, but O1's start-of-item recheck found a newer high-severity
+literal-backslash authority-delimiter advisory affecting through 3.1.3;
+3.1.4 is therefore the authoritative target. The original audit's
+vulnerability count is a point-in-time registry result and must be regenerated
+when the item starts; do not preserve stale counts in acceptance evidence.
 
 The static plugin is runtime-facing and pre-auth by design, but Hoopedorc
 serves only `apps/web/dist`, with no protected subtree or `allowedPath`
 boundary. That lowers the application-specific exploit impact of the
 route-guard advisories; it does not justify retaining vulnerable code. The
-other audited packages (`shell-quote` via `concurrently`, `postcss`,
-`esbuild`, `brace-expansion`) are dev/build paths and still need remediation
-because they run in trusted build/update workflows.
+other high-severity audited packages (`shell-quote` via `concurrently`,
+`postcss`, `brace-expansion`) are dev/build paths and still need remediation
+because they run in trusted build/update workflows. The lower-severity esbuild
+finding is handled explicitly under **Fix** below.
 
 **Upstream evidence:** GitHub advisories
 [`GHSA-83w8-p2f5-377r`](https://github.com/fastify/fastify-static/security/advisories/GHSA-83w8-p2f5-377r)
@@ -166,26 +170,34 @@ and
 [`GHSA-8pvw-jcv7-9cmj`](https://github.com/fastify/fastify-static/security/advisories/GHSA-8pvw-jcv7-9cmj)
 identify `@fastify/static` 10.1.1 and 10.1.2 as successive fixes;
 [`GHSA-4c8g-83qw-93j6`](https://github.com/fastify/fast-uri/security/advisories/GHSA-4c8g-83qw-93j6)
-identifies `fast-uri` 3.1.3; the upstream
+identifies `fast-uri` 3.1.3 for the original finding;
+[`GHSA-v2hh-gcrm-f6hx`](https://github.com/fastify/fast-uri/security/advisories/GHSA-v2hh-gcrm-f6hx)
+supersedes that minimum with 3.1.4; the upstream
 [`find-my-way` 9.7.0 release](https://github.com/delvedor/find-my-way/releases/tag/v9.7.0)
-lists the route-lookup crash fixes. Recheck all four records when O1 starts.
+lists the route-lookup crash fixes. Recheck all five records when O1 starts.
 
 **Fix:** explicitly update `@fastify/static` to ≥10.1.2 and resolve the lock
-to patched `find-my-way` and `fast-uri` versions. Verify the v10 plugin API and
+to `find-my-way` ≥9.7.0 and `fast-uri` ≥3.1.4. Verify the v10 plugin API and
 Fastify peer range against the installed package, then inspect the lockfile
 diff. Use `npm audit fix --dry-run` only as discovery; do not accept a broad
 `npm audit fix` mutation without reviewing every changed direct/transitive
-version and its dependency path.
+version and its dependency path. The regenerated audit reports one low,
+Windows-only esbuild development-server advisory, but the latest `tsup` 8.5.1
+still declares esbuild `^0.27.0`; do not force 0.28.1 through an unsupported
+override. Retain that explicit low residual until `tsup` publishes a compatible
+range.
 
 **Likely files:** `packages/server/package.json`, `package-lock.json`,
 possibly the static-registration block in `packages/server/src/index.ts`.
 
-**Acceptance:** `npm audit` reports zero high vulnerabilities; the built web
-app serves correctly through the real server (index, assets, SPA fallback
-route, traversal/non-canonical probes remain confined to `webDist`, API/WS 404
-behavior); auth gate behavior on `/api` and `/ws` unchanged; `npm ls` proves
-the patched resolved versions; full gates green. Live smoke after deploy:
-`GET /api/health` ok and the dashboard loads through Tailscale Serve.
+**Acceptance:** `npm audit --audit-level=high` reports zero high
+vulnerabilities (plain `npm audit` may report the explicit esbuild low
+residual above); the built web app serves correctly through the real server
+(index, assets, SPA fallback route, traversal/non-canonical probes remain
+confined to `webDist`, API/WS 404 behavior); auth gate behavior on `/api` and
+`/ws` unchanged; `npm ls` proves the patched resolved versions; full gates
+green. Live smoke after deploy: `GET /api/health` ok and the dashboard loads
+through Tailscale Serve.
 
 **Fix risk:** low-medium (plugin major bump with a tiny usage surface).
 
