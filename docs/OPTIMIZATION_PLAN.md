@@ -201,6 +201,35 @@ through Tailscale Serve.
 
 **Fix risk:** low-medium (plugin major bump with a tiny usage surface).
 
+**Status:** completed in
+[#182](https://github.com/IngeniousArtist/hoopedorc/pull/182)
+(`d03f0a0`). The resolved graph now uses `@fastify/static` 10.1.2,
+`find-my-way` 9.7.0, `fast-uri` 3.1.4, `concurrently` 9.2.4,
+`shell-quote` 1.9.0, `postcss` 8.5.24, `nanoid` 3.3.16,
+`brace-expansion` 5.0.8, and `content-disposition` 2.0.1. A raw-loopback
+regression first reproduced the vulnerable plugin serving a denied private
+sentinel through non-canonical paths with HTTP 200; the upgraded plugin
+confines the same probes with 403/404 responses. `npm audit
+--audit-level=high` passed with zero high findings, the production-only audit
+reported zero findings, and plain `npm audit` retained only the explicitly
+accepted low esbuild development-server finding. Local verification passed
+typecheck, build, lint, engine 184/184, adapters 12/12, server 213/213, web
+25/25, E2E 16/16, `git diff --check`, the focused static-server regression
+2/2, and a real prebuilt-server smoke covering index, hashed asset, SPA
+fallback, API/WS auth/404 behavior, and traversal confinement. Linux
+`build-and-test` CI passed in 2m13s.
+
+Post-merge deployment on 2026-07-29 used the canonical fail-closed
+`scripts/update.sh` path to fast-forward the clean production checkout from
+`a96d9c8` to `d03f0a0`, install, build every workspace, and restart the exact
+matching `hoopedorc.service`. The deployed checkout was clean, the service was
+active, its only project was idle, and `GET /api/health` reported `ok=true`,
+`mock=false`, version `0.6.0`, state `running`, and no degraded dependencies.
+Both loopback and Tailscale Serve returned HTTP 200 for the
+dashboard and its hashed JavaScript asset. A real browser loaded the
+production token gate at 390, 768, and 1440 px with no document-level
+horizontal overflow or console errors.
+
 ### O2. Scheduler tick unhandled rejection can shut down the whole server — HIGH (robustness)
 
 **Problem:** `checkSchedules` runs
@@ -1398,8 +1427,10 @@ below because they share one invariant and would be unsafe to split.
    merged in [#180](https://github.com/IngeniousArtist/hoopedorc/pull/180)
    (`0e9d0e5`) with green Linux CI and restored the complete local gate without
    production changes.
-2. **Address immediate exposure and fatal-path stability:** O1 → O2. O1 removes
-   known vulnerable dependencies; O2 removes the server-wide rejection path.
+2. **Address immediate exposure and fatal-path stability:** O1 merged in
+   [#182](https://github.com/IngeniousArtist/hoopedorc/pull/182)
+   (`d03f0a0`) with green CI and live EC2/Tailscale verification. O2 is next
+   and removes the server-wide rejection path.
 3. **Regression rails before behavior-sensitive work:**
    - O27 app-construction seam, then validator/route refusal tests.
    - O30 + O33 may share one documentation-contract enforcement PR after the
