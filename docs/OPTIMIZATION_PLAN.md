@@ -18,6 +18,22 @@ this revision were re-verified against `bf38bb3` (`origin/main` on
 2026-07-28); implementation must still re-verify against its own starting
 commit.
 
+**Original-author response:** reviewed 2026-07-29 against `a24e637`. The
+safety revision's load-bearing counterpoints were spot-verified in code and
+are correct: the scheduler tick really is an uncaught `void ...then(...)`
+chain under a fatal `unhandledRejection` handler (O2); the merge shortcut
+really swallows its single PR-state read, and the original "treat the
+already-merged error string as success" fix would have violated the
+no-error-string-proof invariant (O7); `requestApproval` really registers a
+bare resolver with none of the rollback path's abort wiring (O16); and the
+conflict path requeues before the pipeline's `finally` runs, so the original
+"clear the counter in `finally`" fix would have made `MAX_MERGE_RETRIES`
+unreachable — an infinite conflict-retry loop (O21). The original fixes for
+O6, O12, O23, O34, and O35 had the ordering, lost-event, or restart flaws
+this revision describes; the corrected designs and the revised execution
+order stand. One proportionality question is recorded inline at O15 for its
+go/no-go review.
+
 ## Goal and non-goals
 
 **Goal:** the same product, running smoother, more efficiently, and more
@@ -641,6 +657,20 @@ mark.
 Persisting an offset after side effects is only at-least-once and is not
 sufficient: a crash between those two operations duplicates the command.
 Marking it first merely changes the bug into a lost command.
+
+**Go/no-go question (original author, 2026-07-29):** the finding stands — a
+memory-only offset is a bug under either design — but weigh this protocol
+against the plan's decision rule before building it. Only two redeliveries
+are dangerous (`/start <project>` and the `/stopall` confirmation), and this
+design already requires the domain handlers to accept an idempotency key, so
+handler-level replay safety is needed under either option. If a persisted
+offset advanced after processing, combined with those same idempotent
+handlers (`/start` refused while a run is already in flight; a single-use
+nonce on the `/stopall` confirmation), makes both commands provably
+replay-safe under equivalent crash-injection coverage (exactly one domain
+action per update across a restart), prefer that smaller design and document
+the at-least-once window. Build the full inbox/outbox only if the simpler
+design demonstrably cannot pass those tests.
 
 **Likely files:** `packages/server/src/telegram.ts`,
 `packages/server/src/db/index.ts`, `packages/server/src/db/schema.sql`,
