@@ -886,6 +886,325 @@ test("B19: a manually-dispatched task (runTask) counts toward the shared model c
   );
 });
 
+test("O29: a merge conflict requeues a fresh attempt and merges only its new PR", async () => {
+  const merged: number[] = [];
+  const syncResults: Array<"conflict" | "clean"> = ["conflict", "clean"];
+  const openedPrs: number[] = [];
+  const removedWorktrees: Array<string | undefined> = [];
+  const updates: Array<{
+    status: Task["status"];
+    prNumber: number | undefined;
+  }> = [];
+  const logs: string[] = [];
+  let authorRuns = 0;
+  let worktreeCreates = 0;
+
+  const deps = fakeDeps(
+    {
+      adapterFor: () => ({
+        runner: "opencode",
+        async run() {
+          authorRuns++;
+          return {
+            ok: true,
+            exitReason: "completed",
+            costUsd: 0,
+            tokensIn: 1,
+            tokensOut: 1,
+            summary: "",
+          };
+        },
+      }),
+      worktrees: {
+        async create(_project, candidate) {
+          worktreeCreates++;
+          return {
+            branch: `orc/${candidate.id}-${worktreeCreates}`,
+            path: `/tmp/${candidate.id}-${worktreeCreates}`,
+          };
+        },
+        async remove(_project, candidate) {
+          removedWorktrees.push(candidate.worktreePath);
+        },
+      },
+      git: {
+        async openPr() {
+          const prNumber = 40 + openedPrs.length + 1;
+          openedPrs.push(prNumber);
+          return prNumber;
+        },
+        async syncBranchWithMain() {
+          const result = syncResults.shift();
+          assert.ok(result, "unexpected extra sync");
+          return result;
+        },
+      },
+      events: {
+        onLog(event) {
+          logs.push(event.message);
+        },
+        onTaskUpdated(candidate) {
+          updates.push({
+            status: candidate.status,
+            prNumber: candidate.prNumber,
+          });
+        },
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval() {
+          throw new Error("one recoverable conflict must not request approval");
+        },
+      },
+    },
+    merged,
+  );
+  const candidate = task("conflict-clean");
+
+  await new Orchestrator(deps).start(PROJECT, [candidate]);
+
+  assert.equal(authorRuns, 2, "the conflict must be re-authored from current main");
+  assert.equal(worktreeCreates, 2);
+  assert.deepEqual(openedPrs, [41, 42], "the retry must open a fresh PR");
+  assert.deepEqual(merged, [42], "only the fresh, clean PR may merge");
+  assert.deepEqual(removedWorktrees, [
+    "/tmp/conflict-clean-1",
+    "/tmp/conflict-clean-2",
+  ]);
+  assert.ok(
+    updates.some(
+      (update) =>
+        update.status === "backlog" && update.prNumber === undefined,
+    ),
+    "the recoverable conflict transition must persist backlog with no stale PR",
+  );
+  assert.ok(logs.some((message) => /\(1\/2\)/.test(message)));
+  assert.equal(candidate.status, "done");
+  assert.equal(candidate.prNumber, 42);
+});
+
+test("O29: repeated merge conflicts stop at the retry cap and require manual resolution", async () => {
+  const merged: number[] = [];
+  const openedPrs: number[] = [];
+  const approvals: Array<{
+    title: string;
+    message: string;
+    options: string[];
+  }> = [];
+  const logs: string[] = [];
+  let authorRuns = 0;
+  let worktreeCreates = 0;
+  let cleanupCalls = 0;
+
+  const deps = fakeDeps(
+    {
+      adapterFor: () => ({
+        runner: "opencode",
+        async run() {
+          authorRuns++;
+          return {
+            ok: true,
+            exitReason: "completed",
+            costUsd: 0,
+            tokensIn: 1,
+            tokensOut: 1,
+            summary: "",
+          };
+        },
+      }),
+      worktrees: {
+        async create(_project, candidate) {
+          worktreeCreates++;
+          return {
+            branch: `orc/${candidate.id}-${worktreeCreates}`,
+            path: `/tmp/${candidate.id}-${worktreeCreates}`,
+          };
+        },
+      },
+      git: {
+        async openPr() {
+          const prNumber = 100 + openedPrs.length + 1;
+          openedPrs.push(prNumber);
+          return prNumber;
+        },
+        async syncBranchWithMain() {
+          return "conflict" as const;
+        },
+        async cleanupTaskBranch() {
+          cleanupCalls++;
+        },
+      },
+      events: {
+        onLog(event) {
+          logs.push(event.message);
+        },
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval(args) {
+          approvals.push(args);
+          return "reject";
+        },
+      },
+    },
+    merged,
+  );
+  const candidate = task("conflict-cap");
+
+  await new Orchestrator(deps).start(PROJECT, [candidate]);
+
+  assert.equal(authorRuns, 3, "two requeues plus the capped attempt must run");
+  assert.equal(worktreeCreates, 3);
+  assert.deepEqual(openedPrs, [101, 102, 103]);
+  assert.deepEqual(merged, [], "a repeatedly conflicting PR must never merge");
+  assert.equal(approvals.length, 1);
+  assert.match(approvals[0]!.title, /Merge conflict/);
+  assert.match(approvals[0]!.message, /Resolve the PR manually/);
+  assert.deepEqual(approvals[0]!.options, ["reject"]);
+  assert.equal(cleanupCalls, 1, "terminal failure cleans its remote branch once");
+  assert.ok(logs.some((message) => /\(1\/2\)/.test(message)));
+  assert.ok(logs.some((message) => /\(2\/2\)/.test(message)));
+  assert.ok(logs.some((message) => /after 2 retries/.test(message)));
+  assert.equal(candidate.status, "failed");
+  assert.match(candidate.statusReason ?? "", /needs manual resolution/);
+});
+
+test("O29: restart recovery removes the persisted worktree before a fresh conflict retry", async () => {
+  const merged: number[] = [];
+  const syncResults: Array<"conflict" | "clean"> = ["conflict", "clean"];
+  const openedPrs: number[] = [];
+  const removedWorktrees: Array<string | undefined> = [];
+  const updates: Array<{
+    status: Task["status"];
+    prNumber: number | undefined;
+    worktreePath: string | undefined;
+  }> = [];
+  const logs: string[] = [];
+  let authorRuns = 0;
+  let validatorRuns = 0;
+  let worktreeCreates = 0;
+
+  const persistedDecision: MergeDecision = {
+    id: "persisted-decision",
+    projectId: PROJECT.id,
+    taskId: "restart-conflict",
+    runId: "run-restart-conflict-1",
+    validatorModel: "deepseek-pro",
+    verdict: "approve",
+    reasons: ["approved before restart"],
+    confidence: 0.95,
+    gate: GOOD_GATE,
+    ts: "",
+  };
+  const deps = fakeDeps(
+    {
+      getMergeDecisions: () => [persistedDecision],
+      adapterFor: () => ({
+        runner: "opencode",
+        async run() {
+          authorRuns++;
+          return {
+            ok: true,
+            exitReason: "completed",
+            costUsd: 0,
+            tokensIn: 1,
+            tokensOut: 1,
+            summary: "",
+          };
+        },
+      }),
+      validator: {
+        async review(project, candidate, gate) {
+          validatorRuns++;
+          return {
+            ...persistedDecision,
+            id: "fresh-decision",
+            projectId: project.id,
+            taskId: candidate.id,
+            runId: `run-${candidate.id}-${candidate.attempts}`,
+            gate,
+          };
+        },
+      },
+      worktrees: {
+        async create(_project, candidate) {
+          worktreeCreates++;
+          return {
+            branch: `orc/${candidate.id}-fresh`,
+            path: `/tmp/${candidate.id}-fresh`,
+          };
+        },
+        async remove(_project, candidate) {
+          removedWorktrees.push(candidate.worktreePath);
+        },
+      },
+      git: {
+        async openPr() {
+          openedPrs.push(8);
+          return 8;
+        },
+        async syncBranchWithMain() {
+          const result = syncResults.shift();
+          assert.ok(result, "unexpected extra sync");
+          return result;
+        },
+      },
+      events: {
+        onLog(event) {
+          logs.push(event.message);
+        },
+        onTaskUpdated(candidate) {
+          updates.push({
+            status: candidate.status,
+            prNumber: candidate.prNumber,
+            worktreePath: candidate.worktreePath,
+          });
+        },
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval() {
+          throw new Error("approved restart recovery must not ask again");
+        },
+      },
+    },
+    merged,
+  );
+  const persisted = task("restart-conflict", [], {
+    status: "in_review",
+    attempts: 1,
+    prNumber: 7,
+    branch: "orc/restart-conflict-old",
+    worktreePath: "/tmp/restart-conflict-old",
+  });
+
+  await new Orchestrator(deps).start(PROJECT, [persisted]);
+
+  assert.equal(
+    authorRuns,
+    1,
+    "the persisted decision must reach conflict recovery without re-authoring",
+  );
+  assert.equal(validatorRuns, 1, "only the fresh retry is validated");
+  assert.equal(worktreeCreates, 1, "only the fresh retry creates a worktree");
+  assert.deepEqual(openedPrs, [8], "only the fresh retry opens a PR");
+  assert.deepEqual(merged, [8]);
+  assert.deepEqual(removedWorktrees, [
+    "/tmp/restart-conflict-old",
+    "/tmp/restart-conflict-fresh",
+  ]);
+  assert.ok(logs.some((message) => /Restart recovery:/.test(message)));
+  assert.ok(
+    updates.some(
+      (update) =>
+        update.status === "backlog" &&
+        update.prNumber === undefined &&
+        update.worktreePath === "/tmp/restart-conflict-old",
+    ),
+    "restart recovery must persist the cleared PR before stale-worktree removal",
+  );
+  assert.equal(persisted.status, "done");
+  assert.equal(persisted.prNumber, 8);
+});
+
 test("F15: GitHub checks \"passed\" falls through to the normal auto-merge check", async () => {
   const merged: number[] = [];
   const polls: number[] = [];
