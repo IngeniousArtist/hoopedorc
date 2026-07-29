@@ -1444,6 +1444,39 @@ repository gates green.
 
 **Fix risk:** none/low.
 
+**Implementation decision (2026-07-29):** keep the deterministic
+`build-and-test` job on pull requests and `main` pushes, and run the advisory
+security job only on its weekly schedule or an explicit manual dispatch. At
+workflow scope, group PRs by workflow plus `github.head_ref` and use the unique
+`github.run_id` fallback for every non-PR event; cancel only pull-request runs.
+This follows GitHub's defined fallback pattern and prevents both running and
+pending `main` verifications from sharing a concurrency group.
+
+Use the two-parent checkout already required by O31. The whitespace step must
+compare `HEAD^1...HEAD` for the synthetic PR merge and `HEAD^...HEAD` for a
+`main` push; bare `git diff --check` on a clean checkout would be vacuous. Build
+once, then use a named prebuilt-workspace typecheck command so CI does not
+rebuild types/adapters/engine before the normal build repeats them.
+
+After `npm ci`, resolve the installed `@playwright/test` version into a step
+output. Cache Linux's `~/.cache/ms-playwright` with an exact key containing
+runner OS, that version, and the lockfile hash. A miss runs
+`playwright install --with-deps chromium`; a hit still runs
+`playwright install-deps chromium` because Playwright documents OS packages as
+uncacheable. Do not use a broad restore key that could pair the wrong browser
+binary with the installed package.
+
+The weekly/manual audit is owned by `IngeniousArtist` and invokes
+`npm audit --audit-level=high --json` through a checked Node classifier. It
+writes raw and normalized artifacts on every outcome and emits distinct
+annotations/exit codes for high-or-critical findings versus registry,
+execution, or malformed-response failures. It remains outside protected PR
+checks until an explicit reproducible exception/outage policy exists. Focused
+tests own workflow structure, diff-range failure, concurrency isolation,
+cache hit/miss branches, and audit classification. No runtime state, API,
+persistence, deployment, or EC2 behavior changes; rollback is the O32
+workflow/policy-test commit.
+
 ### O33. `docs/CONTRACT.md` is missing 13 of 49 live routes — MEDIUM (docs)
 
 **Problem:** these registered, typed, client-consumed routes have zero

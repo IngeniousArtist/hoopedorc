@@ -4,17 +4,33 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-and-test:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # O31's lint ratchet compares a PR baseline with the merge commit's
-          # first parent. Keep both parents locally so the root lint command
-          # can fail closed without a network fetch.
+          # O31's lint ratchet and O32's whitespace gate compare a PR merge
+          # with its base parent. Push verification compares the merged commit
+          # with its parent. Both therefore need two commits locally.
           fetch-depth: 2
+
+      - name: Check changed lines for whitespace errors
+        env:
+          DIFF_RANGE: ${{ github.event_name == 'pull_request' && 'HEAD^1...HEAD' || 'HEAD^...HEAD' }}
+        run: git diff --check "$DIFF_RANGE"
 
       - uses: actions/setup-node@v4
         with:
@@ -22,9 +38,57 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm run typecheck
       - run: npm run build
+      - run: npm run typecheck:prebuilt
       - run: npm run lint
       - run: npm test
-      - run: npx playwright install --with-deps chromium
+
+      - name: Resolve installed Playwright version
+        id: playwright-version
+        run: |
+          playwright_version="$(node -p "require('./node_modules/@playwright/test/package.json').version")"
+          test -n "$playwright_version"
+          echo "version=$playwright_version" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Playwright browser cache
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Playwright browser and OS dependencies
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright OS dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
       - run: npm run test:e2e
+
+  security-audit:
+    name: Weekly high-severity dependency audit
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AUDIT_OWNER: IngeniousArtist
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Classify npm audit result
+        run: node scripts/audit-advisory.mjs
+
+      - name: Publish npm audit evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-${{ github.run_id }}
+          path: audit-results/
+          if-no-files-found: error
+          retention-days: 30

@@ -17,7 +17,8 @@
   "scripts": {
     "build": "npm run build -w @orc/types && npm run build -w @orc/adapters && npm run build -w @orc/engine && npm run build -w @orc/server && npm run build -w @orc/web",
     "typecheck": "npm run build -w @orc/types && npm run build -w @orc/adapters && npm run build -w @orc/engine && npm run typecheck --workspaces --if-present",
-    "lint": "node --test scripts/lint-policy.test.mjs && node scripts/lint.mjs",
+    "typecheck:prebuilt": "npm run typecheck --workspaces --if-present",
+    "lint": "node --test scripts/lint-policy.test.mjs scripts/ci-policy.test.mjs scripts/audit-advisory.test.mjs && node scripts/lint.mjs",
     "test": "npm test -w @orc/engine && npm test -w @orc/adapters && npm test -w @orc/server && npm run test:web",
     "test:web": "npm test -w @orc/web",
     "test:e2e": "playwright test -c apps/web/playwright.config.ts",
