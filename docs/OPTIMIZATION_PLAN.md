@@ -1836,6 +1836,42 @@ helper.
 `packages/engine/src/index.ts` (deps), `packages/server/src/engine-runner.ts`
 (signal source), tests.
 
+**Measurement protocol and go/no-go threshold (2026-07-29, before any runtime
+change):** `npm run bench:scheduler-poll` uses the production schema and
+repository mapper against a real in-memory SQLite database. It measures three
+three-second steady-state repetitions with 250 task rows per project for one
+held runtime (the normal case) and eight concurrent held runtimes (a
+deliberately heavy case), subtracts an idle-process CPU control, and records
+full-table reads and SQLite wall time per second. Forty task inserts spread
+deterministically across the polling phase measure commit-to-reconciliation
+p50/p95/max latency. A generation/wakeup protocol is justified only if the
+one-project fixture consumes at least 1% of one CPU core or 5 ms of SQLite
+wall time per second, or the eight-project fixture consumes at least 5% of one
+core after the control subtraction. Any implementation must retain p95 pickup
+latency at or below the measured baseline plus 25 ms and must use this exact
+fixture before and after. Below those thresholds, record the result and defer
+without adding generation state or wakeup ownership.
+
+**Measurement result and implementation decision (2026-07-29):** the baseline
+crossed both go thresholds, so O35 proceeds rather than deferring. On the same
+Apple M5 Pro / Node 22.23.0 host and exact 250-row fixture, one held project
+performed 3.937 full reads/s, spent 8.393 ms/s in SQLite, and used 1.609% of
+one core after the idle control; eight projects performed 31.408 reads/s,
+spent 45.835 ms/s in SQLite, and used 6.075% of one core. Commit-to-reconcile
+latency across 40 inserts was p50 131.059 ms, p95 235.218 ms, max 244.578 ms.
+
+The implemented database-trigger generation plus same-process monotonic wake
+version, measured with the unchanged command and fixture, reduced those
+figures to 0.330 reads/s, 1.042 ms/s, and 0.308% for one project; 2.641
+reads/s, 3.304 ms/s, and 0.971% for eight projects. The SQLite values include
+the new lightweight generation reads (7.922/s and 63.384/s respectively), not
+only the remaining full reads. Pickup latency improved to p50 2.163 ms, p95
+4.975 ms, max 5.053 ms. That is a 91.6% reduction in full-table reads,
+87.6%/92.8% less total measured SQLite time, and 80.9%/84.0% less scheduler
+CPU for the normal/heavy fixtures, while p95 pickup improved by 230.243 ms
+rather than regressing. The 250 ms deadline remains unchanged as the
+out-of-process and time-window safety net.
+
 **Acceptance:** before/after results use the same task counts/host; steady
 full-table reads materially drop without increasing p95 dispatch latency
 beyond the documented bound. Tests cover a write immediately before wait,

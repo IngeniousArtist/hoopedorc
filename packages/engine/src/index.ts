@@ -332,15 +332,30 @@ export interface SchedulerDeps {
   opencodeBaseUrl: string;
   /**
    * Re-fetches every task row for the project. Consulted at the top of each
-   * pass of the autonomous loop so it reconciles against the DB: tasks
-   * committed mid-run (e.g. via plan/commit while this project's loop is
-   * already running — see B9) are picked up without restarting the run, and
-   * field edits made through the UI (reassigning a model, editing scope,
-   * PATCHing status) on any task this orchestrator isn't actively running are
-   * adopted instead of silently ignored. Optional; if omitted, the loop only
-   * ever sees the task list it was started with.
+   * changed durable generation (or every pass for legacy embedders without
+   * taskChanges) so it reconciles against the DB: tasks committed mid-run
+   * (e.g. via plan/commit while this project's loop is already running — see
+   * B9) are picked up without restarting the run, and field edits made through
+   * the UI (reassigning a model, editing scope, PATCHing status) on any task
+   * this orchestrator isn't actively running are adopted instead of silently
+   * ignored. Optional; if omitted, the loop only ever sees the task list it
+   * was started with.
    */
   getTasks?: () => Task[];
+  /**
+   * O35: durable task generation plus a same-process wakeup hint. The
+   * generation decides whether a full reconciliation is required; the wake
+   * version only avoids sleeping until the bounded deadline after a local
+   * write. Correctness must never depend on receiving the memory-only hint.
+   */
+  taskChanges?: {
+    currentGeneration: () => number;
+    currentWakeVersion: () => number;
+    waitForChange: (
+      afterWakeVersion: number,
+      deadlineMs: number,
+    ) => Promise<"change" | "deadline">;
+  };
   /**
    * B30: newest-first persisted MergeDecisions for a task, used only at
    * start()'s orphan recovery to tell "was mid-authoring when this process

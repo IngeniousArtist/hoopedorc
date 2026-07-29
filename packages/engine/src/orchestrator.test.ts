@@ -162,6 +162,62 @@ function fakeDeps(
   };
 }
 
+class TestTaskChanges {
+  generation = 0;
+  wakeVersion = 0;
+  waitCalls = 0;
+  private readonly waiters = new Set<{
+    after: number;
+    resolve: (result: "change" | "deadline") => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+
+  readonly source: NonNullable<SchedulerDeps["taskChanges"]> = {
+    currentGeneration: () => this.generation,
+    currentWakeVersion: () => this.wakeVersion,
+    waitForChange: (after, deadlineMs) => {
+      this.waitCalls++;
+      if (this.wakeVersion > after) return Promise.resolve("change");
+      return new Promise((resolve) => {
+        const waiter = {
+          after,
+          resolve,
+          timer: undefined as unknown as ReturnType<typeof setTimeout>,
+        };
+        waiter.timer = setTimeout(() => {
+          this.waiters.delete(waiter);
+          resolve("deadline");
+        }, deadlineMs);
+        this.waiters.add(waiter);
+      });
+    },
+  };
+
+  write(notify = true): void {
+    this.generation++;
+    if (!notify) return;
+    this.wakeVersion++;
+    for (const waiter of [...this.waiters]) {
+      if (this.wakeVersion <= waiter.after) continue;
+      clearTimeout(waiter.timer);
+      this.waiters.delete(waiter);
+      waiter.resolve("change");
+    }
+  }
+}
+
+async function waitUntil(
+  predicate: () => boolean,
+  message: string,
+  timeoutMs = 1_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) assert.fail(message);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 test("drives a 2-task DAG to done and merges both, respecting dependency order", async () => {
   const merged: number[] = [];
   const t1 = task("t1");
@@ -184,8 +240,8 @@ test("emits a live 'running' run row before the terminal one, sharing the same s
           runs.push(r);
         },
         onMergeDecision() {},
-        async requestApproval() {
-          return "reject";
+        requestApproval() {
+          return Promise.resolve("reject");
         },
       },
     },
@@ -384,8 +440,11 @@ test("B32: every fallback-chain model blocked keeps the run alive (polling) inst
 
 test("B32: pause() exits promptly even while every model is quota/cooldown-blocked (waiting, not winding down)", async () => {
   const merged: number[] = [];
+  const changes = new TestTaskChanges();
   const deps = fakeDeps(
     {
+      taskChanges: changes.source,
+      getTasks: () => [t1],
       checkModelQuota: () => "quota reached: 5/5 runs in the last 1h",
       events: {
         onLog() {}, onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
@@ -746,6 +805,7 @@ test("stopTask on a manually dispatched task (runTask) also aborts and blocks it
 
 test("pause({ drain: true }) lets the active task finish but stops new dispatch", async () => {
   const merged: number[] = [];
+  const changes = new TestTaskChanges();
   let resolveStarted!: () => void;
   const started = new Promise<void>((r) => {
     resolveStarted = r;
@@ -761,7 +821,14 @@ test("pause({ drain: true }) lets the active task finish but stops new dispatch"
       return runResult;
     },
   };
-  const deps = fakeDeps({ adapterFor: () => adapter }, merged);
+  const deps = fakeDeps(
+    {
+      adapterFor: () => adapter,
+      taskChanges: changes.source,
+      getTasks: () => [t1, t2],
+    },
+    merged,
+  );
   const orch = new Orchestrator(deps);
   const t1 = task("t1");
   // t2 depends on t1, so it only becomes ready once t1 finishes — this is
@@ -902,8 +969,8 @@ test("sets in_review while gates run and back to in_progress on a gate-failure r
         },
         onRunUpdated() {},
         onMergeDecision() {},
-        async requestApproval() {
-          return "reject";
+        requestApproval() {
+          return Promise.resolve("reject");
         },
       },
     },
@@ -951,6 +1018,251 @@ test("a task added mid-run (not in the array start() was given) is picked up via
   assert.equal(t1.status, "done");
   assert.equal(t2.status, "done");
   assert.equal(merged.length, 2);
+});
+
+test("O35: multiple notified writes collapse into one full reconciliation", async () => {
+  const changes = new TestTaskChanges();
+  const initial = task("held");
+  const added = [
+    task("added-1", [], { scopePaths: ["src/one/**"] }),
+    task("added-2", [], { scopePaths: ["src/two/**"] }),
+  ];
+  const persisted = [initial];
+  let reads = 0;
+  const picked = new Set<string>();
+  const deps = fakeDeps(
+    {
+      settings: { ...settings(), holdWhileAwaitingApproval: true },
+      getTasks: () => {
+        reads++;
+        return [...persisted];
+      },
+      taskChanges: changes.source,
+      getPendingApproval: () => ({ title: "hold" }),
+      events: {
+        onLog(event) {
+          if (/Picked up new task/.test(event.message)) {
+            picked.add(event.taskId);
+          }
+        },
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    [],
+  );
+  const orchestrator = new Orchestrator(deps);
+  const running = orchestrator.start(PROJECT, [initial]);
+  await waitUntil(
+    () => changes.waitCalls > 0,
+    "scheduler never registered its change waiter",
+  );
+
+  persisted.push(...added);
+  changes.write();
+  changes.write();
+  await waitUntil(
+    () => picked.size === 2,
+    "scheduler did not reconcile both collapsed writes",
+  );
+  assert.equal(reads, 2, "initial read plus one latest-generation read");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(
+    reads,
+    2,
+    "deadline passes without a new generation must not re-read every task",
+  );
+
+  await orchestrator.pause(PROJECT);
+  await running;
+});
+
+test("O35: a write immediately before waiter registration cannot be lost", async () => {
+  const changes = new TestTaskChanges();
+  const initial = task("held-before-wait");
+  const added = task("added-before-wait");
+  const persisted = [initial];
+  let injected = false;
+  let picked = false;
+  const source: NonNullable<SchedulerDeps["taskChanges"]> = {
+    ...changes.source,
+    currentWakeVersion: () => {
+      if (!injected) {
+        injected = true;
+        persisted.push(added);
+        changes.write();
+      }
+      return changes.wakeVersion;
+    },
+  };
+  const deps = fakeDeps(
+    {
+      settings: { ...settings(), holdWhileAwaitingApproval: true },
+      getTasks: () => [...persisted],
+      taskChanges: source,
+      getPendingApproval: () => ({ title: "hold" }),
+      events: {
+        onLog(event) {
+          if (event.taskId === added.id && /Picked up new task/.test(event.message)) {
+            picked = true;
+          }
+        },
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval() {
+          return "reject";
+        },
+      },
+    },
+    [],
+  );
+  const orchestrator = new Orchestrator(deps);
+  const running = orchestrator.start(PROJECT, [initial]);
+
+  await waitUntil(() => picked, "pre-wait write was lost");
+  await orchestrator.pause(PROJECT);
+  await running;
+});
+
+test("O35: a write during reconciliation is observed on the next generation", async () => {
+  const changes = new TestTaskChanges();
+  const initial = task("held-during-read");
+  const added = task("added-during-read");
+  const persisted = [initial];
+  let reads = 0;
+  let picked = false;
+  const deps = fakeDeps(
+    {
+      settings: { ...settings(), holdWhileAwaitingApproval: true },
+      getTasks: () => {
+        reads++;
+        const snapshot = [...persisted];
+        if (reads === 1) {
+          persisted.push(added);
+          changes.write();
+        }
+        return snapshot;
+      },
+      taskChanges: changes.source,
+      getPendingApproval: () => ({ title: "hold" }),
+      events: {
+        onLog(event) {
+          if (event.taskId === added.id && /Picked up new task/.test(event.message)) {
+            picked = true;
+          }
+        },
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        requestApproval() {
+          return Promise.resolve("reject");
+        },
+      },
+    },
+    [],
+  );
+  const orchestrator = new Orchestrator(deps);
+  const running = orchestrator.start(PROJECT, [initial]);
+
+  await waitUntil(() => picked, "write during reconciliation was lost");
+  assert.equal(reads, 2);
+  await orchestrator.pause(PROJECT);
+  await running;
+});
+
+test("O35: restart and an unsignaled durable write recover through the deadline", async () => {
+  const changes = new TestTaskChanges();
+  changes.generation = 7;
+  const initial = task("restart-held");
+  const added = task("restart-external");
+  const persisted = [initial];
+  let reads = 0;
+  const depsFor = (onPicked: () => void) =>
+    fakeDeps(
+      {
+        settings: { ...settings(), holdWhileAwaitingApproval: true },
+        getTasks: () => {
+          reads++;
+          return [...persisted];
+        },
+        taskChanges: changes.source,
+        getPendingApproval: () => ({ title: "hold" }),
+        events: {
+          onLog(event) {
+            if (event.taskId === added.id && /Picked up new task/.test(event.message)) {
+              onPicked();
+            }
+          },
+          onTaskUpdated() {},
+          onRunUpdated() {},
+          onMergeDecision() {},
+          requestApproval() {
+            return Promise.resolve("reject");
+          },
+        },
+      },
+      [],
+    );
+
+  const first = new Orchestrator(depsFor(() => {}));
+  const firstRun = first.start(PROJECT, [initial]);
+  await waitUntil(() => changes.waitCalls > 0, "first runtime did not wait");
+  await first.pause(PROJECT);
+  await firstRun;
+
+  let picked = false;
+  const restarted = new Orchestrator(depsFor(() => {
+    picked = true;
+  }));
+  const restartedRun = restarted.start(PROJECT, [initial]);
+  const restartWaitCalls = changes.waitCalls;
+  await waitUntil(
+    () => changes.waitCalls > restartWaitCalls,
+    "restarted runtime did not establish a fresh wait",
+  );
+  persisted.push(added);
+  changes.write(false);
+
+  await waitUntil(
+    () => picked,
+    "deadline did not recover an out-of-process task generation",
+  );
+  assert.equal(reads, 3, "one initial read per runtime plus changed generation");
+  await restarted.pause(PROJECT);
+  await restartedRun;
+});
+
+test("O35: cooldown and quota windows still recheck on the bounded deadline", async (t) => {
+  for (const kind of ["cooldown", "quota"] as const) {
+    await t.test(kind, async () => {
+      const changes = new TestTaskChanges();
+      const candidate = task(`deadline-${kind}`);
+      let blocked = true;
+      const guard = () => (blocked ? `${kind} blocked` : null);
+      const deps = fakeDeps(
+        {
+          getTasks: () => [candidate],
+          taskChanges: changes.source,
+          checkModelCooldown: kind === "cooldown" ? guard : undefined,
+          checkModelQuota: kind === "quota" ? guard : undefined,
+        },
+        [],
+      );
+      const running = new Orchestrator(deps).start(PROJECT, [candidate]);
+      await waitUntil(
+        () => changes.waitCalls > 0,
+        `${kind} path never reached its deadline wait`,
+      );
+      blocked = false;
+      await running;
+      assert.equal(candidate.status, "done");
+    });
+  }
 });
 
 test("project.config.mergePolicy overrides the global Settings.mergePolicy (F9)", async () => {

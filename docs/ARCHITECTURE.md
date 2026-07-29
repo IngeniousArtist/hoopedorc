@@ -83,6 +83,16 @@ tuple plus its audit record in one transaction. Generation-qualified run IDs
 keep a retried task from overwriting earlier run, invocation, or validator
 history.
 
+Scheduler reconciliation has a separate durable owner: each project's
+SQLite-only `task_generation`, incremented by database triggers in the same
+transaction as every task insert, update, or delete. A runtime performs the
+full task-table read/map rebuild only when that generation changes. Repository
+writes also advance a monotonic same-process wake version so local changes are
+noticed immediately without a lossy boolean edge; a 250 ms deadline still
+compares the SQLite generation for out-of-process writes and rechecks
+cooldown, quota, capacity, and approval state. Missing a memory notification
+can therefore delay discovery only until the deadline—it cannot lose work.
+
 Hard Stop is an ownership barrier: the orchestrator marks itself paused,
 aborts every task controller (including human-approval waits), settles the
 pipelines it owned at that boundary, and only then persists remaining

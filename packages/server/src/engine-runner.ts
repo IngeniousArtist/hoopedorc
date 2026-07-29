@@ -407,6 +407,19 @@ export class EngineRunner {
       adapterFor,
       opencodeBaseUrl: ENV.opencodeBaseUrl,
       getTasks: () => repo.getTasks(this.db, project.id),
+      taskChanges: {
+        currentGeneration: () =>
+          repo.getTaskGeneration(this.db, project.id),
+        currentWakeVersion: () =>
+          repo.getTaskWakeVersion(this.db, project.id),
+        waitForChange: (afterWakeVersion, deadlineMs) =>
+          repo.waitForTaskChange(
+            this.db,
+            project.id,
+            afterWakeVersion,
+            deadlineMs,
+          ),
+      },
       getMergeDecisions: (taskId) => repo.getMergeDecisions(this.db, taskId),
       getPendingApproval: (projectId) => {
         const pending = repo

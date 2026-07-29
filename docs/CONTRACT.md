@@ -33,6 +33,12 @@ same task-row update before continuing. Author/validator run IDs remain
 `run-<task>-g<generation>-<attempt>` afterward; documenter IDs follow the same
 rule with `docs` in place of the attempt.
 
+`projects.task_generation` is an internal persistence/scheduler version, not a
+`Project` API field. SQLite triggers increment it transactionally for every
+task insert, update, or delete. The engine compares it before a full
+reconciliation; same-process wake versions reduce latency but are not durable
+and never substitute for the SQLite value or bounded deadline.
+
 B39 makes plan approval a durability boundary. The server first saves the
 exact submitted PRD/task/AGENTS draft and sets the project to `planning`; it
 then awaits one repository commit/push containing PRD, AGENTS.md, and the

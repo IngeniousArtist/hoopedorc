@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS projects (
   planning_agents_md    TEXT,   -- AGENTS.md draft from last deconstruct (F38, user-editable)
   planning_figma_refs   TEXT,   -- JSON VerifiedFigmaReference[] (F52, small session scratch)
   config                TEXT,   -- JSON ProjectConfig (F9): gate/retry/merge-policy overrides
+  task_generation       INTEGER NOT NULL DEFAULT 0, -- O35: monotonic scheduler reconciliation version
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL
 );
@@ -51,6 +52,33 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
+
+-- O35: the database, not call-site timing, owns the durable task generation.
+-- These triggers cover every current/future task write, including bulk and
+-- direct migration/recovery statements, in the same transaction as the row.
+CREATE TRIGGER IF NOT EXISTS tasks_generation_after_insert
+AFTER INSERT ON tasks
+BEGIN
+  UPDATE projects
+  SET task_generation = task_generation + 1
+  WHERE id = NEW.project_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS tasks_generation_after_update
+AFTER UPDATE ON tasks
+BEGIN
+  UPDATE projects
+  SET task_generation = task_generation + 1
+  WHERE id = NEW.project_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS tasks_generation_after_delete
+AFTER DELETE ON tasks
+BEGIN
+  UPDATE projects
+  SET task_generation = task_generation + 1
+  WHERE id = OLD.project_id;
+END;
 
 CREATE TABLE IF NOT EXISTS runs (
   id          TEXT PRIMARY KEY,
