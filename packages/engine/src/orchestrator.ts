@@ -260,6 +260,142 @@ function failedGateNames(gate: GateResult): string[] {
   return names;
 }
 
+interface EscalationBase {
+  currentModel: ModelId;
+  fallback?: ModelId;
+  attempts: number;
+  maxAttempts: number;
+}
+
+export type EscalationRequest = EscalationBase &
+  (
+    | {
+        stage: "author";
+        exitReason: AgentRunResult["exitReason"];
+      }
+    | {
+        stage: "no_changes";
+        primaryDirtyFiles: readonly string[];
+      }
+    | {
+        stage: "gates";
+        gate: GateResult;
+      }
+    | {
+        stage: "self_review_collision";
+      }
+  );
+
+export type EscalationDecision =
+  | {
+      outcome: "fallback";
+      nextModel: ModelId;
+      extendAttemptBudget: boolean;
+      logMessage: string;
+      troubleDetail: string;
+    }
+  | {
+      outcome: "failed";
+      statusReason: string;
+      troubleDetail: string;
+      errorMessage?: string;
+    };
+
+/**
+ * O34: decide the exact observable result of an exhausted pipeline stage.
+ * This deliberately has no I/O and mutates neither the task nor fallback
+ * state; executeTask snapshots live fallback selection before calling it and
+ * applies the returned decision through one side-effect boundary.
+ */
+export function escalateOrFail(
+  request: EscalationRequest,
+): EscalationDecision {
+  switch (request.stage) {
+    case "author":
+      if (request.fallback) {
+        return {
+          outcome: "fallback",
+          nextModel: request.fallback,
+          extendAttemptBudget: request.attempts >= request.maxAttempts,
+          logMessage: `Switching to fallback model: ${request.fallback}`,
+          troubleDetail:
+            `Switched to fallback model after ${request.exitReason}`,
+        };
+      }
+      return {
+        outcome: "failed",
+        statusReason:
+          `Author run kept failing (${request.exitReason}) and no fallback model was left ` +
+          `(last tried: ${request.currentModel})`,
+        troubleDetail: `No fallback model left after ${request.exitReason}`,
+      };
+
+    case "no_changes":
+      if (request.fallback) {
+        return {
+          outcome: "fallback",
+          nextModel: request.fallback,
+          extendAttemptBudget: true,
+          logMessage:
+            `No changes produced, switching to fallback model: ${request.fallback}`,
+          troubleDetail:
+            "Switched to fallback model after no changes were produced",
+        };
+      }
+      return {
+        outcome: "failed",
+        statusReason:
+          request.primaryDirtyFiles.length > 0
+            ? `Every attempt wrote to the primary clone instead of its worktree ` +
+              `(${request.primaryDirtyFiles.join(", ")}) — no fallback model left ` +
+              `(last tried: ${request.currentModel})`
+            : `Every attempt produced no file changes (models ran out of steps or wrote ` +
+              `outside the worktree; last tried: ${request.currentModel})`,
+        troubleDetail: "No fallback model left after no changes were produced",
+      };
+
+    case "gates":
+      if (request.fallback) {
+        return {
+          outcome: "fallback",
+          nextModel: request.fallback,
+          extendAttemptBudget: true,
+          logMessage:
+            `Gates still failing, switching to fallback model: ${request.fallback}`,
+          troubleDetail: "Switched to fallback model after gates kept failing",
+        };
+      }
+      return {
+        outcome: "failed",
+        statusReason:
+          `Gates kept failing after ${request.attempts} attempts ` +
+          `(${failedGateNames(request.gate).join(", ")}) — no fallback model left`,
+        troubleDetail: "No fallback model left after gates kept failing",
+      };
+
+    case "self_review_collision":
+      if (request.fallback) {
+        return {
+          outcome: "fallback",
+          nextModel: request.fallback,
+          extendAttemptBudget: true,
+          logMessage: `Switching to fallback model: ${request.fallback}`,
+          troubleDetail:
+            "Switched to fallback model after a validator/author routing collision",
+        };
+      }
+      return {
+        outcome: "failed",
+        statusReason:
+          "Author and validator resolve to the same model for this task — fix routing in Settings (byDifficulty/byRole vs validatorByDifficulty)",
+        troubleDetail:
+          "No fallback model left avoiding a validator/author routing collision",
+        errorMessage:
+          "No remaining fallback model avoids the validator collision — fix routing in Settings (byDifficulty/byRole vs validatorByDifficulty).",
+      };
+  }
+}
+
 /**
  * Build the auto-escalation fallback chain for a task, starting with the
  * task's assigned model. When `routing.fallbacks` is set (the Settings UI's
@@ -403,6 +539,40 @@ export class Orchestrator implements Scheduler {
         return model;
       }
     }
+    return undefined;
+  }
+
+  private applyEscalationDecision(
+    task: Task,
+    currentModel: ModelId,
+    decision: EscalationDecision,
+  ): ModelId | undefined {
+    if (decision.outcome === "fallback") {
+      this.switchRunningModel(task.id, decision.nextModel);
+      this.rateLimitWaits.delete(task.id);
+      if (decision.extendAttemptBudget) task.maxAttempts++;
+      this.emit("warn", "engine", decision.logMessage, task.id);
+      this.notifyModelTrouble(
+        task,
+        decision.nextModel,
+        "fallback",
+        decision.troubleDetail,
+      );
+      return decision.nextModel;
+    }
+
+    if (decision.errorMessage) {
+      this.emit("error", "engine", decision.errorMessage, task.id);
+    }
+    this.notifyModelTrouble(
+      task,
+      currentModel,
+      "exhausted",
+      decision.troubleDetail,
+    );
+    task.status = "failed";
+    task.statusReason = decision.statusReason;
+    this.deps.events.onTaskUpdated(task);
     return undefined;
   }
 
@@ -1483,35 +1653,21 @@ export class Orchestrator implements Scheduler {
           // are exhausted.
           exhaustedModels.add(currentModel);
           const fallback = this.nextEnabledFallback(task, exhaustedModels);
-          if (fallback) {
-            currentModel = fallback;
-            this.switchRunningModel(task.id, currentModel);
-            this.rateLimitWaits.delete(task.id);
-            if (task.attempts >= task.maxAttempts) task.maxAttempts++;
-            this.emit(
-              "warn",
-              "engine",
-              `Switching to fallback model: ${currentModel}`,
-              task.id,
-            );
-            this.notifyModelTrouble(
-              task,
-              currentModel,
-              "fallback",
-              `Switched to fallback model after ${authorResult.exitReason}`,
-            );
-            continue;
-          }
-          this.notifyModelTrouble(
+          const nextModel = this.applyEscalationDecision(
             task,
             currentModel,
-            "exhausted",
-            `No fallback model left after ${authorResult.exitReason}`,
+            escalateOrFail({
+              stage: "author",
+              currentModel,
+              fallback,
+              attempts: task.attempts,
+              maxAttempts: task.maxAttempts,
+              exitReason: authorResult.exitReason,
+            }),
           );
-          task.status = "failed";
-          task.statusReason = `Author run kept failing (${authorResult.exitReason}) and no fallback model was left (last tried: ${currentModel})`;
-          this.deps.events.onTaskUpdated(task);
-          return;
+          if (!nextModel) return;
+          currentModel = nextModel;
+          continue;
         }
 
         await this.deps.git.commitAll(
@@ -1568,38 +1724,21 @@ export class Orchestrator implements Scheduler {
 
           exhaustedModels.add(currentModel);
           const fallback = this.nextEnabledFallback(task, exhaustedModels);
-          if (fallback) {
-            currentModel = fallback;
-            this.switchRunningModel(task.id, currentModel);
-            this.rateLimitWaits.delete(task.id);
-            task.maxAttempts++;
-            this.emit(
-              "warn",
-              "engine",
-              `No changes produced, switching to fallback model: ${currentModel}`,
-              task.id,
-            );
-            this.notifyModelTrouble(
-              task,
-              currentModel,
-              "fallback",
-              "Switched to fallback model after no changes were produced",
-            );
-            continue;
-          }
-
-          this.notifyModelTrouble(
+          const nextModel = this.applyEscalationDecision(
             task,
             currentModel,
-            "exhausted",
-            "No fallback model left after no changes were produced",
+            escalateOrFail({
+              stage: "no_changes",
+              currentModel,
+              fallback,
+              attempts: task.attempts,
+              maxAttempts: task.maxAttempts,
+              primaryDirtyFiles: primaryDirty,
+            }),
           );
-          task.status = "failed";
-          task.statusReason = wroteToWrongPlace
-            ? `Every attempt wrote to the primary clone instead of its worktree (${primaryDirty.join(", ")}) — no fallback model left (last tried: ${currentModel})`
-            : `Every attempt produced no file changes (models ran out of steps or wrote outside the worktree; last tried: ${currentModel})`;
-          this.deps.events.onTaskUpdated(task);
-          return;
+          if (!nextModel) return;
+          currentModel = nextModel;
+          continue;
         }
 
         await this.deps.git.push(path, branch, signal);
@@ -1672,36 +1811,21 @@ export class Orchestrator implements Scheduler {
           // before giving up entirely.
           exhaustedModels.add(currentModel);
           const fallback = this.nextEnabledFallback(task, exhaustedModels);
-          if (fallback) {
-            currentModel = fallback;
-            this.switchRunningModel(task.id, currentModel);
-            this.rateLimitWaits.delete(task.id);
-            task.maxAttempts++;
-            this.emit(
-              "warn",
-              "engine",
-              `Gates still failing, switching to fallback model: ${currentModel}`,
-              task.id,
-            );
-            this.notifyModelTrouble(
-              task,
-              currentModel,
-              "fallback",
-              "Switched to fallback model after gates kept failing",
-            );
-            continue;
-          }
-
-          this.notifyModelTrouble(
+          const nextModel = this.applyEscalationDecision(
             task,
             currentModel,
-            "exhausted",
-            "No fallback model left after gates kept failing",
+            escalateOrFail({
+              stage: "gates",
+              currentModel,
+              fallback,
+              attempts: task.attempts,
+              maxAttempts: task.maxAttempts,
+              gate: gateResult,
+            }),
           );
-          task.status = "failed";
-          task.statusReason = `Gates kept failing after ${task.attempts} attempts (${failedGateNames(gateResult).join(", ")}) — no fallback model left`;
-          this.deps.events.onTaskUpdated(task);
-          return;
+          if (!nextModel) return;
+          currentModel = nextModel;
+          continue;
         }
 
         if (this.bailIfStopRequested(task)) return;
@@ -1747,42 +1871,20 @@ export class Orchestrator implements Scheduler {
           this.emit("warn", "validator", err.message, task.id);
           exhaustedModels.add(currentModel);
           const fallback = this.nextEnabledFallback(task, exhaustedModels);
-          if (fallback) {
-            currentModel = fallback;
-            this.switchRunningModel(task.id, currentModel);
-            this.rateLimitWaits.delete(task.id);
-            task.maxAttempts++;
-            this.emit(
-              "warn",
-              "engine",
-              `Switching to fallback model: ${currentModel}`,
-              task.id,
-            );
-            this.notifyModelTrouble(
-              task,
-              currentModel,
-              "fallback",
-              "Switched to fallback model after a validator/author routing collision",
-            );
-            continue;
-          }
-          this.emit(
-            "error",
-            "engine",
-            "No remaining fallback model avoids the validator collision — fix routing in Settings (byDifficulty/byRole vs validatorByDifficulty).",
-            task.id,
-          );
-          this.notifyModelTrouble(
+          const nextModel = this.applyEscalationDecision(
             task,
             currentModel,
-            "exhausted",
-            "No fallback model left avoiding a validator/author routing collision",
+            escalateOrFail({
+              stage: "self_review_collision",
+              currentModel,
+              fallback,
+              attempts: task.attempts,
+              maxAttempts: task.maxAttempts,
+            }),
           );
-          task.status = "failed";
-          task.statusReason =
-            "Author and validator resolve to the same model for this task — fix routing in Settings (byDifficulty/byRole vs validatorByDifficulty)";
-          this.deps.events.onTaskUpdated(task);
-          return;
+          if (!nextModel) return;
+          currentModel = nextModel;
+          continue;
         }
         this.deps.events.onMergeDecision(decision);
 
