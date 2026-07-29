@@ -10,7 +10,7 @@
     "@typescript-eslint/no-unused-vars": 1,
     "@typescript-eslint/only-throw-error": 1,
     "@typescript-eslint/prefer-promise-reject-errors": 2,
-    "@typescript-eslint/require-await": 194,
+    "@typescript-eslint/require-await": 193,
     "no-useless-assignment": 3,
     "prefer-const": 1,
     "preserve-caught-error": 1

@@ -697,6 +697,7 @@ export class Orchestrator implements Scheduler {
     this.capacityBlockedWarned.clear();
     this.quotaBlockedWarned.clear();
     this.missingModelWarned.clear();
+    this.mergeConflicts.clear();
     this.holdForApprovalWarned = false;
     this.quotaWaitNotified = false;
 
@@ -730,6 +731,7 @@ export class Orchestrator implements Scheduler {
             const recovery = this.recoverPendingApproval(project, task, decision);
             this.activeTaskPromises.set(task.id, recovery);
             const clearRecovery = () => {
+              this.clearTerminalMergeConflict(task);
               this.activeTaskIds.delete(task.id);
               this.activeTaskPromises.delete(task.id);
             };
@@ -997,6 +999,7 @@ export class Orchestrator implements Scheduler {
           const ran = this.runningModel.get(task.id) ?? dispatchModel;
           this.decModel(ran);
           this.runningModel.delete(task.id);
+          this.clearTerminalMergeConflict(task);
           this.activeTaskIds.delete(task.id);
           this.activeTaskPromises.delete(task.id);
         };
@@ -1055,6 +1058,28 @@ export class Orchestrator implements Scheduler {
     this.emit("info", "engine", "Orchestrator finished", "");
   }
 
+  /**
+   * Publish only an actively-owned transient stage. The paused/ownership check
+   * and write are deliberately synchronous, so hard Stop cannot interleave
+   * between them and leave a stage status behind after the pipeline settles.
+   */
+  private publishActiveStage(
+    task: Task,
+    status: "in_progress" | "in_review",
+  ): boolean {
+    if (this.paused || !this.activeTaskIds.has(task.id)) return false;
+    task.status = status;
+    this.deps.events.onTaskUpdated(task);
+    return true;
+  }
+
+  /** Conflict requeues are nonterminal and keep their same-run retry count. */
+  private clearTerminalMergeConflict(task: Task): void {
+    if (task.status === "done" || task.status === "failed") {
+      this.mergeConflicts.delete(task.id);
+    }
+  }
+
   async pause(
     _project: Project,
     opts: { drain?: boolean } = {},
@@ -1075,6 +1100,14 @@ export class Orchestrator implements Scheduler {
       return;
     }
 
+    // Snapshot ownership before the first await. A pause can be requested from
+    // a synchronous Starting log callback, just before executeTask has returned
+    // its promise to the dispatch loop, so snapshot ids/tasks first and yield
+    // once before collecting their registered promises.
+    const ownedTaskIds = new Set(this.activeTaskIds);
+    const ownedTasks = this.currentTasks.filter((task) =>
+      ownedTaskIds.has(task.id),
+    );
     this.paused = true;
 
     for (const [, ctrl] of this.taskAbortControllers) {
@@ -1084,10 +1117,18 @@ export class Orchestrator implements Scheduler {
         /* ignore */
       }
     }
-    for (const task of this.currentTasks) {
+
+    await Promise.resolve();
+    const ownedPipelines = [...ownedTaskIds]
+      .map((taskId) => this.activeTaskPromises.get(taskId))
+      .filter((pipeline): pipeline is Promise<void> => pipeline !== undefined);
+    await Promise.allSettled(ownedPipelines);
+
+    for (const task of ownedTasks) {
       if (
-        (task.status === "in_progress" || task.status === "in_review") &&
-        this.activeTaskIds.has(task.id)
+        task.status === "ready" ||
+        task.status === "in_progress" ||
+        task.status === "in_review"
       ) {
         task.status = "backlog";
         this.deps.events.onTaskUpdated(task);
@@ -1200,6 +1241,7 @@ export class Orchestrator implements Scheduler {
       const ran = this.runningModel.get(task.id) ?? task.assignedModel;
       this.decModel(ran);
       this.runningModel.delete(task.id);
+      this.clearTerminalMergeConflict(task);
       this.activeTaskIds.delete(task.id);
       this.activeTaskPromises.delete(task.id);
     }
@@ -1221,11 +1263,15 @@ export class Orchestrator implements Scheduler {
     const signal = taskController.signal;
     this.emit("info", "engine", `Starting: ${task.title}`, task.id);
 
-    task.status = "in_progress";
     // A requeued/retried task carries its previous terminal outcome here —
     // clear it so intermediate updates don't keep re-persisting a stale one.
     task.statusReason = undefined;
-    this.deps.events.onTaskUpdated(task);
+    if (!this.publishActiveStage(task, "in_progress")) {
+      if (this.taskAbortControllers.get(task.id) === taskController) {
+        this.taskAbortControllers.delete(task.id);
+      }
+      return;
+    }
 
     // Seed which earlier models dispatch already skipped. Every later
     // fallback choice rebuilds the chain from live settings (B37).
@@ -1274,7 +1320,6 @@ export class Orchestrator implements Scheduler {
         task.attempts <= task.maxAttempts;
         task.attempts++
       ) {
-        if (this.paused) return;
         if (this.bailIfStopRequested(task)) return;
 
         // Every new attempt starts a fresh author run — reset from
@@ -1282,8 +1327,7 @@ export class Orchestrator implements Scheduler {
         // "in_progress" so the board reflects reality instead of leaving a
         // retry looking like a review is still in progress. A no-op on the
         // very first attempt (already "in_progress" from before this loop).
-        task.status = "in_progress";
-        this.deps.events.onTaskUpdated(task);
+        if (!this.publishActiveStage(task, "in_progress")) return;
 
         // B28/B46: currentModel (task.assignedModel on the first attempt, a
         // fallback-chain entry after an escalation) may no longer be
@@ -1575,8 +1619,7 @@ export class Orchestrator implements Scheduler {
         // "In Progress" throughout review with no way to tell dispatch time
         // from review time. Reset back to "in_progress" at the top of the
         // next attempt if this one gets retried.
-        task.status = "in_review";
-        this.deps.events.onTaskUpdated(task);
+        if (!this.publishActiveStage(task, "in_review")) return;
 
         const gateResult = await this.deps.gates.run(project, task, signal);
         // Defense in depth: GateRunner restores after every individual gate
@@ -1759,6 +1802,7 @@ export class Orchestrator implements Scheduler {
             message:
               `Validator still requests changes:\n${decision.reasons.join("\n")}`,
             options: ["approve_anyway", "reject"],
+            signal,
           });
           if (choice === "approve_anyway") {
             break;
@@ -1775,6 +1819,7 @@ export class Orchestrator implements Scheduler {
             title: `Task ${task.id} escalated for human review`,
             message: decision.reasons.join("\n"),
             options: ["approve", "reject"],
+            signal,
           });
           if (choice === "approve") {
             break;
@@ -1925,6 +1970,7 @@ export class Orchestrator implements Scheduler {
           `This task repeatedly conflicts with ${project.defaultBranch} because other tasks ` +
           `changed the same files. Resolve the PR manually, then reject this to clear it.`,
         options: ["reject"],
+        signal,
       });
       void choice;
       task.status = "failed";
@@ -1932,6 +1978,7 @@ export class Orchestrator implements Scheduler {
       this.deps.events.onTaskUpdated(task);
       return;
     }
+    this.mergeConflicts.delete(task.id);
 
     // F15: opt-in per-project gate — hold the merge until the target
     // repo's own CI (its GitHub-side checks) passes, not just this app's
@@ -1972,6 +2019,7 @@ export class Orchestrator implements Scheduler {
           title: `GitHub checks ${checksResult} for ${task.title}`,
           message: `${reason}. Approve merge anyway?`,
           options: ["approve_merge", "reject"],
+          signal,
         });
         if (this.bailIfStopRequested(task)) return;
         if (choice === "approve_merge") {
@@ -2020,6 +2068,7 @@ export class Orchestrator implements Scheduler {
             `this requires approval regardless of merge policy:\n${riskyReasons.map((r) => `- ${r}`).join("\n")}`
           : `Out-of-scope edits or risky changes detected. Approve merge?`,
         options: ["approve_merge", "reject"],
+        signal,
       });
       if (this.bailIfStopRequested(task)) return;
       if (choice === "approve_merge") {
@@ -2124,6 +2173,7 @@ export class Orchestrator implements Scheduler {
           title: `Task exhausted ${task.maxAttempts} attempts`,
           message: `Validator still requests changes:\n${decision.reasons.join("\n")}`,
           options: ["approve_anyway", "reject"],
+          signal,
         });
         if (this.bailIfStopRequested(task)) return;
         if (choice !== "approve_anyway") {
@@ -2138,6 +2188,7 @@ export class Orchestrator implements Scheduler {
           title: `Task ${task.id} escalated for human review`,
           message: decision.reasons.join("\n"),
           options: ["approve", "reject"],
+          signal,
         });
         if (this.bailIfStopRequested(task)) return;
         if (choice !== "approve") {

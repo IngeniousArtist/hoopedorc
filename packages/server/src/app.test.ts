@@ -141,6 +141,46 @@ test("O27: buildApp injects routes without process handlers or startup services"
   }
 });
 
+test("O16: a late response to a Stop-cancelled approval returns an honest 410", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-cancelled-approval-"));
+  const deps = dependencies(root);
+  const notification = repo.createNotification(deps.db, {
+    projectId: "project-1",
+    severity: "action_required",
+    title: "Cancelled approval",
+    message: "This approval will be stopped",
+    requiresApproval: true,
+    options: ["approve", "reject"],
+  });
+  assert.equal(
+    repo.cancelPendingApproval(deps.db, notification.id)?.respondedWith,
+    repo.CANCELLED_STOP,
+  );
+  const app = await buildApp(deps);
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/notifications/${notification.id}/respond`,
+      payload: { choice: "approve" },
+    });
+    assert.equal(response.statusCode, 410);
+    assert.match(
+      response.json<{ error: string }>().error,
+      /cancelled by Stop — no choice was applied/,
+    );
+    assert.equal(
+      repo.getNotification(deps.db, notification.id)?.respondedWith,
+      repo.CANCELLED_STOP,
+      "the late choice must not overwrite the cancellation",
+    );
+  } finally {
+    await app.close();
+    deps.db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("O27: injected auth is optional on loopback and enforced when configured", async () => {
   const root = mkdtempSync(join(tmpdir(), "hoopedorc-auth-routes-"));
   try {

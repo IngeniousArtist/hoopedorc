@@ -1159,6 +1159,67 @@ test("B37/F48: an already-built runtime reads live budgets, quotas, pricing, not
   assert.deepEqual(taskPushes, ["in_review"]);
 });
 
+test("O16: aborting a normal approval removes its resolver and persists a cancelled notification", async () => {
+  const db = setup();
+  const hub = new WsHub();
+  const broadcasts: unknown[] = [];
+  hub.broadcast = (event) => {
+    broadcasts.push(event);
+  };
+  const engine = new EngineRunner(db, hub);
+  const proj = project(db, "abort-approval");
+  const task = seedTask(db, proj.id, "task", { status: "in_review" });
+  const deps = buildDeps(engine, proj);
+  const controller = new AbortController();
+
+  const approval = deps.events.requestApproval({
+    taskId: task.id,
+    title: "Approve task",
+    message: "Approve this task?",
+    options: ["approve_merge", "reject"],
+    signal: controller.signal,
+  });
+  const notification = repo
+    .getNotifications(db, proj.id)
+    .find((candidate) => candidate.taskId === task.id);
+  assert.ok(notification);
+  assert.equal(notification.respondedWith, undefined);
+
+  controller.abort();
+  await assert.rejects(
+    approval,
+    (error: unknown) =>
+      error instanceof DOMException && error.name === "AbortError",
+  );
+
+  const cancelled = repo.getNotification(db, notification.id);
+  assert.equal(cancelled?.respondedWith, repo.CANCELLED_STOP);
+  assert.equal(
+    (
+      engine as unknown as {
+        pendingApprovals: Map<string, (choice: string) => void>;
+      }
+    ).pendingApprovals.size,
+    0,
+  );
+  assert.equal(
+    engine.resolveApproval(notification.id, "approve_merge"),
+    false,
+    "a late response must not revive the cancelled approval",
+  );
+  assert.ok(
+    broadcasts.some(
+      (event) =>
+        (event as { type?: string; payload?: { id?: string; respondedWith?: string } })
+          .type === "notification" &&
+        (event as { payload?: { id?: string } }).payload?.id === notification.id &&
+        (event as { payload?: { respondedWith?: string } }).payload?.respondedWith ===
+          repo.CANCELLED_STOP,
+    ),
+    "cancellation must broadcast the notification's terminal state",
+  );
+});
+
 test("B36: duplicate rollback clicks share one job and approval merges exactly once", async () => {
   const db = setup();
   const hub = new WsHub();

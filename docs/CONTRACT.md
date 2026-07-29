@@ -164,6 +164,13 @@ web UI and Telegram use the same decision context. B42's `capabilityKey` is a
 stable, secret-free identity stored only on capability warning notifications;
 the server uses it to suppress the same alert across runtime/server restarts.
 The optional context remains absent on older rows and unrelated notifications.
+Normal approval requests also carry the owning task's abort signal. A hard
+Stop cancels the waiter, conditionally records `respondedWith:
+"cancelled_stop"` while the notification is still pending, and makes any late
+HTTP/Telegram response return expired/cancelled without resuming the task. A
+graceful drain does not abort the signal, so the same approval remains live
+until the operator answers it. `expired_restart` continues to identify a
+different terminal case: the process that owned the waiter disappeared.
 
 `POST /api/engine/stop-all` (F23) — the global panic button, one confirmed
 tap from anywhere in the app rather than Projects page → per-row action →

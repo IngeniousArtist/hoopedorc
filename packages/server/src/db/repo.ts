@@ -1421,6 +1421,30 @@ export function respondToNotification(
   return row ? mapNotification(row) : null;
 }
 
+/** Terminal response recorded when hard Stop aborts a live approval waiter. */
+export const CANCELLED_STOP = "cancelled_stop";
+
+/**
+ * Cancel only an approval that is still pending. The conditional update makes
+ * a concurrent human response and hard Stop single-winner: an answer already
+ * persisted by the response path is never overwritten by cancellation.
+ */
+export function cancelPendingApproval(
+  db: Db,
+  id: string,
+): Notification | null {
+  const result = db
+    .prepare(
+      `UPDATE notifications
+       SET responded_with = ?
+       WHERE id = ?
+         AND requires_approval = 1
+         AND responded_with IS NULL`,
+    )
+    .run(CANCELLED_STOP, id);
+  return result.changes === 1 ? getNotification(db, id) : null;
+}
+
 /**
  * The literal `responded_with` value stamped on every still-pending
  * approval at boot (B10) — the process that would have resolved them (the
