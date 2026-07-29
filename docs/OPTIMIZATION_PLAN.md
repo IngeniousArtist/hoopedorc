@@ -1733,6 +1733,30 @@ collision, each with a fallback and with the chain exhausted. Existing
 orchestrator integration tests remain the persisted-transition rail. The
 durable retry-accounting redesign stays out of this PR.
 
+**Status (extraction PR 1):** completed in
+[#198](https://github.com/IngeniousArtist/hoopedorc/pull/198)
+(`784bfa8`). All four `executeTask` escalation sites now snapshot their live
+fallback candidate into the pure `escalateOrFail(...)` decision helper and
+apply its result through one shared side-effect boundary. The extraction
+preserves the original per-stage attempt-budget rules, model concurrency
+switch, rate-limit cleanup, log and model-trouble messages, terminal reasons,
+task update, and fallback timing. The golden table covers author failure with
+and without attempt headroom, clean and wrong-primary-clone no-change
+diagnoses, gate failures, and validator/author collisions, with both an
+available fallback and an exhausted chain. The focused test failed before the
+helper existed and passed after extraction.
+
+Full local verification passed typecheck, build, lint across 140 files with
+the exact 340-finding baseline, engine 195/195, adapters 12/12, server 241/241,
+web 25/25, E2E 16/16 at 360/390/768/1280/1440 px, and
+`git diff --check`. Linux `build-and-test` CI passed at reviewed head
+`0a63cb9` in 2m24s. After merge, local `main` and `origin/main` matched
+`784bfa83e9095c74b3355c375a6296d1d0cfefe1`; the O34 focused golden check
+passed 1/1 and the complete engine suite passed 195/195 again on that commit.
+No EC2 smoke is required because no contract, persistence, UI, process, or
+deployment behavior changed. O34's second, durable retry-accounting
+design/implementation PR remains open and intentionally separate.
+
 **Fix risk:** medium — behavior-sensitive; the test suite is the rail.
 
 ### O35. Scheduler busy-poll efficiency — MEDIUM (efficiency; careful)
