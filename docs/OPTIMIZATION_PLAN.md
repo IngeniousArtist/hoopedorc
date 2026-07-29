@@ -1362,6 +1362,31 @@ full gates green.
 
 **Fix risk:** low-medium (staged rollout controls the blast radius).
 
+**Implementation decision (2026-07-29):** keep O31 to lint policy and its
+regression harness; do not mix in production cleanup. After removing one stale
+disable for the deleted `ban-types` rule, the measured
+`recommendedTypeChecked` backend/types baseline is 341 findings across 14 rule
+IDs: adapters 8, engine 210, server 123, and types 0. Store those exact
+workspace+rule counts in a reviewed baseline. The root lint runner must fail
+when current counts differ in either direction, so a reduction requires the
+same PR to lower the checked baseline and cannot leave future regression
+headroom. On pull requests it must also compare the checked file with the base
+commit and refuse any raised count or new nonzero key.
+
+The initial scan also reported 434 `no-floating-promises` findings, all from
+top-level calls to the promise-returning `test` function imported from
+`node:test`; production code had zero, and `no-misused-promises` had zero.
+Configure the rule's typed `allowForKnownSafeCalls` option for exactly that
+package export rather than blanket-disabling tests. Keep real floating and
+misused promises at error severity globally, with an executable lint-text
+regression proving a newly introduced production float fails. Preserve the
+existing web rules, give browser source browser globals, give web tooling/E2E
+the required browser+Node globals, and give backend tests/runtime Node globals.
+Move shared ESLint tooling ownership to the root because the root configuration
+and gate now serve every workspace. No runtime state, migration, API,
+persistence, deployment, or external side effect changes; rollback is the O31
+lint-policy commit, and no live EC2 check is required.
+
 ### O32. CI omissions: `git diff --check`, audit signal, Playwright cache — LOW (testing/efficiency)
 
 **Problem:** `.github/workflows/ci.yml` omits `git diff --check` (a declared

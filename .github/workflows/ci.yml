@@ -10,6 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # O31's lint ratchet compares a PR baseline with the merge commit's
+          # first parent. Keep both parents locally so the root lint command
+          # can fail closed without a network fetch.
+          fetch-depth: 2
 
       - uses: actions/setup-node@v4
         with:

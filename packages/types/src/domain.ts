@@ -16,7 +16,6 @@ export type ModelId =
   | "deepseek-flash" // medium tasks — via OpenCode
   | "grok" // status summaries / Telegram updates — via OpenCode
   | "nex" // documentation — via OpenCode (OpenRouter, free tier)
-  // eslint-disable-next-line @typescript-eslint/ban-types
   | (string & {});
 
 /** What a model is allowed/expected to do. */
