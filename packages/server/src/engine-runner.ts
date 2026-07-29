@@ -242,8 +242,12 @@ export class EngineRunner {
    * record is created, from all three places one gets created (author run,
    * validator run, planner spend).
    */
-  checkAndPushBudgetAlerts(projectId: string): void {
-    const settings = repo.getSettings(this.db) ?? defaultSettings();
+  checkAndPushBudgetAlerts(
+    projectId: string,
+    settingsSnapshot?: Settings,
+  ): void {
+    const settings =
+      settingsSnapshot ?? repo.getSettings(this.db) ?? defaultSettings();
     const alerts = checkBudgetThresholds(this.db, projectId, settings);
     for (const alert of alerts) {
       const notif = repo.createNotification(this.db, {
@@ -286,13 +290,20 @@ export class EngineRunner {
 
   /** Persist one B40 lifecycle event and fan out only the first accepted
    * terminal transition. SQLite owns the exactly-once decision. */
-  private recordInvocation(event: ModelInvocation): ModelInvocation {
-    const saved = persistInvocationEvent(this.db, event);
+  private recordInvocation(
+    event: ModelInvocation,
+    settingsSnapshot?: Settings,
+  ): ModelInvocation {
+    const settings =
+      event.outcome === "running"
+        ? settingsSnapshot
+        : settingsSnapshot ?? repo.getSettings(this.db) ?? defaultSettings();
+    const saved = persistInvocationEvent(this.db, event, settings);
     if (!saved.transitioned) return saved.invocation;
     if (saved.cost) {
       this.hub.broadcast({ type: "cost.updated", payload: saved.cost });
       if (saved.invocation.projectId) {
-        this.checkAndPushBudgetAlerts(saved.invocation.projectId);
+        this.checkAndPushBudgetAlerts(saved.invocation.projectId, settings);
       }
     }
     if (saved.invocation.exitReason === "rate_limited") {
@@ -613,11 +624,12 @@ export class EngineRunner {
           // Manual per-model pricing (Settings) overrides the CLI-reported
           // cost — recompute from tokens before anything persists or alerts
           // on it (see pricing.ts).
-          const cfg = liveSettings().models.find((m) => m.id === r.model);
+          const settingsSnapshot = liveSettings();
+          const cfg = settingsSnapshot.models.find((m) => m.id === r.model);
           const manual = manualCostUsd(cfg, r.tokensIn, r.tokensOut, r.tokensCached ?? 0);
           if (manual != null) r = { ...r, costUsd: manual };
 
-          this.recordInvocation({
+          const invocation: ModelInvocation = {
             id: r.id,
             projectId: project.id,
             taskId: r.taskId,
@@ -641,7 +653,8 @@ export class EngineRunner {
             tokensIn: r.tokensIn,
             tokensOut: r.tokensOut,
             tokensCached: r.tokensCached ?? 0,
-          });
+          };
+          this.recordInvocation(invocation, settingsSnapshot);
 
           const existingRun = repo.getRun(this.db, r.id);
           if (existingRun?.status === "stopped" && r.status !== "running") {

@@ -1,4 +1,8 @@
-import { InvocationLedgerError, type ModelInvocation } from "@orc/types";
+import {
+  InvocationLedgerError,
+  type ModelInvocation,
+  type Settings,
+} from "@orc/types";
 import { defaultSettings } from "./config.js";
 import type { Db } from "./db/index.js";
 import * as repo from "./db/repo.js";
@@ -21,10 +25,14 @@ export interface PersistedInvocationEvent {
  * wraps this inside a capability check (e.g. Figma preflight) can let it
  * propagate instead of mislabeling an accounting failure as that capability
  * being unavailable.
+ *
+ * A caller that already owns the validated settings snapshot for this event
+ * can pass it through so terminal pricing does not re-read the same row.
  */
 export function persistInvocationEvent(
   db: Db,
   event: ModelInvocation,
+  settingsSnapshot?: Settings,
 ): PersistedInvocationEvent {
   try {
     if (event.outcome === "running") {
@@ -49,7 +57,8 @@ export function persistInvocationEvent(
       });
     }
 
-    const settings = repo.getSettings(db) ?? defaultSettings();
+    const settings =
+      settingsSnapshot ?? repo.getSettings(db) ?? defaultSettings();
     const config = settings.models.find((model) => model.id === event.model);
     const manual = manualCostUsd(
       config,

@@ -72,6 +72,9 @@ budgets/quotas, approval holds, merge policy, notification gates, and manual
 pricing. Defaults, migrations, HTTP/Telegram writes, repository reads, and
 runtime access all share the same normalizer, so an active scheduler never sees
 a shape that the API would reject.
+A billable run event captures one such normalized snapshot and threads it
+through pricing, the invocation ledger, and budget alerts; it never caches that
+snapshot across separate events.
 
 Task retry state has one durable owner: the SQLite task row. `maxAttempts`
 remains immutable policy, while `attempts`, `runExtraAttempts`, current and

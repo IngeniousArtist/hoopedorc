@@ -1935,6 +1935,34 @@ each, then land it with the owning work:
   separate safety inspection. Never trade destructive-change accuracy for a
   subprocess reduction.
 
+**`liveSettings()` measurement protocol and threshold (2026-07-29, before any
+O36 production change):** instrument the real SQLite settings statement while
+invoking each affected dependency/event closure from one already-built
+`EngineRunner` runtime. Count reads for adapter resolution, budget, quota,
+Figma-free preflight, task-status update, run update, and model-trouble
+notification, changing persisted settings after runtime construction where
+needed to prove freshness. Separately time 10,000 production
+`repo.getSettings()` reads/normalizations against the default settings row.
+Implement only if one closure invocation performs more than one settings read;
+otherwise the suspected duplicate work is absent and this candidate is closed
+as deferred without adding caching or changing freshness boundaries.
+
+**`liveSettings()` measurement result and decision (2026-07-29):** the
+instrumented baseline found zero reads for a Figma-free preflight, one each for
+adapter resolution, budget, quota, task update, and model-trouble handlers, but
+three for one billable terminal `onRunUpdated` event: manual run pricing,
+invocation-ledger pricing, and the resulting budget-alert check each re-read
+and re-normalized the settings row. Five 10,000-read repetitions against the
+default settings row took 118.412–147.216 ms, median 121.084 ms (12.108 µs per
+read) on the Apple M5 Pro / Node 22.23.0 measurement host. The count threshold
+therefore passed. The implementation captures settings once at the event
+boundary and threads that snapshot through invocation persistence and budget
+alerts; separate events still read live state. The same instrumented billable
+event now performs one read, eliminating two reads (about 24.216 µs on this
+fixture). Its regression failed at `3 !== 1` before the fix and also proves
+that the fresh manual price reaches the run, invocation, cost, and both crossed
+budget alerts.
+
 **Acceptance:** each PR contains its own counting/timing baseline and removes
 only duplicated work demonstrated by that evidence; settings freshness,
 snapshot completeness/order, and destructive-change inspection remain
