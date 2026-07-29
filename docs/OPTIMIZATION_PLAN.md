@@ -1881,6 +1881,35 @@ and drain; no wakeup is lost and time-based deadlines still fire; full gates
 green. If baseline CPU/latency is immaterial, defer O35 with evidence and add
 no signaling protocol.
 
+**Status:** completed in
+[#202](https://github.com/IngeniousArtist/hoopedorc/pull/202)
+(`c2b2b5f`). SQLite triggers now own one transactionally incremented
+`task_generation` per project, including direct and out-of-process task
+writes. Repository writes additionally advance a monotonic same-process wake
+version. The scheduler captures that edge, rechecks the durable generation,
+and rebuilds its task map only after a generation change; the existing 250 ms
+deadline still owns external-write recovery and cooldown, quota, capacity,
+approval, pause, and drain progress.
+
+The pre-change benchmark crossed the recorded go thresholds, and the same
+fixture after implementation reduced full reads by 91.6%, measured SQLite
+time by 87.6%/92.8%, and adjusted scheduler CPU by 80.9%/84.0% for one/eight
+held projects while improving pickup p95 by 230.243 ms. Full local
+verification passed typecheck, build, lint across 144 files with the exact
+340-finding baseline, engine 210/210, adapters 12/12, server 250/250, web
+26/26, E2E 16/16, and `git diff --check`. Linux `build-and-test` CI passed at
+reviewed head `d4726c3` in 2m27s.
+
+After merge, clean local `main` and `origin/main` matched
+`c2b2b5f8d0651f5b7518e496d3076c2a33872b20`. The unchanged benchmark again
+measured 0.330/2.641 full reads per second, 0.905/3.386 ms of total SQLite time
+per second, 0.275%/0.993% adjusted CPU, and 4.449 ms pickup p95 on the same
+Apple M5 Pro/Node 22.23.0 fixture. The focused engine race/deadline matrix
+passed 7/7, focused server migration/wake/wiring checks passed 6/6, and the
+complete engine suite passed 210/210 on that merged commit. No UI, external
+CLI, filesystem-ownership, or deployment/process behavior changed, so no
+additional live-system smoke is required.
+
 **Fix risk:** medium — wake-up semantics are the invariant; do not merge
 without the cooldown tests passing untouched.
 
