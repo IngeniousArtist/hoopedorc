@@ -1353,16 +1353,18 @@ repository gates green.
 
 **Fix risk:** none/low.
 
-### O33. `docs/CONTRACT.md` is missing 11 of 49 live routes — MEDIUM (docs)
+### O33. `docs/CONTRACT.md` is missing 13 of 49 live routes — MEDIUM (docs)
 
 **Problem:** these registered, typed, client-consumed routes have zero
-mention in the contract doc: `updateProject`, `planSessionArchives`,
-`retryTask`, `taskDiff`, `costAnalytics`, `estimatePlan`, `telegramTest`,
-`auditLog`, `rollbackTask`, `taskRollback`, `testModels`. AGENTS.md names
-CONTRACT.md a source of truth; agents planning changes to diff/retry/rollback/
-analytics work from an incomplete contract.
+mention in the contract doc: `updateProject`, `deleteProject`,
+`planSessionArchives`, `retryTask`, `taskDiff`, `costAnalytics`,
+`estimatePlan`, `telegramTest`, `auditLog`, `rollbackTask`, `taskRollback`,
+`setupHealth`, `testModels`. The start-of-item exact check found that
+`deleteProject` and `setupHealth` had also drifted since the original 11-route
+audit. AGENTS.md names CONTRACT.md a source of truth; agents planning changes
+to diff/retry/rollback/analytics work from an incomplete contract.
 
-**Fix:** document the 11 endpoints from their shared request/response types.
+**Fix:** document the 13 endpoints from their shared request/response types.
 Add a machine-readable route marker/table row for every `ROUTES` key and test
 that exact keys/methods/paths are covered. Do not use a loose substring search
 that can pass on prose, examples, or similarly named routes. Pair this with
@@ -1374,6 +1376,36 @@ O30 after O27 provides the app seam.
 fails when a route is added undocumented; full gates green.
 
 **Fix risk:** none.
+
+**Implementation decision (2026-07-29):** land O30 and O33 together because
+they enforce the same canonical `ROUTES` manifest at its two downstream
+boundaries. A focused server test will construct the injected Fastify app and
+ask Fastify's route table whether every manifest method/path is registered; a
+deliberately changed method/path fixture must be refused by that assertion.
+The REST contract table will carry one exact, machine-readable row per
+`ROUTES` key, bounded by dedicated markers, and the same test will parse those
+rows into key → method/path pairs and compare them exactly with the manifest.
+Duplicate keys or signatures are failures; prose, examples, and similarly
+named routes cannot satisfy the check.
+
+The reproduced failure is documentation drift: the current exact comparison
+reports 36 documented routes against 49 manifest entries and names the 13
+missing keys above. The server route-table half currently passes, which
+establishes that this PR closes a regression gap rather than changing a live
+endpoint. Documenting the rollback pair also exposed that the web used local
+response shapes omitted from `api.ts`; this PR names
+`RollbackTaskResponse`/`TaskRollbackResponse` in the shared contract and makes
+the existing client consume them without changing the runtime payload.
+
+The shared type manifest owns the invariant and the implementation stays in
+the shared contract, its server test, the existing web consumer, and
+`docs/CONTRACT.md`. No state, timer, queue, cache, retry, migration, external
+side effect, crash window, or concurrency outcome is added. The smallest
+rollback is this contract-test-and-documentation commit; stored data and
+mixed-version startup are unaffected. Focused pre-fix evidence is the 13-key
+documentation failure, and the mutation assertion proves a server registration
+rename is detected. No live EC2 check is required because deployed behavior is
+unchanged.
 
 ---
 

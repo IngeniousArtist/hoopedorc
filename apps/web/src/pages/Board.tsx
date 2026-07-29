@@ -5,12 +5,14 @@ import {
   type ModelId,
   type RetryTaskResponse,
   type RollbackJob,
+  type RollbackTaskResponse,
   type ServerEvent,
   type Settings as SettingsType,
   type StopTaskResponse,
   type Task,
   type TaskDiffResponse,
   type TaskEstimate,
+  type TaskRollbackResponse,
   type TaskStatus,
 } from "@orc/types";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -170,7 +172,7 @@ export function Board({
       }
     }
     loadLogs();
-    api<{ rollback: RollbackJob | null }>("taskRollback", {
+    api<TaskRollbackResponse>("taskRollback", {
       params: { id: selectedTaskId },
     })
       .then(({ rollback }) => {
@@ -280,7 +282,7 @@ export function Board({
       return;
     setActionBusy(true);
     try {
-      const res = await api<{ task: Task; rollback: RollbackJob }>("rollbackTask", {
+      const res = await api<RollbackTaskResponse>("rollbackTask", {
         params: { id: taskId },
       });
       setRollbackJobs((current) => ({
