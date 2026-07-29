@@ -1387,6 +1387,31 @@ and gate now serve every workspace. No runtime state, migration, API,
 persistence, deployment, or external side effect changes; rollback is the O31
 lint-policy commit, and no live EC2 check is required.
 
+**Status:** completed in
+[#192](https://github.com/IngeniousArtist/hoopedorc/pull/192)
+(`beda0db`). The root gate now lints 140 files across all five workspaces with
+seven policy regressions, type-aware backend/types rules, scoped
+browser/Node/type-only globals, error-level real floating/misused promises, and
+an exact 341-finding workspace+rule baseline. Pull-request checkout retains
+both parents, and the runner refuses any baseline increase relative to the base
+commit. A typed exception covers only the promise-returning `test` export from
+`node:test`.
+
+Deliberately adding a production `Promise.resolve` failed
+`@typescript-eslint/no-floating-promises`; deliberately raising server
+`require-await` from 58 to 59 failed because the current count no longer
+matched. Both restored cleanly. Local verification passed typecheck, build,
+lint policy 7/7, engine 187/187, adapters 12/12, server 238/238, web 25/25,
+E2E 16/16 at 360/390/768/1280/1440px, the original web-workspace lint command,
+pull-request-mode lint, and `git diff --check`. The first sandboxed server run
+denied three loopback listeners with `EPERM`; the required permissioned rerun
+passed 238/238. Linux `build-and-test` CI passed at reviewed head `c01e31e` in
+2m19s, including the new root lint step in 14 seconds. After merge, local
+`main` and `origin/main` matched
+`beda0dbda83eb62a217eb1edbfca4d0d36527b8e`, and merged-main lint again passed
+7/7 across 140 files. No EC2 check was required because runtime behavior did
+not change.
+
 ### O32. CI omissions: `git diff --check`, audit signal, Playwright cache — LOW (testing/efficiency)
 
 **Problem:** `.github/workflows/ci.yml` omits `git diff --check` (a declared
@@ -1652,8 +1677,8 @@ below because they share one invariant and would be unsafe to split.
    (`d03f0a0`) and O2 merged in
    [#184](https://github.com/IngeniousArtist/hoopedorc/pull/184)
    (`3e4c793`), both with green CI and live EC2/Tailscale verification.
-3. **Regression rails before behavior-sensitive work — O27, O29, and
-   O30 + O33 merged; O31 is next:**
+3. **Regression rails before behavior-sensitive work — O27, O29, O30 + O33,
+   and O31 merged; O32 is next:**
    - O27 merged in
      [#186](https://github.com/IngeniousArtist/hoopedorc/pull/186)
      (`5f6e2ee`) with the app-construction seam, validator/route refusal
@@ -1667,8 +1692,11 @@ below because they share one invariant and would be unsafe to split.
      [#190](https://github.com/IngeniousArtist/hoopedorc/pull/190)
      (`e6b0d33`) with conflict/retry-cap/restart rails and green Linux CI,
      satisfying the prerequisite for O21 and O34.
-   - O31 is next. O31 and O32 land as separate lint/CI policy PRs; neither
-     should bury production behavior changes.
+   - O31 merged in
+     [#192](https://github.com/IngeniousArtist/hoopedorc/pull/192)
+     (`beda0db`) with an exact all-workspace ESLint ratchet and green Linux CI.
+   - O32 is next and remains a separate CI-policy PR with no production
+     behavior changes.
 4. **Durable correctness and recovery:**
    - O3 planning revision receipts.
    - O4 shared Git serialization.
