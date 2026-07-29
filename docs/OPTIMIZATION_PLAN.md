@@ -1136,6 +1136,32 @@ auth on/off, 401 and loopback behavior, project create/delete refusals, and
 O18 validation. Injected apps must close cleanly with no Telegram, scheduler,
 backup, pruning, WebSocket, or self-update timer left running.
 
+**Implementation decision (2026-07-29):** keep this as one O27 PR with two
+reviewable commits (app/lifecycle seam first, validator extraction and coverage
+second). `buildApp` receives the SQLite/engine/hub/self-update dependencies and
+an explicit environment snapshot; it only registers plugins, hooks, and
+routes. An internal production assembly owns the existing pruning, backup,
+scheduler, Telegram, shutdown-handler, listen, and resume-on-boot boundaries,
+and `main()` is the only caller that starts them. Importing the app module or
+closing an injected app therefore cannot install process handlers or leave a
+maintenance timer behind.
+
+The reproduced failure is architectural rather than a new route response:
+importing the only server module immediately runs `main()`, so route injection
+is impossible without opening the operator database and starting global
+lifecycle work. No new durable state, timer, queue, cache, retry, or migration
+is introduced. Existing startup ordering and shutdown settlement remain
+authoritative, and a child-process start/SIGTERM smoke guards that boundary.
+Validator extraction stays in the server layer. Destructive clone cleanup is
+tightened to preserve dirty clones and refuse symlinked, non-repository,
+wrong-origin, and nested-repository paths; the project row is still removed
+and the untouched path is logged for manual cleanup. Concurrent delete
+semantics and every external Git/GitHub effect outside that cleanup guard are
+unchanged. The smallest rollback is the two O27 commits in reverse order; no
+stored data needs conversion. Pre-fix evidence is the absence of any
+`app.inject` seam/test plus focused tests that demonstrate the old cleanup
+predicate accepts a dirty matching-origin clone.
+
 **Likely files:** `packages/server/src/index.ts`, a small app/lifecycle module,
 new `packages/server/src/project-validation.ts`, and focused tests.
 

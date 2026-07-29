@@ -1,30 +1,26 @@
 import "dotenv/config";
-import { execFile } from "node:child_process";
-import { timingSafeEqual } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import type {
   Difficulty,
   MergePolicy,
   ModelId,
   ModelInvocation,
   Project,
-  ProjectConfig,
   Role,
   ServerEvent,
   Task,
 } from "@orc/types";
 import { SECRET_SENTINEL, TASK_STATUSES, WS_PATH, pickAssignedModel } from "@orc/types";
 import type { TaskStatus } from "@orc/types";
-import { GitServiceImpl, detectDocker, isPlausibleImageRef } from "@orc/engine";
+import { GitServiceImpl, detectDocker } from "@orc/engine";
 import {
   ENV,
   SettingsValidationError,
@@ -104,22 +100,52 @@ import {
   runSetupChecks,
   testModels,
 } from "./setup";
-import { parseSetupCommand } from "./project-config";
 import { persistInvocationEvent } from "./invocation-ledger";
 import { ShutdownCoordinator, installShutdownHandlers } from "./shutdown";
 import { buildRuntimeHealth } from "./runtime-health";
 import { SelfUpdater, SelfUpdateRefusedError } from "./self-update";
 import { registerBuiltWebApp } from "./web-static";
+import {
+  isValidBranchName,
+  isValidRepoUrl,
+  localPathOkForClone,
+  parseProjectConfig,
+  redactSettings,
+  safeToDeleteLocalPath,
+  safeTokenEqual,
+  unauthenticatedBindingError,
+  validateLocalPath,
+} from "./project-validation";
 import type {
   DraftTask,
   Notification,
   PlanChatMessage,
   PlanDeconstructRequest,
-  Settings as SettingsType,
   VerifiedFigmaReference,
+  Settings as SettingsType,
 } from "@orc/types";
 
 type RouteParams = { id: string };
+type ServerEnvironment = typeof ENV;
+
+export interface BuildAppDependencies {
+  db: Db;
+  hub: WsHub;
+  engine: EngineRunner;
+  selfUpdater: SelfUpdater;
+  env: ServerEnvironment;
+  repoRoot: string;
+  version: string;
+  webDist?: string;
+  logger?: boolean;
+}
+
+interface ServerAssembly {
+  app: FastifyInstance;
+  shutdown: ShutdownCoordinator;
+  startBackgroundServices(): void;
+  resumeAfterListen(): void;
+}
 
 function plannerRequestCancellation(
   request: IncomingMessage,
@@ -334,297 +360,53 @@ function buildPriorContext(db: Db, project: Project): string | undefined {
     .join("\n\n");
 }
 
-// Branch names flow unsanitized into `git` argv (worktree-manager.ts,
-// validator.ts) — arg arrays there mean no shell metacharacters can execute,
-// but a leading `-` could still be parsed as a git flag rather than a
-// refname. Keep the charset tight to plausible ref names.
-const VALID_BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
-function isValidBranchName(branch: string): boolean {
-  return VALID_BRANCH_NAME.test(branch) && !branch.startsWith("-");
-}
-
-// repoUrl is passed to `git clone` and `gh --repo` (git-service.ts,
-// github.ts) — restrict to the two shapes those CLIs expect so a value like
-// `--upload-pack=...` can't be smuggled in as a flag.
-const VALID_REPO_URL =
-  /^(https:\/\/github\.com\/[\w.-]+\/[\w.-]+|git@github\.com:[\w.-]+\/[\w.-]+)(\.git)?\/?$/;
-function isValidRepoUrl(url: string): boolean {
-  return VALID_REPO_URL.test(url);
-}
-
-const pexecFile = promisify(execFile);
-
-const VALID_MERGE_POLICIES: MergePolicy[] = [
-  "hard_gate_flag_risky",
-  "fully_autonomous",
-  "always_ask",
-];
-
-/**
- * Validate + normalize a project's config override (F9). Gate script names
- * and testCommand ride into `execFile` arg arrays downstream (gate-runner.ts)
- * — no shell involved — so validation here is about sane values, not
- * injection. Returns `{ error }` on the first bad field, or `{ value }`
- * (possibly `undefined`, meaning "no config") otherwise.
- */
-function parseProjectConfig(
-  input: unknown,
-): { error: string } | { value: ProjectConfig | undefined } {
-  if (input == null) return { value: undefined };
-  if (typeof input !== "object") return { error: "config must be an object" };
-  const raw = input as Record<string, unknown>;
-  const value: ProjectConfig = {};
-
-  if (raw.setupCommand !== undefined) {
-    const parsed = parseSetupCommand(raw.setupCommand);
-    if ("error" in parsed) return parsed;
-    value.setupCommand = parsed.value;
-  }
-
-  if (raw.maxAttempts !== undefined) {
-    const n = raw.maxAttempts;
-    if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 20) {
-      return { error: "config.maxAttempts must be an integer between 1 and 20" };
-    }
-    value.maxAttempts = n;
-  }
-
-  if (raw.mergePolicy !== undefined) {
-    if (!VALID_MERGE_POLICIES.includes(raw.mergePolicy as MergePolicy)) {
-      return { error: `config.mergePolicy must be one of: ${VALID_MERGE_POLICIES.join(", ")}` };
-    }
-    value.mergePolicy = raw.mergePolicy as MergePolicy;
-  }
-
-  if (raw.gates !== undefined) {
-    if (typeof raw.gates !== "object" || raw.gates === null) {
-      return { error: "config.gates must be an object" };
-    }
-    const g = raw.gates as Record<string, unknown>;
-    const gates: NonNullable<ProjectConfig["gates"]> = {};
-    for (const key of ["typecheckScript", "lintScript", "buildScript", "testScript"] as const) {
-      const v = g[key];
-      if (v === undefined) continue;
-      if (v === false) {
-        gates[key] = false;
-        continue;
-      }
-      if (typeof v === "string" && v.trim().length > 0 && v.length <= 100) {
-        gates[key] = v.trim();
-        continue;
-      }
-      return { error: `config.gates.${key} must be a non-empty script name (<=100 chars) or false` };
-    }
-    if (g.testCommand !== undefined) {
-      if (typeof g.testCommand !== "string" || g.testCommand.length > 500) {
-        return { error: "config.gates.testCommand must be a string (<=500 chars)" };
-      }
-      const trimmed = g.testCommand.trim();
-      if (trimmed) gates.testCommand = trimmed;
-    }
-    if (Object.keys(gates).length > 0) value.gates = gates;
-  }
-
-  if (raw.requireGithubChecks !== undefined) {
-    if (typeof raw.requireGithubChecks !== "boolean") {
-      return { error: "config.requireGithubChecks must be a boolean" };
-    }
-    value.requireGithubChecks = raw.requireGithubChecks;
-  }
-
-  if (raw.githubChecksTimeoutMin !== undefined) {
-    const n = raw.githubChecksTimeoutMin;
-    if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 120) {
-      return { error: "config.githubChecksTimeoutMin must be an integer between 1 and 120" };
-    }
-    value.githubChecksTimeoutMin = n;
-  }
-
-  if (raw.perTaskDocs !== undefined) {
-    if (typeof raw.perTaskDocs !== "boolean") {
-      return { error: "config.perTaskDocs must be a boolean" };
-    }
-    value.perTaskDocs = raw.perTaskDocs;
-  }
-
-  if (raw.skillHints !== undefined) {
-    if (!Array.isArray(raw.skillHints)) {
-      return { error: "config.skillHints must be an array of strings" };
-    }
-    if (raw.skillHints.length > 20) {
-      return { error: "config.skillHints must have at most 20 entries" };
-    }
-    const hints: string[] = [];
-    for (const h of raw.skillHints) {
-      if (typeof h !== "string" || h.length > 200) {
-        return { error: "config.skillHints entries must be strings of at most 200 chars" };
-      }
-      const trimmed = h.trim();
-      if (trimmed) hints.push(trimmed);
-    }
-    if (hints.length > 0) value.skillHints = hints;
-  }
-
-  if (raw.gateImage !== undefined) {
-    if (typeof raw.gateImage !== "string" || !isPlausibleImageRef(raw.gateImage)) {
-      return { error: "config.gateImage must be a plausible Docker image reference (<=200 chars)" };
-    }
-    value.gateImage = raw.gateImage;
-  }
-
-  if (raw.schedule !== undefined) {
-    if (typeof raw.schedule !== "object" || raw.schedule === null) {
-      return { error: "config.schedule must be an object" };
-    }
-    const s = raw.schedule as Record<string, unknown>;
-    if (typeof s.enabled !== "boolean") {
-      return { error: "config.schedule.enabled must be a boolean" };
-    }
-    if (s.mode !== "interval" && s.mode !== "daily") {
-      return { error: 'config.schedule.mode must be "interval" or "daily"' };
-    }
-    if (s.mode === "interval") {
-      const n = s.intervalHours;
-      if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 24 * 30) {
-        return { error: "config.schedule.intervalHours must be an integer between 1 and 720" };
-      }
-      value.schedule = { enabled: s.enabled, mode: "interval", intervalHours: n };
-    } else {
-      const hour = s.hour;
-      const minute = s.minute;
-      if (typeof hour !== "number" || !Number.isInteger(hour) || hour < 0 || hour > 23) {
-        return { error: "config.schedule.hour must be an integer between 0 and 23" };
-      }
-      if (typeof minute !== "number" || !Number.isInteger(minute) || minute < 0 || minute > 59) {
-        return { error: "config.schedule.minute must be an integer between 0 and 59" };
-      }
-      value.schedule = { enabled: s.enabled, mode: "daily", hour, minute };
-    }
-  }
-
-  return { value: Object.keys(value).length > 0 ? value : undefined };
-}
-
 /** A project's own maxAttempts override (F9), or the engine-wide default. */
 function defaultMaxAttempts(project: Project): number {
   return project.config?.maxAttempts ?? 3;
 }
 
-/** The `origin` remote URL of a git working copy, or null if it isn't one
- *  (no .git, no origin, or git failed for any other reason). */
-async function gitOriginUrl(dir: string): Promise<string | null> {
-  try {
-    const { stdout } = await pexecFile("git", ["remote", "get-url", "origin"], {
-      cwd: dir,
-      encoding: "utf-8",
-    });
-    return stdout.trim() || null;
-  } catch {
-    return null;
+async function assembleServer(
+  dependencies: BuildAppDependencies,
+): Promise<ServerAssembly> {
+  const {
+    db,
+    hub,
+    engine,
+    selfUpdater,
+    env,
+    repoRoot,
+    version,
+    webDist,
+  } = dependencies;
+  if (!repo.getSettings(db)) {
+    repo.upsertSettings(db, defaultSettings());
   }
-}
+  const bindingError = unauthenticatedBindingError(
+    env.host,
+    env.apiToken || repo.getSettings(db)?.apiToken || undefined,
+    env.allowUnauthenticated,
+  );
+  if (bindingError) throw new Error(bindingError);
 
-/** True if `ancestor` is `of` itself or a directory containing it — i.e.
- *  deleting `ancestor` would also delete `of`. */
-function isPathAncestorOrSame(ancestor: string, of: string): boolean {
-  const a = ancestor.endsWith("/") ? ancestor.slice(0, -1) : ancestor;
-  const b = of.endsWith("/") ? of.slice(0, -1) : of;
-  return b === a || b.startsWith(`${a}/`);
-}
-
-/**
- * Guard against a project.localPath that would make DELETE /api/projects/:id
- * (or a future clone) destroy something it shouldn't. `localPath` must
- * already have `~` expanded to an absolute path.
- */
-function validateLocalPath(localPath: string): string | null {
-  if (!isAbsolute(localPath)) {
-    return "localPath must be an absolute path";
-  }
-  const resolved = resolve(localPath);
-  const home = homedir();
-  if (resolved === "/") return "localPath cannot be '/'";
-  if (resolved === home) return "localPath cannot be the home directory itself";
-  if (isPathAncestorOrSame(resolved, process.cwd())) {
-    return "localPath cannot be an ancestor of (or the same as) the server's own working directory";
-  }
-  if (isPathAncestorOrSame(resolved, resolve(ENV.reposDir))) {
-    return "localPath cannot be an ancestor of (or the same as) the repos directory";
-  }
-  return null;
-}
-
-/**
- * A project's localPath either shouldn't exist yet (git clone will create
- * it), should be empty, or — if the operator points at a directory that
- * already exists — must already be a clone of the SAME repo. Anything else
- * (an unrelated project, a home directory full of dotfiles, etc.) is
- * rejected rather than silently reused (and later, on delete, rm -rf'd).
- */
-async function localPathOkForClone(
-  localPath: string,
-  repoUrl: string,
-): Promise<string | null> {
-  if (!existsSync(localPath)) return null;
-  if (!statSync(localPath).isDirectory()) {
-    return "localPath already exists and is not a directory";
-  }
-  if (readdirSync(localPath).length === 0) return null;
-
-  const origin = await gitOriginUrl(localPath);
-  if (origin === repoUrl) return null;
-  return origin
-    ? `localPath already exists and is a git clone of a different repository (${origin})`
-    : "localPath already exists, is non-empty, and is not a git clone of this repository";
-}
-
-/**
- * Whether DELETE /api/projects/:id may rm -rf a project's localPath: only
- * when it's deep enough to plausibly be a real clone (not e.g. the home
- * directory itself) AND its origin still matches the project's repoUrl. A
- * hand-edited localPath pointing anywhere else is left alone; the DB rows
- * are still deleted, but the operator is warned to clean up manually.
- */
-async function safeToDeleteLocalPath(
-  localPath: string,
-  repoUrl: string,
-): Promise<boolean> {
-  if (localPath.length <= homedir().length + 1) return false;
-  if (!existsSync(join(localPath, ".git"))) return false;
-  return (await gitOriginUrl(localPath)) === repoUrl;
-}
-
-/** Replace secret fields with SECRET_SENTINEL before a settings object leaves
- *  the server (GET or PUT response). */
-function redactSettings(settings: SettingsType): SettingsType {
-  return {
-    ...settings,
-    apiToken: settings.apiToken ? SECRET_SENTINEL : undefined,
-    telegram: settings.telegram && {
-      ...settings.telegram,
-      botToken: settings.telegram.botToken ? SECRET_SENTINEL : undefined,
-    },
-  };
-}
-
-async function main() {
   // S7: override only the `url` field of Fastify's default req serializer
   // (method/host/remoteAddress/etc. stay exactly as the default reports
   // them) so a token in the query string never reaches the logs.
   const app = Fastify({
-    logger: {
-      serializers: {
-        req(request) {
-          return {
-            method: request.method,
-            url: redactTokenFromUrl(request.url),
-            host: request.host,
-            remoteAddress: request.ip,
-            remotePort: request.socket ? request.socket.remotePort : undefined,
-          };
+    logger: dependencies.logger === false
+      ? false
+      : {
+          serializers: {
+            req(request) {
+              return {
+                method: request.method,
+                url: redactTokenFromUrl(request.url),
+                host: request.host,
+                remoteAddress: request.ip,
+                remotePort: request.socket ? request.socket.remotePort : undefined,
+              };
+            },
+          },
         },
-      },
-    },
   });
 
   // Allowlist only — the dev web app's own origins plus any operator-added
@@ -634,7 +416,7 @@ async function main() {
   // allowlist stops mattering.
   const DEV_WEB_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"];
   await app.register(cors, {
-    origin: [...DEV_WEB_ORIGINS, ...ENV.corsOrigins],
+    origin: [...DEV_WEB_ORIGINS, ...env.corsOrigins],
   });
   await app.register(websocket);
   // F27: plan-mode attachment uploads. The route-level `req.file({ limits })`
@@ -652,29 +434,10 @@ async function main() {
   // (`dist/index.js`), so the relative path is identical either way. In dev
   // (Vite's own server on :5173, proxying /api + /ws here) this directory
   // won't exist, so this is a no-op.
-  const here = dirname(fileURLToPath(import.meta.url));
-  // F24: same "3 directories below the repo root" reasoning as webDist below —
-  // read once at boot (not per-request) so /api/health and SetupView can show
-  // what's actually deployed on a remote box instead of "ssh in and guess".
-  const repoRoot = resolve(here, "../../../");
-  const version = (
-    JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8")) as {
-      version: string;
-    }
-  ).version;
-  const webDist = resolve(repoRoot, "apps/web/dist");
-  if (existsSync(webDist)) {
+  if (webDist && existsSync(webDist)) {
     await registerBuiltWebApp(app, webDist);
     app.log.info(`serving built web app from ${webDist}`);
   }
-
-  const db = setupDb();
-  const selfUpdater = new SelfUpdater({
-    repoRoot,
-    mock: ENV.mock,
-  });
-  const hub = new WsHub();
-  const engine = new EngineRunner(db, hub);
   const maintenanceTimers: ReturnType<typeof setInterval>[] = [];
   const backgroundOperations = new Set<Promise<void>>();
   const requestControllers = new Set<AbortController>();
@@ -691,11 +454,6 @@ async function main() {
     runBackgroundOperation(backgroundOperations, label, operation, reportFailure);
   }
 
-  // ensure settings exist
-  if (!repo.getSettings(db)) {
-    repo.upsertSettings(db, defaultSettings());
-  }
-
   // Every agent output line is persisted forever otherwise — a few long runs
   // grow the logs table into hundreds of MB, slowing the WAL and snapshot
   // queries. Prune on boot (an old fat DB shrinks immediately) and again
@@ -704,28 +462,24 @@ async function main() {
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   function pruneOldLogs(): void {
     try {
-      const deleted = repo.pruneLogs(db, ENV.logRetentionDays);
+      const deleted = repo.pruneLogs(db, env.logRetentionDays);
       if (deleted > 0) {
-        app.log.info(`pruned ${deleted} old log row(s) (retention: ${ENV.logRetentionDays}d)`);
+        app.log.info(`pruned ${deleted} old log row(s) (retention: ${env.logRetentionDays}d)`);
       }
     } catch (err) {
       app.log.warn(`log pruning failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  pruneOldLogs();
-  const logPruneTimer = setInterval(pruneOldLogs, ONE_DAY_MS);
-  logPruneTimer.unref();
-  maintenanceTimers.push(logPruneTimer);
 
   // B23: mirrors pruneOldLogs — the notifications table otherwise grows
   // unbounded across months of autonomous runs. Never touches a pending
   // approval regardless of age (see pruneNotifications()'s own guard).
   function pruneOldNotifications(): void {
     try {
-      const deleted = repo.pruneNotifications(db, ENV.notificationRetentionDays);
+      const deleted = repo.pruneNotifications(db, env.notificationRetentionDays);
       if (deleted > 0) {
         app.log.info(
-          `pruned ${deleted} old notification(s) (retention: ${ENV.notificationRetentionDays}d)`,
+          `pruned ${deleted} old notification(s) (retention: ${env.notificationRetentionDays}d)`,
         );
       }
     } catch (err) {
@@ -734,10 +488,6 @@ async function main() {
       );
     }
   }
-  pruneOldNotifications();
-  const notificationPruneTimer = setInterval(pruneOldNotifications, ONE_DAY_MS);
-  notificationPruneTimer.unref();
-  maintenanceTimers.push(notificationPruneTimer);
 
   // F17: online-backup the DB on boot and once a day thereafter. No-op for
   // a mock/in-memory boot (nothing durable to protect). A failed backup
@@ -748,9 +498,9 @@ async function main() {
       async () => {
         const result = await runBackup(
           db,
-          ENV.mock ? ":memory:" : ENV.dbPath,
-          ENV.dbBackupDir,
-          ENV.dbBackupKeep,
+          env.mock ? ":memory:" : env.dbPath,
+          env.dbBackupDir,
+          env.dbBackupKeep,
         );
         if (!result.skipped) app.log.info(`DB backup written: ${result.file}`);
       },
@@ -761,10 +511,6 @@ async function main() {
       },
     );
   }
-  backupDb();
-  const backupTimer = setInterval(backupDb, ONE_DAY_MS);
-  backupTimer.unref();
-  maintenanceTimers.push(backupTimer);
 
   // F19: cron-style auto-start — checked roughly once a minute (fine enough
   // granularity for a "daily at HH:MM" schedule) against every project's
@@ -786,61 +532,10 @@ async function main() {
       logInfo: (message) => app.log.info(message),
     });
   }
-  const scheduleTimer = setInterval(checkScheduleTimer, SCHEDULE_CHECK_MS);
-  scheduleTimer.unref();
-  maintenanceTimers.push(scheduleTimer);
 
-  // Zombie approvals (B10): any approval-notification still unresolved from
-  // before this boot has no live resolver anymore (EngineRunner.pendingApprovals
-  // lived only in the previous process's memory) — stamp them expired now, before
-  // resume-on-boot re-dispatches running projects, so the UI/Telegram never show
-  // dead Approve/Reject controls for them.
-  const expiredApprovals = repo.expireStaleApprovals(db);
-  if (expiredApprovals > 0) {
-    app.log.info(`expired ${expiredApprovals} stale approval notification(s) from before this boot`);
-  }
-
-  // F22: seeded *after* the expiry sweep above, not inside setupDb() —
-  // B10's expireStaleApprovals runs unconditionally on every boot (mock or
-  // not) and would otherwise immediately stamp a freshly-seeded pending
-  // approval "expired_restart" before anyone ever saw it live, the same
-  // interaction U1's own live-verification had to work around.
-  if (ENV.mock) {
-    for (const n of seed().notifications) {
-      repo.createNotification(db, n);
-    }
-  }
-
-  /** ENV.apiToken wins over the settings-stored one; either enables auth. */
+  /** The environment token wins over the settings-stored one; either enables auth. */
   function getApiToken(): string | undefined {
-    return ENV.apiToken || repo.getSettings(db)?.apiToken || undefined;
-  }
-
-  /**
-   * Constant-time token compare (S6). `timingSafeEqual` throws on unequal
-   * buffer lengths rather than returning false, so the length check must
-   * come first — but comparing lengths still leaks length, not content,
-   * which is the same tradeoff every constant-time-compare guide accepts.
-   */
-  function safeTokenEqual(candidate: string | undefined, expected: string): boolean {
-    if (candidate === undefined) return false;
-    const a = Buffer.from(candidate, "utf-8");
-    const b = Buffer.from(expected, "utf-8");
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(a, b);
-  }
-
-  // Refuse to come up wide-open-and-unauthenticated: if HOST is bound beyond
-  // loopback, either a token must gate the API or the operator must
-  // explicitly opt into ALLOW_UNAUTHENTICATED=1 (e.g. a throwaway sandbox).
-  const isLoopbackHost = ENV.host === "127.0.0.1" || ENV.host === "localhost";
-  if (!isLoopbackHost && !getApiToken() && !ENV.allowUnauthenticated) {
-    app.log.error(
-      `HOST=${ENV.host} exposes the API beyond localhost with no API_TOKEN set. ` +
-        `Set API_TOKEN (or settings.apiToken) to require auth, or set ` +
-        `ALLOW_UNAUTHENTICATED=1 to start anyway (not recommended).`,
-    );
-    process.exit(1);
+    return env.apiToken || repo.getSettings(db)?.apiToken || undefined;
   }
 
   // Bearer-token auth (off by default). Skips /api/health so uptime checks
@@ -929,6 +624,7 @@ async function main() {
     running: false,
     state: "disabled",
   };
+  let backgroundServicesStarted = false;
 
   function projectControls(): TelegramCommandReply["inlineKeyboard"] {
     return repo.getProjects(db).slice(0, 12).map((project) => [
@@ -1098,6 +794,9 @@ async function main() {
 
   /** (Re)start the bot from current settings. Safe to call repeatedly. */
   function configureTelegram() {
+    // Route-only/injected apps intentionally never start Telegram. Production
+    // flips this boundary before its first boot-time configuration.
+    if (!backgroundServicesStarted) return;
     if (telegram) {
       telegram.stop();
       telegram = undefined;
@@ -1169,7 +868,51 @@ async function main() {
     resendPendingApprovals(db, telegram);
   }
 
-  configureTelegram(); // start the bot at boot if enabled
+  function startBackgroundServices(): void {
+    if (backgroundServicesStarted) return;
+    backgroundServicesStarted = true;
+
+    pruneOldLogs();
+    const logPruneTimer = setInterval(pruneOldLogs, ONE_DAY_MS);
+    logPruneTimer.unref();
+    maintenanceTimers.push(logPruneTimer);
+
+    pruneOldNotifications();
+    const notificationPruneTimer = setInterval(
+      pruneOldNotifications,
+      ONE_DAY_MS,
+    );
+    notificationPruneTimer.unref();
+    maintenanceTimers.push(notificationPruneTimer);
+
+    backupDb();
+    const backupTimer = setInterval(backupDb, ONE_DAY_MS);
+    backupTimer.unref();
+    maintenanceTimers.push(backupTimer);
+
+    const scheduleTimer = setInterval(checkScheduleTimer, SCHEDULE_CHECK_MS);
+    scheduleTimer.unref();
+    maintenanceTimers.push(scheduleTimer);
+
+    // Zombie approvals (B10): a previous process's in-memory resolver cannot
+    // survive restart. Expire those rows before resume-on-boot can re-dispatch.
+    const expiredApprovals = repo.expireStaleApprovals(db);
+    if (expiredApprovals > 0) {
+      app.log.info(
+        `expired ${expiredApprovals} stale approval notification(s) from before this boot`,
+      );
+    }
+
+    // F22 mock fixtures are seeded after the stale-approval sweep so their
+    // fresh controls are not immediately expired.
+    if (env.mock) {
+      for (const notification of seed().notifications) {
+        repo.createNotification(db, notification);
+      }
+    }
+
+    configureTelegram();
+  }
 
   let engineShutdown: ReturnType<EngineRunner["shutdown"]> | undefined;
   const shutdown = new ShutdownCoordinator({
@@ -1211,7 +954,7 @@ async function main() {
       await app.close();
     },
     checkpointDb: () => {
-      if (!ENV.mock) db.pragma("wal_checkpoint(TRUNCATE)");
+      if (!env.mock) db.pragma("wal_checkpoint(TRUNCATE)");
     },
     closeDb: () => {
       db.close();
@@ -1245,7 +988,7 @@ async function main() {
     const dockerRequired = settings.sandboxGates === "required";
     return buildRuntimeHealth({
       lifecycle: shutdown.snapshot,
-      mock: ENV.mock,
+      mock: env.mock,
       version,
       dockerAvailable,
       dockerRequired,
@@ -1327,12 +1070,14 @@ async function main() {
     }
 
     const settings = repo.getSettings(db) ?? defaultSettings();
-    const baseDir = expandHome(settings.defaultProjectsDir || ENV.reposDir);
+    const baseDir = expandHome(settings.defaultProjectsDir || env.reposDir);
     const localPath = body.localPath?.trim()
       ? expandHome(body.localPath.trim())
       : uniqueLocalPath(baseDir, body.name);
 
-    const pathError = validateLocalPath(localPath);
+    const pathError = validateLocalPath(localPath, {
+      reposDir: env.reposDir,
+    });
     if (pathError) return reply.code(400).send({ error: pathError });
     const cloneError = await localPathOkForClone(localPath, repoUrl);
     if (cloneError) return reply.code(400).send({ error: cloneError });
@@ -1419,29 +1164,51 @@ async function main() {
         .send({ error: "project execution is active or still stopping — wait for it to settle before deleting" });
     }
 
-    // Best-effort cleanup of the local clone + any leftover task worktrees
-    // (`${localPath}-wt-<taskId>`). The DB delete below is the source of
-    // truth; a failure here just leaves orphaned files on disk. Only ever
-    // rm -rf when localPath still looks like a real, deep-enough clone of
-    // THIS project's repo — a hand-edited localPath (e.g. "~" or "/") is
-    // left untouched rather than wiped.
+    // Best-effort cleanup of the local clone + any leftover task worktrees.
+    // The DB delete below is the source of truth; refused/failed disk cleanup
+    // leaves explicit operator work intact. Validate every candidate before
+    // deleting any of them so removing the primary clone cannot invalidate a
+    // worktree's .git pointer midway through the safety inspection.
     try {
       const exists = existsSync(project.localPath);
       if (exists && (await safeToDeleteLocalPath(project.localPath, project.repoUrl))) {
-        rmSync(project.localPath, { recursive: true, force: true });
         const parent = dirname(project.localPath);
         const base = project.localPath.slice(parent.length + 1);
+        const safeWorktrees: string[] = [];
+        let refusedWorktree = false;
         if (existsSync(parent)) {
           for (const entry of readdirSync(parent)) {
             if (entry.startsWith(`${base}-wt-`)) {
-              rmSync(join(parent, entry), { recursive: true, force: true });
+              const candidate = join(parent, entry);
+              if (await safeToDeleteLocalPath(candidate, project.repoUrl)) {
+                safeWorktrees.push(candidate);
+              } else {
+                refusedWorktree = true;
+                app.log.warn(
+                  `refusing to delete project worktree ${candidate}: it is ` +
+                    `dirty or is not a recognized clone of ${project.repoUrl}`,
+                );
+              }
             }
           }
+        }
+        if (refusedWorktree) {
+          app.log.warn(
+            `refusing to delete local files for project ${id}: at least one ` +
+              `matching worktree could not be proved safe — DB rows removed, ` +
+              `all project files left untouched`,
+          );
+        } else {
+          for (const worktree of safeWorktrees) {
+            rmSync(worktree, { recursive: true, force: true });
+          }
+          rmSync(project.localPath, { recursive: true, force: true });
         }
       } else if (exists) {
         app.log.warn(
           `refusing to delete local files for project ${id}: ${project.localPath} ` +
-            `is not a recognized git clone of ${project.repoUrl} — DB rows removed, disk left untouched`,
+            `is dirty or is not a recognized clone of ${project.repoUrl} — ` +
+            `DB rows removed, disk left untouched`,
         );
       }
     } catch (err) {
@@ -1602,7 +1369,7 @@ async function main() {
       // F27: name-only list of whatever's currently in context/attachments/
       // — buildChatPrompt turns this into a "read these with your file
       // tools" pointer, not an inline dump.
-      const attachmentNames = listAttachments(attachmentsDir(project, ENV.mock)).map(
+      const attachmentNames = listAttachments(attachmentsDir(project, env.mock)).map(
         (a) => a.name,
       );
       const { reply: text, costUsd } = await runPlannerChat(
@@ -1622,7 +1389,7 @@ async function main() {
       recordPlanChatTurn(
         db,
         project,
-        ENV.mock,
+        env.mock,
         updatedMessages,
         plannerModelLabel(plannerModel),
         (msg) => app.log.warn(msg),
@@ -1674,7 +1441,7 @@ async function main() {
     );
     try {
       const cwd = await resolvePlannerCwd(project);
-      const attachmentNames = listAttachments(attachmentsDir(project, ENV.mock)).map(
+      const attachmentNames = listAttachments(attachmentsDir(project, env.mock)).map(
         (a) => a.name,
       );
       if (
@@ -1720,7 +1487,7 @@ async function main() {
       recordPlanDeconstruct(
         db,
         project,
-        ENV.mock,
+        env.mock,
         messages,
         output.prdMarkdown,
         tasks,
@@ -1785,7 +1552,7 @@ async function main() {
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    return { sessions: listArchivedSessions(project, ENV.mock) };
+    return { sessions: listArchivedSessions(project, env.mock) };
   });
 
   // F27: planning-context attachments — images/PDFs/reference files the
@@ -1795,7 +1562,7 @@ async function main() {
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    return { attachments: listAttachments(attachmentsDir(project, ENV.mock)) };
+    return { attachments: listAttachments(attachmentsDir(project, env.mock)) };
   });
 
   app.post("/api/projects/:id/plan/attachments", async (req, reply) => {
@@ -1831,7 +1598,7 @@ async function main() {
       throw err;
     }
 
-    const dir = attachmentsDir(project, ENV.mock);
+    const dir = attachmentsDir(project, env.mock);
     return { attachments: saveAttachment(dir, sanitized, buffer) };
   });
 
@@ -1839,7 +1606,7 @@ async function main() {
     const { id, name } = req.params as { id: string; name: string };
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    const updated = removeAttachment(attachmentsDir(project, ENV.mock), name);
+    const updated = removeAttachment(attachmentsDir(project, env.mock), name);
     if (updated === null) return reply.code(404).send({ error: "attachment not found" });
     return { attachments: updated };
   });
@@ -1879,7 +1646,7 @@ async function main() {
         },
         settings,
         committedPlannerLabel,
-        ENV.mock,
+        env.mock,
         (message) => app.log.warn(message),
         { git: planningGitPersistence },
       );
@@ -2499,7 +2266,7 @@ async function main() {
   }
 
   function selfUpdateRuntimeBlocker(): string | undefined {
-    return getApiToken() && !ENV.apiToken
+    return getApiToken() && !env.apiToken
       ? "UI updates require API_TOKEN in .env so the detached updater can repeat the active-project check."
       : undefined;
   }
@@ -2540,7 +2307,7 @@ async function main() {
     try {
       result = await testModels(
         settings,
-        ENV.opencodeBaseUrl,
+        env.opencodeBaseUrl,
         (event) => recordModelInvocation(event),
         cancellation.signal,
       );
@@ -2629,7 +2396,7 @@ async function main() {
     }
 
     // MOCK mode: synthetic log stream
-    if (ENV.mock) {
+    if (env.mock) {
       const tasks = repo.getTasks(db, "proj-hoopedorc");
       const interval = setInterval(() => {
         const log: ServerEvent = {
@@ -2651,48 +2418,105 @@ async function main() {
     }
   });
 
-  installShutdownHandlers(shutdown, process, (label, error) => {
-    app.log.error(
-      `${label}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
-    );
-  });
-
-  await app.listen({ port: ENV.port, host: ENV.host });
-  shutdown.markRunning();
-  app.log.info(
-    `hoopedorc server up on ${ENV.host}:${ENV.port} (mock=${ENV.mock})`,
-  );
-
-  // Resume-on-boot. A project's status lives in the DB but the orchestrator
-  // driving it lives only in this process's memory. So if the server restarts
-  // while a project is "running" — crash, OOM, deploy, dev-server reload —
-  // the project stays "running" in the DB with nothing actually working on it,
-  // and silently hangs forever. On boot, re-dispatch any project still marked
-  // "running"; the orchestrator's orphan recovery requeues whatever task was
-  // mid-flight, so this picks up cleanly. Skipped in mock mode (no real engine).
-  if (!ENV.mock) {
-    const resumedRollbacks = engine.resumeRollbacks();
-    if (resumedRollbacks > 0) {
-      app.log.info(`resuming ${resumedRollbacks} rollback job(s) after restart`);
-    }
-    for (const p of repo.getProjects(db)) {
-      if (p.status === "running" && !engine.hasActivity(p.id)) {
-        app.log.info(`resuming project ${p.name} (${p.id}) after restart`);
-        runBackground(
-          `resume project "${p.name}" (${p.id})`,
-          () => engine.start(p),
-        );
+  function resumeAfterListen(): void {
+    // Resume-on-boot. A project's status lives in the DB but the orchestrator
+    // driving it lives only in this process's memory. So if the server restarts
+    // while a project is "running" — crash, OOM, deploy, dev-server reload —
+    // the project stays "running" in the DB with nothing actually working on it,
+    // and silently hangs forever. Skipped in mock mode (no real engine).
+    if (!env.mock) {
+      const resumedRollbacks = engine.resumeRollbacks();
+      if (resumedRollbacks > 0) {
+        app.log.info(`resuming ${resumedRollbacks} rollback job(s) after restart`);
       }
-    }
-    for (const p of repo.getProjects(db)) {
-      if (engine.resumeQueued(p)) {
-        app.log.info(`resuming queued task dispatches for ${p.name} (${p.id})`);
+      for (const project of repo.getProjects(db)) {
+        if (project.status === "running" && !engine.hasActivity(project.id)) {
+          app.log.info(
+            `resuming project ${project.name} (${project.id}) after restart`,
+          );
+          runBackground(
+            `resume project "${project.name}" (${project.id})`,
+            () => engine.start(project),
+          );
+        }
+      }
+      for (const project of repo.getProjects(db)) {
+        if (engine.resumeQueued(project)) {
+          app.log.info(
+            `resuming queued task dispatches for ${project.name} (${project.id})`,
+          );
+        }
       }
     }
   }
+
+  return {
+    app,
+    shutdown,
+    startBackgroundServices,
+    resumeAfterListen,
+  };
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+/**
+ * Route-only construction seam for tests and embedders. Dependencies remain
+ * caller-owned; this function never listens, installs process handlers, or
+ * starts maintenance/Telegram/resume work.
+ */
+export async function buildApp(
+  dependencies: BuildAppDependencies,
+): Promise<FastifyInstance> {
+  return (await assembleServer(dependencies)).app;
+}
+
+function productionDependencies(): BuildAppDependencies {
+  // Source and bundled entry points both sit three directories below the
+  // repository root.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = resolve(here, "../../../");
+  const version = (
+    JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8")) as {
+      version: string;
+    }
+  ).version;
+  const webDist = resolve(repoRoot, "apps/web/dist");
+  const db = setupDb();
+  const hub = new WsHub();
+  return {
+    db,
+    hub,
+    engine: new EngineRunner(db, hub),
+    selfUpdater: new SelfUpdater({ repoRoot, mock: ENV.mock }),
+    env: ENV,
+    repoRoot,
+    version,
+    webDist,
+    logger: true,
+  };
+}
+
+async function main(): Promise<void> {
+  const server = await assembleServer(productionDependencies());
+  server.startBackgroundServices();
+  installShutdownHandlers(server.shutdown, process, (label, error) => {
+    server.app.log.error(
+      `${label}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+    );
+  });
+  await server.app.listen({ port: ENV.port, host: ENV.host });
+  server.shutdown.markRunning();
+  server.app.log.info(
+    `hoopedorc server up on ${ENV.host}:${ENV.port} (mock=${ENV.mock})`,
+  );
+  server.resumeAfterListen();
+}
+
+const invokedAsMain =
+  process.argv[1] !== undefined &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedAsMain) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
