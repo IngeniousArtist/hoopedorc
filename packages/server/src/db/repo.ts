@@ -251,6 +251,15 @@ function mapTask(row: Record<string, unknown>): Task {
     prNumber: row.pr_number != null ? Number(row.pr_number) : undefined,
     attempts: Number(row.attempts),
     maxAttempts: Number(row.max_attempts),
+    runGeneration: Number(row.run_generation ?? 0),
+    runExtraAttempts: Number(row.run_extra_attempts ?? 0),
+    runModel: row.run_model
+      ? (asStr(row.run_model) as Task["runModel"])
+      : undefined,
+    runExhaustedModels: row.run_exhausted_models
+      ? json<Task["runExhaustedModels"]>(row.run_exhausted_models)
+      : [],
+    runRateLimitRetries: Number(row.run_rate_limit_retries ?? 0),
     dispatchRequestedAt: row.dispatch_requested_at
       ? asStr(row.dispatch_requested_at)
       : undefined,
@@ -276,12 +285,35 @@ export function getTask(db: Db, id: string): Task | null {
 
 export function createTask(
   db: Db,
-  t: Omit<Task, "createdAt" | "updatedAt">,
+  t: Omit<
+    Task,
+    | "createdAt"
+    | "updatedAt"
+    | "runGeneration"
+    | "runExtraAttempts"
+    | "runExhaustedModels"
+    | "runRateLimitRetries"
+  > &
+    Partial<
+      Pick<
+        Task,
+        | "runGeneration"
+        | "runExtraAttempts"
+        | "runExhaustedModels"
+        | "runRateLimitRetries"
+      >
+    >,
 ): Task {
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO tasks (id, project_id, title, description, difficulty, status, depends_on, acceptance_criteria, assigned_model, role, scope_paths, attempts, max_attempts, dispatch_requested_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO tasks (
+       id, project_id, title, description, difficulty, status, depends_on,
+       acceptance_criteria, assigned_model, role, scope_paths, attempts,
+       max_attempts, run_generation, run_extra_attempts, run_model,
+       run_exhausted_models, run_rate_limit_retries, dispatch_requested_at,
+       created_at, updated_at
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     t.id,
     t.projectId,
@@ -296,6 +328,11 @@ export function createTask(
     JSON.stringify(t.scopePaths),
     t.attempts,
     t.maxAttempts,
+    t.runGeneration ?? 0,
+    t.runExtraAttempts ?? 0,
+    t.runModel ?? null,
+    JSON.stringify(t.runExhaustedModels ?? []),
+    t.runRateLimitRetries ?? 0,
     t.dispatchRequestedAt ?? null,
     now,
     now,
@@ -324,10 +361,19 @@ export function updateTask(
     prNumber: "pr_number",
     attempts: "attempts",
     maxAttempts: "max_attempts",
+    runGeneration: "run_generation",
+    runExtraAttempts: "run_extra_attempts",
+    runModel: "run_model",
+    runRateLimitRetries: "run_rate_limit_retries",
     dispatchRequestedAt: "dispatch_requested_at",
     statusReason: "status_reason",
   };
-  const jsonCols = new Set(["dependsOn", "acceptanceCriteria", "scopePaths"]);
+  const jsonCols = new Set([
+    "dependsOn",
+    "acceptanceCriteria",
+    "scopePaths",
+    "runExhaustedModels",
+  ]);
 
   for (const [key, col] of Object.entries(colMap)) {
     if (key in updates) {
@@ -346,6 +392,50 @@ export function updateTask(
   vals.push(id);
   db.prepare(`UPDATE tasks SET ${set.join(", ")} WHERE id = ?`).run(...vals);
   return getTask(db, id);
+}
+
+/**
+ * Start one new logical run for a retryable task. The conditional write and
+ * audit insert share one SQLite transaction, so concurrent HTTP/Telegram
+ * callers cannot both increment the generation or create duplicate audits.
+ */
+export function resetTaskForRetry(
+  db: Db,
+  id: string,
+  actor: "human" | "telegram",
+): Task | null {
+  return db.transaction(() => {
+    const now = new Date().toISOString();
+    const won = db.prepare(
+      `UPDATE tasks
+       SET status = 'backlog',
+           attempts = 0,
+           run_generation = run_generation + 1,
+           run_extra_attempts = 0,
+           run_model = NULL,
+           run_exhausted_models = '[]',
+           run_rate_limit_retries = 0,
+           pr_number = NULL,
+           branch = NULL,
+           worktree_path = NULL,
+           dispatch_requested_at = ?,
+           status_reason = NULL,
+           updated_at = ?
+       WHERE id = ?
+         AND status IN ('failed', 'changes_requested', 'blocked')
+       RETURNING project_id, title`,
+    ).get(now, now, id) as { project_id: string; title: string } | undefined;
+    if (!won) return null;
+
+    createAuditEntry(db, {
+      projectId: won.project_id,
+      taskId: id,
+      kind: "retry",
+      actor,
+      summary: `Retried "${won.title}"`,
+    });
+    return getTask(db, id);
+  })();
 }
 
 /** Cancel every queued manual-priority request that has not started yet. */

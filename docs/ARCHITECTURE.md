@@ -73,6 +73,16 @@ pricing. Defaults, migrations, HTTP/Telegram writes, repository reads, and
 runtime access all share the same normalizer, so an active scheduler never sees
 a shape that the API would reject.
 
+Task retry state has one durable owner: the SQLite task row. `maxAttempts`
+remains immutable policy, while `attempts`, `runExtraAttempts`, current and
+exhausted fallback models, rate-limit retry count, and a monotonic logical-run
+generation are persisted together at each execution boundary. An author
+invocation is reserved before spawn. Restarted runtimes resume the stored model
+and remaining effective allowance, and manual Retry conditionally resets that
+tuple plus its audit record in one transaction. Generation-qualified run IDs
+keep a retried task from overwriting earlier run, invocation, or validator
+history.
+
 Hard Stop is an ownership barrier: the orchestrator marks itself paused,
 aborts every task controller (including human-approval waits), settles the
 pipelines it owned at that boundary, and only then persists remaining

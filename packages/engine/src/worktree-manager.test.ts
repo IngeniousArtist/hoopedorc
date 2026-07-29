@@ -151,6 +151,10 @@ function worktreeTask(path: string): Task {
     worktreePath: path,
     attempts: 1,
     maxAttempts: 2,
+    runGeneration: 0,
+    runExtraAttempts: 0,
+    runExhaustedModels: [],
+    runRateLimitRetries: 0,
     createdAt: "",
     updatedAt: "",
   };

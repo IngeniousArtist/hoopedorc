@@ -53,6 +53,10 @@ function task(
     scopePaths: [],
     attempts: 0,
     maxAttempts: 3,
+    runGeneration: 0,
+    runExtraAttempts: 0,
+    runExhaustedModels: [],
+    runRateLimitRetries: 0,
   });
 }
 
@@ -252,6 +256,11 @@ test("B42: a blocked task keeps a repaired/reassigned model and Retry clears sta
   repo.updateTask(db, "figma-task", {
     assignedModel: "deepseek-pro",
     attempts: 1,
+    runGeneration: 2,
+    runExtraAttempts: 3,
+    runModel: "deepseek-pro",
+    runExhaustedModels: ["deepseek-flash"],
+    runRateLimitRetries: 1,
     branch: "orc/figma-task",
     worktreePath: "/tmp/figma-task",
     prNumber: 42,
@@ -278,11 +287,52 @@ test("B42: a blocked task keeps a repaired/reassigned model and Retry clears sta
   assert.equal(reset.assignedModel, "deepseek-pro");
   assert.equal(reset.status, "backlog");
   assert.equal(reset.attempts, 0);
+  assert.equal(reset.runGeneration, 3);
+  assert.equal(reset.runExtraAttempts, 0);
+  assert.equal(reset.runModel, undefined);
+  assert.deepEqual(reset.runExhaustedModels, []);
+  assert.equal(reset.runRateLimitRetries, 0);
   assert.equal(reset.branch, undefined);
   assert.equal(reset.worktreePath, undefined);
   assert.equal(reset.prNumber, undefined);
   assert.equal(reset.statusReason, undefined);
   assert.deepEqual(dispatches, ["figma-task"]);
+});
+
+test("O34: concurrent Retry requests start one logical run and create one audit entry", async () => {
+  const db = setup();
+  project(db, "p1");
+  task(db, "retry-race", "p1", "failed");
+  const dispatches: string[] = [];
+  const engine = {
+    async dispatchOne(_project: unknown, taskId: string) {
+      dispatches.push(taskId);
+      await Promise.resolve();
+      return repo.getTask(db, taskId)!;
+    },
+  } as unknown as EngineRunner;
+
+  const [human, telegram] = await Promise.all([
+    retryTask(db, engine, () => {}, "retry-race", "human"),
+    retryTask(db, engine, () => {}, "retry-race", "telegram"),
+  ]);
+
+  assert.deepEqual(
+    [human.ok, telegram.ok].sort(),
+    [false, true],
+    "exactly one caller wins",
+  );
+  const loser = human.ok ? telegram : human;
+  assert.equal(loser.ok, false);
+  assert.equal(!loser.ok && loser.status, 409);
+  assert.equal(repo.getTask(db, "retry-race")!.runGeneration, 1);
+  assert.deepEqual(dispatches, ["retry-race"]);
+  assert.equal(
+    repo
+      .getAuditLog(db, "p1")
+      .filter((entry) => entry.kind === "retry").length,
+    1,
+  );
 });
 
 test("stopAllProjects: updates status, broadcasts, and audit-logs only for whatever the engine reports as actually stopped", async () => {

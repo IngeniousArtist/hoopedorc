@@ -58,6 +58,13 @@ export function initDb(path: string = ENV.dbPath): Db {
     "ALTER TABLE tasks ADD COLUMN status_reason TEXT",
     // B34: durable manual-priority queue intent. Cleared when dispatch starts.
     "ALTER TABLE tasks ADD COLUMN dispatch_requested_at TEXT",
+    // O34: restart-safe logical-run accounting. Keep max_attempts immutable;
+    // these fields own runtime recovery allowance and fallback position.
+    "ALTER TABLE tasks ADD COLUMN run_generation INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN run_extra_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN run_model TEXT",
+    "ALTER TABLE tasks ADD COLUMN run_exhausted_models TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE tasks ADD COLUMN run_rate_limit_retries INTEGER NOT NULL DEFAULT 0",
     // Cached-input token counts, for manual per-model pricing (fresh vs
     // cached input bill at different rates).
     "ALTER TABLE runs ADD COLUMN tokens_cached INTEGER NOT NULL DEFAULT 0",
@@ -69,7 +76,17 @@ export function initDb(path: string = ENV.dbPath): Db {
     "ALTER TABLE costs ADD COLUMN invocation_id TEXT",
     "ALTER TABLE model_checks ADD COLUMN invocation_id TEXT",
   ]) {
-    try { db.exec(col); } catch { /* column already exists */ }
+    try {
+      db.exec(col);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        /duplicate column name/i.test(error.message)
+      ) {
+        continue;
+      }
+      throw error;
+    }
   }
   // B40 migration/backfill. Deterministic ids + INSERT OR IGNORE make this
   // safe on every boot. Prefer run rows (author/docs), then add historical

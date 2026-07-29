@@ -117,6 +117,7 @@ export interface TaskDigest {
   assignedModel?: string;
   attempts?: number;
   maxAttempts?: number;
+  runExtraAttempts?: number;
   /** One-line summary — the task's own description, or a failure reason. */
   summary?: string;
   costUsd?: number;
@@ -645,7 +646,14 @@ export class TelegramBot implements ServerNotifier {
 
     const meta: string[] = [];
     if (d.assignedModel) meta.push(d.difficulty ? `${d.assignedModel} (${d.difficulty})` : d.assignedModel);
-    if (d.attempts != null && d.maxAttempts != null) meta.push(`${d.attempts}/${d.maxAttempts} attempts`);
+    if (d.attempts != null && d.maxAttempts != null) {
+      meta.push(
+        `${d.attempts} attempts · policy ${d.maxAttempts}` +
+          (d.runExtraAttempts
+            ? ` + ${d.runExtraAttempts} recovery`
+            : ""),
+      );
+    }
     if (d.costUsd != null) meta.push(`$${d.costUsd.toFixed(4)}`);
     if (meta.length > 0) lines.push(meta.join(" · "));
 

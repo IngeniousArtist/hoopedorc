@@ -413,6 +413,71 @@ test("F52: an existing database receives the planning Figma column idempotently"
   reopened.close();
 });
 
+test("O34: an existing database receives durable task-run columns idempotently", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "hoopedorc-o34-migration-")), "orc.db");
+  const original = initDb(path);
+  repo.createProject(original, {
+    id: "legacy-project",
+    name: "Legacy",
+    repoUrl: "https://github.com/x/legacy",
+    defaultBranch: "main",
+    localPath: "/tmp/legacy",
+    status: "paused",
+  });
+  repo.createTask(original, {
+    id: "legacy-task",
+    projectId: "legacy-project",
+    title: "Legacy task",
+    description: "",
+    difficulty: "medium",
+    status: "failed",
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: [],
+    attempts: 4,
+    maxAttempts: 7,
+  });
+  for (const column of [
+    "run_generation",
+    "run_extra_attempts",
+    "run_model",
+    "run_exhausted_models",
+    "run_rate_limit_retries",
+  ]) {
+    original.exec(`ALTER TABLE tasks DROP COLUMN ${column}`);
+  }
+  original.close();
+
+  for (let pass = 0; pass < 2; pass++) {
+    const migrated = initDb(path);
+    const columns = migrated
+      .prepare("PRAGMA table_info(tasks)")
+      .all() as { name: string }[];
+    for (const column of [
+      "run_generation",
+      "run_extra_attempts",
+      "run_model",
+      "run_exhausted_models",
+      "run_rate_limit_retries",
+    ]) {
+      assert.equal(
+        columns.filter((candidate) => candidate.name === column).length,
+        1,
+        `${column} exists exactly once after migration pass ${pass + 1}`,
+      );
+    }
+    const legacy = repo.getTask(migrated, "legacy-task")!;
+    assert.equal(legacy.attempts, 4);
+    assert.equal(legacy.maxAttempts, 7);
+    assert.equal(legacy.runGeneration, 0);
+    assert.equal(legacy.runExtraAttempts, 0);
+    assert.deepEqual(legacy.runExhaustedModels, []);
+    assert.equal(legacy.runRateLimitRetries, 0);
+    migrated.close();
+  }
+});
+
 // ── B34: durable priority dispatch + race-safe Stop transitions ──
 
 function seedTask(
@@ -434,9 +499,55 @@ function seedTask(
     scopePaths: [],
     attempts: 0,
     maxAttempts: 3,
+    runGeneration: 0,
+    runExtraAttempts: 0,
+    runExhaustedModels: [],
+    runRateLimitRetries: 0,
     dispatchRequestedAt,
   });
 }
+
+test("O34: task-run accounting round-trips and only one conditional Retry wins", () => {
+  const db = setup();
+  seedTask(db, "retry-race", "failed");
+  repo.updateTask(db, "retry-race", {
+    attempts: 4,
+    runGeneration: 7,
+    runExtraAttempts: 2,
+    runModel: "deepseek-pro",
+    runExhaustedModels: ["deepseek-flash"],
+    runRateLimitRetries: 1,
+    branch: "orc/retry-race",
+    worktreePath: "/tmp/retry-race",
+    prNumber: 42,
+    statusReason: "No fallback left",
+  });
+
+  const first = repo.resetTaskForRetry(db, "retry-race", "human");
+  const second = repo.resetTaskForRetry(db, "retry-race", "telegram");
+
+  assert.ok(first);
+  assert.equal(second, null);
+  const reset = repo.getTask(db, "retry-race")!;
+  assert.equal(reset.status, "backlog");
+  assert.equal(reset.attempts, 0);
+  assert.equal(reset.maxAttempts, 3);
+  assert.equal(reset.runGeneration, 8);
+  assert.equal(reset.runExtraAttempts, 0);
+  assert.equal(reset.runModel, undefined);
+  assert.deepEqual(reset.runExhaustedModels, []);
+  assert.equal(reset.runRateLimitRetries, 0);
+  assert.equal(reset.branch, undefined);
+  assert.equal(reset.worktreePath, undefined);
+  assert.equal(reset.prNumber, undefined);
+  assert.equal(reset.statusReason, undefined);
+  assert.ok(reset.dispatchRequestedAt, "accepted Retry persists scheduler intent");
+  const retries = repo
+    .getAuditLog(db, "proj-1")
+    .filter((entry) => entry.kind === "retry");
+  assert.equal(retries.length, 1);
+  assert.equal(retries[0]!.actor, "human");
+});
 
 test("dispatchRequestedAt round-trips and project Stop clears queued requests", () => {
   const db = setup();

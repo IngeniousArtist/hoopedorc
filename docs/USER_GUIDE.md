@@ -136,6 +136,12 @@ going on a always-on box.
    running. Hard Stop also cancels any approval that task is waiting on; its
    old web or Telegram buttons expire and cannot resume the merge. Graceful
    **Pause** keeps active approval prompts live while it drains current work.
+   A task card labels consumed author invocations as `Attempt N`, the
+   configured `policy M`, and any separately granted `+ R recovery`
+   allowance. Rate-limit waits and fallback recovery never inflate the policy.
+   Retry atomically starts one new logical run, clears only that run's
+   accounting and stale branch/PR coordinates, and keeps the task's policy,
+   assignment, description, dependencies, and acceptance criteria.
 
 ## The safety model
 

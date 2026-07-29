@@ -529,10 +529,11 @@ export class EngineRunner {
           repo.updateTask(this.db, t.id, {
             status: t.status,
             attempts: t.attempts,
-            // Model-fallback escalation bumps maxAttempts in memory mid-run
-            // (one extra attempt per fallback model) — persist it, otherwise
-            // the kanban card shows attempts > maxAttempts (e.g. "4/3").
-            maxAttempts: t.maxAttempts,
+            runGeneration: t.runGeneration,
+            runExtraAttempts: t.runExtraAttempts,
+            runModel: t.runModel,
+            runExhaustedModels: t.runExhaustedModels,
+            runRateLimitRetries: t.runRateLimitRetries,
             branch: t.branch,
             worktreePath: t.worktreePath,
             prNumber: t.prNumber,
@@ -567,6 +568,7 @@ export class EngineRunner {
                 assignedModel: t.assignedModel,
                 attempts: t.attempts,
                 maxAttempts: t.maxAttempts,
+                runExtraAttempts: t.runExtraAttempts,
                 summary: t.description.split("\n")[0],
                 costUsd,
                 prNumber: t.prNumber,

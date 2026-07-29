@@ -82,6 +82,10 @@ function task(worktreePath: string): Task {
     worktreePath,
     attempts: 0,
     maxAttempts: 2,
+    runGeneration: 0,
+    runExtraAttempts: 0,
+    runExhaustedModels: [],
+    runRateLimitRetries: 0,
     createdAt: "",
     updatedAt: "",
   };

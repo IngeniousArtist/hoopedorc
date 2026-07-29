@@ -1757,6 +1757,24 @@ No EC2 smoke is required because no contract, persistence, UI, process, or
 deployment behavior changed. O34's second, durable retry-accounting
 design/implementation PR remains open and intentionally separate.
 
+**Accounting decision (2026-07-29):** the second PR uses the existing task row
+as the atomic restart boundary and keeps `maxAttempts` immutable. `attempts`
+continues to count author invocations reserved in the current logical run;
+`runExtraAttempts` records only recovery allowance, so the effective limit is
+`maxAttempts + runExtraAttempts`. The same row also persists the current
+fallback model, exhausted models, and same-model rate-limit retry count because
+all three are required to resume the exact boundary after a stop or process
+restart. A monotonic `runGeneration` starts at zero and increments exactly once
+in the same SQLite transaction as an accepted manual Retry and its audit entry;
+that new-run transition alone resets attempts, recovery allowance, fallback
+position, and stale execution coordinates. Generation-qualified run IDs keep
+new runs from overwriting prior invocations or merge decisions while generation
+zero retains legacy IDs for recovery. The idempotent migration preserves every
+historical `attempts`/`max_attempts` value rather than guessing whether an old
+maximum was policy or runtime inflation. Full semantics, migration behavior,
+non-goals, and transition ordering are recorded in
+`docs/specs/retry-accounting.md`.
+
 **Fix risk:** medium — behavior-sensitive; the test suite is the rail.
 
 ### O35. Scheduler busy-poll efficiency — MEDIUM (efficiency; careful)
