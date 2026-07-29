@@ -1275,6 +1275,26 @@ green.
 
 **Fix risk:** none (test-only).
 
+**Implementation decision (2026-07-29):** keep O29 test-only. Add three
+orchestrator fixtures around the existing `syncBranchWithMain` seam: one
+conflict followed by a clean retry must author again, open a new PR, and merge
+only that new PR; three consecutive conflicts must requeue twice, then request
+the reject-only manual-resolution decision and fail without merging; and a
+restarted `in_review` task with a persisted current decision plus an existing
+worktree must recover the old merge tail, requeue on conflict, remove the
+stale worktree, then create a fresh attempt and merge its new PR.
+
+The reproduced risk is an unguarded idempotency path rather than a known live
+failure: removing the conflict branch's `prNumber = undefined` must make the
+new conflict→clean and restart fixtures fail by reusing the stale PR. The
+engine owns the invariant and no production source, durable state, timer,
+queue, cache, retry policy, migration, external side effect, or concurrency
+outcome changes. The fixtures use deterministic fake Git/worktree boundaries;
+crash recovery is represented by constructing a new `Orchestrator` around the
+persisted task/decision/worktree shape. The smallest rollback is the O29 test
+commit, old data is untouched, and no live EC2 check is required for this
+test-only item.
+
 ### O30. `ROUTES` manifest is not enforced against server registration — MEDIUM (testing)
 
 **Problem:** all 49 `ROUTES` entries (`packages/types/src/api.ts:623-673`)
