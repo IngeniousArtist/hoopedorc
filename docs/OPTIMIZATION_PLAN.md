@@ -1477,6 +1477,49 @@ cache hit/miss branches, and audit classification. No runtime state, API,
 persistence, deployment, or EC2 behavior changes; rollback is the O32
 workflow/policy-test commit.
 
+**Status:** completed in
+[#194](https://github.com/IngeniousArtist/hoopedorc/pull/194)
+(`75e73e5`). CI now checks committed changes for whitespace, cancels only
+superseded runs of the same PR, gives every non-PR run a unique concurrency
+group, builds once before workspace typechecking, and keeps the scheduled or
+manual registry audit outside deterministic PR checks. The Playwright cache
+key contains runner OS, installed `@playwright/test` version, and lockfile
+hash; a miss installs Chromium plus OS dependencies, while a hit restores only
+the browser archive and still verifies host packages. The audit classifier
+always archives raw, stderr, and normalized evidence and distinguishes
+findings from registry, execution, malformed-response, and unexplained npm
+failures.
+
+Local verification passed typecheck, build, the new prebuilt typecheck, lint
+with 16/16 policy tests across 140 files and the exact 341-finding baseline,
+engine 187/187, adapters 12/12, server 238/238, web 25/25, E2E 16/16 at
+360/390/768/1280/1440px, YAML/Node syntax checks, and `git diff --check`. The
+first sandboxed server run denied three loopback listeners with `EPERM`; the
+required permissioned rerun passed all 238. The committed mutation regression
+proved trailing whitespace fails the exact push diff range, and four audit
+regressions proved clean, high/critical, registry, malformed, unexplained, and
+spawn outcomes remain distinct. A sandboxed live audit produced a correctly
+classified registry/DNS failure; after explicit network approval, the same
+command was clean at the high/critical threshold and retained one low advisory
+in its raw and normalized evidence.
+
+Live PR run `30456746332` at `a90ebe3` was canceled when run `30456768082`
+superseded it. Reviewing that completed run caught an empty version output in
+the first cache key; `2cf2829` made extraction fail closed and added an exact
+regression. Corrected run `30457930771` passed in 2m06s with key
+`Linux-playwright-1.61.1-<lockhash>`, a real miss, the normal
+`install --with-deps chromium` fallback, 16 E2E passes, and a saved cache.
+Merged-main run `30458225663` independently passed in 2m15s and published the
+same exact default-branch cache. Concurrently dispatched manual audit run
+`30458262638` was preserved and queued instead of canceling the main run,
+passed with owner `IngeniousArtist`, and uploaded the 30-day
+`npm-audit-30458262638` artifact with no high or critical findings.
+Evidence-PR run `30458691543` then restored the exact default-branch
+`Linux-playwright-1.61.1-<lockhash>` key, ran only
+`playwright install-deps chromium`, skipped the browser-download branch, passed
+all 16 E2E tests, and finished green in 2m06s. No live EC2 check was required
+because O32 changes only repository CI.
+
 ### O33. `docs/CONTRACT.md` is missing 13 of 49 live routes — MEDIUM (docs)
 
 **Problem:** these registered, typed, client-consumed routes have zero
