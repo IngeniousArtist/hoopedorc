@@ -43,6 +43,64 @@ clarified O16/O21's terminology: `drain: true` is the graceful **Pause** that
 keeps active approval waits alive; `drain: false` is the hard **Stop** that
 aborts and settles them. The item text below is authoritative.
 
+**Continuation handoff (2026-07-30, written after closing O36):** this note
+reconciles plan state for the next implementation session and records
+observations from the O36 settings-save and merge-decision work
+(#208–#211) that affect upcoming items.
+
+*State.* Merged with recorded status and evidence: O1, O2, O16 + O21, O27
+(implementation), O28, O29, O30 + O33, O31, O32, O34 (both PRs), O35, and all
+four O36 candidates (live settings #204, WebSocket catch-up #206,
+settings-save scan #208, merge-decision diff reuse #210, each with a
+follow-up verification record). Not started, per this document's own status
+trail: O3, O4, O5, O6, O7, O8, O9, O10, O11, O12, O13, O14, O15, O17, O18,
+O19, O20, O22, O23, O24, O25, and O26. The execution order below remains
+authoritative: the next item is **O3 planning revision receipts**, then the
+rest of wave 4. Waves 3, 6, and 7 completed out of listed order without
+harm because their prerequisites (O29 for O21/O34; O6/O13 pairing waived by
+measuring the WS candidate against the production snapshot directly) were
+individually satisfied; wave 4's internal O16 → O14 → O15 ordering still
+holds, with O16 already merged.
+
+*Deployment lag.* The production box last deployed `3e4c793` (O2,
+2026-07-29). Everything merged since — O27 through O36 — is undeployed;
+each of those items individually required no live smoke, but O27's
+authorized EC2 update/health smoke is still recorded as outstanding. Before
+or alongside starting O3, run one routine `scripts/update.sh` deploy,
+record `GET /api/health` plus the dashboard check, and clear O27's
+outstanding evidence in its status entry.
+
+*Observations for upcoming items.*
+
+- **Evidence convention:** each implementation PR carries its measurement
+  protocol and result in this document; a separate doc-only follow-up PR
+  records the status block with post-merge verification on merged `main`
+  (#204/#205, #206/#207, #208/#209, #210/#211). Keep that shape.
+- **ESLint ratchet trap (O31):** new `async` test-double methods without an
+  `await` trip the engine `require-await` baseline (expected exact count;
+  found +11 during #210's first draft). Write fakes as plain methods
+  returning `Promise.resolve(...)` — do not raise the baseline.
+- **SQLite join planning (relevant to O13):** an unpinned
+  `projects INNER JOIN tasks` planned as a full `tasks` scan because the
+  WHERE clause filtered only task columns; `CROSS JOIN` pins the join order
+  so SQLite searches `idx_tasks_project`. Capture `EXPLAIN QUERY PLAN` on a
+  seeded fixture, not an empty database, before trusting a plan.
+- **Shared refs across worktrees (relevant to O4):** task worktrees share
+  the primary clone's common `.git` refs and config. #210 removed the
+  one in-decision double-read, but any two git reads at different pipeline
+  stages can still straddle a sibling task's fetch; O4's single
+  engine-owned repository lock remains the real serialization fix, and its
+  lock key should come from the common Git directory for exactly this
+  reason.
+- **Author-stage listing is not reusable:** the post-author empty-worktree
+  guard (`orchestrator.ts` `executeTask`) intentionally keeps its own
+  `changedFiles` subprocess — gates and validation run between it and the
+  merge decision, so its timing is not identical. Do not "finish" #210 by
+  removing it.
+- **Ad-hoc measurement scripts are not committed.** Every O35/O36 protocol
+  in this document contains enough detail to regenerate its script; committed
+  regression tests carry the load-bearing counting assertions.
+
 ## Goal and non-goals
 
 **Goal:** the same product, running smoother, more efficiently, and more
@@ -2208,8 +2266,8 @@ below because they share one invariant and would be unsafe to split.
    (`d03f0a0`) and O2 merged in
    [#184](https://github.com/IngeniousArtist/hoopedorc/pull/184)
    (`3e4c793`), both with green CI and live EC2/Tailscale verification.
-3. **Regression rails before behavior-sensitive work — O27, O29, O30 + O33,
-   and O31 merged; O32 is next:**
+3. **Regression rails before behavior-sensitive work — merged (O27, O29,
+   O30 + O33, O31, O32):**
    - O27 merged in
      [#186](https://github.com/IngeniousArtist/hoopedorc/pull/186)
      (`5f6e2ee`) with the app-construction seam, validator/route refusal
@@ -2226,19 +2284,25 @@ below because they share one invariant and would be unsafe to split.
    - O31 merged in
      [#192](https://github.com/IngeniousArtist/hoopedorc/pull/192)
      (`beda0db`) with an exact all-workspace ESLint ratchet and green Linux CI.
-   - O32 is next and remains a separate CI-policy PR with no production
+   - O32 merged in
+     [#194](https://github.com/IngeniousArtist/hoopedorc/pull/194) and
+     [#195](https://github.com/IngeniousArtist/hoopedorc/pull/195)
+     (`75e73e5`, `bc5e792`) as a separate CI-policy change with no production
      behavior changes.
 4. **Durable correctness and recovery:**
    - O3 planning revision receipts.
    - O4 shared Git serialization.
    - O7 authoritative PR merge confirmation.
    - O13 query/delete migration.
-   - O16 abort-aware approval ownership → O14 durable approval/Stop
-     transitions → O15 Telegram inbox/outbox. This order gives Telegram a
-     durable, idempotent approval consumer to call.
+   - O16 abort-aware approval ownership (merged with O21 in
+     [#196](https://github.com/IngeniousArtist/hoopedorc/pull/196)) →
+     O14 durable approval/Stop transitions → O15 Telegram inbox/outbox.
+     This order gives Telegram a durable, idempotent approval consumer to
+     call.
    - O18 route validation (using O27's injection rails).
    - O20 accounting/log persistence.
-   - O21 lifecycle cleanup only after O29.
+   - O21 lifecycle cleanup only after O29 — merged with O16 in
+     [#196](https://github.com/IngeniousArtist/hoopedorc/pull/196).
    - O17 and O19 updater hardening, each followed by the required live EC2
      smoke.
 5. **Bounded resources and safe UI:**
@@ -2256,8 +2320,13 @@ below because they share one invariant and would be unsafe to split.
    WebSocket query candidate is evaluated with O6/O13; its Git candidate
    waits for the relevant engine rails. Record immaterial candidates as
    deferred rather than adding signaling, caching, or memoization machinery.
+   O35 merged in
+   [#202](https://github.com/IngeniousArtist/hoopedorc/pull/202)/[#203](https://github.com/IngeniousArtist/hoopedorc/pull/203);
+   all four O36 candidates merged with evidence in #204–#211. O10 and O22
+   benchmarks remain.
 7. **Structural cleanup:** O34 helper extraction after O29/O21, followed by
-   its separate durable-accounting design/PR if still justified.
+   its separate durable-accounting design/PR if still justified — merged in
+   [#198](https://github.com/IngeniousArtist/hoopedorc/pull/198)–[#201](https://github.com/IngeniousArtist/hoopedorc/pull/201).
 8. **After every merge:** update the item with status, PR, merge commit, exact
    gate/test counts, and outstanding live evidence. After each numbered wave,
    independently run the complete gate on merged `main`; deploy-affecting
