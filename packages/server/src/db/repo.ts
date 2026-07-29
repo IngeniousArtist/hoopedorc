@@ -905,6 +905,24 @@ export function getRuns(db: Db, taskId: string): Run[] {
     .map((r) => mapRun(r as Record<string, unknown>));
 }
 
+/**
+ * O36: Fetch every task run for one project with the existing task/project
+ * indexes. The caller groups this newest-first stream while it owns the task
+ * order, avoiding one getRuns() query per task in a WebSocket catch-up.
+ */
+export function getRunsForProject(db: Db, projectId: string): Run[] {
+  return db
+    .prepare(
+      `SELECT r.*
+       FROM tasks AS t
+       INNER JOIN runs AS r ON r.task_id = t.id
+       WHERE t.project_id = ?
+       ORDER BY r.started_at DESC`,
+    )
+    .all(projectId)
+    .map((r) => mapRun(r as Record<string, unknown>));
+}
+
 export function getRun(db: Db, id: string): Run | null {
   const row = db.prepare("SELECT * FROM runs WHERE id = ?").get(id) as
     | Record<string, unknown>

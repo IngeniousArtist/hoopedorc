@@ -56,6 +56,57 @@ function seedLogTask(db: ReturnType<typeof initDb>) {
   });
 }
 
+test("O36: getRunsForProject returns only the requested project's newest-first history", () => {
+  const db = setup();
+  const task = seedLogTask(db);
+  repo.createProject(db, {
+    id: "proj-2",
+    name: "Other project",
+    repoUrl: "https://github.com/x/other",
+    defaultBranch: "main",
+    localPath: "/tmp/other",
+    status: "paused",
+  });
+  const otherTask = repo.createTask(db, {
+    id: "task-other",
+    projectId: "proj-2",
+    title: "Other",
+    description: "",
+    difficulty: "easy",
+    status: "ready",
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: [],
+    attempts: 0,
+    maxAttempts: 3,
+  });
+  for (const [id, projectId, taskId, startedAt] of [
+    ["run-old", "proj-1", task.id, "2026-01-01T00:00:00.000Z"],
+    ["run-new", "proj-1", task.id, "2026-01-01T00:01:00.000Z"],
+    ["run-other", "proj-2", otherTask.id, "2026-01-01T00:02:00.000Z"],
+  ] as const) {
+    repo.createRun(db, {
+      id,
+      projectId,
+      taskId,
+      model: "deepseek-flash",
+      attempt: 1,
+      status: "passed",
+      startedAt,
+      endedAt: startedAt,
+      costUsd: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+    });
+  }
+
+  assert.deepEqual(
+    repo.getRunsForProject(db, "proj-1").map((run) => run.id),
+    ["run-new", "run-old"],
+  );
+});
+
 /** Creates a real notification via the public API, then backdates its
  *  created_at directly — createNotification always stamps "now", and these
  *  tests need explicit control over age. */

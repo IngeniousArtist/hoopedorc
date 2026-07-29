@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import {
   existsSync,
   mkdirSync,
@@ -24,6 +24,7 @@ import {
 } from "./index.js";
 import { SelfUpdater } from "./self-update.js";
 import { WsHub } from "./ws-hub.js";
+import type WebSocket from "ws";
 
 const PROCESS_EVENTS = [
   "SIGTERM",
@@ -137,6 +138,114 @@ test("O27: buildApp injects routes without process handlers or startup services"
       assert.deepEqual(listenerCounts(), before);
     }
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("O36: a project catch-up snapshot reads all runs with one indexed statement", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-o36-ws-catchup-"));
+  const deps = dependencies(root);
+  const app = await buildApp(deps);
+  const taskCount = 250;
+  const runsPerTask = 3;
+  const baseTime = Date.parse("2026-01-01T00:00:00.000Z");
+
+  class FakeSocket extends EventEmitter {
+    readyState = 1;
+    readonly sent: string[] = [];
+
+    send(payload: string): void {
+      this.sent.push(payload);
+    }
+  }
+
+  try {
+    for (let taskIndex = 0; taskIndex < taskCount; taskIndex++) {
+      const task = repo.createTask(deps.db, {
+        id: `o36-task-${taskIndex}`,
+        projectId: "project-1",
+        title: `O36 task ${taskIndex}`,
+        description: "",
+        difficulty: "easy",
+        status: "ready",
+        dependsOn: [],
+        acceptanceCriteria: [],
+        assignedModel: "deepseek-flash",
+        scopePaths: [],
+        attempts: 0,
+        maxAttempts: 3,
+      });
+      for (let runIndex = 0; runIndex < runsPerTask; runIndex++) {
+        const startedAt = new Date(
+          baseTime + taskIndex * runsPerTask * 1_000 + runIndex * 1_000,
+        ).toISOString();
+        repo.createRun(deps.db, {
+          id: `o36-run-${taskIndex}-${runIndex}`,
+          projectId: "project-1",
+          taskId: task.id,
+          model: "deepseek-flash",
+          attempt: runIndex + 1,
+          status: "passed",
+          startedAt,
+          endedAt: startedAt,
+          costUsd: 0,
+          tokensIn: 0,
+          tokensOut: 0,
+        });
+      }
+    }
+
+    const prepare = deps.db.prepare.bind(deps.db);
+    let snapshotRunReads = 0;
+    Object.defineProperty(deps.db, "prepare", {
+      configurable: true,
+      value(source: string) {
+        const statement = source.replace(/\s+/g, " ").trim();
+        if (
+          statement ===
+            "SELECT * FROM runs WHERE task_id = ? ORDER BY started_at DESC" ||
+          statement ===
+            "SELECT r.* FROM tasks AS t INNER JOIN runs AS r ON r.task_id = t.id WHERE t.project_id = ? ORDER BY r.started_at DESC"
+        ) {
+          snapshotRunReads++;
+        }
+        return prepare(source);
+      },
+    });
+
+    const socket = new FakeSocket();
+    deps.hub.add(socket as unknown as WebSocket);
+    socket.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "subscribe", projectId: "project-1" })),
+    );
+
+    assert.equal(
+      snapshotRunReads,
+      1,
+      "one project-scoped indexed run query replaces one query per task",
+    );
+    const events = socket.sent.map((payload) => JSON.parse(payload) as {
+      type: string;
+      payload: { id: string };
+    });
+    assert.equal(events.length, 1 + taskCount * (1 + runsPerTask));
+    assert.equal(events[0]?.type, "project.updated");
+    assert.equal(events[0]?.payload.id, "project-1");
+    let cursor = 1;
+    for (let taskIndex = 0; taskIndex < taskCount; taskIndex++) {
+      assert.equal(events[cursor]?.type, "task.updated");
+      assert.equal(events[cursor]?.payload.id, `o36-task-${taskIndex}`);
+      cursor++;
+      for (let runIndex = runsPerTask - 1; runIndex >= 0; runIndex--) {
+        assert.equal(events[cursor]?.type, "run.updated");
+        assert.equal(events[cursor]?.payload.id, `o36-run-${taskIndex}-${runIndex}`);
+        cursor++;
+      }
+    }
+  } finally {
+    await app.close();
+    deps.db.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
