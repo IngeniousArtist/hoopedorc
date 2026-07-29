@@ -226,6 +226,24 @@ function buildDeps(engine: EngineRunner, proj: Project): SchedulerDeps {
   return (orch as unknown as { deps: SchedulerDeps }).deps;
 }
 
+function countSettingsReads(db: ReturnType<typeof initDb>): () => number {
+  const prepare = db.prepare.bind(db);
+  let reads = 0;
+  Object.defineProperty(db, "prepare", {
+    configurable: true,
+    value(source: string) {
+      if (
+        source.replace(/\s+/g, " ").trim() ===
+        "SELECT json FROM settings WHERE id = 1"
+      ) {
+        reads++;
+      }
+      return prepare(source);
+    },
+  });
+  return () => reads;
+}
+
 test("F44: a model-trouble event creates exactly one web notification + broadcast, a repeat for the same task+event creates none", () => {
   const db = setup();
   const hub = new WsHub();
@@ -1185,6 +1203,59 @@ test("B37/F48: an already-built runtime reads live budgets, quotas, pricing, not
   });
   deps.events.onTaskUpdated({ ...task, status: "in_review" });
   assert.deepEqual(taskPushes, ["in_review"]);
+});
+
+test("O36: one billable run event uses one live settings snapshot", () => {
+  const db = setup();
+  const engine = new EngineRunner(db, new WsHub());
+  const proj = project(db, "o36-settings");
+  const task = seedTask(db, proj.id, "task");
+  const deps = buildDeps(engine, proj);
+  const original = repo.getSettings(db)!;
+  repo.upsertSettings(db, {
+    ...original,
+    globalMonthlyBudgetUsd: 1,
+    models: original.models.map((model) =>
+      model.id === "deepseek-flash"
+        ? { ...model, costPerMInputUsd: 2, costPerMOutputUsd: 0 }
+        : model,
+    ),
+  });
+  const settingsReads = countSettingsReads(db);
+  const before = settingsReads();
+  const startedAt = new Date().toISOString();
+
+  deps.events.onRunUpdated({
+    id: "o36-run",
+    projectId: proj.id,
+    taskId: task.id,
+    model: "deepseek-flash",
+    effort: "high",
+    attempt: 1,
+    status: "passed",
+    startedAt,
+    endedAt: startedAt,
+    costUsd: 0.01,
+    tokensIn: 1_000_000,
+    tokensOut: 0,
+    tokensCached: 0,
+  });
+
+  assert.equal(
+    settingsReads() - before,
+    1,
+    "pricing, invocation billing, and budget alerts share one event snapshot",
+  );
+  assert.equal(repo.getRun(db, "o36-run")!.costUsd, 2);
+  assert.equal(repo.getInvocation(db, "o36-run")!.costUsd, 2);
+  assert.equal(repo.getCosts(db, proj.id)[0]?.costUsd, 2);
+  assert.equal(
+    repo
+      .getNotifications(db, proj.id)
+      .filter((notification) => notification.title.startsWith("Budget alert:"))
+      .length,
+    2,
+  );
 });
 
 test("O16: aborting a normal approval removes its resolver and persists a cancelled notification", async () => {
