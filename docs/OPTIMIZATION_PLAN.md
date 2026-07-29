@@ -1513,8 +1513,12 @@ Merged-main run `30458225663` independently passed in 2m15s and published the
 same exact default-branch cache. Concurrently dispatched manual audit run
 `30458262638` was preserved and queued instead of canceling the main run,
 passed with owner `IngeniousArtist`, and uploaded the 30-day
-`npm-audit-30458262638` artifact with no high or critical findings. No live
-EC2 check was required because O32 changes only repository CI.
+`npm-audit-30458262638` artifact with no high or critical findings.
+Evidence-PR run `30458691543` then restored the exact default-branch
+`Linux-playwright-1.61.1-<lockhash>` key, ran only
+`playwright install-deps chromium`, skipped the browser-download branch, passed
+all 16 E2E tests, and finished green in 2m06s. No live EC2 check was required
+because O32 changes only repository CI.
 
 ### O33. `docs/CONTRACT.md` is missing 13 of 49 live routes — MEDIUM (docs)
 
