@@ -1719,6 +1719,20 @@ requests cannot double-increment, `maxAttempts` never mutates, and a genuine
 new logical run resets only the intended counter; board/API labels distinguish
 policy maximum from consumed effective attempts; full gates green for each PR.
 
+**Extraction decision (2026-07-29):** this first PR is deliberately limited to
+the pure decision extraction. `escalateOrFail(...)` receives a snapshot of the
+stage, current/fallback model, attempt position, and stage-specific failure
+context, then returns the exact fallback or terminal decision without mutating
+the task or consulting live settings. One shared applicator owns the existing
+model-count switch, rate-limit cleanup, `maxAttempts` bump, log/notification,
+terminal status, and persistence callbacks. It introduces no new state,
+contract, migration, restart behavior, or UI change. Golden table tests must
+cover author failure (with and without remaining attempt headroom), no changes
+(clean and wrong-primary-clone diagnoses), failed gates, and self-review
+collision, each with a fallback and with the chain exhausted. Existing
+orchestrator integration tests remain the persisted-transition rail. The
+durable retry-accounting redesign stays out of this PR.
+
 **Fix risk:** medium — behavior-sensitive; the test suite is the rail.
 
 ### O35. Scheduler busy-poll efficiency — MEDIUM (efficiency; careful)

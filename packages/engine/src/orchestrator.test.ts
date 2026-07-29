@@ -10,6 +10,7 @@ import {
   Orchestrator,
   buildFallbackChain,
   detectDestructiveChanges,
+  escalateOrFail,
   isAuthOrSecretFile,
   scopesOverlap,
 } from "./orchestrator.js";
@@ -3051,6 +3052,193 @@ test("readyTasks: a docs task stays blocked while a dep is still running, or whe
     0,
     "nothing landed — there is nothing for a docs task to document",
   );
+});
+
+test("O34: escalateOrFail preserves every stage's fallback and exhausted decisions", () => {
+  const failedGate: GateResult = {
+    ...GOOD_GATE,
+    typecheck: false,
+    tests: false,
+    noConflicts: false,
+  };
+  const cases = [
+    {
+      name: "author fallback at the attempt limit extends the budget",
+      input: {
+        stage: "author" as const,
+        currentModel: "model-a",
+        fallback: "model-b",
+        attempts: 2,
+        maxAttempts: 2,
+        exitReason: "stuck" as const,
+      },
+      expected: {
+        outcome: "fallback",
+        nextModel: "model-b",
+        extendAttemptBudget: true,
+        logMessage: "Switching to fallback model: model-b",
+        troubleDetail: "Switched to fallback model after stuck",
+      },
+    },
+    {
+      name: "author fallback with headroom preserves the budget",
+      input: {
+        stage: "author" as const,
+        currentModel: "model-a",
+        fallback: "model-b",
+        attempts: 1,
+        maxAttempts: 2,
+        exitReason: "error" as const,
+      },
+      expected: {
+        outcome: "fallback",
+        nextModel: "model-b",
+        extendAttemptBudget: false,
+        logMessage: "Switching to fallback model: model-b",
+        troubleDetail: "Switched to fallback model after error",
+      },
+    },
+    {
+      name: "author exhaustion",
+      input: {
+        stage: "author" as const,
+        currentModel: "model-a",
+        attempts: 2,
+        maxAttempts: 2,
+        exitReason: "rate_limited" as const,
+      },
+      expected: {
+        outcome: "failed",
+        statusReason:
+          "Author run kept failing (rate_limited) and no fallback model was left (last tried: model-a)",
+        troubleDetail: "No fallback model left after rate_limited",
+      },
+    },
+    {
+      name: "no changes fallback",
+      input: {
+        stage: "no_changes" as const,
+        currentModel: "model-a",
+        fallback: "model-b",
+        attempts: 2,
+        maxAttempts: 2,
+        primaryDirtyFiles: [],
+      },
+      expected: {
+        outcome: "fallback",
+        nextModel: "model-b",
+        extendAttemptBudget: true,
+        logMessage: "No changes produced, switching to fallback model: model-b",
+        troubleDetail: "Switched to fallback model after no changes were produced",
+      },
+    },
+    {
+      name: "no changes exhaustion in a clean primary clone",
+      input: {
+        stage: "no_changes" as const,
+        currentModel: "model-a",
+        attempts: 2,
+        maxAttempts: 2,
+        primaryDirtyFiles: [],
+      },
+      expected: {
+        outcome: "failed",
+        statusReason:
+          "Every attempt produced no file changes (models ran out of steps or wrote outside the worktree; last tried: model-a)",
+        troubleDetail: "No fallback model left after no changes were produced",
+      },
+    },
+    {
+      name: "no changes exhaustion after writing to the primary clone",
+      input: {
+        stage: "no_changes" as const,
+        currentModel: "model-a",
+        attempts: 2,
+        maxAttempts: 2,
+        primaryDirtyFiles: ["src/a.ts", "src/b.ts"],
+      },
+      expected: {
+        outcome: "failed",
+        statusReason:
+          "Every attempt wrote to the primary clone instead of its worktree (src/a.ts, src/b.ts) — no fallback model left (last tried: model-a)",
+        troubleDetail: "No fallback model left after no changes were produced",
+      },
+    },
+    {
+      name: "gate fallback",
+      input: {
+        stage: "gates" as const,
+        currentModel: "model-a",
+        fallback: "model-b",
+        attempts: 2,
+        maxAttempts: 2,
+        gate: failedGate,
+      },
+      expected: {
+        outcome: "fallback",
+        nextModel: "model-b",
+        extendAttemptBudget: true,
+        logMessage: "Gates still failing, switching to fallback model: model-b",
+        troubleDetail: "Switched to fallback model after gates kept failing",
+      },
+    },
+    {
+      name: "gate exhaustion",
+      input: {
+        stage: "gates" as const,
+        currentModel: "model-a",
+        attempts: 2,
+        maxAttempts: 2,
+        gate: failedGate,
+      },
+      expected: {
+        outcome: "failed",
+        statusReason:
+          "Gates kept failing after 2 attempts (typecheck, tests, conflicts with main) — no fallback model left",
+        troubleDetail: "No fallback model left after gates kept failing",
+      },
+    },
+    {
+      name: "self-review collision fallback",
+      input: {
+        stage: "self_review_collision" as const,
+        currentModel: "model-a",
+        fallback: "model-b",
+        attempts: 1,
+        maxAttempts: 2,
+      },
+      expected: {
+        outcome: "fallback",
+        nextModel: "model-b",
+        extendAttemptBudget: true,
+        logMessage: "Switching to fallback model: model-b",
+        troubleDetail:
+          "Switched to fallback model after a validator/author routing collision",
+      },
+    },
+    {
+      name: "self-review collision exhaustion",
+      input: {
+        stage: "self_review_collision" as const,
+        currentModel: "model-a",
+        attempts: 1,
+        maxAttempts: 2,
+      },
+      expected: {
+        outcome: "failed",
+        statusReason:
+          "Author and validator resolve to the same model for this task — fix routing in Settings (byDifficulty/byRole vs validatorByDifficulty)",
+        troubleDetail:
+          "No fallback model left avoiding a validator/author routing collision",
+        errorMessage:
+          "No remaining fallback model avoids the validator collision — fix routing in Settings (byDifficulty/byRole vs validatorByDifficulty).",
+      },
+    },
+  ];
+
+  for (const entry of cases) {
+    assert.deepEqual(escalateOrFail(entry.input), entry.expected, entry.name);
+  }
 });
 
 test("buildFallbackChain: explicit routing.fallbacks wins over difficulty tiers, in order, deduped", () => {
