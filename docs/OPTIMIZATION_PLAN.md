@@ -2080,6 +2080,26 @@ and five 100-save repetitions took 46.607–54.019 ms, median 48.554 ms
 tests prove terminal and known-model exclusion, the loop's warning order,
 warning parity on the production save path, and the one-statement invariant.
 
+**Status (settings-save full scan candidate):** completed in
+[#208](https://github.com/IngeniousArtist/hoopedorc/pull/208)
+(`c3b3e79`). A settings save now checks dangling task models through one
+`CROSS JOIN` repository read that filters status and assigned model in SQL
+while keeping the replaced loop's exact warning text and order. Full local
+verification passed typecheck, build, lint across 144 files with the exact
+340-finding baseline, engine 210/210, adapters 12/12, server 255/255, web
+26/26, E2E 16/16, and `git diff --check`. Linux `build-and-test` CI passed at
+reviewed head `a9c778f` in 5m30s.
+
+After merge, clean local `main` and `origin/main` matched
+`c3b3e7973ddee3b52b4135ea05354797faa0e124`. The focused O36 regressions
+passed 2/2, and the independent measurement on the unchanged
+20-project/5,000-task fixture again issued one joined dangling-model
+statement per save (5 statements total) with a 49.003 ms median across five
+100-save repetitions, while the real query plan searched `idx_tasks_project`
+with no full `tasks` scan. No API, WebSocket event, persistence-schema, UI,
+external CLI, filesystem-ownership, or deployment/process behavior changed,
+so no additional live-system smoke is required.
+
 **Fix risk:** low.
 
 ---
