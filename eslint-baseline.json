@@ -1,0 +1,32 @@
+{
+  "apps/web": {},
+  "packages/adapters": {
+    "@typescript-eslint/no-unnecessary-type-assertion": 1,
+    "@typescript-eslint/no-unsafe-argument": 6,
+    "@typescript-eslint/require-await": 1
+  },
+  "packages/engine": {
+    "@typescript-eslint/no-unnecessary-type-assertion": 6,
+    "@typescript-eslint/no-unused-vars": 1,
+    "@typescript-eslint/only-throw-error": 1,
+    "@typescript-eslint/prefer-promise-reject-errors": 2,
+    "@typescript-eslint/require-await": 194,
+    "no-useless-assignment": 3,
+    "prefer-const": 1,
+    "preserve-caught-error": 1
+  },
+  "packages/server": {
+    "@typescript-eslint/no-base-to-string": 12,
+    "@typescript-eslint/no-unnecessary-type-assertion": 33,
+    "@typescript-eslint/no-unsafe-argument": 2,
+    "@typescript-eslint/no-unsafe-assignment": 2,
+    "@typescript-eslint/no-unsafe-member-access": 5,
+    "@typescript-eslint/no-unused-vars": 8,
+    "@typescript-eslint/prefer-promise-reject-errors": 1,
+    "@typescript-eslint/require-await": 58,
+    "@typescript-eslint/restrict-template-expressions": 1,
+    "@typescript-eslint/unbound-method": 1,
+    "no-useless-assignment": 1
+  },
+  "packages/types": {}
+}
