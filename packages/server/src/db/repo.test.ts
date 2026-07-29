@@ -39,6 +39,23 @@ function seedRollbackTask(db: ReturnType<typeof initDb>) {
   });
 }
 
+function seedLogTask(db: ReturnType<typeof initDb>) {
+  return repo.createTask(db, {
+    id: "task-logs",
+    projectId: "proj-1",
+    title: "Logs",
+    description: "",
+    difficulty: "easy",
+    status: "ready",
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: [],
+    attempts: 0,
+    maxAttempts: 3,
+  });
+}
+
 /** Creates a real notification via the public API, then backdates its
  *  created_at directly — createNotification always stamps "now", and these
  *  tests need explicit control over age. */
@@ -67,6 +84,59 @@ function seedNotification(
     n.id,
   );
 }
+
+// ── O27: pruneLogs age + per-task bounds ──
+
+test("O27: pruneLogs removes expired rows and preserves recent history", () => {
+  const db = setup();
+  const task = seedLogTask(db);
+  repo.createLog(db, {
+    projectId: "proj-1",
+    taskId: task.id,
+    runId: "run-old",
+    ts: new Date(Date.now() - 31 * DAY_MS).toISOString(),
+    level: "info",
+    source: "agent",
+    message: "old",
+  });
+  repo.createLog(db, {
+    projectId: "proj-1",
+    taskId: task.id,
+    runId: "run-recent",
+    ts: new Date(Date.now() - DAY_MS).toISOString(),
+    level: "info",
+    source: "agent",
+    message: "recent",
+  });
+
+  assert.equal(repo.pruneLogs(db, 14), 1);
+  assert.deepEqual(
+    repo.getLogsByTask(db, task.id).map((log) => log.message),
+    ["recent"],
+  );
+});
+
+test("O27: pruneLogs keeps only the newest configured rows per task", () => {
+  const db = setup();
+  const task = seedLogTask(db);
+  for (let index = 0; index < 5; index++) {
+    repo.createLog(db, {
+      projectId: "proj-1",
+      taskId: task.id,
+      runId: `run-${index}`,
+      ts: new Date(Date.now() - (5 - index) * 1000).toISOString(),
+      level: "info",
+      source: "agent",
+      message: `log-${index}`,
+    });
+  }
+
+  assert.equal(repo.pruneLogs(db, 14, 2), 3);
+  assert.deepEqual(
+    repo.getLogsByTask(db, task.id).map((log) => log.message),
+    ["log-3", "log-4"],
+  );
+});
 
 // ── B23: pruneNotifications never deletes a pending approval ──
 

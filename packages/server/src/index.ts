@@ -1,10 +1,7 @@
 import "dotenv/config";
-import { execFile } from "node:child_process";
-import { timingSafeEqual } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import cors from "@fastify/cors";
@@ -17,14 +14,13 @@ import type {
   ModelId,
   ModelInvocation,
   Project,
-  ProjectConfig,
   Role,
   ServerEvent,
   Task,
 } from "@orc/types";
 import { SECRET_SENTINEL, TASK_STATUSES, WS_PATH, pickAssignedModel } from "@orc/types";
 import type { TaskStatus } from "@orc/types";
-import { GitServiceImpl, detectDocker, isPlausibleImageRef } from "@orc/engine";
+import { GitServiceImpl, detectDocker } from "@orc/engine";
 import {
   ENV,
   SettingsValidationError,
@@ -104,19 +100,29 @@ import {
   runSetupChecks,
   testModels,
 } from "./setup";
-import { parseSetupCommand } from "./project-config";
 import { persistInvocationEvent } from "./invocation-ledger";
 import { ShutdownCoordinator, installShutdownHandlers } from "./shutdown";
 import { buildRuntimeHealth } from "./runtime-health";
 import { SelfUpdater, SelfUpdateRefusedError } from "./self-update";
 import { registerBuiltWebApp } from "./web-static";
+import {
+  isValidBranchName,
+  isValidRepoUrl,
+  localPathOkForClone,
+  parseProjectConfig,
+  redactSettings,
+  safeToDeleteLocalPath,
+  safeTokenEqual,
+  unauthenticatedBindingError,
+  validateLocalPath,
+} from "./project-validation";
 import type {
   DraftTask,
   Notification,
   PlanChatMessage,
   PlanDeconstructRequest,
-  Settings as SettingsType,
   VerifiedFigmaReference,
+  Settings as SettingsType,
 } from "@orc/types";
 
 type RouteParams = { id: string };
@@ -354,277 +360,9 @@ function buildPriorContext(db: Db, project: Project): string | undefined {
     .join("\n\n");
 }
 
-// Branch names flow unsanitized into `git` argv (worktree-manager.ts,
-// validator.ts) — arg arrays there mean no shell metacharacters can execute,
-// but a leading `-` could still be parsed as a git flag rather than a
-// refname. Keep the charset tight to plausible ref names.
-const VALID_BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
-function isValidBranchName(branch: string): boolean {
-  return VALID_BRANCH_NAME.test(branch) && !branch.startsWith("-");
-}
-
-// repoUrl is passed to `git clone` and `gh --repo` (git-service.ts,
-// github.ts) — restrict to the two shapes those CLIs expect so a value like
-// `--upload-pack=...` can't be smuggled in as a flag.
-const VALID_REPO_URL =
-  /^(https:\/\/github\.com\/[\w.-]+\/[\w.-]+|git@github\.com:[\w.-]+\/[\w.-]+)(\.git)?\/?$/;
-function isValidRepoUrl(url: string): boolean {
-  return VALID_REPO_URL.test(url);
-}
-
-const pexecFile = promisify(execFile);
-
-const VALID_MERGE_POLICIES: MergePolicy[] = [
-  "hard_gate_flag_risky",
-  "fully_autonomous",
-  "always_ask",
-];
-
-/**
- * Validate + normalize a project's config override (F9). Gate script names
- * and testCommand ride into `execFile` arg arrays downstream (gate-runner.ts)
- * — no shell involved — so validation here is about sane values, not
- * injection. Returns `{ error }` on the first bad field, or `{ value }`
- * (possibly `undefined`, meaning "no config") otherwise.
- */
-function parseProjectConfig(
-  input: unknown,
-): { error: string } | { value: ProjectConfig | undefined } {
-  if (input == null) return { value: undefined };
-  if (typeof input !== "object") return { error: "config must be an object" };
-  const raw = input as Record<string, unknown>;
-  const value: ProjectConfig = {};
-
-  if (raw.setupCommand !== undefined) {
-    const parsed = parseSetupCommand(raw.setupCommand);
-    if ("error" in parsed) return parsed;
-    value.setupCommand = parsed.value;
-  }
-
-  if (raw.maxAttempts !== undefined) {
-    const n = raw.maxAttempts;
-    if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 20) {
-      return { error: "config.maxAttempts must be an integer between 1 and 20" };
-    }
-    value.maxAttempts = n;
-  }
-
-  if (raw.mergePolicy !== undefined) {
-    if (!VALID_MERGE_POLICIES.includes(raw.mergePolicy as MergePolicy)) {
-      return { error: `config.mergePolicy must be one of: ${VALID_MERGE_POLICIES.join(", ")}` };
-    }
-    value.mergePolicy = raw.mergePolicy as MergePolicy;
-  }
-
-  if (raw.gates !== undefined) {
-    if (typeof raw.gates !== "object" || raw.gates === null) {
-      return { error: "config.gates must be an object" };
-    }
-    const g = raw.gates as Record<string, unknown>;
-    const gates: NonNullable<ProjectConfig["gates"]> = {};
-    for (const key of ["typecheckScript", "lintScript", "buildScript", "testScript"] as const) {
-      const v = g[key];
-      if (v === undefined) continue;
-      if (v === false) {
-        gates[key] = false;
-        continue;
-      }
-      if (typeof v === "string" && v.trim().length > 0 && v.length <= 100) {
-        gates[key] = v.trim();
-        continue;
-      }
-      return { error: `config.gates.${key} must be a non-empty script name (<=100 chars) or false` };
-    }
-    if (g.testCommand !== undefined) {
-      if (typeof g.testCommand !== "string" || g.testCommand.length > 500) {
-        return { error: "config.gates.testCommand must be a string (<=500 chars)" };
-      }
-      const trimmed = g.testCommand.trim();
-      if (trimmed) gates.testCommand = trimmed;
-    }
-    if (Object.keys(gates).length > 0) value.gates = gates;
-  }
-
-  if (raw.requireGithubChecks !== undefined) {
-    if (typeof raw.requireGithubChecks !== "boolean") {
-      return { error: "config.requireGithubChecks must be a boolean" };
-    }
-    value.requireGithubChecks = raw.requireGithubChecks;
-  }
-
-  if (raw.githubChecksTimeoutMin !== undefined) {
-    const n = raw.githubChecksTimeoutMin;
-    if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 120) {
-      return { error: "config.githubChecksTimeoutMin must be an integer between 1 and 120" };
-    }
-    value.githubChecksTimeoutMin = n;
-  }
-
-  if (raw.perTaskDocs !== undefined) {
-    if (typeof raw.perTaskDocs !== "boolean") {
-      return { error: "config.perTaskDocs must be a boolean" };
-    }
-    value.perTaskDocs = raw.perTaskDocs;
-  }
-
-  if (raw.skillHints !== undefined) {
-    if (!Array.isArray(raw.skillHints)) {
-      return { error: "config.skillHints must be an array of strings" };
-    }
-    if (raw.skillHints.length > 20) {
-      return { error: "config.skillHints must have at most 20 entries" };
-    }
-    const hints: string[] = [];
-    for (const h of raw.skillHints) {
-      if (typeof h !== "string" || h.length > 200) {
-        return { error: "config.skillHints entries must be strings of at most 200 chars" };
-      }
-      const trimmed = h.trim();
-      if (trimmed) hints.push(trimmed);
-    }
-    if (hints.length > 0) value.skillHints = hints;
-  }
-
-  if (raw.gateImage !== undefined) {
-    if (typeof raw.gateImage !== "string" || !isPlausibleImageRef(raw.gateImage)) {
-      return { error: "config.gateImage must be a plausible Docker image reference (<=200 chars)" };
-    }
-    value.gateImage = raw.gateImage;
-  }
-
-  if (raw.schedule !== undefined) {
-    if (typeof raw.schedule !== "object" || raw.schedule === null) {
-      return { error: "config.schedule must be an object" };
-    }
-    const s = raw.schedule as Record<string, unknown>;
-    if (typeof s.enabled !== "boolean") {
-      return { error: "config.schedule.enabled must be a boolean" };
-    }
-    if (s.mode !== "interval" && s.mode !== "daily") {
-      return { error: 'config.schedule.mode must be "interval" or "daily"' };
-    }
-    if (s.mode === "interval") {
-      const n = s.intervalHours;
-      if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > 24 * 30) {
-        return { error: "config.schedule.intervalHours must be an integer between 1 and 720" };
-      }
-      value.schedule = { enabled: s.enabled, mode: "interval", intervalHours: n };
-    } else {
-      const hour = s.hour;
-      const minute = s.minute;
-      if (typeof hour !== "number" || !Number.isInteger(hour) || hour < 0 || hour > 23) {
-        return { error: "config.schedule.hour must be an integer between 0 and 23" };
-      }
-      if (typeof minute !== "number" || !Number.isInteger(minute) || minute < 0 || minute > 59) {
-        return { error: "config.schedule.minute must be an integer between 0 and 59" };
-      }
-      value.schedule = { enabled: s.enabled, mode: "daily", hour, minute };
-    }
-  }
-
-  return { value: Object.keys(value).length > 0 ? value : undefined };
-}
-
 /** A project's own maxAttempts override (F9), or the engine-wide default. */
 function defaultMaxAttempts(project: Project): number {
   return project.config?.maxAttempts ?? 3;
-}
-
-/** The `origin` remote URL of a git working copy, or null if it isn't one
- *  (no .git, no origin, or git failed for any other reason). */
-async function gitOriginUrl(dir: string): Promise<string | null> {
-  try {
-    const { stdout } = await pexecFile("git", ["remote", "get-url", "origin"], {
-      cwd: dir,
-      encoding: "utf-8",
-    });
-    return stdout.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-/** True if `ancestor` is `of` itself or a directory containing it — i.e.
- *  deleting `ancestor` would also delete `of`. */
-function isPathAncestorOrSame(ancestor: string, of: string): boolean {
-  const a = ancestor.endsWith("/") ? ancestor.slice(0, -1) : ancestor;
-  const b = of.endsWith("/") ? of.slice(0, -1) : of;
-  return b === a || b.startsWith(`${a}/`);
-}
-
-/**
- * Guard against a project.localPath that would make DELETE /api/projects/:id
- * (or a future clone) destroy something it shouldn't. `localPath` must
- * already have `~` expanded to an absolute path.
- */
-function validateLocalPath(localPath: string): string | null {
-  if (!isAbsolute(localPath)) {
-    return "localPath must be an absolute path";
-  }
-  const resolved = resolve(localPath);
-  const home = homedir();
-  if (resolved === "/") return "localPath cannot be '/'";
-  if (resolved === home) return "localPath cannot be the home directory itself";
-  if (isPathAncestorOrSame(resolved, process.cwd())) {
-    return "localPath cannot be an ancestor of (or the same as) the server's own working directory";
-  }
-  if (isPathAncestorOrSame(resolved, resolve(ENV.reposDir))) {
-    return "localPath cannot be an ancestor of (or the same as) the repos directory";
-  }
-  return null;
-}
-
-/**
- * A project's localPath either shouldn't exist yet (git clone will create
- * it), should be empty, or — if the operator points at a directory that
- * already exists — must already be a clone of the SAME repo. Anything else
- * (an unrelated project, a home directory full of dotfiles, etc.) is
- * rejected rather than silently reused (and later, on delete, rm -rf'd).
- */
-async function localPathOkForClone(
-  localPath: string,
-  repoUrl: string,
-): Promise<string | null> {
-  if (!existsSync(localPath)) return null;
-  if (!statSync(localPath).isDirectory()) {
-    return "localPath already exists and is not a directory";
-  }
-  if (readdirSync(localPath).length === 0) return null;
-
-  const origin = await gitOriginUrl(localPath);
-  if (origin === repoUrl) return null;
-  return origin
-    ? `localPath already exists and is a git clone of a different repository (${origin})`
-    : "localPath already exists, is non-empty, and is not a git clone of this repository";
-}
-
-/**
- * Whether DELETE /api/projects/:id may rm -rf a project's localPath: only
- * when it's deep enough to plausibly be a real clone (not e.g. the home
- * directory itself) AND its origin still matches the project's repoUrl. A
- * hand-edited localPath pointing anywhere else is left alone; the DB rows
- * are still deleted, but the operator is warned to clean up manually.
- */
-async function safeToDeleteLocalPath(
-  localPath: string,
-  repoUrl: string,
-): Promise<boolean> {
-  if (localPath.length <= homedir().length + 1) return false;
-  if (!existsSync(join(localPath, ".git"))) return false;
-  return (await gitOriginUrl(localPath)) === repoUrl;
-}
-
-/** Replace secret fields with SECRET_SENTINEL before a settings object leaves
- *  the server (GET or PUT response). */
-function redactSettings(settings: SettingsType): SettingsType {
-  return {
-    ...settings,
-    apiToken: settings.apiToken ? SECRET_SENTINEL : undefined,
-    telegram: settings.telegram && {
-      ...settings.telegram,
-      botToken: settings.telegram.botToken ? SECRET_SENTINEL : undefined,
-    },
-  };
 }
 
 async function assembleServer(
@@ -640,6 +378,16 @@ async function assembleServer(
     version,
     webDist,
   } = dependencies;
+  if (!repo.getSettings(db)) {
+    repo.upsertSettings(db, defaultSettings());
+  }
+  const bindingError = unauthenticatedBindingError(
+    env.host,
+    env.apiToken || repo.getSettings(db)?.apiToken || undefined,
+    env.allowUnauthenticated,
+  );
+  if (bindingError) throw new Error(bindingError);
+
   // S7: override only the `url` field of Fastify's default req serializer
   // (method/host/remoteAddress/etc. stay exactly as the default reports
   // them) so a token in the query string never reaches the logs.
@@ -704,11 +452,6 @@ async function assembleServer(
     reportFailure: BackgroundFailureReporter = reportBackgroundFailure,
   ): void {
     runBackgroundOperation(backgroundOperations, label, operation, reportFailure);
-  }
-
-  // ensure settings exist
-  if (!repo.getSettings(db)) {
-    repo.upsertSettings(db, defaultSettings());
   }
 
   // Every agent output line is persisted forever otherwise — a few long runs
@@ -793,32 +536,6 @@ async function assembleServer(
   /** The environment token wins over the settings-stored one; either enables auth. */
   function getApiToken(): string | undefined {
     return env.apiToken || repo.getSettings(db)?.apiToken || undefined;
-  }
-
-  /**
-   * Constant-time token compare (S6). `timingSafeEqual` throws on unequal
-   * buffer lengths rather than returning false, so the length check must
-   * come first — but comparing lengths still leaks length, not content,
-   * which is the same tradeoff every constant-time-compare guide accepts.
-   */
-  function safeTokenEqual(candidate: string | undefined, expected: string): boolean {
-    if (candidate === undefined) return false;
-    const a = Buffer.from(candidate, "utf-8");
-    const b = Buffer.from(expected, "utf-8");
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(a, b);
-  }
-
-  // Refuse to come up wide-open-and-unauthenticated: if HOST is bound beyond
-  // loopback, either a token must gate the API or the operator must
-  // explicitly opt into ALLOW_UNAUTHENTICATED=1 (e.g. a throwaway sandbox).
-  const isLoopbackHost = env.host === "127.0.0.1" || env.host === "localhost";
-  if (!isLoopbackHost && !getApiToken() && !env.allowUnauthenticated) {
-    throw new Error(
-      `HOST=${env.host} exposes the API beyond localhost with no API_TOKEN set. ` +
-      `Set API_TOKEN (or settings.apiToken) to require auth, or set ` +
-      `ALLOW_UNAUTHENTICATED=1 to start anyway (not recommended).`,
-    );
   }
 
   // Bearer-token auth (off by default). Skips /api/health so uptime checks
@@ -1358,7 +1075,9 @@ async function assembleServer(
       ? expandHome(body.localPath.trim())
       : uniqueLocalPath(baseDir, body.name);
 
-    const pathError = validateLocalPath(localPath);
+    const pathError = validateLocalPath(localPath, {
+      reposDir: env.reposDir,
+    });
     if (pathError) return reply.code(400).send({ error: pathError });
     const cloneError = await localPathOkForClone(localPath, repoUrl);
     if (cloneError) return reply.code(400).send({ error: cloneError });
@@ -1445,29 +1164,51 @@ async function assembleServer(
         .send({ error: "project execution is active or still stopping — wait for it to settle before deleting" });
     }
 
-    // Best-effort cleanup of the local clone + any leftover task worktrees
-    // (`${localPath}-wt-<taskId>`). The DB delete below is the source of
-    // truth; a failure here just leaves orphaned files on disk. Only ever
-    // rm -rf when localPath still looks like a real, deep-enough clone of
-    // THIS project's repo — a hand-edited localPath (e.g. "~" or "/") is
-    // left untouched rather than wiped.
+    // Best-effort cleanup of the local clone + any leftover task worktrees.
+    // The DB delete below is the source of truth; refused/failed disk cleanup
+    // leaves explicit operator work intact. Validate every candidate before
+    // deleting any of them so removing the primary clone cannot invalidate a
+    // worktree's .git pointer midway through the safety inspection.
     try {
       const exists = existsSync(project.localPath);
       if (exists && (await safeToDeleteLocalPath(project.localPath, project.repoUrl))) {
-        rmSync(project.localPath, { recursive: true, force: true });
         const parent = dirname(project.localPath);
         const base = project.localPath.slice(parent.length + 1);
+        const safeWorktrees: string[] = [];
+        let refusedWorktree = false;
         if (existsSync(parent)) {
           for (const entry of readdirSync(parent)) {
             if (entry.startsWith(`${base}-wt-`)) {
-              rmSync(join(parent, entry), { recursive: true, force: true });
+              const candidate = join(parent, entry);
+              if (await safeToDeleteLocalPath(candidate, project.repoUrl)) {
+                safeWorktrees.push(candidate);
+              } else {
+                refusedWorktree = true;
+                app.log.warn(
+                  `refusing to delete project worktree ${candidate}: it is ` +
+                    `dirty or is not a recognized clone of ${project.repoUrl}`,
+                );
+              }
             }
           }
+        }
+        if (refusedWorktree) {
+          app.log.warn(
+            `refusing to delete local files for project ${id}: at least one ` +
+              `matching worktree could not be proved safe — DB rows removed, ` +
+              `all project files left untouched`,
+          );
+        } else {
+          for (const worktree of safeWorktrees) {
+            rmSync(worktree, { recursive: true, force: true });
+          }
+          rmSync(project.localPath, { recursive: true, force: true });
         }
       } else if (exists) {
         app.log.warn(
           `refusing to delete local files for project ${id}: ${project.localPath} ` +
-            `is not a recognized git clone of ${project.repoUrl} — DB rows removed, disk left untouched`,
+            `is dirty or is not a recognized clone of ${project.repoUrl} — ` +
+            `DB rows removed, disk left untouched`,
         );
       }
     } catch (err) {
