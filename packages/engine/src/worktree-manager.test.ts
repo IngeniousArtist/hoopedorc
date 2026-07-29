@@ -626,6 +626,52 @@ test("S9: typed diff acquisition scans destructive lines beyond the old 40K cap"
   );
 });
 
+test("O36: changedFiles and changedFilesWithStatus report identical path lists", async () => {
+  const repo = tmpDir("wt-o36-path-parity");
+  await git(["init", "-q"], repo);
+  await git(["branch", "-M", "main"], repo);
+  writeFileSync(join(repo, "modify-me.ts"), "export const before = 1;\n");
+  writeFileSync(join(repo, "delete-me.txt"), "delete me\n");
+  writeFileSync(join(repo, "package.json"), `{"name":"x","version":"1.0.0"}\n`.repeat(4));
+  await git(["add", "-A"], repo);
+  await git(["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "base"], repo);
+  await git(["update-ref", "refs/remotes/origin/main", "HEAD"], repo);
+
+  writeFileSync(join(repo, "modify-me.ts"), "export const after = 2;\n");
+  unlinkSync(join(repo, "delete-me.txt"));
+  renameSync(join(repo, "package.json"), join(repo, "renamed-manifest.json"));
+  writeFileSync(join(repo, "added.ts"), "export const added = true;\n");
+  await git(["add", "-A"], repo);
+  await git(["-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "change"], repo);
+
+  const runner = new WorktreeManagerImpl({ sandboxGates: "off" });
+  const p = project(repo);
+  const t = worktreeTask(repo);
+
+  // With rename detection (git's default) both listings report only the
+  // rename's destination path; this parity is what lets the risky-file rules
+  // reuse the destructive inspection's list in canAutoMerge.
+  const detected = await runner.changedFilesWithStatus(p, t);
+  assert.equal(detected.ok, true);
+  assert.ok(detected.value.some((entry) => entry.status.startsWith("R")));
+  assert.deepEqual(
+    await runner.changedFiles(p, t),
+    detected.value.map((entry) => entry.path),
+  );
+
+  // With rename detection disabled the rename decomposes into a delete plus
+  // an add — in BOTH listings — so the path lists still match.
+  await git(["config", "diff.renames", "false"], repo);
+  const decomposed = await runner.changedFilesWithStatus(p, t);
+  assert.equal(decomposed.ok, true);
+  assert.ok(decomposed.value.every((entry) => !entry.status.startsWith("R")));
+  assert.ok(decomposed.value.some((entry) => entry.path === "package.json"));
+  assert.deepEqual(
+    await runner.changedFiles(p, t),
+    decomposed.value.map((entry) => entry.path),
+  );
+});
+
 test("S9: git inspection failure is typed, never an empty clean result", async () => {
   const dir = tmpDir("wt-not-git");
   const runner = new WorktreeManagerImpl({ sandboxGates: "off" });

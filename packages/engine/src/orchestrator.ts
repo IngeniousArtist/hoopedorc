@@ -2858,6 +2858,16 @@ export class Orchestrator implements Scheduler {
     const settings = this.settings();
     const { riskyChangeRules } = settings;
 
+    // O36: when the destructive inspection below completes, the risky-file
+    // rules further down reuse its path list instead of launching a second
+    // `git diff --name-only` over the same refs. The two listings are
+    // interchangeable: with rename detection both report only the rename's
+    // destination path, and with it disabled both report the old and new
+    // paths (proven against real git in worktree-manager.test.ts). Reuse
+    // also pins both rules to one snapshot — previously a sibling task's
+    // fetch could advance origin/<branch> between the two subprocesses.
+    let inspectedPaths: string[] | undefined;
+
     // S8: runs BEFORE any merge-policy branch below, including
     // fully_autonomous's "always merge" — a destructive change forces
     // human review in EVERY policy, not just the default one. That's the
@@ -2916,6 +2926,7 @@ export class Orchestrator implements Scheduler {
         );
         return { canMerge: false, riskyReasons: reasons };
       }
+      inspectedPaths = filesWithStatus.value.map((entry) => entry.path);
     }
 
     // F9: a project can override the global merge policy (e.g. "always_ask"
@@ -2940,7 +2951,11 @@ export class Orchestrator implements Scheduler {
       return { canMerge: false, riskyReasons: [] };
     }
 
-    const files = await this.deps.worktrees.changedFiles(project, task);
+    // O36: the destructive inspection already listed this decision's changed
+    // files; only a disabled destructiveChanges rule still needs its own read.
+    const files =
+      inspectedPaths ??
+      (await this.deps.worktrees.changedFiles(project, task));
     if (riskyChangeRules.dbSchema && files.some((f) => /\.sql$|migrations?\//i.test(f))) {
       this.emit("warn", "engine", "Risky: DB/schema change detected", task.id);
       return { canMerge: false, riskyReasons: [] };

@@ -2100,6 +2100,47 @@ with no full `tasks` scan. No API, WebSocket event, persistence-schema, UI,
 external CLI, filesystem-ownership, or deployment/process behavior changed,
 so no additional live-system smoke is required.
 
+**Merge-decision git diff measurement protocol and threshold (2026-07-30,
+before any O36 production change):** drive one complete task pipeline through
+the real `Orchestrator` with instrumented worktree dependencies and count the
+changed-file/diff acquisitions one `hard_gate_flag_risky` merge decision
+issues, then time the candidate-redundant
+`git diff --name-only origin/main...HEAD` subprocess (five 100-invocation
+repetitions on a real 500-file/10-changed repository). Separately prove the
+reuse precondition against real git: `changedFiles` and the path field of
+`changedFilesWithStatus` must report identical lists over the same
+`origin/<defaultBranch>...HEAD` refs for added, modified, deleted, and
+renamed files, under both default rename detection and `diff.renames=false`
+(both invocations share one repository config, so they cannot disagree on
+that setting). Implement reuse only if the merge decision demonstrably lists
+changed files twice with no worktree or ref mutation between the two reads
+and the parity proof holds; otherwise keep the separate safety inspection and
+defer. The destructive inspection itself must remain byte-identical, and a
+disabled `destructiveChanges` rule must keep its own risky-rule listing.
+
+**Merge-decision git diff measurement result and decision (2026-07-30):** one
+real merge decision issued one `changedFilesWithStatus`, one `diffText`, and
+one additional `changedFiles` — the risky-file rules' own listing over the
+exact refs the destructive inspection had just read, launched milliseconds
+earlier in the same `canAutoMerge` invocation with no mutation in between.
+(The pipeline's other `changedFiles` call, the post-author empty-worktree
+guard, runs at a different stage with non-identical timing and stays.) The
+redundant subprocess measured a 703.243 ms median per 100 invocations
+(7.032 ms per merge decision) on the 500-file fixture, Node 22.23.0
+measurement host, git 2.50.1. Real-git parity held: with rename detection
+both listings report only the rename's destination path, and with
+`diff.renames=false` both decompose it into delete plus add. The threshold
+therefore passed. The pre-fix regressions failed at `2 !== 1` for both the
+counting and the reused-rule-input cases; implement reuse of the completed
+destructive inspection's path list inside `canAutoMerge` only, with a
+disabled inspection still performing its own separate listing (proven by a
+test that passes unchanged before and after). Reuse also removes the window
+in which a sibling task's fetch could advance `origin/<defaultBranch>`
+between the two subprocesses of one decision. After implementation the same
+instrumented pipeline issued one `changedFilesWithStatus`, one `diffText`,
+and one author-stage `changedFiles`, with the merge decision launching no
+second listing.
+
 **Fix risk:** low.
 
 ---

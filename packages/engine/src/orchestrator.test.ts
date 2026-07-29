@@ -4323,6 +4323,149 @@ test("S8: riskyChangeRules.destructiveChanges: false restores today's fully_auto
   assert.equal(merged.length, 1);
 });
 
+test("O36: one merge decision reuses the destructive-inspection file list", async () => {
+  const merged: number[] = [];
+  const counts = { changedFiles: 0, changedFilesWithStatus: 0, diffText: 0 };
+  const deps = fakeDeps(
+    {
+      settings: {
+        ...settings(),
+        riskyChangeRules: {
+          dbSchema: true,
+          newDependencies: true,
+          authOrSecrets: true,
+          outOfScopeEdits: true,
+        },
+      },
+      worktrees: {
+        changedFiles() {
+          counts.changedFiles++;
+          return Promise.resolve(["src/example.ts"]);
+        },
+        changedFilesWithStatus() {
+          counts.changedFilesWithStatus++;
+          return Promise.resolve(acquired([{ path: "src/example.ts", status: "M" }]));
+        },
+        diffText() {
+          counts.diffText++;
+          return Promise.resolve(acquired(""));
+        },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+  assert.equal(t1.status, "done");
+  assert.equal(merged.length, 1);
+  assert.equal(counts.changedFilesWithStatus, 1);
+  assert.equal(counts.diffText, 1);
+  assert.equal(
+    counts.changedFiles,
+    1,
+    "only the author-stage empty-worktree guard lists files separately — " +
+      "the risky-file rules reuse the destructive inspection's list",
+  );
+});
+
+test("O36: reused inspection paths still trip the risky dependency rule", async () => {
+  const merged: number[] = [];
+  const counts = { changedFiles: 0 };
+  const logs: string[] = [];
+  let approvalMessage = "";
+  const deps = fakeDeps(
+    {
+      settings: {
+        ...settings(),
+        riskyChangeRules: { ...settings().riskyChangeRules, newDependencies: true },
+      },
+      worktrees: {
+        changedFiles() {
+          counts.changedFiles++;
+          return Promise.resolve(["package.json"]);
+        },
+        changedFilesWithStatus() {
+          return Promise.resolve(acquired([{ path: "package.json", status: "M" }]));
+        },
+        diffText() {
+          return Promise.resolve(acquired('+  "left-pad": "^1.3.0",\n'));
+        },
+      },
+      events: {
+        onLog(event) { logs.push(event.message); },
+        onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        requestApproval(args) {
+          approvalMessage = args.message;
+          return Promise.resolve("reject" as const);
+        },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+  assert.equal(t1.status, "failed");
+  assert.equal(merged.length, 0);
+  assert.ok(logs.some((message) => /dependency change detected/.test(message)));
+  assert.match(approvalMessage, /risky changes detected/i);
+  assert.equal(
+    counts.changedFiles,
+    1,
+    "the dependency rule fired from the reused inspection list, not a second read",
+  );
+});
+
+test("O36: destructiveChanges: false keeps the separate risky-rule listing", async () => {
+  const merged: number[] = [];
+  const counts = { changedFiles: 0, changedFilesWithStatus: 0, diffText: 0 };
+  let asked = false;
+  const deps = fakeDeps(
+    {
+      settings: {
+        ...settings(),
+        riskyChangeRules: {
+          ...settings().riskyChangeRules,
+          destructiveChanges: false,
+          newDependencies: true,
+        },
+      },
+      worktrees: {
+        changedFiles() {
+          counts.changedFiles++;
+          return Promise.resolve(["package.json"]);
+        },
+        changedFilesWithStatus() {
+          counts.changedFilesWithStatus++;
+          return Promise.resolve(acquired([{ path: "package.json", status: "M" }]));
+        },
+        diffText() {
+          counts.diffText++;
+          return Promise.resolve(acquired(""));
+        },
+      },
+      events: {
+        onLog() {}, onTaskUpdated() {}, onRunUpdated() {}, onMergeDecision() {},
+        requestApproval() {
+          asked = true;
+          return Promise.resolve("reject" as const);
+        },
+      },
+    },
+    merged,
+  );
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+  assert.equal(asked, true, "the dependency rule still runs without the destructive inspection");
+  assert.equal(merged.length, 0);
+  assert.equal(counts.changedFilesWithStatus, 0);
+  assert.equal(counts.diffText, 0);
+  assert.equal(
+    counts.changedFiles,
+    2,
+    "with the inspection disabled the risky rules keep their own listing",
+  );
+});
+
 test("S8: the author prompt includes the fixed safety guardrails block", async () => {
   const capturedPrompts: string[] = [];
   const capturingAdapter: AgentAdapter = {
