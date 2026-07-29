@@ -138,8 +138,20 @@ export function TaskCard({
           {task.difficulty}
         </span>
         {task.attempts > 0 && (
-          <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-400">
-            {task.attempts}/{task.maxAttempts}
+          <span
+            className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-400"
+            title={
+              `${task.attempts} author invocations consumed in logical run ` +
+              `${task.runGeneration}; policy allows ${task.maxAttempts}` +
+              (task.runExtraAttempts > 0
+                ? ` plus ${task.runExtraAttempts} recovery attempts`
+                : "")
+            }
+          >
+            Attempt {task.attempts} · policy {task.maxAttempts}
+            {task.runExtraAttempts > 0
+              ? ` + ${task.runExtraAttempts} recovery`
+              : ""}
           </span>
         )}
         {task.status === "ready" && estimate && (

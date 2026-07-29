@@ -30,6 +30,11 @@ import {
   WORKING_DIRECTORY_BLOCK,
 } from "./guidelines.js";
 import { SelfReviewError } from "./validator.js";
+import {
+  docsRunId,
+  effectiveAttemptLimit,
+  taskRunId,
+} from "./task-run.js";
 import type {
   EngineEvents,
   FigmaAuthorCapabilityContext,
@@ -470,10 +475,6 @@ export class Orchestrator implements Scheduler {
   /** B28: tasks already logged as having a dangling assignedModel this run,
    *  to avoid log spam. */
   private readonly missingModelWarned = new Set<string>();
-  /** F32: how many rate-limit wait-and-retries a task has used on its
-   *  CURRENT model, so it falls back after RATE_LIMIT_RETRIES instead of
-   *  waiting forever; cleared per-task in executeTask's finally. */
-  private readonly rateLimitWaits = new Map<string, number>();
   /** How many times each task has been requeued for a merge-time conflict,
    *  so a perpetually-conflicting task can't loop forever. */
   private readonly mergeConflicts = new Map<string, number>();
@@ -546,11 +547,15 @@ export class Orchestrator implements Scheduler {
     task: Task,
     currentModel: ModelId,
     decision: EscalationDecision,
+    exhaustedModels: ReadonlySet<ModelId>,
   ): ModelId | undefined {
+    task.runExhaustedModels = [...exhaustedModels];
     if (decision.outcome === "fallback") {
       this.switchRunningModel(task.id, decision.nextModel);
-      this.rateLimitWaits.delete(task.id);
-      if (decision.extendAttemptBudget) task.maxAttempts++;
+      task.runModel = decision.nextModel;
+      task.runRateLimitRetries = 0;
+      if (decision.extendAttemptBudget) task.runExtraAttempts++;
+      this.deps.events.onTaskUpdated(task);
       this.emit("warn", "engine", decision.logMessage, task.id);
       this.notifyModelTrouble(
         task,
@@ -561,6 +566,9 @@ export class Orchestrator implements Scheduler {
       return decision.nextModel;
     }
 
+    task.status = "failed";
+    task.statusReason = decision.statusReason;
+    this.deps.events.onTaskUpdated(task);
     if (decision.errorMessage) {
       this.emit("error", "engine", decision.errorMessage, task.id);
     }
@@ -570,9 +578,6 @@ export class Orchestrator implements Scheduler {
       "exhausted",
       decision.troubleDetail,
     );
-    task.status = "failed";
-    task.statusReason = decision.statusReason;
-    this.deps.events.onTaskUpdated(task);
     return undefined;
   }
 
@@ -729,6 +734,10 @@ export class Orchestrator implements Scheduler {
         return undefined;
       }
       this.switchRunningModel(task.id, fallback);
+      task.runModel = fallback;
+      task.runExhaustedModels = [...exhaustedModels];
+      task.runRateLimitRetries = 0;
+      this.deps.events.onTaskUpdated(task);
       this.emit(
         "warn",
         "engine",
@@ -1431,6 +1440,12 @@ export class Orchestrator implements Scheduler {
     const taskController = new AbortController();
     this.taskAbortControllers.set(task.id, taskController);
     const signal = taskController.signal;
+    // Defensive normalization for direct engine callers and rolling upgrades.
+    // The canonical repository mapper always supplies these fields.
+    task.runGeneration ??= 0;
+    task.runExtraAttempts ??= 0;
+    task.runExhaustedModels ??= [];
+    task.runRateLimitRetries ??= 0;
     this.emit("info", "engine", `Starting: ${task.title}`, task.id);
 
     // A requeued/retried task carries its previous terminal outcome here —
@@ -1443,16 +1458,32 @@ export class Orchestrator implements Scheduler {
       return;
     }
 
-    // Seed which earlier models dispatch already skipped. Every later
-    // fallback choice rebuilds the chain from live settings (B37).
+    // Resume the durable fallback position when this logical run already
+    // crossed a model boundary. For a fresh dispatch-time fallback, seed and
+    // persist the skipped prefix before any Figma proof or worktree exists.
+    // Every later fallback choice still rebuilds the chain from live settings
+    // (B37), with the durable exhausted set preventing repeats.
     const initialFallbackChain = buildFallbackChain(
       task.assignedModel,
       task.difficulty,
       this.settings().routing,
     );
-    const startIndex = Math.max(0, initialFallbackChain.indexOf(startModel));
-    const exhaustedModels = new Set<ModelId>(initialFallbackChain.slice(0, startIndex));
-    let currentModel = startModel;
+    const persistedModel = task.runModel;
+    let currentModel = persistedModel ?? startModel;
+    const exhaustedModels = new Set<ModelId>(task.runExhaustedModels ?? []);
+    if (!persistedModel) {
+      const startIndex = Math.max(0, initialFallbackChain.indexOf(startModel));
+      for (const model of initialFallbackChain.slice(0, startIndex)) {
+        exhaustedModels.add(model);
+      }
+      if (startModel !== task.assignedModel) {
+        task.runModel = startModel;
+        task.runExhaustedModels = [...exhaustedModels];
+        task.runRateLimitRetries = 0;
+        this.deps.events.onTaskUpdated(task);
+      }
+    }
+    this.switchRunningModel(task.id, currentModel);
 
     try {
       // B46: resolve to a live, enabled candidate — including when
@@ -1485,11 +1516,7 @@ export class Orchestrator implements Scheduler {
       let fixInstructions: string | undefined;
       let finalGate: GateResult | undefined;
 
-      for (
-        task.attempts = 1;
-        task.attempts <= task.maxAttempts;
-        task.attempts++
-      ) {
+      while (task.attempts < effectiveAttemptLimit(task)) {
         if (this.bailIfStopRequested(task)) return;
 
         // Every new attempt starts a fresh author run — reset from
@@ -1555,19 +1582,25 @@ export class Orchestrator implements Scheduler {
             task,
             currentModel,
             signal,
-            true,
           ))
         ) {
           return;
         }
 
+        // Reserve the author invocation durably only after every zero-attempt
+        // preflight/budget/quota refusal has passed, but before the subprocess
+        // may start. A crash can therefore never repeat an unaccounted call.
+        task.attempts++;
+        this.deps.events.onTaskUpdated(task);
+        const attemptLimit = effectiveAttemptLimit(task);
         const attemptEffort =
           this.settings().models.find((model) => model.id === currentModel)?.effort ??
           "default";
         this.emit(
           "info",
           "engine",
-          `Attempt ${task.attempts}/${task.maxAttempts} [model: ${currentModel}] [effort: ${attemptEffort}]`,
+          `Attempt ${task.attempts}/${attemptLimit} (policy ${task.maxAttempts}) ` +
+            `[model: ${currentModel}] [effort: ${attemptEffort}]`,
           task.id,
         );
 
@@ -1616,9 +1649,11 @@ export class Orchestrator implements Scheduler {
           // immediately below (a hung or crashing model won't be fixed by
           // waiting).
           if (authorResult.exitReason === "rate_limited") {
-            const waits = this.rateLimitWaits.get(task.id) ?? 0;
+            const waits = task.runRateLimitRetries;
             if (waits < RATE_LIMIT_RETRIES) {
-              this.rateLimitWaits.set(task.id, waits + 1);
+              task.runRateLimitRetries = waits + 1;
+              task.runExtraAttempts++;
+              this.deps.events.onTaskUpdated(task);
               const waitMs = this.deps.rateLimitWaitMs ?? RATE_LIMIT_WAIT_MS;
               this.emit(
                 "warn",
@@ -1635,10 +1670,6 @@ export class Orchestrator implements Scheduler {
                   `Rate-limited — waiting before retrying the same model`,
                 );
               }
-              // The wait/retry must not consume a real attempt — the for
-              // loop's own `attempts++` on `continue` below is compensated
-              // by this bump.
-              task.maxAttempts++;
               const outcome = await this.waitOutRateLimit(task, waitMs, signal);
               if (outcome === "aborted") {
                 if (this.bailIfStopRequested(task)) return;
@@ -1661,9 +1692,10 @@ export class Orchestrator implements Scheduler {
               currentModel,
               fallback,
               attempts: task.attempts,
-              maxAttempts: task.maxAttempts,
+              maxAttempts: effectiveAttemptLimit(task),
               exitReason: authorResult.exitReason,
             }),
+            exhaustedModels,
           );
           if (!nextModel) return;
           currentModel = nextModel;
@@ -1720,7 +1752,7 @@ export class Orchestrator implements Scheduler {
               "This attempt must actually create/modify the files this task " +
               "requires — verify with `git status` before finishing.";
 
-          if (task.attempts < task.maxAttempts) continue;
+          if (task.attempts < effectiveAttemptLimit(task)) continue;
 
           exhaustedModels.add(currentModel);
           const fallback = this.nextEnabledFallback(task, exhaustedModels);
@@ -1732,9 +1764,10 @@ export class Orchestrator implements Scheduler {
               currentModel,
               fallback,
               attempts: task.attempts,
-              maxAttempts: task.maxAttempts,
+              maxAttempts: effectiveAttemptLimit(task),
               primaryDirtyFiles: primaryDirty,
             }),
+            exhaustedModels,
           );
           if (!nextModel) return;
           currentModel = nextModel;
@@ -1805,7 +1838,7 @@ export class Orchestrator implements Scheduler {
             task.id,
           );
 
-          if (task.attempts < task.maxAttempts) continue;
+          if (task.attempts < effectiveAttemptLimit(task)) continue;
 
           // All attempts on this model exhausted — try the next fallback model
           // before giving up entirely.
@@ -1819,9 +1852,10 @@ export class Orchestrator implements Scheduler {
               currentModel,
               fallback,
               attempts: task.attempts,
-              maxAttempts: task.maxAttempts,
+              maxAttempts: effectiveAttemptLimit(task),
               gate: gateResult,
             }),
+            exhaustedModels,
           );
           if (!nextModel) return;
           currentModel = nextModel;
@@ -1854,7 +1888,7 @@ export class Orchestrator implements Scheduler {
             (line) =>
               this.deps.events.onLog({
                 projectId: this.projectId,
-                runId: `run-${task.id}-${task.attempts}`,
+                runId: taskRunId(task),
                 taskId: task.id,
                 ts: new Date().toISOString(),
                 level: "debug",
@@ -1879,8 +1913,9 @@ export class Orchestrator implements Scheduler {
               currentModel,
               fallback,
               attempts: task.attempts,
-              maxAttempts: task.maxAttempts,
+              maxAttempts: effectiveAttemptLimit(task),
             }),
+            exhaustedModels,
           );
           if (!nextModel) return;
           currentModel = nextModel;
@@ -1896,11 +1931,13 @@ export class Orchestrator implements Scheduler {
             `Changes requested:\n${fixInstructions}`,
             task.id,
           );
-          if (task.attempts < task.maxAttempts) continue;
+          if (task.attempts < effectiveAttemptLimit(task)) continue;
 
           const choice = await this.deps.events.requestApproval({
             taskId: task.id,
-            title: `Task exhausted ${task.maxAttempts} attempts`,
+            title:
+              `Task exhausted ${task.attempts} author invocations ` +
+              `(policy ${task.maxAttempts})`,
             message:
               `Validator still requests changes:\n${decision.reasons.join("\n")}`,
             options: ["approve_anyway", "reject"],
@@ -1959,7 +1996,6 @@ export class Orchestrator implements Scheduler {
         this.taskAbortControllers.delete(task.id);
       }
       this.stopRequested.delete(task.id);
-      this.rateLimitWaits.delete(task.id);
       this.figmaCapabilityByTask.delete(task.id);
       this.noFigmaReferenceTasks.delete(task.id);
       try {
@@ -2054,6 +2090,10 @@ export class Orchestrator implements Scheduler {
         // the work is redone on top of the sibling's changes and merges clean.
         task.status = "backlog";
         task.prNumber = undefined;
+        task.runExtraAttempts++;
+        task.runModel = undefined;
+        task.runExhaustedModels = [];
+        task.runRateLimitRetries = 0;
         this.deps.events.onTaskUpdated(task);
         return;
       }
@@ -2225,7 +2265,7 @@ export class Orchestrator implements Scheduler {
 
   /**
    * B30: a task `in_review` with an open PR and a MergeDecision already
-   * persisted for its CURRENT attempt (runId matches `run-<taskId>-<attempts>`)
+   * persisted for its CURRENT attempt (runId matches taskRunId(task))
    * was — before whatever restarted this process — sitting at one of
    * executeTask's `requestApproval` calls, not mid-authoring. Returns that
    * decision so start()'s orphan recovery can re-arm it instead of
@@ -2239,7 +2279,7 @@ export class Orchestrator implements Scheduler {
       return undefined;
     }
     const decision = this.deps.getMergeDecisions?.(task.id)?.[0];
-    if (!decision || decision.runId !== `run-${task.id}-${task.attempts}`) {
+    if (!decision || decision.runId !== taskRunId(task)) {
       return undefined;
     }
     return decision;
@@ -2272,7 +2312,9 @@ export class Orchestrator implements Scheduler {
       if (decision.verdict === "request_changes") {
         const choice = await this.deps.events.requestApproval({
           taskId: task.id,
-          title: `Task exhausted ${task.maxAttempts} attempts`,
+          title:
+            `Task exhausted ${task.attempts} author invocations ` +
+            `(policy ${task.maxAttempts})`,
           message: `Validator still requests changes:\n${decision.reasons.join("\n")}`,
           options: ["approve_anyway", "reject"],
           signal,
@@ -2408,7 +2450,7 @@ export class Orchestrator implements Scheduler {
 
           this.deps.events.onLog({
             projectId: this.projectId,
-            runId: `run-${task.id}-${task.attempts}`,
+            runId: taskRunId(task),
             taskId: task.id,
             ts: new Date().toISOString(),
             level: "debug",
@@ -2526,7 +2568,7 @@ export class Orchestrator implements Scheduler {
 
     this.emit("info", "engine", `Documenting merged change with ${docsModel}…`, task.id);
 
-    const runId = `run-${task.id}-docs`;
+    const runId = docsRunId(task);
     const startedAt = new Date().toISOString();
     const effort = docsConfig.effort ?? "default";
     const controller = new AbortController();
@@ -2663,7 +2705,7 @@ export class Orchestrator implements Scheduler {
     startedAt: string,
     // F30: the docs stage passes its own `run-<taskId>-docs` id since it
     // isn't tied to an attempt number the way author runs are.
-    runId: string = `run-${task.id}-${task.attempts}`,
+    runId: string = taskRunId(task),
     effort = "default",
   ): void {
     const run: Run = {

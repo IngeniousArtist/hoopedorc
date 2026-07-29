@@ -40,6 +40,11 @@ CREATE TABLE IF NOT EXISTS tasks (
   pr_number           INTEGER,
   attempts            INTEGER NOT NULL DEFAULT 0,
   max_attempts        INTEGER NOT NULL DEFAULT 3,
+  run_generation      INTEGER NOT NULL DEFAULT 0,
+  run_extra_attempts  INTEGER NOT NULL DEFAULT 0,
+  run_model           TEXT,
+  run_exhausted_models TEXT NOT NULL DEFAULT '[]', -- JSON ModelId[]
+  run_rate_limit_retries INTEGER NOT NULL DEFAULT 0,
   dispatch_requested_at TEXT,  -- B34: persisted manual-priority queue request
   status_reason       TEXT,    -- one-line human-readable terminal outcome
   created_at          TEXT NOT NULL,

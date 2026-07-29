@@ -179,8 +179,23 @@ export interface Task {
   branch?: string;
   worktreePath?: string;
   prNumber?: number;
+  /** Author invocations reserved in the current logical run. */
   attempts: number;
+  /** Immutable operator policy. Engine recovery never changes this value. */
   maxAttempts: number;
+  /** Monotonic logical-run identity; incremented once per accepted Retry. */
+  runGeneration: number;
+  /**
+   * Recovery allowance granted by rate-limit/fallback/requeue transitions in
+   * this logical run. Effective limit = maxAttempts + runExtraAttempts.
+   */
+  runExtraAttempts: number;
+  /** Current durable fallback model; omitted while using assignedModel. */
+  runModel?: ModelId;
+  /** Models already exhausted in this logical run, in encounter order. */
+  runExhaustedModels: ModelId[];
+  /** Same-model rate-limit waits already granted for runModel/assignedModel. */
+  runRateLimitRetries: number;
   /**
    * B34: a persisted request to prioritize this task through the project's
    * one shared scheduler. It is cleared only when the scheduler actually

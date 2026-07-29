@@ -203,6 +203,11 @@ function setupDb(): Db {
         prNumber: t.prNumber,
         attempts: t.attempts,
         maxAttempts: t.maxAttempts,
+        runGeneration: t.runGeneration,
+        runExtraAttempts: t.runExtraAttempts,
+        runModel: t.runModel,
+        runExhaustedModels: t.runExhaustedModels,
+        runRateLimitRetries: t.runRateLimitRetries,
       });
     }
     repo.upsertSettings(db, settings);

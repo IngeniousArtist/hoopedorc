@@ -199,33 +199,21 @@ export async function retryTask(
   const budgetMsg = checkBudget(db, task.projectId, task.assignedModel, settings);
   if (budgetMsg) return { ok: false, status: 403, error: `budget cap: ${budgetMsg}` };
 
-  // Also clear prNumber/branch/worktreePath: a prior failed attempt may have
-  // already pushed to and opened a PR on `orc/<taskId>`. Without this, the
-  // new attempt's worktree (freshly branched off origin/<default>) can't
-  // push to that same branch name — its remote ref has diverged — and the
-  // push is rejected as non-fast-forward, failing every retry regardless of
-  // which model runs it.
-  repo.updateTask(
-    db,
-    id,
-    {
-      status: "backlog",
-      attempts: 0,
-      prNumber: null,
-      branch: null,
-      worktreePath: null,
-      dispatchRequestedAt: null,
-      statusReason: null,
-    } as Record<string, unknown> as Parameters<typeof repo.updateTask>[2],
-  );
-  repo.createAuditEntry(db, {
-    projectId: task.projectId,
-    taskId: id,
-    kind: "retry",
-    actor,
-    summary: `Retried "${task.title}"`,
-  });
-  const resetTask = repo.getTask(db, id)!;
+  // O34: status qualification, generation increment, task-run reset, stale
+  // execution cleanup, and the audit entry are one conditional SQLite
+  // transaction. A concurrent HTTP/Telegram Retry that lost the race cannot
+  // create a second logical run or audit entry.
+  const resetTask = repo.resetTaskForRetry(db, id, actor);
+  if (!resetTask) {
+    const current = repo.getTask(db, id);
+    return {
+      ok: false,
+      status: 409,
+      error: current
+        ? `task is ${current.status}; only ${retryable.join("/")} can be retried`
+        : "task not found",
+    };
+  }
   broadcast({ type: "task.updated", payload: resetTask });
 
   const project = repo.getProject(db, task.projectId)!;

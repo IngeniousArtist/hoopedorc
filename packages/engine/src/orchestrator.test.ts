@@ -14,6 +14,12 @@ import {
   isAuthOrSecretFile,
   scopesOverlap,
 } from "./orchestrator.js";
+import {
+  docsRunId,
+  effectiveAttemptLimit,
+  taskRunId,
+} from "./task-run.js";
+import { SelfReviewError } from "./validator.js";
 import type { GitService, SchedulerDeps, WorktreeManager } from "./index.js";
 
 function acquired<T>(value: T) {
@@ -52,7 +58,9 @@ function task(id: string, dependsOn: string[] = [], over: Partial<Task> = {}): T
   return {
     id, projectId: "p1", title: id, description: "", difficulty: "medium",
     status: "ready", dependsOn, acceptanceCriteria: [], assignedModel: "deepseek-flash",
-    scopePaths: ["**/*"], attempts: 0, maxAttempts: 2, createdAt: "", updatedAt: "", ...over,
+    scopePaths: ["**/*"], attempts: 0, maxAttempts: 2,
+    runGeneration: 0, runExtraAttempts: 0, runExhaustedModels: [],
+    runRateLimitRetries: 0, createdAt: "", updatedAt: "", ...over,
   };
 }
 
@@ -2500,11 +2508,12 @@ test("F32: a rate-limited author run waits and retries the SAME model, without c
     ["deepseek-flash", "deepseek-flash", "deepseek-flash"],
     "must retry the SAME model, never switch",
   );
-  // Started at attempts=1/maxAttempts=2 (headroom 1); each wait bumps both
-  // in lockstep, so the headroom right after the final successful attempt
-  // must still be exactly 1 — proof the waits didn't eat into the real
-  // attempt budget.
-  assert.equal(t1.maxAttempts - t1.attempts, 1);
+  // O34: the policy stays at two while the two rate-limit waits grant their
+  // own durable recovery slots. Effective headroom remains one, proving waits
+  // did not consume the configured policy budget.
+  assert.equal(t1.maxAttempts, 2);
+  assert.equal(t1.runExtraAttempts, 2);
+  assert.equal(effectiveAttemptLimit(t1) - t1.attempts, 1);
 
   assert.equal(trouble.length, 1, "only the FIRST wait should notify, not every wait");
   assert.equal(trouble[0]!.event, "rate_limit_wait");
@@ -2551,6 +2560,7 @@ test("F32: rate-limit retries exhausted falls back to the next model", async () 
   const events = trouble.map((t) => t.event);
   assert.deepEqual(events, ["rate_limit_wait", "fallback"]);
   assert.equal(trouble[1]!.model, "deepseek-pro");
+  assert.equal(t1.maxAttempts, 2, "fallback does not mutate policy");
 });
 
 test("B37: disabling a fallback while the author is in flight prevents a new fallback attempt", async () => {
@@ -3239,6 +3249,451 @@ test("O34: escalateOrFail preserves every stage's fallback and exhausted decisio
   for (const entry of cases) {
     assert.deepEqual(escalateOrFail(entry.input), entry.expected, entry.name);
   }
+});
+
+test("O34: effective limits and run ids distinguish policy from logical-run recovery", () => {
+  const t1 = task("t1", [], {
+    attempts: 3,
+    maxAttempts: 2,
+    runExtraAttempts: 2,
+  });
+
+  assert.equal(effectiveAttemptLimit(t1), 4);
+  assert.equal(t1.maxAttempts, 2, "reading the effective limit never mutates policy");
+  assert.equal(taskRunId(t1), "run-t1-3", "generation zero preserves legacy ids");
+  assert.equal(docsRunId(t1), "run-t1-docs");
+
+  t1.runGeneration = 2;
+  assert.equal(taskRunId(t1), "run-t1-g2-3");
+  assert.equal(docsRunId(t1), "run-t1-g2-docs");
+});
+
+test("O34: an author attempt is persisted before its subprocess starts", async () => {
+  const persistedAttempts: number[] = [];
+  let subprocessSawReservedAttempt = false;
+  const t1 = task("reserve-first", [], { maxAttempts: 1 });
+  const deps = fakeDeps(
+    {
+      adapterFor: () => ({
+        runner: "opencode",
+        async run(): Promise<AgentRunResult> {
+          await Promise.resolve();
+          subprocessSawReservedAttempt =
+            persistedAttempts.includes(1) && t1.attempts === 1;
+          return {
+            ok: true,
+            exitReason: "completed",
+            costUsd: 0,
+            tokensIn: 1,
+            tokensOut: 1,
+            summary: "",
+          };
+        },
+      }),
+      events: {
+        onLog() {},
+        onTaskUpdated(currentTask) {
+          persistedAttempts.push(currentTask.attempts);
+        },
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval() {
+          await Promise.resolve();
+          return "reject";
+        },
+      },
+    },
+    [],
+  );
+
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+  assert.equal(subprocessSawReservedAttempt, true);
+  assert.equal(t1.status, "done");
+});
+
+test("O34: every persisted fallback boundary resumes on the same model and budget", async (t) => {
+  const stages = ["author", "no_changes", "gates", "self_review_collision"] as const;
+
+  for (const stage of stages) {
+    await t.test(stage, async () => {
+      const liveSettings: Settings = {
+        ...settings(),
+        models: [
+          {
+            id: "model-a",
+            displayName: "Model A",
+            runner: "opencode",
+            opencodeModel: "model/a",
+            roles: ["medium"],
+            enabled: true,
+            maxConcurrent: 1,
+          },
+          {
+            id: "model-b",
+            displayName: "Model B",
+            runner: "opencode",
+            opencodeModel: "model/b",
+            roles: ["medium"],
+            enabled: true,
+            maxConcurrent: 1,
+          },
+          {
+            id: "reviewer",
+            displayName: "Reviewer",
+            runner: "opencode",
+            opencodeModel: "model/reviewer",
+            roles: ["validator"],
+            enabled: true,
+            maxConcurrent: 1,
+          },
+        ],
+        routing: {
+          planner: "model-a",
+          byDifficulty: { easy: "model-a", medium: "model-a", hard: "model-a" },
+          byRole: {},
+          validatorByDifficulty: {
+            easy: "reviewer",
+            medium: "reviewer",
+            hard: "reviewer",
+          },
+          fallbacks: ["model-b"],
+        },
+      };
+      const persisted = task(`restart-${stage}`, [], {
+        assignedModel: "model-a",
+        maxAttempts: 1,
+      });
+      let firstAuthorModel = "";
+      let pausePromise: Promise<void> | undefined;
+      let restartSnapshot: Task | undefined;
+      const firstRef: { current?: Orchestrator } = {};
+      const firstDeps = fakeDeps(
+        {
+          settings: liveSettings,
+          getSettings: () => liveSettings,
+          adapterFor: (model) => ({
+            runner: "opencode",
+            async run(): Promise<AgentRunResult> {
+              await Promise.resolve();
+              firstAuthorModel = model;
+              if (stage === "author" && model === "model-a") {
+                return {
+                  ok: false,
+                  exitReason: "error",
+                  costUsd: 0,
+                  tokensIn: 0,
+                  tokensOut: 0,
+                  summary: "",
+                };
+              }
+              return {
+                ok: true,
+                exitReason: "completed",
+                costUsd: 0,
+                tokensIn: 1,
+                tokensOut: 1,
+                summary: "",
+              };
+            },
+          }),
+          worktrees: {
+            async changedFiles() {
+              await Promise.resolve();
+              return stage === "no_changes" && firstAuthorModel === "model-a"
+                ? []
+                : ["src/example.ts"];
+            },
+          },
+          gates: {
+            async run() {
+              await Promise.resolve();
+              return stage === "gates" && firstAuthorModel === "model-a"
+                ? { ...GOOD_GATE, tests: false, details: { tests: "failed" } }
+                : GOOD_GATE;
+            },
+          },
+          validator: {
+            async review(project, currentTask, gate, authorModel) {
+              await Promise.resolve();
+              if (
+                stage === "self_review_collision" &&
+                authorModel === "model-a"
+              ) {
+                throw new SelfReviewError("author and validator collide");
+              }
+              return {
+                id: "decision",
+                projectId: project.id,
+                taskId: currentTask.id,
+                runId: taskRunId(currentTask),
+                validatorModel: "reviewer",
+                verdict: "approve",
+                reasons: ["ok"],
+                confidence: 0.95,
+                gate,
+                ts: "",
+              };
+            },
+          },
+          events: {
+            onLog() {},
+            onTaskUpdated(currentTask) {
+              if (
+                !pausePromise &&
+                currentTask.runModel === "model-b" &&
+                currentTask.runExtraAttempts === 1
+              ) {
+                restartSnapshot = {
+                  ...currentTask,
+                  runExhaustedModels: [...currentTask.runExhaustedModels],
+                };
+                pausePromise = firstRef.current!.pause(PROJECT);
+              }
+            },
+            onRunUpdated() {},
+            onMergeDecision() {},
+            async requestApproval() {
+              await Promise.resolve();
+              return "reject";
+            },
+          },
+        },
+        [],
+      );
+      const first = new Orchestrator(firstDeps);
+      firstRef.current = first;
+      await first.start(PROJECT, [persisted]);
+      await pausePromise;
+
+      assert.equal(persisted.status, "backlog");
+      const resumed = restartSnapshot!;
+      assert.ok(
+        resumed.status === "in_progress" || resumed.status === "in_review",
+        "snapshot represents the process-crash boundary before orphan recovery",
+      );
+      assert.equal(resumed.attempts, 1);
+      assert.equal(resumed.maxAttempts, 1, "fallback never changes policy");
+      assert.equal(resumed.runExtraAttempts, 1);
+      assert.equal(resumed.runModel, "model-b");
+      assert.deepEqual(resumed.runExhaustedModels, ["model-a"]);
+
+      const resumedModels: string[] = [];
+      const resumedDeps = fakeDeps(
+        {
+          settings: liveSettings,
+          getSettings: () => liveSettings,
+          adapterFor: (model) => ({
+            runner: "opencode",
+            async run(): Promise<AgentRunResult> {
+              await Promise.resolve();
+              resumedModels.push(model);
+              return {
+                ok: true,
+                exitReason: "completed",
+                costUsd: 0,
+                tokensIn: 1,
+                tokensOut: 1,
+                summary: "",
+              };
+            },
+          }),
+          validator: {
+            async review(project, currentTask, gate) {
+              await Promise.resolve();
+              return {
+                id: "resumed-decision",
+                projectId: project.id,
+                taskId: currentTask.id,
+                runId: taskRunId(currentTask),
+                validatorModel: "reviewer",
+                verdict: "approve",
+                reasons: ["ok"],
+                confidence: 0.95,
+                gate,
+                ts: "",
+              };
+            },
+          },
+        },
+        [],
+      );
+
+      await new Orchestrator(resumedDeps).start(PROJECT, [resumed]);
+      assert.equal(resumed.status, "done");
+      assert.equal(resumed.attempts, 2);
+      assert.equal(resumed.maxAttempts, 1);
+      assert.equal(resumed.runExtraAttempts, 1);
+      assert.equal(resumedModels[0], "model-b");
+      assert.equal(resumedModels.includes("model-a"), false);
+    });
+  }
+});
+
+test("O34: a restart preserves the same-model rate-limit cap", async () => {
+  const liveSettings: Settings = {
+    ...settings(),
+    models: [
+      {
+        id: "model-a",
+        displayName: "Model A",
+        runner: "opencode",
+        opencodeModel: "model/a",
+        roles: ["medium"],
+        enabled: true,
+        maxConcurrent: 1,
+      },
+      {
+        id: "model-b",
+        displayName: "Model B",
+        runner: "opencode",
+        opencodeModel: "model/b",
+        roles: ["medium"],
+        enabled: true,
+        maxConcurrent: 1,
+      },
+      {
+        id: "reviewer",
+        displayName: "Reviewer",
+        runner: "opencode",
+        opencodeModel: "model/reviewer",
+        roles: ["validator"],
+        enabled: true,
+        maxConcurrent: 1,
+      },
+    ],
+    routing: {
+      planner: "model-a",
+      byDifficulty: { easy: "model-a", medium: "model-a", hard: "model-a" },
+      byRole: {},
+      validatorByDifficulty: {
+        easy: "reviewer",
+        medium: "reviewer",
+        hard: "reviewer",
+      },
+      fallbacks: ["model-b"],
+    },
+  };
+  const persisted = task("rate-restart", [], {
+    assignedModel: "model-a",
+    maxAttempts: 1,
+  });
+  let pausePromise: Promise<void> | undefined;
+  let restartSnapshot: Task | undefined;
+  const firstRef: { current?: Orchestrator } = {};
+  const firstDeps = fakeDeps(
+    {
+      settings: liveSettings,
+      getSettings: () => liveSettings,
+      rateLimitWaitMs: 60_000,
+      adapterFor: () => ({
+        runner: "opencode",
+        async run(): Promise<AgentRunResult> {
+          await Promise.resolve();
+          return {
+            ok: false,
+            exitReason: "rate_limited",
+            costUsd: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+            summary: "",
+          };
+        },
+      }),
+      events: {
+        onLog() {},
+        onTaskUpdated(currentTask) {
+          if (!pausePromise && currentTask.runRateLimitRetries === 1) {
+            restartSnapshot = {
+              ...currentTask,
+              runExhaustedModels: [...currentTask.runExhaustedModels],
+            };
+            pausePromise = firstRef.current!.pause(PROJECT);
+          }
+        },
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval() {
+          await Promise.resolve();
+          return "reject";
+        },
+      },
+    },
+    [],
+  );
+  const first = new Orchestrator(firstDeps);
+  firstRef.current = first;
+  await first.start(PROJECT, [persisted]);
+  await pausePromise;
+
+  assert.equal(persisted.status, "backlog");
+  const resumed = restartSnapshot!;
+  assert.equal(resumed.status, "in_progress");
+  assert.equal(resumed.attempts, 1);
+  assert.equal(resumed.maxAttempts, 1);
+  assert.equal(resumed.runExtraAttempts, 1);
+  assert.equal(resumed.runRateLimitRetries, 1);
+
+  const resumedModels: string[] = [];
+  const resumedDeps = fakeDeps(
+    {
+      settings: liveSettings,
+      getSettings: () => liveSettings,
+      rateLimitWaitMs: 1,
+      adapterFor: (model) => ({
+        runner: "opencode",
+        async run(): Promise<AgentRunResult> {
+          await Promise.resolve();
+          resumedModels.push(model);
+          if (model === "model-a") {
+            return {
+              ok: false,
+              exitReason: "rate_limited",
+              costUsd: 0,
+              tokensIn: 0,
+              tokensOut: 0,
+              summary: "",
+            };
+          }
+          return {
+            ok: true,
+            exitReason: "completed",
+            costUsd: 0,
+            tokensIn: 1,
+            tokensOut: 1,
+            summary: "",
+          };
+        },
+      }),
+      validator: {
+        async review(project, currentTask, gate) {
+          await Promise.resolve();
+          return {
+            id: "decision",
+            projectId: project.id,
+            taskId: currentTask.id,
+            runId: taskRunId(currentTask),
+            validatorModel: "reviewer",
+            verdict: "approve",
+            reasons: ["ok"],
+            confidence: 0.95,
+            gate,
+            ts: "",
+          };
+        },
+      },
+    },
+    [],
+  );
+  await new Orchestrator(resumedDeps).start(PROJECT, [resumed]);
+
+  assert.equal(resumed.status, "done");
+  assert.deepEqual(
+    resumedModels,
+    ["model-a", "model-a", "model-b"],
+    "one persisted wait leaves one wait, then fallback",
+  );
+  assert.equal(resumed.maxAttempts, 1);
+  assert.equal(resumed.runRateLimitRetries, 0);
 });
 
 test("buildFallbackChain: explicit routing.fallbacks wins over difficulty tiers, in order, deduped", () => {

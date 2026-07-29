@@ -20,6 +20,19 @@ the old one-off manual Orchestrator path, lets multiple requests obey the same
 scope/model-cap rules as autonomous work, and preserves a queued request across
 a process restart.
 
+O34 separates immutable attempt policy from logical-run recovery. A `Task`
+always exposes `attempts` (author invocations reserved in this run),
+`maxAttempts` (operator policy), `runGeneration` (zero for the initial run),
+`runExtraAttempts` (durable recovery allowance), `runModel` (optional current
+fallback), `runExhaustedModels`, and `runRateLimitRetries`. The effective limit
+is `maxAttempts + runExtraAttempts`; engine control flow never changes
+`maxAttempts`. Attempts are persisted before author spawn, and each
+rate-limit/fallback/requeue boundary persists the complete run state in the
+same task-row update before continuing. Author/validator run IDs remain
+`run-<task>-<attempt>` for generation zero and become
+`run-<task>-g<generation>-<attempt>` afterward; documenter IDs follow the same
+rule with `docs` in place of the attempt.
+
 B39 makes plan approval a durability boundary. The server first saves the
 exact submitted PRD/task/AGENTS draft and sets the project to `planning`; it
 then awaits one repository commit/push containing PRD, AGENTS.md, and the
@@ -146,9 +159,11 @@ waits and retries the SAME model up to `RATE_LIMIT_RETRIES` (2) times
 before falling back — a 5-minute rate limit is often not a
 this-model-can't-do-it problem — via `SchedulerDeps.rateLimitWaitMs`
 (overridable; production uses the real `RATE_LIMIT_WAIT_MS`, 5 min).
-Each wait bumps `task.maxAttempts` in lockstep so it never consumes the
-task's real attempt budget; a Pause or Stop press mid-wait bails
-promptly instead of sleeping it out. `stuck`/`error` exit reasons are
+Each wait durably increments `runRateLimitRetries` and
+`runExtraAttempts`, leaving `maxAttempts` unchanged so it never consumes or
+inflates the task's policy budget; a Pause or Stop press mid-wait bails
+promptly instead of sleeping it out. Fallback selection and exhausted models
+are durable too, so a restart cannot repeat the wrong model. `stuck`/`error` exit reasons are
 unaffected — they still escalate to the next fallback model immediately,
 same as before F32. `EngineRunner` forwards every `onModelTrouble` event
 to both an audit-log entry (`kind: "model_trouble"`) and — gated by the
@@ -397,6 +412,16 @@ response with no verified nodes contains no generated visual-QA task. The
 existing B42 check proves the final selected author before execution.
 
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
+
+`POST /api/tasks/:id/retry` accepts only `failed`, `changes_requested`, or
+`blocked`. One conditional SQLite transaction increments `runGeneration`,
+resets only the current run's attempts/recovery/fallback state, clears stale
+execution coordinates, persists scheduler intent, and inserts the retry audit
+entry. Concurrent web and
+Telegram requests therefore have one winner; later callers receive 409 and
+cannot create duplicate runs or audits. The task's `maxAttempts`, assignment,
+description, DAG, and acceptance policy are preserved.
+
 Base: `/api`. JSON in/out. Errors use `ApiError`.
 
 <!-- ROUTES:START -->

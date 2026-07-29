@@ -1456,6 +1456,15 @@ orchestration code, so a "live" run would only re-prove the same author
 → gates → validator plumbing F29/F30 already exercised, not anything
 F32-specific.
 
+**O34 accounting supersession (2026-07-29):** the implementation evidence
+above remains the historical record of F32's shipped behavior, but its
+memory-only `rateLimitWaits` and runtime mutation of `task.maxAttempts` are no
+longer current architecture. O34 keeps `maxAttempts` immutable and persists
+same-model wait count, fallback position, and recovery allowance on the task
+row. The equivalent updated headroom assertion is
+`maxAttempts + runExtraAttempts - attempts`; full transition and migration
+semantics live in `docs/specs/retry-accounting.md`.
+
 **F33 — done.** Much smaller than F30/F32 — the plan's own "what exists
 already" note was accurate: `testModels` already ran a real prompt
 through every enabled model and returned `reply`, and SetupView already

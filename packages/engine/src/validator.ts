@@ -14,6 +14,7 @@ import {
   buildTaskHandoffBlock,
 } from "./guidelines.js";
 import type { GitAcquisition, Validator } from "./index.js";
+import { taskRunId } from "./task-run.js";
 
 const MAX_VALIDATOR_DIFF_BYTES = 512 * 1024;
 
@@ -333,7 +334,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
       id: randomUUID(),
       projectId: project.id,
       taskId: task.id,
-      runId: `run-${task.id}-${task.attempts}`,
+      runId: taskRunId(task),
       validatorModel: validatorModel as MergeDecision["validatorModel"],
       verdict,
       reasons,
