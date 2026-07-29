@@ -46,6 +46,8 @@ import type {
 export const FIGMA_CAPABILITY_UNAVAILABLE_MARKER =
   "[HOOPEDORC_CAPABILITY_UNAVAILABLE:figma]";
 
+const SCHEDULER_RECONCILE_DEADLINE_MS = 250;
+
 const FIGMA_AUTHOR_RECOVERY_ACTIONS = [
   "Fix or re-authenticate Figma MCP for this runner, then Retry the task.",
   "Reassign the task to another Figma-capable model, then Retry it.",
@@ -811,9 +813,21 @@ export class Orchestrator implements Scheduler {
    * would clobber in-progress state (attempts, worktreePath, mid-run status
    * transitions) with a stale snapshot.
    */
-  private reconcileTasks(): void {
+  private reconcileTasks(
+    observedGeneration: number | undefined,
+  ): number | undefined {
+    const taskChanges = this.deps.taskChanges;
+    const generation = taskChanges?.currentGeneration();
+    if (
+      taskChanges &&
+      observedGeneration !== undefined &&
+      generation === observedGeneration
+    ) {
+      return observedGeneration;
+    }
+
     const fresh = this.deps.getTasks?.();
-    if (!fresh) return;
+    if (!fresh) return generation ?? observedGeneration;
 
     const freshById = new Map(fresh.map((t) => [t.id, t]));
     for (const f of fresh) {
@@ -834,6 +848,33 @@ export class Orchestrator implements Scheduler {
       if (!f) continue; // deleted from the DB since we last saw it — keep as-is
       Object.assign(t, f);
     }
+    return generation;
+  }
+
+  /**
+   * O35: capture the memory edge before sleeping, then recheck the durable
+   * generation. A write before waiter registration either changes that
+   * generation or advances the edge; a write after registration resolves the
+   * waiter. The deadline remains the fail-safe for out-of-process writes and
+   * time-based cooldown/quota/capacity/approval changes.
+   */
+  private async waitForSchedulerChange(
+    observedGeneration: number | undefined,
+  ): Promise<void> {
+    const taskChanges = this.deps.taskChanges;
+    if (!taskChanges || observedGeneration === undefined) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, SCHEDULER_RECONCILE_DEADLINE_MS),
+      );
+      return;
+    }
+
+    const wakeVersion = taskChanges.currentWakeVersion();
+    if (taskChanges.currentGeneration() !== observedGeneration) return;
+    await taskChanges.waitForChange(
+      wakeVersion,
+      SCHEDULER_RECONCILE_DEADLINE_MS,
+    );
   }
 
   readyTasks(tasks: Task[]): Task[] {
@@ -931,8 +972,9 @@ export class Orchestrator implements Scheduler {
 
     this.emit("info", "engine", "Orchestrator starting", "");
 
+    let observedTaskGeneration: number | undefined;
     while (!this.paused) {
-      this.reconcileTasks();
+      observedTaskGeneration = this.reconcileTasks(observedTaskGeneration);
 
       // F41: same drain-not-abort semantics as `draining` above, but
       // driven by an unresolved approval instead of a human pause — only
@@ -1216,7 +1258,7 @@ export class Orchestrator implements Scheduler {
           blockedByTimeBounded ||
           pendingApproval)
       ) {
-        await new Promise((r) => setTimeout(r, 250));
+        await this.waitForSchedulerChange(observedTaskGeneration);
         continue;
       }
 

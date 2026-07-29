@@ -549,6 +549,105 @@ test("O34: task-run accounting round-trips and only one conditional Retry wins",
   assert.equal(retries[0]!.actor, "human");
 });
 
+test("O35: an existing database receives task generations and triggers idempotently", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hoopedorc-o35-migration-"));
+  const path = join(dir, "legacy.db");
+  const original = initDb(path);
+  repo.createProject(original, {
+    id: "legacy-generation-project",
+    name: "Legacy generation",
+    repoUrl: "https://github.com/x/legacy-generation",
+    defaultBranch: "main",
+    localPath: "/tmp/legacy-generation",
+    status: "paused",
+  });
+  repo.createTask(original, {
+    id: "legacy-generation-task",
+    projectId: "legacy-generation-project",
+    title: "Legacy task",
+    description: "",
+    difficulty: "medium",
+    status: "ready",
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: [],
+    attempts: 0,
+    maxAttempts: 3,
+  });
+  for (const trigger of [
+    "tasks_generation_after_insert",
+    "tasks_generation_after_update",
+    "tasks_generation_after_delete",
+  ]) {
+    original.exec(`DROP TRIGGER ${trigger}`);
+  }
+  original.exec("ALTER TABLE projects DROP COLUMN task_generation");
+  original.close();
+
+  for (let pass = 0; pass < 2; pass++) {
+    const migrated = initDb(path);
+    const columns = migrated
+      .prepare("PRAGMA table_info(projects)")
+      .all() as { name: string }[];
+    assert.equal(
+      columns.filter((column) => column.name === "task_generation").length,
+      1,
+    );
+    const triggers = migrated
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'trigger' AND name LIKE 'tasks_generation_after_%'`,
+      )
+      .all() as { name: string }[];
+    assert.equal(triggers.length, 3);
+    assert.equal(repo.getTaskGeneration(migrated, "legacy-generation-project"), 0);
+    assert.ok(repo.getTask(migrated, "legacy-generation-task"));
+    migrated.close();
+  }
+});
+
+test("O35: every task mutation advances durable generation and repository wake state", () => {
+  const db = setup();
+  const projectId = "proj-1";
+  const startGeneration = repo.getTaskGeneration(db, projectId);
+  const startWake = repo.getTaskWakeVersion(db, projectId);
+
+  seedTask(db, "generation-task", "failed", "queued");
+  assert.equal(repo.getTaskGeneration(db, projectId), startGeneration + 1);
+  assert.equal(repo.getTaskWakeVersion(db, projectId), startWake + 1);
+
+  repo.updateTask(db, "generation-task", { status: "in_progress" });
+  assert.equal(repo.getTaskGeneration(db, projectId), startGeneration + 2);
+  assert.equal(repo.getTaskWakeVersion(db, projectId), startWake + 2);
+
+  assert.equal(
+    repo.markTaskStoppedIfActive(db, "generation-task").changed,
+    true,
+  );
+  assert.equal(repo.getTaskGeneration(db, projectId), startGeneration + 3);
+  assert.equal(repo.getTaskWakeVersion(db, projectId), startWake + 3);
+
+  repo.updateTask(db, "generation-task", {
+    status: "failed",
+    dispatchRequestedAt: "queued",
+  });
+  repo.clearDispatchRequests(db, projectId);
+  assert.equal(repo.getTaskGeneration(db, projectId), startGeneration + 5);
+  assert.equal(repo.getTaskWakeVersion(db, projectId), startWake + 5);
+
+  assert.ok(repo.resetTaskForRetry(db, "generation-task", "human"));
+  assert.equal(repo.getTaskGeneration(db, projectId), startGeneration + 6);
+  assert.equal(repo.getTaskWakeVersion(db, projectId), startWake + 6);
+
+  // A write from another process/older code still advances the trigger-owned
+  // durable generation. It deliberately has no in-memory hint; the bounded
+  // scheduler deadline is the recovery path.
+  db.prepare("UPDATE tasks SET title = title WHERE id = ?").run("generation-task");
+  assert.equal(repo.getTaskGeneration(db, projectId), startGeneration + 7);
+  assert.equal(repo.getTaskWakeVersion(db, projectId), startWake + 6);
+});
+
 test("dispatchRequestedAt round-trips and project Stop clears queued requests", () => {
   const db = setup();
   const requestedAt = "2026-07-14T00:00:00.000Z";

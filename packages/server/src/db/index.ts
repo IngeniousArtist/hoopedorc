@@ -38,6 +38,9 @@ export function initDb(path: string = ENV.dbPath): Db {
     "ALTER TABLE projects ADD COLUMN config TEXT",
     // F19: when the scheduler last auto-started this project.
     "ALTER TABLE projects ADD COLUMN last_scheduled_run_at TEXT",
+    // O35: durable, per-project task mutation generation. The schema's task
+    // triggers increment it in the same transaction as every row mutation.
+    "ALTER TABLE projects ADD COLUMN task_generation INTEGER NOT NULL DEFAULT 0",
     // F22: PR link + validator reasons for an approval notification — the
     // same context Telegram's approval message already carries, now also
     // persisted so the web UI can render it (JSON, nullable).

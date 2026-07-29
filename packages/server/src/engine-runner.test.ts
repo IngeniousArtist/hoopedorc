@@ -711,6 +711,34 @@ test("B34: repeated manual dispatches share one project runtime and one schedule
   assert.equal(engine.hasActivity(proj.id), false);
 });
 
+test("O35: a persisted manual dispatch advances generation and wakes the production source", async () => {
+  const db = setup();
+  const proj = project(db, "o35-manual");
+  const queued = seedTask(db, proj.id, "queued");
+  const controlled = controlledOrchestrator();
+  const taskChanges = buildDeps(
+    new EngineRunner(db, new WsHub()),
+    proj,
+  ).taskChanges!;
+  const engine = new EngineRunner(db, new WsHub(), {
+    ensureClone: async () => {},
+    orchestratorFactory: () => controlled.orchestrator,
+  });
+  const generation = taskChanges.currentGeneration();
+  const wakeVersion = taskChanges.currentWakeVersion();
+  const waiting = taskChanges.waitForChange(wakeVersion, 1_000);
+
+  await engine.dispatchOne(proj, queued.id);
+
+  assert.equal(await waiting, "change");
+  assert.equal(taskChanges.currentGeneration(), generation + 1);
+  await controlled.started;
+  const runtime = activeRuntime(engine, proj.id);
+  repo.clearDispatchRequests(db, proj.id);
+  controlled.resolveStart();
+  await runtime.settled;
+});
+
 test("B34: Start promotes a manual runtime instead of constructing a competing Orchestrator", async () => {
   const db = setup();
   const hub = new WsHub();

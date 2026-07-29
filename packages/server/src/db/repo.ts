@@ -18,6 +18,22 @@ import type {
 } from "@orc/types";
 import type { Db } from "./index";
 import { normalizeSettings } from "../config";
+import { TaskChangeBus, type TaskChangeWaitResult } from "../task-change-bus";
+
+const taskChangeBuses = new WeakMap<Db, TaskChangeBus>();
+
+function taskChangeBus(db: Db): TaskChangeBus {
+  let bus = taskChangeBuses.get(db);
+  if (!bus) {
+    bus = new TaskChangeBus();
+    taskChangeBuses.set(db, bus);
+  }
+  return bus;
+}
+
+function publishTaskChange(db: Db, projectId: string): void {
+  taskChangeBus(db).notify(projectId);
+}
 
 function json<T>(raw: unknown): T {
   if (typeof raw === "string") return JSON.parse(raw) as T;
@@ -283,6 +299,29 @@ export function getTask(db: Db, id: string): Task | null {
   return row ? mapTask(row) : null;
 }
 
+/** O35 durable generation maintained by SQLite triggers on every task write. */
+export function getTaskGeneration(db: Db, projectId: string): number {
+  const row = db
+    .prepare("SELECT task_generation FROM projects WHERE id = ?")
+    .get(projectId) as { task_generation: number } | undefined;
+  return Number(row?.task_generation ?? 0);
+}
+
+/** O35 same-process edge token; durable correctness still comes from SQLite. */
+export function getTaskWakeVersion(db: Db, projectId: string): number {
+  return taskChangeBus(db).currentVersion(projectId);
+}
+
+/** Wait for a repository task write or the scheduler's bounded deadline. */
+export function waitForTaskChange(
+  db: Db,
+  projectId: string,
+  afterVersion: number,
+  deadlineMs: number,
+): Promise<TaskChangeWaitResult> {
+  return taskChangeBus(db).waitForChange(projectId, afterVersion, deadlineMs);
+}
+
 export function createTask(
   db: Db,
   t: Omit<
@@ -337,7 +376,9 @@ export function createTask(
     now,
     now,
   );
-  return getTask(db, t.id)!;
+  const created = getTask(db, t.id)!;
+  publishTaskChange(db, t.projectId);
+  return created;
 }
 
 export function updateTask(
@@ -390,8 +431,14 @@ export function updateTask(
   }
 
   vals.push(id);
-  db.prepare(`UPDATE tasks SET ${set.join(", ")} WHERE id = ?`).run(...vals);
-  return getTask(db, id);
+  const changed = db
+    .prepare(
+      `UPDATE tasks SET ${set.join(", ")} WHERE id = ? RETURNING project_id`,
+    )
+    .get(...vals) as { project_id: string } | undefined;
+  const task = getTask(db, id);
+  if (changed) publishTaskChange(db, changed.project_id);
+  return task;
 }
 
 /**
@@ -404,7 +451,8 @@ export function resetTaskForRetry(
   id: string,
   actor: "human" | "telegram",
 ): Task | null {
-  return db.transaction(() => {
+  let projectId: string | undefined;
+  const reset = db.transaction(() => {
     const now = new Date().toISOString();
     const won = db.prepare(
       `UPDATE tasks
@@ -426,6 +474,7 @@ export function resetTaskForRetry(
        RETURNING project_id, title`,
     ).get(now, now, id) as { project_id: string; title: string } | undefined;
     if (!won) return null;
+    projectId = won.project_id;
 
     createAuditEntry(db, {
       projectId: won.project_id,
@@ -436,6 +485,8 @@ export function resetTaskForRetry(
     });
     return getTask(db, id);
   })();
+  if (projectId) publishTaskChange(db, projectId);
+  return reset;
 }
 
 /** Cancel every queued manual-priority request that has not started yet. */
@@ -450,10 +501,12 @@ export function clearDispatchRequests(db: Db, projectId: string): Task[] {
   db.prepare(
     "UPDATE tasks SET dispatch_requested_at = NULL, updated_at = ? WHERE project_id = ? AND dispatch_requested_at IS NOT NULL",
   ).run(new Date().toISOString(), projectId);
-  return requested.flatMap(({ id }) => {
+  const cleared = requested.flatMap(({ id }) => {
     const task = getTask(db, id);
     return task ? [task] : [];
   });
+  publishTaskChange(db, projectId);
+  return cleared;
 }
 
 /**
@@ -472,7 +525,9 @@ export function markTaskStoppedIfActive(
        WHERE id = ? AND status IN ('in_progress', 'in_review')`,
     )
     .run(reason, new Date().toISOString(), id);
-  return { changed: result.changes > 0, task: getTask(db, id) };
+  const task = getTask(db, id);
+  if (result.changes > 0 && task) publishTaskChange(db, task.projectId);
+  return { changed: result.changes > 0, task };
 }
 
 // ── Rollback jobs ──
