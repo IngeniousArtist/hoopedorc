@@ -838,6 +838,27 @@ late response, persisted notification state, and resolver cleanup.
 
 **Fix risk:** low-medium (must respect the pause-vs-stop semantic split).
 
+**Status:** completed with O21 in
+[#196](https://github.com/IngeniousArtist/hoopedorc/pull/196)
+(`59c8c7d`). Every normal and restart-recovery approval receives the task
+controller signal. Hard Stop now removes the resolver, conditionally persists
+and broadcasts `cancelled_stop`, writes its audit entry, rejects the waiter
+with `AbortError`, settles the owned pipeline, and leaves no path for a late
+answer to resume a merge; the HTTP route returns an explicit 410 without
+overwriting cancellation. The conditional SQLite update proves Stop and a
+human answer are single-winner. Graceful drain keeps the signal live and
+applies its answer normally, and the unchanged rollback-approval tests remain
+green.
+
+Full local verification passed typecheck, build, lint (including a downward
+engine `require-await` ratchet from 194 to 193), engine 194/194, adapters
+12/12, server 241/241, web 25/25, E2E 16/16 at
+360/390/768/1280/1440 px, and `git diff --check`. Linux `build-and-test` CI
+passed in 2m18s. On merged `59c8c7d`, the shared O16/O21/O29 engine checks
+passed 9/9 and the focused server O16 checks passed 3/3. No EC2 smoke is
+required because this changes deterministic in-process lifecycle state, not
+deployment or host behavior.
+
 ### O17. Self-update can wedge "in progress" for 2 h after an early death — MEDIUM-LOW (robustness)
 
 **Problem:** `start()` persists `state:"queued"` before launching
@@ -1001,6 +1022,26 @@ boundaries. Rollback is the single engine/test/docs change; no live EC2 check
 is required because this is deterministic in-process scheduler state.
 
 **Fix risk:** very low / low.
+
+**Status:** completed with O16 in
+[#196](https://github.com/IngeniousArtist/hoopedorc/pull/196)
+(`59c8c7d`). `publishActiveStage` is now the only transient-stage writer and
+synchronously checks pause plus active ownership. Hard Stop snapshots its
+owned tasks, marks the orchestrator paused, aborts and settles those exact
+pipelines, then persists backlog for any remaining runnable/transient task.
+Barrier tests cover initial/retry `in_progress` and pre-gate `in_review`;
+drain and approval behavior remain covered. Conflict counts reset at a new
+`start()`, disappear immediately after clean sync, and prune when terminal
+tasks release ownership, while the O29 same-run conflict → requeue → cap test
+still proves the retry budget remains reachable.
+
+Full local verification passed typecheck, build, lint, engine 194/194,
+adapters 12/12, server 241/241, web 25/25, E2E 16/16 at
+360/390/768/1280/1440 px, and `git diff --check`. Linux `build-and-test` CI
+passed in 2m18s. The merged commit was confirmed as local and `origin/main` at
+`59c8c7d`; the shared O16/O21/O29 engine checks then passed 9/9 and the focused
+server O16 checks passed 3/3. No live EC2 check is required for this
+in-process-only lifecycle change.
 
 ---
 
