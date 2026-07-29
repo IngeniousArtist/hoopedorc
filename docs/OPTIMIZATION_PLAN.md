@@ -2141,6 +2141,29 @@ instrumented pipeline issued one `changedFilesWithStatus`, one `diffText`,
 and one author-stage `changedFiles`, with the merge decision launching no
 second listing.
 
+**Status (merge-decision git diff candidate):** completed in
+[#210](https://github.com/IngeniousArtist/hoopedorc/pull/210)
+(`c883c97`). The risky-file rules now reuse the completed destructive
+inspection's path list inside `canAutoMerge`; a disabled
+`destructiveChanges` rule keeps its own separate listing, and the
+destructive inspection itself is byte-identical. Full local verification
+passed typecheck, build, lint across 144 files with the exact 340-finding
+baseline, engine 214/214, adapters 12/12, server 255/255, web 26/26,
+E2E 16/16, and `git diff --check`. Linux `build-and-test` CI passed at
+reviewed head `65c2f0f` in 2m18s.
+
+After merge, clean local `main` and `origin/main` matched
+`c883c9702a69e8c1442d84e57529bc5f68d2a3ba`. The focused O36 regressions
+passed 4/4, and the independent instrumented pipeline again issued one
+`changedFilesWithStatus`, one `diffText`, and only the author-stage
+`changedFiles`, while the avoided subprocess re-measured a 712.548 ms median
+per 100 invocations (7.125 ms per merge decision) on the unchanged 500-file
+fixture. No API, contract, persistence, UI, external CLI,
+filesystem-ownership, or deployment/process behavior changed, so no
+additional live-system smoke is required. This closes the last of O36's four
+candidates: live settings reuse (#204), the WebSocket catch-up join (#206),
+the settings-save scan (#208), and this merge-decision reuse (#210).
+
 **Fix risk:** low.
 
 ---
