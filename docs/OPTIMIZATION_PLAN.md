@@ -1969,6 +1969,27 @@ snapshot completeness/order, and destructive-change inspection remain
 identical; full gates green. Unmeasured or immaterial candidates are closed as
 deferred without code.
 
+**Status (`liveSettings()` candidate):** completed in
+[#204](https://github.com/IngeniousArtist/hoopedorc/pull/204)
+(`fb58add`). A billable terminal run event now owns one normalized settings
+snapshot across manual pricing, invocation-ledger pricing, and budget alerts,
+reducing the measured SQLite settings reads from three to one while separate
+events retain live reads. Full local verification passed typecheck, build,
+lint across 144 files with the exact 340-finding baseline, engine 210/210,
+adapters 12/12, server 251/251, web 26/26, E2E 16/16, and
+`git diff --check`. Linux `build-and-test` CI passed at reviewed head
+`9bab1f9` in 5m23s.
+
+After merge, clean local `main` and `origin/main` matched
+`fb58addf4154072e9d9f1425ec75e05074b873f0`. The focused O36 regression passed
+1/1, and the independent measurement again counted zero reads for Figma-free
+preflight and one each for adapter, budget, quota, task update, run update,
+and model-trouble closures. Five 10,000-read repetitions had a 118.797 ms
+median (11.880 µs/read), while live task and model-trouble notifications
+remained observable. No API, persistence-schema, UI, external CLI,
+filesystem-ownership, or deployment/process behavior changed, so no
+additional live-system smoke is required.
+
 **Fix risk:** low.
 
 ---
