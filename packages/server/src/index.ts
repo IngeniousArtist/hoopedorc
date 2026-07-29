@@ -2381,12 +2381,19 @@ async function assembleServer(
   hub.setSnapshotProvider((projectId) => {
     const project = repo.getProject(db, projectId);
     if (!project) return [];
+    const tasks = repo.getTasks(db, projectId);
+    const runsByTask = new Map<string, ReturnType<typeof repo.getRuns>>();
+    for (const run of repo.getRunsForProject(db, projectId)) {
+      const runs = runsByTask.get(run.taskId);
+      if (runs) runs.push(run);
+      else runsByTask.set(run.taskId, [run]);
+    }
     const events: ServerEvent[] = [
       { type: "project.updated", payload: project },
     ];
-    for (const t of repo.getTasks(db, projectId)) {
+    for (const t of tasks) {
       events.push({ type: "task.updated", payload: t });
-      for (const r of repo.getRuns(db, t.id)) {
+      for (const r of runsByTask.get(t.id) ?? []) {
         events.push({ type: "run.updated", payload: r });
       }
     }

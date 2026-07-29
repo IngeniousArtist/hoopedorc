@@ -1990,6 +1990,40 @@ remained observable. No API, persistence-schema, UI, external CLI,
 filesystem-ownership, or deployment/process behavior changed, so no
 additional live-system smoke is required.
 
+**WS catch-up snapshot N+1 measurement protocol and threshold (2026-07-30,
+before any O36 production change):** seed one project with 250 tasks and three
+historical runs per task, then subscribe a real `WsHub` client after
+`buildApp()` has registered the production snapshot provider. Instrument the
+exact SQLite run-read statements and record five 100-snapshot timing
+repetitions. Capture `EXPLAIN QUERY PLAN` for both the current per-task query
+and the proposed project-scoped tasks→runs join. The join must search through
+the existing `idx_tasks_project` and `idx_runs_task` indexes without a full
+`runs` table scan; a temporary sort remains acceptable when needed to preserve
+each task's newest-first run order. Implement only if the production snapshot
+issues one `getRuns(taskId)` statement per task (250 on this fixture), the
+join produces the identical project/task/run event sequence, and one grouped
+run query can replace those reads. Otherwise defer this candidate without an
+index, cache, or contract change.
+
+**WS catch-up snapshot N+1 measurement result and decision (2026-07-30):** the
+real production subscribe path emitted 1,001 project/task/run events per
+snapshot for that 250-task/750-run fixture and issued exactly 250
+`SELECT * FROM runs WHERE task_id = ? ORDER BY started_at DESC` statements.
+Five 100-snapshot repetitions took 354.640–365.870 ms, median 357.642 ms, on
+the Node 22.23.0 local measurement host. The current query plan uses
+`idx_runs_task`; the proposed tasks→runs join uses both `idx_tasks_project` and
+`idx_runs_task` with no full `runs` scan (each plan needs a temporary sort to
+preserve newest-first task history). The threshold therefore passed. The
+pre-fix production-snapshot regression failed at `250 !== 1`; implement one
+joined repository read and group it in memory without changing the WebSocket
+contract, event contents, or project/task/run ordering. On the unchanged
+fixture after implementation, each 100-snapshot repetition issued 100 grouped
+run statements rather than 25,000 per-task statements, and took
+225.055–235.886 ms, median 225.963 ms. That removes 99.6% of snapshot run-read
+statements and 131.679 ms per 100 snapshots (36.8%) on this fixture. Focused
+tests prove project isolation, newest-first task history, one query for the
+production subscribe path, and the full emitted event sequence.
+
 **Fix risk:** low.
 
 ---
