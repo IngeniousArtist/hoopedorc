@@ -2045,6 +2045,41 @@ persistence-schema, UI, external CLI, filesystem-ownership, or
 deployment/process behavior changed, so no additional live-system smoke is
 required.
 
+**Settings-save full scan measurement protocol and threshold (2026-07-30,
+before any O36 production change):** seed 20 projects with 250 tasks each
+(5,000 task rows on models that exist in settings, mixed terminal and active
+statuses), then drive the real production `PUT /api/settings` route through
+`buildApp()`. Instrument the exact SQLite project/task statements one save
+issues and record five 100-save timing repetitions. Capture
+`EXPLAIN QUERY PLAN` for the current per-project tasks read and for the
+proposed single project-join read; the join must search `tasks` through the
+existing `idx_tasks_project` index without a full `tasks` scan, with a
+temporary sort acceptable to preserve the replaced loop's warning order
+(newest project first, oldest task first). Implement only if one production
+save issues one tasks statement per project (20 on this fixture) and maps
+every task row to warn about the rare dangling few; otherwise defer this
+candidate without an index, cache, or contract change.
+
+**Settings-save full scan measurement result and decision (2026-07-30):** the
+real production save issued one projects-list read plus exactly 20
+`SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at ASC` statements
+(25 statements per save in total) and materialized all 5,000 task rows to
+produce zero warnings on this clean fixture. Five 100-save repetitions took
+1482.405–1517.786 ms, median 1489.405 ms (14.894 ms per save), on the
+Node 22.23.0 local measurement host. The threshold therefore passed. The
+pre-fix production-save regression failed at `6 !== 1` on its six-project
+test fixture; implement one joined repository read that filters status and
+assigned model in SQL and pins the project→tasks join order with `CROSS JOIN`
+so SQLite searches `idx_tasks_project` instead of scanning `tasks` (an
+unpinned join plans as a full `tasks` scan), while keeping the warning text
+and order identical. On the unchanged fixture after implementation, one save
+issued 5 statements (zero projects-list, zero per-project, one joined read)
+and five 100-save repetitions took 46.607–54.019 ms, median 48.554 ms
+(0.486 ms per save). That removes 20 of the 21 project/task statements and
+96.7% of the median save time (14.408 ms per save) on this fixture. Focused
+tests prove terminal and known-model exclusion, the loop's warning order,
+warning parity on the production save path, and the one-statement invariant.
+
 **Fix risk:** low.
 
 ---

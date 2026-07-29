@@ -299,6 +299,33 @@ export function getTask(db: Db, id: string): Task | null {
   return row ? mapTask(row) : null;
 }
 
+/**
+ * O36: every non-terminal task whose assigned model is not in `knownModelIds`,
+ * for the settings-save dangling-model warning. One statement replaces the
+ * projects×tasks loop that read and mapped every task row on each save. The
+ * CROSS JOIN pins the project→tasks join order so SQLite searches tasks
+ * through `idx_tasks_project` instead of scanning the whole table, and the
+ * ordering mirrors the replaced loop: newest project first, oldest task first.
+ */
+export function getDanglingModelTasks(
+  db: Db,
+  knownModelIds: readonly string[],
+): Task[] {
+  const missingModel = knownModelIds.length
+    ? `AND t.assigned_model NOT IN (${knownModelIds.map(() => "?").join(", ")})`
+    : "";
+  return db
+    .prepare(
+      `SELECT t.*
+       FROM projects AS p
+       CROSS JOIN tasks AS t ON t.project_id = p.id
+       WHERE t.status NOT IN ('done', 'failed') ${missingModel}
+       ORDER BY p.created_at DESC, t.created_at ASC`,
+    )
+    .all(...knownModelIds)
+    .map((r) => mapTask(r as Record<string, unknown>));
+}
+
 /** O35 durable generation maintained by SQLite triggers on every task write. */
 export function getTaskGeneration(db: Db, projectId: string): number {
   const row = db

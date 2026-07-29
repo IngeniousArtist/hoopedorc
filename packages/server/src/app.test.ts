@@ -250,6 +250,130 @@ test("O36: a project catch-up snapshot reads all runs with one indexed statement
   }
 });
 
+test("O36: a settings save checks dangling task models with one indexed statement", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-o36-settings-scan-"));
+  const deps = dependencies(root);
+  const extraProjects = 5;
+  const tasksPerProject = 20;
+  // createProject/createTask stamp "now"; the warning order the loop
+  // guaranteed (newest project first, oldest task first) needs explicit
+  // timestamps, so backdate created_at directly.
+  const setProjectCreated = deps.db.prepare(
+    "UPDATE projects SET created_at = ? WHERE id = ?",
+  );
+  const setTaskCreated = deps.db.prepare(
+    "UPDATE tasks SET created_at = ? WHERE id = ?",
+  );
+  setProjectCreated.run("2026-01-01T00:00:00.000Z", "project-1");
+
+  const seedTask = (
+    projectId: string,
+    index: number,
+    status: string,
+    assignedModel: string,
+  ) => {
+    const id = `o36-scan-task-${projectId}-${index}`;
+    repo.createTask(deps.db, {
+      id,
+      projectId,
+      title: `Scan task ${index}`,
+      description: "",
+      difficulty: "easy",
+      status: status as import("@orc/types").TaskStatus,
+      dependsOn: [],
+      acceptanceCriteria: [],
+      assignedModel,
+      scopePaths: [],
+      attempts: 0,
+      maxAttempts: 3,
+    });
+    setTaskCreated.run(
+      `2026-01-01T00:${String(10 + index).padStart(2, "0")}:00.000Z`,
+      id,
+    );
+  };
+  for (let projectIndex = 2; projectIndex <= 1 + extraProjects; projectIndex++) {
+    const projectId = `o36-scan-project-${projectIndex}`;
+    repo.createProject(deps.db, {
+      id: projectId,
+      name: `Scan project ${projectIndex}`,
+      repoUrl: "https://github.com/example/o36-scan",
+      defaultBranch: "main",
+      localPath: join(root, `project-${projectIndex}`),
+      status: "created",
+    });
+    setProjectCreated.run(`2026-01-0${projectIndex}T00:00:00.000Z`, projectId);
+    for (let taskIndex = 0; taskIndex < tasksPerProject; taskIndex++) {
+      seedTask(projectId, taskIndex, taskIndex % 2 ? "done" : "ready", "deepseek-flash");
+    }
+  }
+  // Dangling live tasks that must warn, and a terminal one that must not.
+  seedTask("o36-scan-project-4", tasksPerProject + 1, "ready", "ghost-model");
+  seedTask("o36-scan-project-4", tasksPerProject + 2, "in_progress", "ghost-model");
+  seedTask("o36-scan-project-4", tasksPerProject + 3, "done", "ghost-model");
+  seedTask("project-1", 0, "backlog", "retired-model");
+
+  const app = await buildApp(deps);
+  const log = app.log as { warn: (message: unknown) => void };
+  const realWarn = log.warn;
+  try {
+    const current = (
+      await app.inject({ method: "GET", url: "/api/settings" })
+    ).json<{ settings: unknown }>();
+
+    const prepare = deps.db.prepare.bind(deps.db);
+    const taskReadStatements: string[] = [];
+    Object.defineProperty(deps.db, "prepare", {
+      configurable: true,
+      value(source: string) {
+        const statement = source.replace(/\s+/g, " ").trim();
+        if (statement.includes("FROM tasks") || statement.includes("JOIN tasks")) {
+          taskReadStatements.push(statement);
+        }
+        return prepare(source);
+      },
+    });
+    const warnings: string[] = [];
+    log.warn = (message: unknown) => {
+      if (
+        typeof message === "string" &&
+        message.includes("no longer exists in Settings")
+      ) {
+        warnings.push(message);
+      }
+    };
+
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { settings: current.settings },
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(
+      taskReadStatements.length,
+      1,
+      "one indexed join query replaces one tasks query per project",
+    );
+    assert.ok(taskReadStatements[0]?.includes("CROSS JOIN tasks"));
+    assert.deepEqual(warnings, [
+      'task o36-scan-task-o36-scan-project-4-21 ("Scan task 21") in project ' +
+        'o36-scan-project-4 is assigned to model "ghost-model", which no ' +
+        "longer exists in Settings",
+      'task o36-scan-task-o36-scan-project-4-22 ("Scan task 22") in project ' +
+        'o36-scan-project-4 is assigned to model "ghost-model", which no ' +
+        "longer exists in Settings",
+      'task o36-scan-task-project-1-0 ("Scan task 0") in project project-1 ' +
+        'is assigned to model "retired-model", which no longer exists in ' +
+        "Settings",
+    ]);
+  } finally {
+    log.warn = realWarn;
+    await app.close();
+    deps.db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("O16: a late response to a Stop-cancelled approval returns an honest 410", async () => {
   const root = mkdtempSync(join(tmpdir(), "hoopedorc-cancelled-approval-"));
   const deps = dependencies(root);

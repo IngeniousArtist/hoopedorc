@@ -107,6 +107,76 @@ test("O36: getRunsForProject returns only the requested project's newest-first h
   );
 });
 
+test("O36: getDanglingModelTasks reports live unknown-model tasks in loop order", () => {
+  const db = setup();
+  repo.createProject(db, {
+    id: "proj-2",
+    name: "Older project",
+    repoUrl: "https://github.com/x/other",
+    defaultBranch: "main",
+    localPath: "/tmp/other",
+    status: "paused",
+  });
+  // createProject/createTask stamp "now"; ordering assertions need explicit
+  // timestamps, so backdate created_at directly like the notification tests.
+  const setProjectCreated = db.prepare(
+    "UPDATE projects SET created_at = ? WHERE id = ?",
+  );
+  setProjectCreated.run("2026-01-02T00:00:00.000Z", "proj-1");
+  setProjectCreated.run("2026-01-01T00:00:00.000Z", "proj-2");
+  const setTaskCreated = db.prepare(
+    "UPDATE tasks SET created_at = ? WHERE id = ?",
+  );
+  const seed = (
+    id: string,
+    projectId: string,
+    status: string,
+    assignedModel: string,
+    createdAt: string,
+  ) => {
+    repo.createTask(db, {
+      id,
+      projectId,
+      title: id,
+      description: "",
+      difficulty: "easy",
+      status: status as import("@orc/types").TaskStatus,
+      dependsOn: [],
+      acceptanceCriteria: [],
+      assignedModel,
+      scopePaths: [],
+      attempts: 0,
+      maxAttempts: 3,
+    });
+    setTaskCreated.run(createdAt, id);
+  };
+  seed("t1-known", "proj-1", "ready", "deepseek-flash", "2026-01-02T00:00:01.000Z");
+  seed("t1-ghost-late", "proj-1", "in_progress", "ghost", "2026-01-02T00:00:03.000Z");
+  seed("t1-ghost-early", "proj-1", "ready", "ghost", "2026-01-02T00:00:02.000Z");
+  seed("t1-ghost-done", "proj-1", "done", "ghost", "2026-01-02T00:00:04.000Z");
+  seed("t1-ghost-failed", "proj-1", "failed", "ghost", "2026-01-02T00:00:05.000Z");
+  seed("t2-ghost", "proj-2", "backlog", "phantom", "2026-01-01T00:00:01.000Z");
+
+  // Newest project first, oldest task first within a project — the exact
+  // sequence the replaced projects×tasks warning loop produced. Terminal
+  // tasks and tasks on a known model never warn.
+  assert.deepEqual(
+    repo
+      .getDanglingModelTasks(db, ["deepseek-flash", "phantom"])
+      .map((task) => task.id),
+    ["t1-ghost-early", "t1-ghost-late"],
+  );
+  assert.deepEqual(
+    repo.getDanglingModelTasks(db, ["deepseek-flash"]).map((task) => task.id),
+    ["t1-ghost-early", "t1-ghost-late", "t2-ghost"],
+  );
+  // No known models at all: every live task's model dangles.
+  assert.deepEqual(
+    repo.getDanglingModelTasks(db, []).map((task) => task.id),
+    ["t1-known", "t1-ghost-early", "t1-ghost-late", "t2-ghost"],
+  );
+});
+
 /** Creates a real notification via the public API, then backdates its
  *  created_at directly — createNotification always stamps "now", and these
  *  tests need explicit control over age. */
