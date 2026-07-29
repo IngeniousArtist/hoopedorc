@@ -10,7 +10,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import type {
   Difficulty,
   MergePolicy,
@@ -120,6 +120,26 @@ import type {
 } from "@orc/types";
 
 type RouteParams = { id: string };
+type ServerEnvironment = typeof ENV;
+
+export interface BuildAppDependencies {
+  db: Db;
+  hub: WsHub;
+  engine: EngineRunner;
+  selfUpdater: SelfUpdater;
+  env: ServerEnvironment;
+  repoRoot: string;
+  version: string;
+  webDist?: string;
+  logger?: boolean;
+}
+
+interface ServerAssembly {
+  app: FastifyInstance;
+  shutdown: ShutdownCoordinator;
+  startBackgroundServices(): void;
+  resumeAfterListen(): void;
+}
 
 function plannerRequestCancellation(
   request: IncomingMessage,
@@ -607,24 +627,38 @@ function redactSettings(settings: SettingsType): SettingsType {
   };
 }
 
-async function main() {
+async function assembleServer(
+  dependencies: BuildAppDependencies,
+): Promise<ServerAssembly> {
+  const {
+    db,
+    hub,
+    engine,
+    selfUpdater,
+    env,
+    repoRoot,
+    version,
+    webDist,
+  } = dependencies;
   // S7: override only the `url` field of Fastify's default req serializer
   // (method/host/remoteAddress/etc. stay exactly as the default reports
   // them) so a token in the query string never reaches the logs.
   const app = Fastify({
-    logger: {
-      serializers: {
-        req(request) {
-          return {
-            method: request.method,
-            url: redactTokenFromUrl(request.url),
-            host: request.host,
-            remoteAddress: request.ip,
-            remotePort: request.socket ? request.socket.remotePort : undefined,
-          };
+    logger: dependencies.logger === false
+      ? false
+      : {
+          serializers: {
+            req(request) {
+              return {
+                method: request.method,
+                url: redactTokenFromUrl(request.url),
+                host: request.host,
+                remoteAddress: request.ip,
+                remotePort: request.socket ? request.socket.remotePort : undefined,
+              };
+            },
+          },
         },
-      },
-    },
   });
 
   // Allowlist only — the dev web app's own origins plus any operator-added
@@ -634,7 +668,7 @@ async function main() {
   // allowlist stops mattering.
   const DEV_WEB_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"];
   await app.register(cors, {
-    origin: [...DEV_WEB_ORIGINS, ...ENV.corsOrigins],
+    origin: [...DEV_WEB_ORIGINS, ...env.corsOrigins],
   });
   await app.register(websocket);
   // F27: plan-mode attachment uploads. The route-level `req.file({ limits })`
@@ -652,29 +686,10 @@ async function main() {
   // (`dist/index.js`), so the relative path is identical either way. In dev
   // (Vite's own server on :5173, proxying /api + /ws here) this directory
   // won't exist, so this is a no-op.
-  const here = dirname(fileURLToPath(import.meta.url));
-  // F24: same "3 directories below the repo root" reasoning as webDist below —
-  // read once at boot (not per-request) so /api/health and SetupView can show
-  // what's actually deployed on a remote box instead of "ssh in and guess".
-  const repoRoot = resolve(here, "../../../");
-  const version = (
-    JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8")) as {
-      version: string;
-    }
-  ).version;
-  const webDist = resolve(repoRoot, "apps/web/dist");
-  if (existsSync(webDist)) {
+  if (webDist && existsSync(webDist)) {
     await registerBuiltWebApp(app, webDist);
     app.log.info(`serving built web app from ${webDist}`);
   }
-
-  const db = setupDb();
-  const selfUpdater = new SelfUpdater({
-    repoRoot,
-    mock: ENV.mock,
-  });
-  const hub = new WsHub();
-  const engine = new EngineRunner(db, hub);
   const maintenanceTimers: ReturnType<typeof setInterval>[] = [];
   const backgroundOperations = new Set<Promise<void>>();
   const requestControllers = new Set<AbortController>();
@@ -704,28 +719,24 @@ async function main() {
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   function pruneOldLogs(): void {
     try {
-      const deleted = repo.pruneLogs(db, ENV.logRetentionDays);
+      const deleted = repo.pruneLogs(db, env.logRetentionDays);
       if (deleted > 0) {
-        app.log.info(`pruned ${deleted} old log row(s) (retention: ${ENV.logRetentionDays}d)`);
+        app.log.info(`pruned ${deleted} old log row(s) (retention: ${env.logRetentionDays}d)`);
       }
     } catch (err) {
       app.log.warn(`log pruning failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  pruneOldLogs();
-  const logPruneTimer = setInterval(pruneOldLogs, ONE_DAY_MS);
-  logPruneTimer.unref();
-  maintenanceTimers.push(logPruneTimer);
 
   // B23: mirrors pruneOldLogs — the notifications table otherwise grows
   // unbounded across months of autonomous runs. Never touches a pending
   // approval regardless of age (see pruneNotifications()'s own guard).
   function pruneOldNotifications(): void {
     try {
-      const deleted = repo.pruneNotifications(db, ENV.notificationRetentionDays);
+      const deleted = repo.pruneNotifications(db, env.notificationRetentionDays);
       if (deleted > 0) {
         app.log.info(
-          `pruned ${deleted} old notification(s) (retention: ${ENV.notificationRetentionDays}d)`,
+          `pruned ${deleted} old notification(s) (retention: ${env.notificationRetentionDays}d)`,
         );
       }
     } catch (err) {
@@ -734,10 +745,6 @@ async function main() {
       );
     }
   }
-  pruneOldNotifications();
-  const notificationPruneTimer = setInterval(pruneOldNotifications, ONE_DAY_MS);
-  notificationPruneTimer.unref();
-  maintenanceTimers.push(notificationPruneTimer);
 
   // F17: online-backup the DB on boot and once a day thereafter. No-op for
   // a mock/in-memory boot (nothing durable to protect). A failed backup
@@ -748,9 +755,9 @@ async function main() {
       async () => {
         const result = await runBackup(
           db,
-          ENV.mock ? ":memory:" : ENV.dbPath,
-          ENV.dbBackupDir,
-          ENV.dbBackupKeep,
+          env.mock ? ":memory:" : env.dbPath,
+          env.dbBackupDir,
+          env.dbBackupKeep,
         );
         if (!result.skipped) app.log.info(`DB backup written: ${result.file}`);
       },
@@ -761,10 +768,6 @@ async function main() {
       },
     );
   }
-  backupDb();
-  const backupTimer = setInterval(backupDb, ONE_DAY_MS);
-  backupTimer.unref();
-  maintenanceTimers.push(backupTimer);
 
   // F19: cron-style auto-start — checked roughly once a minute (fine enough
   // granularity for a "daily at HH:MM" schedule) against every project's
@@ -786,34 +789,10 @@ async function main() {
       logInfo: (message) => app.log.info(message),
     });
   }
-  const scheduleTimer = setInterval(checkScheduleTimer, SCHEDULE_CHECK_MS);
-  scheduleTimer.unref();
-  maintenanceTimers.push(scheduleTimer);
 
-  // Zombie approvals (B10): any approval-notification still unresolved from
-  // before this boot has no live resolver anymore (EngineRunner.pendingApprovals
-  // lived only in the previous process's memory) — stamp them expired now, before
-  // resume-on-boot re-dispatches running projects, so the UI/Telegram never show
-  // dead Approve/Reject controls for them.
-  const expiredApprovals = repo.expireStaleApprovals(db);
-  if (expiredApprovals > 0) {
-    app.log.info(`expired ${expiredApprovals} stale approval notification(s) from before this boot`);
-  }
-
-  // F22: seeded *after* the expiry sweep above, not inside setupDb() —
-  // B10's expireStaleApprovals runs unconditionally on every boot (mock or
-  // not) and would otherwise immediately stamp a freshly-seeded pending
-  // approval "expired_restart" before anyone ever saw it live, the same
-  // interaction U1's own live-verification had to work around.
-  if (ENV.mock) {
-    for (const n of seed().notifications) {
-      repo.createNotification(db, n);
-    }
-  }
-
-  /** ENV.apiToken wins over the settings-stored one; either enables auth. */
+  /** The environment token wins over the settings-stored one; either enables auth. */
   function getApiToken(): string | undefined {
-    return ENV.apiToken || repo.getSettings(db)?.apiToken || undefined;
+    return env.apiToken || repo.getSettings(db)?.apiToken || undefined;
   }
 
   /**
@@ -833,14 +812,13 @@ async function main() {
   // Refuse to come up wide-open-and-unauthenticated: if HOST is bound beyond
   // loopback, either a token must gate the API or the operator must
   // explicitly opt into ALLOW_UNAUTHENTICATED=1 (e.g. a throwaway sandbox).
-  const isLoopbackHost = ENV.host === "127.0.0.1" || ENV.host === "localhost";
-  if (!isLoopbackHost && !getApiToken() && !ENV.allowUnauthenticated) {
-    app.log.error(
-      `HOST=${ENV.host} exposes the API beyond localhost with no API_TOKEN set. ` +
-        `Set API_TOKEN (or settings.apiToken) to require auth, or set ` +
-        `ALLOW_UNAUTHENTICATED=1 to start anyway (not recommended).`,
+  const isLoopbackHost = env.host === "127.0.0.1" || env.host === "localhost";
+  if (!isLoopbackHost && !getApiToken() && !env.allowUnauthenticated) {
+    throw new Error(
+      `HOST=${env.host} exposes the API beyond localhost with no API_TOKEN set. ` +
+      `Set API_TOKEN (or settings.apiToken) to require auth, or set ` +
+      `ALLOW_UNAUTHENTICATED=1 to start anyway (not recommended).`,
     );
-    process.exit(1);
   }
 
   // Bearer-token auth (off by default). Skips /api/health so uptime checks
@@ -929,6 +907,7 @@ async function main() {
     running: false,
     state: "disabled",
   };
+  let backgroundServicesStarted = false;
 
   function projectControls(): TelegramCommandReply["inlineKeyboard"] {
     return repo.getProjects(db).slice(0, 12).map((project) => [
@@ -1098,6 +1077,9 @@ async function main() {
 
   /** (Re)start the bot from current settings. Safe to call repeatedly. */
   function configureTelegram() {
+    // Route-only/injected apps intentionally never start Telegram. Production
+    // flips this boundary before its first boot-time configuration.
+    if (!backgroundServicesStarted) return;
     if (telegram) {
       telegram.stop();
       telegram = undefined;
@@ -1169,7 +1151,51 @@ async function main() {
     resendPendingApprovals(db, telegram);
   }
 
-  configureTelegram(); // start the bot at boot if enabled
+  function startBackgroundServices(): void {
+    if (backgroundServicesStarted) return;
+    backgroundServicesStarted = true;
+
+    pruneOldLogs();
+    const logPruneTimer = setInterval(pruneOldLogs, ONE_DAY_MS);
+    logPruneTimer.unref();
+    maintenanceTimers.push(logPruneTimer);
+
+    pruneOldNotifications();
+    const notificationPruneTimer = setInterval(
+      pruneOldNotifications,
+      ONE_DAY_MS,
+    );
+    notificationPruneTimer.unref();
+    maintenanceTimers.push(notificationPruneTimer);
+
+    backupDb();
+    const backupTimer = setInterval(backupDb, ONE_DAY_MS);
+    backupTimer.unref();
+    maintenanceTimers.push(backupTimer);
+
+    const scheduleTimer = setInterval(checkScheduleTimer, SCHEDULE_CHECK_MS);
+    scheduleTimer.unref();
+    maintenanceTimers.push(scheduleTimer);
+
+    // Zombie approvals (B10): a previous process's in-memory resolver cannot
+    // survive restart. Expire those rows before resume-on-boot can re-dispatch.
+    const expiredApprovals = repo.expireStaleApprovals(db);
+    if (expiredApprovals > 0) {
+      app.log.info(
+        `expired ${expiredApprovals} stale approval notification(s) from before this boot`,
+      );
+    }
+
+    // F22 mock fixtures are seeded after the stale-approval sweep so their
+    // fresh controls are not immediately expired.
+    if (env.mock) {
+      for (const notification of seed().notifications) {
+        repo.createNotification(db, notification);
+      }
+    }
+
+    configureTelegram();
+  }
 
   let engineShutdown: ReturnType<EngineRunner["shutdown"]> | undefined;
   const shutdown = new ShutdownCoordinator({
@@ -1211,7 +1237,7 @@ async function main() {
       await app.close();
     },
     checkpointDb: () => {
-      if (!ENV.mock) db.pragma("wal_checkpoint(TRUNCATE)");
+      if (!env.mock) db.pragma("wal_checkpoint(TRUNCATE)");
     },
     closeDb: () => {
       db.close();
@@ -1245,7 +1271,7 @@ async function main() {
     const dockerRequired = settings.sandboxGates === "required";
     return buildRuntimeHealth({
       lifecycle: shutdown.snapshot,
-      mock: ENV.mock,
+      mock: env.mock,
       version,
       dockerAvailable,
       dockerRequired,
@@ -1327,7 +1353,7 @@ async function main() {
     }
 
     const settings = repo.getSettings(db) ?? defaultSettings();
-    const baseDir = expandHome(settings.defaultProjectsDir || ENV.reposDir);
+    const baseDir = expandHome(settings.defaultProjectsDir || env.reposDir);
     const localPath = body.localPath?.trim()
       ? expandHome(body.localPath.trim())
       : uniqueLocalPath(baseDir, body.name);
@@ -1602,7 +1628,7 @@ async function main() {
       // F27: name-only list of whatever's currently in context/attachments/
       // — buildChatPrompt turns this into a "read these with your file
       // tools" pointer, not an inline dump.
-      const attachmentNames = listAttachments(attachmentsDir(project, ENV.mock)).map(
+      const attachmentNames = listAttachments(attachmentsDir(project, env.mock)).map(
         (a) => a.name,
       );
       const { reply: text, costUsd } = await runPlannerChat(
@@ -1622,7 +1648,7 @@ async function main() {
       recordPlanChatTurn(
         db,
         project,
-        ENV.mock,
+        env.mock,
         updatedMessages,
         plannerModelLabel(plannerModel),
         (msg) => app.log.warn(msg),
@@ -1674,7 +1700,7 @@ async function main() {
     );
     try {
       const cwd = await resolvePlannerCwd(project);
-      const attachmentNames = listAttachments(attachmentsDir(project, ENV.mock)).map(
+      const attachmentNames = listAttachments(attachmentsDir(project, env.mock)).map(
         (a) => a.name,
       );
       if (
@@ -1720,7 +1746,7 @@ async function main() {
       recordPlanDeconstruct(
         db,
         project,
-        ENV.mock,
+        env.mock,
         messages,
         output.prdMarkdown,
         tasks,
@@ -1785,7 +1811,7 @@ async function main() {
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    return { sessions: listArchivedSessions(project, ENV.mock) };
+    return { sessions: listArchivedSessions(project, env.mock) };
   });
 
   // F27: planning-context attachments — images/PDFs/reference files the
@@ -1795,7 +1821,7 @@ async function main() {
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    return { attachments: listAttachments(attachmentsDir(project, ENV.mock)) };
+    return { attachments: listAttachments(attachmentsDir(project, env.mock)) };
   });
 
   app.post("/api/projects/:id/plan/attachments", async (req, reply) => {
@@ -1831,7 +1857,7 @@ async function main() {
       throw err;
     }
 
-    const dir = attachmentsDir(project, ENV.mock);
+    const dir = attachmentsDir(project, env.mock);
     return { attachments: saveAttachment(dir, sanitized, buffer) };
   });
 
@@ -1839,7 +1865,7 @@ async function main() {
     const { id, name } = req.params as { id: string; name: string };
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    const updated = removeAttachment(attachmentsDir(project, ENV.mock), name);
+    const updated = removeAttachment(attachmentsDir(project, env.mock), name);
     if (updated === null) return reply.code(404).send({ error: "attachment not found" });
     return { attachments: updated };
   });
@@ -1879,7 +1905,7 @@ async function main() {
         },
         settings,
         committedPlannerLabel,
-        ENV.mock,
+        env.mock,
         (message) => app.log.warn(message),
         { git: planningGitPersistence },
       );
@@ -2499,7 +2525,7 @@ async function main() {
   }
 
   function selfUpdateRuntimeBlocker(): string | undefined {
-    return getApiToken() && !ENV.apiToken
+    return getApiToken() && !env.apiToken
       ? "UI updates require API_TOKEN in .env so the detached updater can repeat the active-project check."
       : undefined;
   }
@@ -2540,7 +2566,7 @@ async function main() {
     try {
       result = await testModels(
         settings,
-        ENV.opencodeBaseUrl,
+        env.opencodeBaseUrl,
         (event) => recordModelInvocation(event),
         cancellation.signal,
       );
@@ -2629,7 +2655,7 @@ async function main() {
     }
 
     // MOCK mode: synthetic log stream
-    if (ENV.mock) {
+    if (env.mock) {
       const tasks = repo.getTasks(db, "proj-hoopedorc");
       const interval = setInterval(() => {
         const log: ServerEvent = {
@@ -2651,48 +2677,105 @@ async function main() {
     }
   });
 
-  installShutdownHandlers(shutdown, process, (label, error) => {
-    app.log.error(
-      `${label}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
-    );
-  });
-
-  await app.listen({ port: ENV.port, host: ENV.host });
-  shutdown.markRunning();
-  app.log.info(
-    `hoopedorc server up on ${ENV.host}:${ENV.port} (mock=${ENV.mock})`,
-  );
-
-  // Resume-on-boot. A project's status lives in the DB but the orchestrator
-  // driving it lives only in this process's memory. So if the server restarts
-  // while a project is "running" — crash, OOM, deploy, dev-server reload —
-  // the project stays "running" in the DB with nothing actually working on it,
-  // and silently hangs forever. On boot, re-dispatch any project still marked
-  // "running"; the orchestrator's orphan recovery requeues whatever task was
-  // mid-flight, so this picks up cleanly. Skipped in mock mode (no real engine).
-  if (!ENV.mock) {
-    const resumedRollbacks = engine.resumeRollbacks();
-    if (resumedRollbacks > 0) {
-      app.log.info(`resuming ${resumedRollbacks} rollback job(s) after restart`);
-    }
-    for (const p of repo.getProjects(db)) {
-      if (p.status === "running" && !engine.hasActivity(p.id)) {
-        app.log.info(`resuming project ${p.name} (${p.id}) after restart`);
-        runBackground(
-          `resume project "${p.name}" (${p.id})`,
-          () => engine.start(p),
-        );
+  function resumeAfterListen(): void {
+    // Resume-on-boot. A project's status lives in the DB but the orchestrator
+    // driving it lives only in this process's memory. So if the server restarts
+    // while a project is "running" — crash, OOM, deploy, dev-server reload —
+    // the project stays "running" in the DB with nothing actually working on it,
+    // and silently hangs forever. Skipped in mock mode (no real engine).
+    if (!env.mock) {
+      const resumedRollbacks = engine.resumeRollbacks();
+      if (resumedRollbacks > 0) {
+        app.log.info(`resuming ${resumedRollbacks} rollback job(s) after restart`);
       }
-    }
-    for (const p of repo.getProjects(db)) {
-      if (engine.resumeQueued(p)) {
-        app.log.info(`resuming queued task dispatches for ${p.name} (${p.id})`);
+      for (const project of repo.getProjects(db)) {
+        if (project.status === "running" && !engine.hasActivity(project.id)) {
+          app.log.info(
+            `resuming project ${project.name} (${project.id}) after restart`,
+          );
+          runBackground(
+            `resume project "${project.name}" (${project.id})`,
+            () => engine.start(project),
+          );
+        }
+      }
+      for (const project of repo.getProjects(db)) {
+        if (engine.resumeQueued(project)) {
+          app.log.info(
+            `resuming queued task dispatches for ${project.name} (${project.id})`,
+          );
+        }
       }
     }
   }
+
+  return {
+    app,
+    shutdown,
+    startBackgroundServices,
+    resumeAfterListen,
+  };
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+/**
+ * Route-only construction seam for tests and embedders. Dependencies remain
+ * caller-owned; this function never listens, installs process handlers, or
+ * starts maintenance/Telegram/resume work.
+ */
+export async function buildApp(
+  dependencies: BuildAppDependencies,
+): Promise<FastifyInstance> {
+  return (await assembleServer(dependencies)).app;
+}
+
+function productionDependencies(): BuildAppDependencies {
+  // Source and bundled entry points both sit three directories below the
+  // repository root.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = resolve(here, "../../../");
+  const version = (
+    JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8")) as {
+      version: string;
+    }
+  ).version;
+  const webDist = resolve(repoRoot, "apps/web/dist");
+  const db = setupDb();
+  const hub = new WsHub();
+  return {
+    db,
+    hub,
+    engine: new EngineRunner(db, hub),
+    selfUpdater: new SelfUpdater({ repoRoot, mock: ENV.mock }),
+    env: ENV,
+    repoRoot,
+    version,
+    webDist,
+    logger: true,
+  };
+}
+
+async function main(): Promise<void> {
+  const server = await assembleServer(productionDependencies());
+  server.startBackgroundServices();
+  installShutdownHandlers(server.shutdown, process, (label, error) => {
+    server.app.log.error(
+      `${label}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
+    );
+  });
+  await server.app.listen({ port: ENV.port, host: ENV.host });
+  server.shutdown.markRunning();
+  server.app.log.info(
+    `hoopedorc server up on ${ENV.host}:${ENV.port} (mock=${ENV.mock})`,
+  );
+  server.resumeAfterListen();
+}
+
+const invokedAsMain =
+  process.argv[1] !== undefined &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedAsMain) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
