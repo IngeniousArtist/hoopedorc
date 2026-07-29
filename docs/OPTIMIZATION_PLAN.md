@@ -1294,6 +1294,10 @@ green.
 
 **Fix risk:** low.
 
+**Status:** completed with O33 in
+[#188](https://github.com/IngeniousArtist/hoopedorc/pull/188)
+(`fab7175`). The shared verification evidence is recorded under O33.
+
 ### O31. ESLint covers only `apps/web` — the backend is unlinted — MEDIUM (maintainability)
 
 **Problem:** the root `lint` script is `npm run lint -w @orc/web` and every
@@ -1406,6 +1410,27 @@ mixed-version startup are unaffected. Focused pre-fix evidence is the 13-key
 documentation failure, and the mutation assertion proves a server registration
 rename is detected. No live EC2 check is required because deployed behavior is
 unchanged.
+
+**Status:** completed with O30 in
+[#188](https://github.com/IngeniousArtist/hoopedorc/pull/188)
+(`fab7175`). The REST table now has one exact key/method/path row for all 49
+`ROUTES` entries, and the server suite enforces both manifest → Fastify
+registration and manifest ↔ contract documentation. Mutation fixtures prove a
+renamed server path and a newly added undocumented route are both rejected.
+The start-of-item documentation test failed with the reproduced 13 missing
+keys before the rows were added. The rollback endpoints now expose
+`RollbackTaskResponse` and `TaskRollbackResponse` through the shared contract,
+and the existing board client consumes those names without changing payloads.
+
+Full local verification passed typecheck, build, lint, engine 184/184,
+adapters 12/12, server 238/238, web 25/25, E2E 16/16 at
+360/390/768/1280/1440 px, and `git diff --check`. The first full server run
+had one unrelated F44 timing miss at 237/238; that test passed immediately in
+isolation and the full rerun passed 238/238. Linux `build-and-test` CI passed
+in 2m21s. The merged commit was independently confirmed as local and
+`origin/main` at `fab7175`, and both O30/O33 focused checks passed again on
+that commit. No EC2 smoke is required because runtime and deployment behavior
+are unchanged.
 
 ---
 
@@ -1565,16 +1590,18 @@ below because they share one invariant and would be unsafe to split.
    (`d03f0a0`) and O2 merged in
    [#184](https://github.com/IngeniousArtist/hoopedorc/pull/184)
    (`3e4c793`), both with green CI and live EC2/Tailscale verification.
-3. **Regression rails before behavior-sensitive work — O27 merged; O30 + O33
-   are next:**
+3. **Regression rails before behavior-sensitive work — O27 and O30 + O33
+   merged; O29 is next:**
    - O27 merged in
      [#186](https://github.com/IngeniousArtist/hoopedorc/pull/186)
      (`5f6e2ee`) with the app-construction seam, validator/route refusal
      coverage, and green Linux CI. Its authorized EC2 update/health smoke is
      still outstanding as recorded above.
-   - O30 + O33 may share one documentation-contract enforcement PR now that
-     the app seam exists.
-   - O29 must merge before O21 or O34.
+   - O30 + O33 merged together in
+     [#188](https://github.com/IngeniousArtist/hoopedorc/pull/188)
+     (`fab7175`) with exact Fastify/manifest/documentation enforcement and
+     green Linux CI.
+   - O29 is next and must merge before O21 or O34.
    - O31 and O32 land as separate lint/CI policy PRs; neither should bury
      production behavior changes.
 4. **Durable correctness and recovery:**
