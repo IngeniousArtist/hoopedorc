@@ -1775,6 +1775,41 @@ maximum was policy or runtime inflation. Full semantics, migration behavior,
 non-goals, and transition ordering are recorded in
 `docs/specs/retry-accounting.md`.
 
+**Status (accounting PR 2):** completed in
+[#200](https://github.com/IngeniousArtist/hoopedorc/pull/200)
+(`832732d`). The canonical task row now separates immutable `maxAttempts`
+policy from consumed author invocations and durable recovery allowance, and
+persists the logical-run generation, current fallback, exhausted models, and
+same-model rate-limit waits. Every fallback stage resumes from the same model
+and effective budget after a fresh Orchestrator starts. Manual HTTP/Telegram
+Retry uses one conditional SQLite transaction, so exactly one concurrent
+caller increments the generation, resets run state, records durable dispatch
+intent, and creates the audit entry. Generation-qualified run IDs preserve
+prior invocations and merge decisions, while the board and Telegram describe
+policy and recovery allowance separately.
+
+The pre-change engine, migration/repository, and TaskCard regressions failed
+without the run-state helper, task columns/atomic reset, and unambiguous label,
+then passed with the implementation. Full local verification passed typecheck,
+build, lint across 142 files with the exact 340-finding baseline, engine
+203/203, adapters 12/12, server 244/244, web 26/26, E2E 16/16, and
+`git diff --check`. Real-browser verification at 360, 390, 768, 1280, and
+1440 px confirmed the exact policy/recovery label and tooltip, no
+document-level overflow, and no browser errors. Linux `build-and-test` CI
+passed at reviewed head `24067d8` in 2m12s. After merge, local `main` and
+`origin/main` matched `832732d719de33686f28da4778518d58db9e804b`; the
+focused O34 engine restart matrix passed 9/9, the server migration/concurrent
+Retry checks passed 3/3, and the TaskCard check passed 1/1 again on that
+commit.
+
+The required post-merge EC2 update and live health/board smoke remain
+outstanding: this execution environment has no SSH identity or configuration,
+Tailscale CLI, or configured production endpoint with which to identify the
+authorized box safely. Run `scripts/update.sh` from the known clean, idle
+production checkout, then record the exact checkout commit, matching
+`hoopedorc.service` restart, `GET /api/health`, migration-preserved task data,
+and loopback/Tailscale board label.
+
 **Fix risk:** medium — behavior-sensitive; the test suite is the rail.
 
 ### O35. Scheduler busy-poll efficiency — MEDIUM (efficiency; careful)
