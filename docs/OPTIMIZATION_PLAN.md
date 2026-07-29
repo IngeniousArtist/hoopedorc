@@ -2024,6 +2024,27 @@ statements and 131.679 ms per 100 snapshots (36.8%) on this fixture. Focused
 tests prove project isolation, newest-first task history, one query for the
 production subscribe path, and the full emitted event sequence.
 
+**Status (WS catch-up snapshot candidate):** completed in
+[#206](https://github.com/IngeniousArtist/hoopedorc/pull/206)
+(`3e461c4`). The catch-up snapshot now fetches runs through one
+project-scoped tasks→runs join and groups its newest-first stream in memory,
+while preserving the existing project → task → run event sequence. Full local
+verification passed typecheck, build, lint across 144 files with the exact
+340-finding baseline, engine 210/210, adapters 12/12, server 253/253, web
+26/26, E2E 16/16, and `git diff --check`. Linux `build-and-test` CI passed at
+reviewed head `a225cde` in 2m21s.
+
+After merge, clean local `main` and `origin/main` matched
+`3e461c41d23a728bf3fa127d890cc057a85c9c3f`. The focused production
+subscribe-path regression passed 1/1. The unchanged 250-task/750-run fixture
+again emitted 1,001 events per snapshot and made 100 grouped run statements
+per 100 snapshots (one each), with a 217.042 ms median across five
+repetitions. The real query plans still search `idx_tasks_project` and
+`idx_runs_task` without a full `runs` scan. No API, WebSocket event,
+persistence-schema, UI, external CLI, filesystem-ownership, or
+deployment/process behavior changed, so no additional live-system smoke is
+required.
+
 **Fix risk:** low.
 
 ---
