@@ -1295,6 +1295,23 @@ persisted task/decision/worktree shape. The smallest rollback is the O29 test
 commit, old data is untouched, and no live EC2 check is required for this
 test-only item.
 
+**Status:** completed in
+[#190](https://github.com/IngeniousArtist/hoopedorc/pull/190)
+(`e6b0d33`). Three deterministic orchestrator regressions now cover
+conflict→clean requeue through a fresh worktree/PR, three conflicts reaching
+the two-retry cap and reject-only manual resolution, and restart recovery from
+a persisted decision plus stale worktree. Deliberately removing
+`prNumber = undefined` made all three focused O29 tests fail through stale-PR
+reuse; restoring it passed 3/3. No production source changed.
+
+Local verification passed typecheck, build, lint, engine 187/187, adapters
+12/12, server 238/238, web 25/25, E2E 16/16 at 360/390/768/1280/1440px, and
+`git diff --check`. Linux `build-and-test` CI passed at the reviewed head
+`60f23c2` in 2m24s. After merge, local `main` and `origin/main` independently
+matched `e6b0d3324aee6fe77f41032d8308d63c212944e9`, and the merged engine suite
+passed 187/187. No EC2 check was required because O29 changed only tests and
+roadmap evidence.
+
 ### O30. `ROUTES` manifest is not enforced against server registration — MEDIUM (testing)
 
 **Problem:** all 49 `ROUTES` entries (`packages/types/src/api.ts:623-673`)
@@ -1610,8 +1627,8 @@ below because they share one invariant and would be unsafe to split.
    (`d03f0a0`) and O2 merged in
    [#184](https://github.com/IngeniousArtist/hoopedorc/pull/184)
    (`3e4c793`), both with green CI and live EC2/Tailscale verification.
-3. **Regression rails before behavior-sensitive work — O27 and O30 + O33
-   merged; O29 is next:**
+3. **Regression rails before behavior-sensitive work — O27, O29, and
+   O30 + O33 merged; O31 is next:**
    - O27 merged in
      [#186](https://github.com/IngeniousArtist/hoopedorc/pull/186)
      (`5f6e2ee`) with the app-construction seam, validator/route refusal
@@ -1621,9 +1638,12 @@ below because they share one invariant and would be unsafe to split.
      [#188](https://github.com/IngeniousArtist/hoopedorc/pull/188)
      (`fab7175`) with exact Fastify/manifest/documentation enforcement and
      green Linux CI.
-   - O29 is next and must merge before O21 or O34.
-   - O31 and O32 land as separate lint/CI policy PRs; neither should bury
-     production behavior changes.
+   - O29 merged in
+     [#190](https://github.com/IngeniousArtist/hoopedorc/pull/190)
+     (`e6b0d33`) with conflict/retry-cap/restart rails and green Linux CI,
+     satisfying the prerequisite for O21 and O34.
+   - O31 is next. O31 and O32 land as separate lint/CI policy PRs; neither
+     should bury production behavior changes.
 4. **Durable correctness and recovery:**
    - O3 planning revision receipts.
    - O4 shared Git serialization.
