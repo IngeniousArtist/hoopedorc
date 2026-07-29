@@ -45,7 +45,10 @@ jobs:
 
       - name: Resolve installed Playwright version
         id: playwright-version
-        run: echo "version=$(node -p 'require(\"./node_modules/@playwright/test/package.json\").version')" >> "$GITHUB_OUTPUT"
+        run: |
+          playwright_version="$(node -p "require('./node_modules/@playwright/test/package.json').version")"
+          test -n "$playwright_version"
+          echo "version=$playwright_version" >> "$GITHUB_OUTPUT"
 
       - name: Restore Playwright browser cache
         id: playwright-cache

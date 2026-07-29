@@ -48,6 +48,15 @@ test("O32: Playwright cache keys exact binaries and preserves both install paths
   assert.match(workflow, /id: playwright-version/);
   assert.match(
     workflow,
+    /playwright_version="\$\(node -p "require\('\.\/node_modules\/@playwright\/test\/package\.json'\)\.version"\)"/,
+  );
+  assert.match(workflow, /test -n "\$playwright_version"/);
+  assert.match(
+    workflow,
+    /echo "version=\$playwright_version" >> "\$GITHUB_OUTPUT"/,
+  );
+  assert.match(
+    workflow,
     /key: \$\{\{ runner\.os \}\}-playwright-\$\{\{ steps\.playwright-version\.outputs\.version \}\}-\$\{\{ hashFiles\('package-lock\.json'\) \}\}/,
   );
   assert.match(workflow, /path: ~\/\.cache\/ms-playwright/);
