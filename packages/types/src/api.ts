@@ -12,6 +12,7 @@ import type {
   Project,
   ProjectConfig,
   Role,
+  RollbackJob,
   Run,
   RunnerKind,
   Settings,
@@ -445,6 +446,11 @@ export interface AuditLogResponse {
 
 export interface RollbackTaskResponse {
   task: Task;
+  rollback: RollbackJob;
+}
+
+export interface TaskRollbackResponse {
+  rollback: RollbackJob | null;
 }
 
 /** Every validator verdict recorded for a task, newest first — the Review

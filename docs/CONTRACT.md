@@ -392,44 +392,59 @@ existing B42 check proves the final selected author before execution.
 ## REST API (`@orc/types/api.ts`, `ROUTES`)
 Base: `/api`. JSON in/out. Errors use `ApiError`.
 
-| Route | Body → Response |
-|---|---|
-| `GET /api/health` | → `HealthResponse` (`ok`, version, lifecycle state, safe degraded reasons, Docker availability/requirement) |
-| `POST /api/projects` | `CreateProjectRequest` → `CreateProjectResponse` |
-| `GET /api/projects` | → `ListProjectsResponse` |
-| `GET /api/projects/:id` | → `GetProjectResponse` |
-| `POST /api/projects/:id/plan` | `PlanProjectRequest` → `PlanProjectResponse` |
-| `POST /api/projects/:id/plan/chat` | `PlanChatRequest` → `PlanChatResponse` |
-| `POST /api/projects/:id/plan/deconstruct` | `PlanDeconstructRequest` → `PlanDeconstructResponse` (incl. F38's `agentsMd`; F52 optionally returns `verifiedFigmaReferences`, or typed 409 capability details) |
-| `POST /api/projects/:id/plan/save-draft` | `SaveDraftRequest` → `SaveDraftResponse` |
-| `GET /api/projects/:id/plan/session` | → `PlanningSessionResponse` (incl. F38's `agentsMd` and F52's optional verified Figma list) |
-| `POST /api/projects/:id/plan/commit` | `PlanCommitRequest` → `PlanCommitResponse` |
-| `GET /api/projects/:id/plan/attachments` | (F27) → `ListPlanAttachmentsResponse` |
-| `POST /api/projects/:id/plan/attachments` | (F27) multipart file upload → `ListPlanAttachmentsResponse` |
-| `DELETE /api/projects/:id/plan/attachments/:name` | (F27) → `ListPlanAttachmentsResponse` |
-| `POST /api/projects/:id/start` | → `{ ok }` |
-| `POST /api/projects/:id/pause` | `PauseProjectRequest` (optional) → `{ ok }` |
-| `POST /api/engine/stop-all` | (F23 — global panic button) → `StopAllResponse` |
-| `GET /api/projects/:id/tasks` | → `ListTasksResponse` |
-| `POST /api/projects/:id/tasks` | `AddTaskRequest` → `AddTaskResponse` |
-| `GET /api/tasks/:id` | → `GetTaskResponse` |
-| `PATCH /api/tasks/:id` | `UpdateTaskRequest` → `UpdateTaskResponse` |
-| `POST /api/tasks/:id/dispatch` | → `DispatchTaskResponse` |
-| `POST /api/tasks/:id/stop` | → `{ ok }` |
-| `GET /api/tasks/:id/runs` | → `ListRunsResponse` |
-| `GET /api/tasks/:id/decisions` | → `TaskDecisionsResponse` |
-| `GET /api/runs/:id/logs` | → `RunLogsResponse` |
-| `GET /api/tasks/:id/logs` | `?after=<ISO ts>&limit=<n>` → `TaskLogsResponse` |
-| `GET /api/projects/:id/costs` | → `CostsResponse` |
-| `GET /api/settings` | → `GetSettingsResponse` |
-| `PUT /api/settings` | `UpdateSettingsRequest` → `UpdateSettingsResponse` |
-| `GET /api/notifications` | → `ListNotificationsResponse` |
-| `POST /api/notifications/:id/respond` | `RespondNotificationRequest` → `{ ok }` |
-| `GET /api/setup/self-update` | → `SelfUpdateStatusResponse` (deployment availability, temporary blockers, and current/last update phase) |
-| `POST /api/setup/self-update` | no body → `StartSelfUpdateResponse` (202; launches only the fixed guarded updater in a separate systemd unit) |
-| `GET /api/setup/models` | → `ModelRosterResponse` |
-| `GET /api/setup/model-catalog` | → `ModelCatalogResponse` (installed Codex catalog, Claude Code aliases/current IDs, and OpenCode `zai/`/`zai-coding-plan/`/`xai/`/`deepseek/` models) |
-| `GET /api/setup/model-health` | → `ModelHealthResponse` |
+<!-- ROUTES:START -->
+| `ROUTES` key | Route | Body → Response |
+|---|---|---|
+| `health` | `GET /api/health` | → `HealthResponse` (`ok`, version, lifecycle state, safe degraded reasons, Docker availability/requirement) |
+| `createProject` | `POST /api/projects` | `CreateProjectRequest` → `CreateProjectResponse` |
+| `listProjects` | `GET /api/projects` | → `ListProjectsResponse` |
+| `getProject` | `GET /api/projects/:id` | → `GetProjectResponse` |
+| `updateProject` | `PATCH /api/projects/:id` | `UpdateProjectRequest` → `UpdateProjectResponse` |
+| `deleteProject` | `DELETE /api/projects/:id` | → `DeleteProjectResponse` |
+| `planProject` | `POST /api/projects/:id/plan` | `PlanProjectRequest` → `PlanProjectResponse` |
+| `planChat` | `POST /api/projects/:id/plan/chat` | `PlanChatRequest` → `PlanChatResponse` |
+| `planDeconstruct` | `POST /api/projects/:id/plan/deconstruct` | `PlanDeconstructRequest` → `PlanDeconstructResponse` (incl. F38's `agentsMd`; F52 optionally returns `verifiedFigmaReferences`, or typed 409 capability details) |
+| `planCommit` | `POST /api/projects/:id/plan/commit` | `PlanCommitRequest` → `PlanCommitResponse` |
+| `planSession` | `GET /api/projects/:id/plan/session` | → `PlanningSessionResponse` (incl. F38's `agentsMd` and F52's optional verified Figma list) |
+| `planSessionArchives` | `GET /api/projects/:id/plan/sessions` | → `ListPlanSessionArchivesResponse` |
+| `planSaveDraft` | `POST /api/projects/:id/plan/save-draft` | `SaveDraftRequest` → `SaveDraftResponse` |
+| `listPlanAttachments` | `GET /api/projects/:id/plan/attachments` | (F27) → `ListPlanAttachmentsResponse` |
+| `uploadPlanAttachment` | `POST /api/projects/:id/plan/attachments` | (F27) multipart file upload → `ListPlanAttachmentsResponse` |
+| `deletePlanAttachment` | `DELETE /api/projects/:id/plan/attachments/:name` | (F27) → `ListPlanAttachmentsResponse` |
+| `startProject` | `POST /api/projects/:id/start` | → `{ ok }` |
+| `pauseProject` | `POST /api/projects/:id/pause` | `PauseProjectRequest` (optional) → `{ ok }` |
+| `listTasks` | `GET /api/projects/:id/tasks` | → `ListTasksResponse` |
+| `addTask` | `POST /api/projects/:id/tasks` | `AddTaskRequest` → `AddTaskResponse` |
+| `getTask` | `GET /api/tasks/:id` | → `GetTaskResponse` |
+| `updateTask` | `PATCH /api/tasks/:id` | `UpdateTaskRequest` → `UpdateTaskResponse` |
+| `dispatchTask` | `POST /api/tasks/:id/dispatch` | → `DispatchTaskResponse` |
+| `retryTask` | `POST /api/tasks/:id/retry` | → `RetryTaskResponse` |
+| `taskDiff` | `GET /api/tasks/:id/diff` | → `TaskDiffResponse` (diff is capped and may be marked truncated) |
+| `stopTask` | `POST /api/tasks/:id/stop` | → `StopTaskResponse` |
+| `listTaskRuns` | `GET /api/tasks/:id/runs` | → `ListRunsResponse` |
+| `runLogs` | `GET /api/runs/:id/logs` | → `RunLogsResponse` |
+| `taskLogs` | `GET /api/tasks/:id/logs` | `?after=<ISO ts>&limit=<n>` → `TaskLogsResponse` |
+| `costs` | `GET /api/projects/:id/costs` | → `CostsResponse` |
+| `costAnalytics` | `GET /api/projects/:id/analytics` | → `CostAnalyticsResponse` |
+| `estimatePlan` | `GET /api/projects/:id/estimate` | → `EstimateResponse` |
+| `getSettings` | `GET /api/settings` | → `GetSettingsResponse` |
+| `updateSettings` | `PUT /api/settings` | `UpdateSettingsRequest` → `UpdateSettingsResponse` |
+| `telegramTest` | `POST /api/telegram/test` | `TelegramTestRequest` → `TelegramTestResponse` |
+| `listNotifications` | `GET /api/notifications` | → `ListNotificationsResponse` |
+| `respondNotification` | `POST /api/notifications/:id/respond` | `RespondNotificationRequest` → `{ ok }` |
+| `auditLog` | `GET /api/projects/:id/audit` | → `AuditLogResponse` |
+| `rollbackTask` | `POST /api/tasks/:id/rollback` | → `RollbackTaskResponse` (202; starts or resumes the durable rollback job) |
+| `taskRollback` | `GET /api/tasks/:id/rollback` | → `TaskRollbackResponse` |
+| `taskDecisions` | `GET /api/tasks/:id/decisions` | → `TaskDecisionsResponse` |
+| `setupHealth` | `GET /api/setup` | → `SetupHealthResponse` |
+| `selfUpdateStatus` | `GET /api/setup/self-update` | → `SelfUpdateStatusResponse` (deployment availability, temporary blockers, and current/last update phase) |
+| `startSelfUpdate` | `POST /api/setup/self-update` | no body → `StartSelfUpdateResponse` (202; launches only the fixed guarded updater in a separate systemd unit) |
+| `setupModels` | `GET /api/setup/models` | → `ModelRosterResponse` |
+| `modelCatalog` | `GET /api/setup/model-catalog` | → `ModelCatalogResponse` (installed Codex catalog, Claude Code aliases/current IDs, and OpenCode `zai/`/`zai-coding-plan/`/`xai/`/`deepseek/` models) |
+| `modelHealth` | `GET /api/setup/model-health` | → `ModelHealthResponse` |
+| `testModels` | `POST /api/setup/test-models` | no body → `TestModelsResponse` |
+| `stopAll` | `POST /api/engine/stop-all` | (F23 — global panic button) → `StopAllResponse` |
+<!-- ROUTES:END -->
 
 ## WebSocket (`@orc/types/ws.ts`, `WS_PATH = /ws`)
 Server → client `ServerEvent`: `log`, `task.updated`, `run.updated`,
