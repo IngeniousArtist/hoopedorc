@@ -2171,20 +2171,12 @@ async function assembleServer(
     // blocking: the orchestrator's own dispatch/attempt-loop guards are the
     // actual safety net (requeue-to-backlog instead of a Fatal crash) —
     // this is purely an operator-visible heads-up in the server log.
-    const validModelIds = new Set(merged.models.map((m) => m.id));
-    for (const p of repo.getProjects(db)) {
-      for (const t of repo.getTasks(db, p.id)) {
-        if (
-          t.status !== "done" &&
-          t.status !== "failed" &&
-          !validModelIds.has(t.assignedModel)
-        ) {
-          app.log.warn(
-            `task ${t.id} ("${t.title}") in project ${p.id} is assigned to ` +
-              `model "${t.assignedModel}", which no longer exists in Settings`,
-          );
-        }
-      }
+    const validModelIds = merged.models.map((m) => m.id);
+    for (const t of repo.getDanglingModelTasks(db, validModelIds)) {
+      app.log.warn(
+        `task ${t.id} ("${t.title}") in project ${t.projectId} is assigned to ` +
+          `model "${t.assignedModel}", which no longer exists in Settings`,
+      );
     }
 
     return { settings: redactSettings(saved) };
