@@ -73,6 +73,14 @@ pricing. Defaults, migrations, HTTP/Telegram writes, repository reads, and
 runtime access all share the same normalizer, so an active scheduler never sees
 a shape that the API would reject.
 
+Hard Stop is an ownership barrier: the orchestrator marks itself paused,
+aborts every task controller (including human-approval waits), settles the
+pipelines it owned at that boundary, and only then persists remaining
+transient tasks back to backlog. Graceful drain does not abort or rewrite
+active work. Transient `in_progress`/`in_review` publications synchronously
+verify both active ownership and the non-paused state, so a late stage update
+cannot recreate an orphan after Stop.
+
 Plan approval crosses an explicit Git/SQLite durability boundary. The submitted
 draft is retained in SQLite under `planning` while one serialized primary-clone
 operation writes and pushes PRD/AGENTS/CLAUDE together. The session archive is

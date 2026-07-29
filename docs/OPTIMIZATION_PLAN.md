@@ -821,6 +821,21 @@ a late choice gets an honest expired/cancelled response. A `drain: true` Pause
 keeps the same approval live, applies one answer, and lets the drain settle
 normally. Rollback-approval behavior is unchanged; full gates green.
 
+**Implementation decision (2026-07-29):** land O16 with O21 because O21's
+hard-Stop settlement boundary cannot await an unabortable approval promise.
+Add the existing task controller's `AbortSignal` to `EngineEvents.requestApproval`
+and every normal/recovery approval call. `EngineRunner` owns resolver cleanup:
+on abort it conditionally stamps the still-pending notification
+`cancelled_stop`, broadcasts and audits that transition, removes the resolver,
+and rejects with `AbortError`; a concurrent human response wins only if it
+already removed the resolver. No table or payload migration is needed because
+`responded_with` already stores terminal strings and the existing response
+route already returns 410 when no live resolver exists. Graceful drain does
+not abort the controller, so its approval promise and notification remain
+unchanged. The rollback approval implementation is behaviorally unchanged and
+serves as the wiring model. Engine and server tests must cover Stop, drain,
+late response, persisted notification state, and resolver cleanup.
+
 **Fix risk:** low-medium (must respect the pause-vs-stop semantic split).
 
 ### O17. Self-update can wedge "in progress" for 2 h after an early death — MEDIUM-LOW (robustness)
@@ -964,6 +979,26 @@ reaches the cap; a later new run starts fresh; terminal/clean tasks leave no
 counter. Barrier-controlled tests pause immediately before every transient
 stage publication and prove no task remains in a stage status without a live
 run; drain semantics and approval waits remain unchanged; full gates green.
+
+**Implementation decision (2026-07-29):** O29 is complete, and O16 lands in
+the same change because hard-Stop settlement would otherwise hang on a bare
+approval resolver. Keep conflict accounting owned by the in-memory
+orchestrator: reset it once at the beginning of a new `start()` pass, delete a
+task's entry after a clean sync outcome, and delete terminal entries only when
+that orchestrator releases active ownership.
+This deliberately leaves conflict requeues counted inside one pass. Hard pause
+will snapshot the tasks owned at the pause boundary, set `paused` before
+aborting them, await those exact pipelines, and then persist `backlog` only for
+snapshot tasks still in a transient stage. A synchronous
+`publishActiveStage()` guard will be the only writer of `in_progress` and
+`in_review`; because its ownership/pause check and update contain no await,
+JavaScript cannot interleave a pause between them. No API, schema, timer,
+deployment, or cross-process state changes are needed. Regression coverage
+must hold barriers immediately before the initial/retry `in_progress` and
+pre-gate `in_review` publications, retain the existing drain/approval tests,
+and inspect counter cleanup at the new-run, clean-sync, and terminal
+boundaries. Rollback is the single engine/test/docs change; no live EC2 check
+is required because this is deterministic in-process scheduler state.
 
 **Fix risk:** very low / low.
 

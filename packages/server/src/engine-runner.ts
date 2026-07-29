@@ -790,8 +790,45 @@ export class EngineRunner {
           });
           this.hub.broadcast({ type: "notification", payload: notif });
           this.notifier?.approvalRequested(notif, { prUrl, reasons: latestDecision?.reasons });
-          return new Promise<string>((resolve) => {
-            this.pendingApprovals.set(notif.id, resolve);
+          return new Promise<string>((resolve, reject) => {
+            let settled = false;
+            const onAbort = () => {
+              if (settled) return;
+              settled = true;
+              args.signal?.removeEventListener("abort", onAbort);
+              this.pendingApprovals.delete(notif.id);
+              const cancelled = repo.cancelPendingApproval(this.db, notif.id);
+              if (cancelled) {
+                repo.createAuditEntry(this.db, {
+                  projectId: project.id,
+                  taskId: args.taskId,
+                  kind: "approval_cancelled",
+                  actor: "engine",
+                  summary: `${args.title} → cancelled by hard Stop`,
+                });
+                this.hub.broadcast({
+                  type: "notification",
+                  payload: cancelled,
+                });
+              }
+              reject(
+                new DOMException(
+                  "Approval interrupted by hard Stop",
+                  "AbortError",
+                ),
+              );
+            };
+            if (args.signal?.aborted) {
+              onAbort();
+              return;
+            }
+            args.signal?.addEventListener("abort", onAbort, { once: true });
+            this.pendingApprovals.set(notif.id, (choice) => {
+              if (settled) return;
+              settled = true;
+              args.signal?.removeEventListener("abort", onAbort);
+              resolve(choice);
+            });
           });
         },
       },

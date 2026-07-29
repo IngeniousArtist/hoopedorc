@@ -2224,7 +2224,9 @@ async function assembleServer(
       return reply.code(410).send({
         notification: result.notification,
         error:
-          "approval expired — the task will re-request approval if it's still needed",
+          result.notification.respondedWith === repo.CANCELLED_STOP
+            ? "approval cancelled by Stop — no choice was applied"
+            : "approval expired — the task will re-request approval if it's still needed",
       });
     }
 

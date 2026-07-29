@@ -103,6 +103,8 @@ export interface EngineEvents {
     title: string;
     message: string;
     options: string[];
+    /** Hard Stop aborts this signal; graceful drain deliberately does not. */
+    signal?: AbortSignal;
   }) => Promise<string>;
   /**
    * F32: fired when a task's author model hits trouble worth telling a human

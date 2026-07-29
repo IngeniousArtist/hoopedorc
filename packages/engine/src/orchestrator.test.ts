@@ -55,6 +55,29 @@ function task(id: string, dependsOn: string[] = [], over: Partial<Task> = {}): T
   };
 }
 
+function mergeConflictCount(
+  orchestrator: Orchestrator,
+  taskId: string,
+): number | undefined {
+  return (
+    orchestrator as unknown as {
+      mergeConflicts: Map<string, number>;
+    }
+  ).mergeConflicts.get(taskId);
+}
+
+function seedMergeConflictCount(
+  orchestrator: Orchestrator,
+  taskId: string,
+  count: number,
+): void {
+  (
+    orchestrator as unknown as {
+      mergeConflicts: Map<string, number>;
+    }
+  ).mergeConflicts.set(taskId, count);
+}
+
 const approveAdapter: AgentAdapter = {
   runner: "opencode",
   async run(): Promise<AgentRunResult> {
@@ -378,6 +401,272 @@ test("B32: pause() exits promptly even while every model is quota/cooldown-block
   );
   assert.notEqual(t1.status, "done");
   assert.equal(merged.length, 0);
+});
+
+test("O21: hard pause immediately before initial in_progress publication leaves owned work in backlog", async () => {
+  const updates: Task["status"][] = [];
+  let pausePromise: Promise<void> | undefined;
+  const candidate = task("pause-before-initial");
+  const deps = fakeDeps(
+    {
+      events: {
+        onLog(event) {
+          if (
+            event.message === `Starting: ${candidate.title}` &&
+            !pausePromise
+          ) {
+            pausePromise = orchestrator.pause(PROJECT);
+          }
+        },
+        onTaskUpdated(updated) {
+          updates.push(updated.status);
+        },
+        onRunUpdated() {},
+        onMergeDecision() {},
+        requestApproval() {
+          return Promise.resolve("reject");
+        },
+      },
+    },
+    [],
+  );
+  const orchestrator = new Orchestrator(deps);
+
+  await orchestrator.start(PROJECT, [candidate]);
+  await pausePromise;
+
+  assert.ok(pausePromise, "the starting boundary must request a hard pause");
+  assert.equal(candidate.status, "backlog");
+  assert.equal(
+    updates.includes("in_progress") || updates.includes("in_review"),
+    false,
+    "no transient stage may publish after the pause boundary",
+  );
+});
+
+test("O21: hard pause immediately before retry in_progress publication prevents the retry", async () => {
+  const updates: Task["status"][] = [];
+  let pausePromise: Promise<void> | undefined;
+  let pauseUpdateIndex = -1;
+  let authorRuns = 0;
+  const candidate = task("pause-before-retry");
+  const deps = fakeDeps(
+    {
+      adapterFor: () => ({
+        runner: "opencode",
+        run() {
+          authorRuns++;
+          return Promise.resolve({
+            ok: true,
+            exitReason: "completed" as const,
+            costUsd: 0,
+            tokensIn: 1,
+            tokensOut: 1,
+            summary: "",
+          });
+        },
+      }),
+      gates: {
+        run() {
+          return Promise.resolve({
+            ...GOOD_GATE,
+            typecheck: false,
+            details: { typecheck: "retry barrier" },
+          });
+        },
+      },
+      events: {
+        onLog(event) {
+          if (event.message.startsWith("Gates failed:") && !pausePromise) {
+            pauseUpdateIndex = updates.length;
+            pausePromise = orchestrator.pause(PROJECT);
+          }
+        },
+        onTaskUpdated(updated) {
+          updates.push(updated.status);
+        },
+        onRunUpdated() {},
+        onMergeDecision() {},
+        requestApproval() {
+          return Promise.resolve("reject");
+        },
+      },
+    },
+    [],
+  );
+  const orchestrator = new Orchestrator(deps);
+
+  await orchestrator.start(PROJECT, [candidate]);
+  await pausePromise;
+
+  assert.ok(pausePromise, "the failed-gate boundary must request a hard pause");
+  assert.equal(authorRuns, 1, "the paused retry must not invoke the author");
+  assert.equal(candidate.status, "backlog");
+  assert.equal(
+    updates
+      .slice(pauseUpdateIndex)
+      .some((status) => status === "in_progress" || status === "in_review"),
+    false,
+    "no retry stage may publish after the pause boundary",
+  );
+});
+
+test("O21: hard pause settles a PR-opening pipeline before persisting backlog instead of leaving in_review orphaned", async () => {
+  let announceOpenPr!: () => void;
+  const openPrStarted = new Promise<void>((resolve) => {
+    announceOpenPr = resolve;
+  });
+  let finishOpenPr!: (prNumber: number) => void;
+  const openPrResult = new Promise<number>((resolve) => {
+    finishOpenPr = resolve;
+  });
+  const updates: Task["status"][] = [];
+  const candidate = task("pause-before-review");
+  const deps = fakeDeps(
+    {
+      git: {
+        async openPr() {
+          announceOpenPr();
+          return openPrResult;
+        },
+      },
+      events: {
+        onLog() {},
+        onTaskUpdated(updated) {
+          updates.push(updated.status);
+        },
+        onRunUpdated() {},
+        onMergeDecision() {},
+        requestApproval() {
+          return Promise.resolve("reject");
+        },
+      },
+    },
+    [],
+  );
+  const orchestrator = new Orchestrator(deps);
+  const runPromise = orchestrator.start(PROJECT, [candidate]);
+  await openPrStarted;
+
+  let pauseSettled = false;
+  const pausePromise = orchestrator.pause(PROJECT).then(() => {
+    pauseSettled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    pauseSettled,
+    false,
+    "hard pause must wait for the owned pipeline to settle",
+  );
+
+  finishOpenPr(71);
+  await pausePromise;
+  await runPromise;
+
+  assert.equal(candidate.status, "backlog");
+  assert.equal(updates.at(-1), "backlog");
+});
+
+test("O16: hard Stop aborts and settles a pending approval without merging", async () => {
+  let announceApproval!: () => void;
+  const approvalStarted = new Promise<void>((resolve) => {
+    announceApproval = resolve;
+  });
+  let approvalSignal: AbortSignal | undefined;
+  const candidate = task("stop-pending-approval");
+  const merged: number[] = [];
+  const deps = fakeDeps(
+    {
+      gates: {
+        run() {
+          return Promise.resolve({
+            ...GOOD_GATE,
+            inScope: false,
+            details: { inScope: "approval fixture" },
+          });
+        },
+      },
+      events: {
+        onLog() {},
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        requestApproval(args) {
+          approvalSignal = args.signal;
+          announceApproval();
+          return new Promise((_resolve, reject) => {
+            const onAbort = () =>
+              reject(new DOMException("Approval interrupted", "AbortError"));
+            if (args.signal?.aborted) onAbort();
+            else args.signal?.addEventListener("abort", onAbort, { once: true });
+          });
+        },
+      },
+    },
+    merged,
+  );
+  const orchestrator = new Orchestrator(deps);
+  const runPromise = orchestrator.start(PROJECT, [candidate]);
+  await approvalStarted;
+
+  await orchestrator.pause(PROJECT);
+  await runPromise;
+
+  assert.equal(approvalSignal?.aborted, true);
+  assert.equal(candidate.status, "backlog");
+  assert.deepEqual(merged, []);
+});
+
+test("O16: graceful drain keeps a pending approval live and applies its one answer", async () => {
+  let announceApproval!: () => void;
+  const approvalStarted = new Promise<void>((resolve) => {
+    announceApproval = resolve;
+  });
+  let finishApproval!: (choice: "approve_merge") => void;
+  const approvalResult = new Promise<"approve_merge">((resolve) => {
+    finishApproval = resolve;
+  });
+  let approvalSignal: AbortSignal | undefined;
+  const candidate = task("drain-pending-approval");
+  const merged: number[] = [];
+  const deps = fakeDeps(
+    {
+      gates: {
+        run() {
+          return Promise.resolve({
+            ...GOOD_GATE,
+            inScope: false,
+            details: { inScope: "approval fixture" },
+          });
+        },
+      },
+      events: {
+        onLog() {},
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        requestApproval(args) {
+          approvalSignal = args.signal;
+          announceApproval();
+          return approvalResult;
+        },
+      },
+    },
+    merged,
+  );
+  const orchestrator = new Orchestrator(deps);
+  const runPromise = orchestrator.start(PROJECT, [candidate]);
+  await approvalStarted;
+
+  await orchestrator.pause(PROJECT, { drain: true });
+  assert.equal(approvalSignal?.aborted, false);
+  assert.equal(candidate.status, "in_review");
+
+  finishApproval("approve_merge");
+  await runPromise;
+
+  assert.equal(candidate.status, "done");
+  assert.deepEqual(merged, [1]);
 });
 
 test("stopTask aborts a running author and the task ends blocked without merging", async () => {
@@ -959,8 +1248,9 @@ test("O29: a merge conflict requeues a fresh attempt and merges only its new PR"
     merged,
   );
   const candidate = task("conflict-clean");
+  const orchestrator = new Orchestrator(deps);
 
-  await new Orchestrator(deps).start(PROJECT, [candidate]);
+  await orchestrator.start(PROJECT, [candidate]);
 
   assert.equal(authorRuns, 2, "the conflict must be re-authored from current main");
   assert.equal(worktreeCreates, 2);
@@ -980,6 +1270,11 @@ test("O29: a merge conflict requeues a fresh attempt and merges only its new PR"
   assert.ok(logs.some((message) => /\(1\/2\)/.test(message)));
   assert.equal(candidate.status, "done");
   assert.equal(candidate.prNumber, 42);
+  assert.equal(
+    mergeConflictCount(orchestrator, candidate.id),
+    undefined,
+    "a clean sync outcome must not retain its earlier conflict count",
+  );
 });
 
 test("O29: repeated merge conflicts stop at the retry cap and require manual resolution", async () => {
@@ -1049,8 +1344,9 @@ test("O29: repeated merge conflicts stop at the retry cap and require manual res
     merged,
   );
   const candidate = task("conflict-cap");
+  const orchestrator = new Orchestrator(deps);
 
-  await new Orchestrator(deps).start(PROJECT, [candidate]);
+  await orchestrator.start(PROJECT, [candidate]);
 
   assert.equal(authorRuns, 3, "two requeues plus the capped attempt must run");
   assert.equal(worktreeCreates, 3);
@@ -1066,6 +1362,122 @@ test("O29: repeated merge conflicts stop at the retry cap and require manual res
   assert.ok(logs.some((message) => /after 2 retries/.test(message)));
   assert.equal(candidate.status, "failed");
   assert.match(candidate.statusReason ?? "", /needs manual resolution/);
+  assert.equal(
+    mergeConflictCount(orchestrator, candidate.id),
+    undefined,
+    "terminal ownership release must prune the exhausted conflict counter",
+  );
+});
+
+test("O21: a later start clears a stale conflict count before applying the same-run retry cap", async () => {
+  let authorRuns = 0;
+  let approvals = 0;
+  const deps = fakeDeps(
+    {
+      adapterFor: () => ({
+        runner: "opencode",
+        run() {
+          authorRuns++;
+          return Promise.resolve({
+            ok: true,
+            exitReason: "completed" as const,
+            costUsd: 0,
+            tokensIn: 1,
+            tokensOut: 1,
+            summary: "",
+          });
+        },
+      }),
+      git: {
+        syncBranchWithMain() {
+          return Promise.resolve("conflict" as const);
+        },
+      },
+      events: {
+        onLog() {},
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        requestApproval() {
+          approvals++;
+          return Promise.resolve("reject");
+        },
+      },
+    },
+    [],
+  );
+  const candidate = task("fresh-run-conflicts");
+  const orchestrator = new Orchestrator(deps);
+  seedMergeConflictCount(orchestrator, candidate.id, 2);
+
+  await orchestrator.start(PROJECT, [candidate]);
+
+  assert.equal(
+    authorRuns,
+    3,
+    "the new run must receive both conflict requeues before reaching the cap",
+  );
+  assert.equal(approvals, 1);
+  assert.equal(candidate.status, "failed");
+  assert.equal(mergeConflictCount(orchestrator, candidate.id), undefined);
+});
+
+test("O21: a clean sync prunes the conflict counter before a nonterminal approval wait", async () => {
+  const syncResults: Array<"conflict" | "clean"> = ["conflict", "clean"];
+  let announceApproval!: () => void;
+  const approvalStarted = new Promise<void>((resolve) => {
+    announceApproval = resolve;
+  });
+  let finishApproval!: (choice: "reject") => void;
+  const approvalResult = new Promise<"reject">((resolve) => {
+    finishApproval = resolve;
+  });
+  const deps = fakeDeps(
+    {
+      gates: {
+        run() {
+          return Promise.resolve({
+            ...GOOD_GATE,
+            inScope: false,
+            details: { inScope: "outside declared scope" },
+          });
+        },
+      },
+      git: {
+        syncBranchWithMain() {
+          const result = syncResults.shift();
+          assert.ok(result, "unexpected extra sync");
+          return Promise.resolve(result);
+        },
+      },
+      events: {
+        onLog() {},
+        onTaskUpdated() {},
+        onRunUpdated() {},
+        onMergeDecision() {},
+        async requestApproval() {
+          announceApproval();
+          return approvalResult;
+        },
+      },
+    },
+    [],
+  );
+  const candidate = task("clean-before-approval");
+  const orchestrator = new Orchestrator(deps);
+  const runPromise = orchestrator.start(PROJECT, [candidate]);
+
+  await approvalStarted;
+  assert.equal(candidate.status, "in_review");
+  assert.equal(
+    mergeConflictCount(orchestrator, candidate.id),
+    undefined,
+    "clean sync must prune the prior conflict before the active task becomes terminal",
+  );
+
+  finishApproval("reject");
+  await runPromise;
+  assert.equal(candidate.status, "failed");
 });
 
 test("O29: restart recovery removes the persisted worktree before a fresh conflict retry", async () => {

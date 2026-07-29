@@ -133,7 +133,9 @@ going on a always-on box.
 7. When a task finishes, its PR is already merged (or waiting on you, per
    the above). You can **Retry** a failed task, **Rollback** a merged one
    through a separately gated rollback PR, or **Stop** a task that's still
-   running.
+   running. Hard Stop also cancels any approval that task is waiting on; its
+   old web or Telegram buttons expire and cannot resume the merge. Graceful
+   **Pause** keeps active approval prompts live while it drains current work.
 
 ## The safety model
 

@@ -182,6 +182,32 @@ test("pruneNotifications: recent notifications survive regardless of type", () =
   assert.notEqual(repo.getNotification(db, "recent"), null);
 });
 
+test("O16: cancelPendingApproval is single-winner and never overwrites a human response", () => {
+  const db = setup();
+  seedNotification(db, {
+    id: "stop-wins",
+    requiresApproval: true,
+    ageMs: 0,
+  });
+  assert.equal(
+    repo.cancelPendingApproval(db, "stop-wins")?.respondedWith,
+    repo.CANCELLED_STOP,
+  );
+  assert.equal(repo.cancelPendingApproval(db, "stop-wins"), null);
+
+  seedNotification(db, {
+    id: "human-wins",
+    requiresApproval: true,
+    respondedWith: "approve",
+    ageMs: 0,
+  });
+  assert.equal(repo.cancelPendingApproval(db, "human-wins"), null);
+  assert.equal(
+    repo.getNotification(db, "human-wins")?.respondedWith,
+    "approve",
+  );
+});
+
 // ── B26: getNotifications' LIMIT must not drop a pending approval ──
 
 test("getNotifications: an old pending approval survives past 250 newer responded notifications (default limit)", () => {
