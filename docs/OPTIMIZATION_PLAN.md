@@ -1174,6 +1174,37 @@ down gracefully; extraction preserves route behavior; full gates green.
 **Fix risk:** medium; land the app seam separately from validator behavior if
 the diff ceases to be easily reviewable.
 
+**Status:** implementation completed in
+[#186](https://github.com/IngeniousArtist/hoopedorc/pull/186)
+(`5f6e2ee`). `buildApp` now accepts caller-owned DB/engine/hub/self-update
+dependencies and an environment snapshot, registers the complete app, and
+does not listen, install process handlers, or start maintenance, Telegram,
+scheduler, backup, or resume work. The guarded `main()` entrypoint remains the
+only production composition root and retains the coordinated shutdown path.
+Project/config/token/path validation now lives in
+`project-validation.ts`. Disk cleanup additionally refuses dirty,
+wrong-origin, unmanaged, symlinked, nested-repository, and unsafe sibling
+worktree paths; refusal still removes the project row while preserving every
+file for explicit operator cleanup.
+
+The pre-fix matching-origin predicate was replayed against the dirty-clone
+regression and failed with `true !== false`; restoring the clean-status proof
+made it pass. Sixteen focused O27 checks cover repeated construction/closure,
+process-handler counts, auth off/on/401/health bypass and non-loopback startup,
+project create/delete success and refusals, validator success/error shapes,
+settings redaction, token comparison, log age/count pruning, and a child
+process running the real `main()` through listen → SIGTERM → exit 0. Full local
+verification passed typecheck, build, lint, engine 184/184, adapters 12/12,
+server 236/236, web 25/25, E2E 16/16 at 360/390/768/1280/1440 px, and
+`git diff --check`. Linux `build-and-test` CI passed in 2m19s.
+
+The post-merge EC2 update/health smoke remains outstanding: the current
+execution environment has no SSH identity, Tailscale CLI, or configured
+production endpoint with which to identify the authorized box safely. Run
+`scripts/update.sh` from that known production checkout, then record the exact
+checkout commit, clean/idle preconditions, matching `hoopedorc.service`
+restart, `GET /api/health`, and loopback/Tailscale dashboard results.
+
 ### O28. Deterministic fixes for local-only test failures — MEDIUM (testing)
 
 **Problem:** two tests can fail locally while Linux CI stays green:
@@ -1502,10 +1533,15 @@ below because they share one invariant and would be unsafe to split.
    (`d03f0a0`) and O2 merged in
    [#184](https://github.com/IngeniousArtist/hoopedorc/pull/184)
    (`3e4c793`), both with green CI and live EC2/Tailscale verification.
-3. **Regression rails before behavior-sensitive work — O27 is next:**
-   - O27 app-construction seam, then validator/route refusal tests.
-   - O30 + O33 may share one documentation-contract enforcement PR after the
-     app seam exists.
+3. **Regression rails before behavior-sensitive work — O27 merged; O30 + O33
+   are next:**
+   - O27 merged in
+     [#186](https://github.com/IngeniousArtist/hoopedorc/pull/186)
+     (`5f6e2ee`) with the app-construction seam, validator/route refusal
+     coverage, and green Linux CI. Its authorized EC2 update/health smoke is
+     still outstanding as recorded above.
+   - O30 + O33 may share one documentation-contract enforcement PR now that
+     the app seam exists.
    - O29 must merge before O21 or O34.
    - O31 and O32 land as separate lint/CI policy PRs; neither should bury
      production behavior changes.
