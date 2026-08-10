@@ -336,6 +336,21 @@ pass typecheck, build, lint at the unchanged 340-finding baseline, engine
 and the production smoke above remain outstanding until this branch is merged
 and deployed; they must be added without rewriting this pre-merge evidence.
 
+**Refresh status:** completed in
+[#214](https://github.com/IngeniousArtist/hoopedorc/pull/214)
+(`1b367542`). The hosted `build-and-test` check passed in 2m27s. After merge,
+local `main` and `origin/main` were independently confirmed clean and equal at
+that commit; `npm ls` confirmed all four patched resolutions, both
+high-severity audits exited successfully, the production-only audit reported
+zero vulnerabilities, and the full audit reported only the accepted low
+esbuild finding. The focused real static-server regression again passed 2/2.
+The doc-only status follow-up also passed typecheck, build, lint at the
+unchanged 340-finding baseline, engine 214/214, adapters 12/12, server 255/255,
+web 26/26, E2E 16/16 at 360/390/768/1280/1440 px, and `git diff --check`. No
+production deployment was performed as part of this lockfile refresh, so the
+live loopback/Tailscale smoke listed above remains outstanding for the next
+production update.
+
 ### O2. Scheduler tick unhandled rejection can shut down the whole server — HIGH (robustness)
 
 **Problem:** `checkSchedules` runs
