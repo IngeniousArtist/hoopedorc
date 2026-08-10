@@ -648,6 +648,15 @@ or `archive`). Hoopedorc's own `context/plan-sessions/` archives and
 changes; unfinished files elsewhere still block the planning commit so they
 cannot be swept into automation accidentally.
 
+The same retry safety applies when the commit succeeded but the browser never
+received its response. The Plan tab keeps one server-issued revision ID for
+the editable draft and resends it on retry; Hoopedorc returns the original task
+IDs instead of committing, archiving, or creating tasks again. A stale tab
+cannot reuse that revision with edited content or overwrite a newer planning
+session—it receives a reload-the-session error. After a successful commit, the
+next planning iteration receives a new revision ID, so intentionally planning
+another identical batch remains possible.
+
 ## Backups & data
 
 Everything lives in two places: the SQLite DB (`DB_PATH`, default

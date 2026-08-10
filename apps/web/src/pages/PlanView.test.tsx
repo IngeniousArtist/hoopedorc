@@ -14,6 +14,7 @@ vi.mock("../hooks/useWS", () => ({ useWS: vi.fn() }));
 
 const apiMock = vi.mocked(api);
 const project = { ...projectFixture, status: "created" as const };
+const revisionId = "11111111-1111-4111-8111-111111111111";
 const reference = {
   canonicalUrl:
     "https://www.figma.com/design/File123/Login?node-id=10-20",
@@ -77,6 +78,7 @@ describe("PlanView Figma verification", () => {
     apiMock.mockImplementation(async (key) => {
       if (key === "planSession") {
         return {
+          revisionId,
           messages: [],
           planCostUsd: 0.04,
           verifiedFigmaReferences: [reference],
@@ -100,6 +102,7 @@ describe("PlanView Figma verification", () => {
     apiMock.mockImplementation(async (key) => {
       if (key === "planSession") {
         return {
+          revisionId,
           messages: [
             { role: "user", content: `Match ${reference.canonicalUrl}` },
             { role: "assistant", content: "Ready. [PLAN_COMPLETE]" },
@@ -186,6 +189,7 @@ describe("PlanView Figma verification", () => {
       }
       if (key === "planSession") {
         return {
+          revisionId,
           messages: [],
           prd: "# Visual plan",
           draftTasks: [draft, visualDraft],
@@ -195,9 +199,14 @@ describe("PlanView Figma verification", () => {
       }
       if (key === "planSaveDraft") return { ok: true };
       if (key === "planCommit") {
-        committedTasks = (options?.body as { tasks: Array<Record<string, unknown>> })
-          .tasks;
+        const body = options?.body as {
+          revisionId: string;
+          tasks: Array<Record<string, unknown>>;
+        };
+        expect(body.revisionId).toBe(revisionId);
+        committedTasks = body.tasks;
         return {
+          revisionId,
           project: { ...project, status: "planned" },
           tasks: [],
           prdMarkdown: "# Visual plan",
@@ -232,6 +241,7 @@ describe("PlanView Figma verification", () => {
     apiMock.mockImplementation(async (key, options) => {
       if (key === "planSession") {
         return {
+          revisionId,
           messages: [],
           prd: "# Visual plan",
           draftTasks: [draft, visualDraft],
@@ -241,9 +251,14 @@ describe("PlanView Figma verification", () => {
       }
       if (key === "planSaveDraft") return { ok: true };
       if (key === "planCommit") {
-        committedTasks = (options?.body as { tasks: Array<Record<string, unknown>> })
-          .tasks;
+        const body = options?.body as {
+          revisionId: string;
+          tasks: Array<Record<string, unknown>>;
+        };
+        expect(body.revisionId).toBe(revisionId);
+        committedTasks = body.tasks;
         return {
+          revisionId,
           project: { ...project, status: "planned" },
           tasks: [],
           prdMarkdown: "# Visual plan",
@@ -271,5 +286,50 @@ describe("PlanView Figma verification", () => {
     expect(
       committedTasks.some((task) => task.title === "Visual fidelity QA"),
     ).toBe(false);
+  });
+
+  it("retries a lost commit response with the same server-issued revision", async () => {
+    const submittedRevisions: string[] = [];
+    let commitCalls = 0;
+    apiMock.mockImplementation(async (key, options) => {
+      if (key === "planSession") {
+        return {
+          revisionId,
+          messages: [],
+          prd: "# Retry plan",
+          draftTasks: [draft],
+          planCostUsd: 0,
+        };
+      }
+      if (key === "planSaveDraft") return { ok: true };
+      if (key === "planCommit") {
+        commitCalls += 1;
+        submittedRevisions.push(
+          (options?.body as { revisionId: string }).revisionId,
+        );
+        if (commitCalls === 1) throw new Error("commit response was lost");
+        return {
+          revisionId,
+          project: { ...project, status: "planned" },
+          tasks: [],
+          prdMarkdown: "# Retry plan",
+        };
+      }
+      return baseApi(key);
+    });
+    const user = userEvent.setup();
+    renderPlan();
+
+    expect(await screen.findByDisplayValue("Build login")).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: "Approve & Create Tasks" }),
+    );
+    expect(await screen.findByText(/commit response was lost/)).toBeVisible();
+
+    await user.click(
+      screen.getByRole("button", { name: "Approve & Create Tasks" }),
+    );
+    expect(await screen.findByText("0 tasks created")).toBeVisible();
+    expect(submittedRevisions).toEqual([revisionId, revisionId]);
   });
 });

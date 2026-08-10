@@ -476,6 +476,51 @@ iteration; failures before Git, after push, and during finalization remain
 retryable without duplicates; the existing failed-retry cases stay green;
 full API checklist and repository gates green.
 
+**Implementation decision (2026-08-11):** SQLite owns the active revision.
+`GET /plan/session` lazily creates and returns one server-generated UUID; the
+chat, deconstruct, save-draft, and commit requests must echo it, so a stale tab
+cannot write into a later session. The migration backfills only projects with
+existing planning scratch or `planning` status, preserving all scratch fields;
+an empty project receives its revision on first session read. Successful
+finalization clears the active revision together with scratch, while the
+immutable receipt remains available for an old response retry.
+
+`planning_commits` uses `(project_id, revision_id)` as its primary key and
+stores `pending|successful`, a SHA-256 hash over a versioned canonical
+serialization of the effective PRD, every materialized draft field, and the
+generated AGENTS guidance, plus created task IDs and the successful public
+response. Receipt reservation, exact scratch persistence, and the `planning`
+transition share the pre-Git SQLite transaction. Task creation, PRD
+publication, scratch/revision clearing, and successful receipt publication
+share the final transaction. A matching successful receipt replays without
+Git, archive, task, or broadcast effects; a hash mismatch fails closed. One
+in-process owner promise lets simultaneous matching requests share the result,
+while a pending receipt left by a stopped process remains safely retryable
+because the existing Git and archive writes are idempotent. Receipts are
+retained rather than pruned because they are the long-lived proof for stale
+clients. No production plan is mutated for verification; real Git/archive and
+crash boundaries are covered with temporary repositories/files and SQLite
+fault injection, followed by the full API checklist and repository gates.
+
+**Implementation result (2026-08-11, pre-merge):** the shared API now carries
+the server-issued revision through session reads and every planning mutation.
+SQLite owns the active revision and the durable receipt; the web client keeps
+the same revision across a lost-response retry, while stale or malformed
+revisions fail before model, Git, archive, task, or broadcast effects. Focused
+verification passed planning-commit 8/8, repository/migration 27/27,
+injected-route/lifecycle 11/11, and PlanView interaction 5/5. Those tests cover
+database reopen and exact replay, simultaneous matching requests, changed
+content refusal, a legitimate identical-content next iteration, rollback
+before Git, the existing failure after push, transactional finalization
+failure, legacy scratch migration, and a client retry after a lost HTTP
+response. Full local gates pass typecheck, build, lint at the unchanged
+340-finding baseline, engine 214/214, adapters 12/12, server 263/263, web
+27/27, E2E 16/16 at 360/390/768/1280/1440 px, and `git diff --check`. CI and
+merged-main verification remain outstanding until this branch is merged and
+must be appended without rewriting this pre-merge evidence. No live production
+plan was mutated because every external-effect and crash boundary is exercised
+against temporary repositories, archives, and databases.
+
 **Fix risk:** medium — must not block legitimate v2-iteration commits.
 
 ### O4. Unserialized git mutations on the shared primary clone — HIGH (robustness)

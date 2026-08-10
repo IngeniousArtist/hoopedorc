@@ -72,6 +72,7 @@ test.describe.serial("critical operator workflows", () => {
     await page.route(`**/api/projects/${projectId}/plan/session`, (route) =>
       route.fulfill({
         json: {
+          revisionId: "11111111-1111-4111-8111-111111111111",
           messages: [
             {
               role: "user",
@@ -231,6 +232,7 @@ test.describe.serial("critical operator workflows", () => {
     await page.route(`**/api/projects/${projectId}/plan/session`, (route) =>
       route.fulfill({
         json: {
+          revisionId: "22222222-2222-4222-8222-222222222222",
           messages: [
             { role: "user", content: "Add an API health endpoint." },
             { role: "assistant", content: "Ready. [PLAN_COMPLETE]" },

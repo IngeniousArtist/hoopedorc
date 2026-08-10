@@ -122,6 +122,8 @@ export interface PlanChatMessage {
 }
 
 export interface PlanChatRequest {
+  /** O3: immutable server-issued id for this editable planning revision. */
+  revisionId: string;
   messages: PlanChatMessage[];
 }
 export interface PlanChatResponse {
@@ -163,6 +165,8 @@ export interface DraftTask {
 }
 
 export interface PlanDeconstructRequest {
+  /** O3: immutable server-issued id for this editable planning revision. */
+  revisionId: string;
   messages: PlanChatMessage[];
   /**
    * Explicit screenshot fallback after a typed live-node failure. Exact node
@@ -231,11 +235,15 @@ export interface PlanDeconstructResponse {
 }
 
 export interface PlanCommitRequest {
+  /** O3: idempotency key returned by PlanningSessionResponse. */
+  revisionId: string;
   prdMarkdown: string;
   tasks: DraftTask[];
   agentsMd?: string;
 }
 export interface PlanCommitResponse {
+  /** The committed/replayed revision. */
+  revisionId: string;
   project: Project;
   tasks: Task[];
   prdMarkdown: string;
@@ -244,6 +252,8 @@ export interface PlanCommitResponse {
 
 /** Persisted planning state for a project — fetched on Plan page load. */
 export interface PlanningSessionResponse {
+  /** O3: server-issued id reused by every write/retry for this revision. */
+  revisionId: string;
   messages: PlanChatMessage[];
   prd?: string;
   draftTasks?: DraftTask[];
@@ -270,6 +280,8 @@ export interface ListPlanSessionArchivesResponse {
 }
 
 export interface SaveDraftRequest {
+  /** O3: immutable server-issued id for this editable planning revision. */
+  revisionId: string;
   prdMarkdown: string;
   tasks: DraftTask[];
   agentsMd?: string;

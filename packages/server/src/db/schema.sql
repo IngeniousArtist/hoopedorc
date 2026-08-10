@@ -18,10 +18,26 @@ CREATE TABLE IF NOT EXISTS projects (
   planning_draft_tasks  TEXT,   -- JSON DraftTask[] from last deconstruct (user-editable)
   planning_agents_md    TEXT,   -- AGENTS.md draft from last deconstruct (F38, user-editable)
   planning_figma_refs   TEXT,   -- JSON VerifiedFigmaReference[] (F52, small session scratch)
+  planning_revision_id  TEXT,   -- O3: immutable id for the current editable planning revision
   config                TEXT,   -- JSON ProjectConfig (F9): gate/retry/merge-policy overrides
   task_generation       INTEGER NOT NULL DEFAULT 0, -- O35: monotonic scheduler reconciliation version
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL
+);
+
+-- O3: durable proof that one exact planning revision was materialized once.
+-- Successful rows are retained so stale clients can replay the original
+-- response after a server restart without repeating Git/archive/task effects.
+CREATE TABLE IF NOT EXISTS planning_commits (
+  project_id       TEXT NOT NULL REFERENCES projects(id),
+  revision_id      TEXT NOT NULL,
+  state            TEXT NOT NULL CHECK (state IN ('pending', 'successful')),
+  content_hash     TEXT NOT NULL,
+  created_task_ids TEXT NOT NULL DEFAULT '[]', -- JSON Task id[]
+  result_json      TEXT,                       -- successful PlanCommitResponse
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  PRIMARY KEY (project_id, revision_id)
 );
 
 CREATE TABLE IF NOT EXISTS tasks (

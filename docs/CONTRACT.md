@@ -48,6 +48,21 @@ after those succeed does one SQLite transaction create tasks, publish
 rejects a `planning` project. Repository, archive, or finalization failure
 leaves the scratch intact for an idempotent retry.
 
+O3 makes that retry boundary durable after success as well. Every editable
+planning session has one server-generated `revisionId`; `plan/session` returns
+it and chat, deconstruct, save-draft, and commit must echo it. Revision-scoped
+scratch updates reject stale tabs. Commit reserves a `planning_commits` row
+keyed by `(project_id, revision_id)` before Git, bound to a canonical SHA-256
+hash of the submitted PRD/task/AGENTS content. A matching `pending` row retries
+the existing idempotent Git/archive path. The final task/scratch/project
+transaction also stores the created task IDs and exact successful response and
+marks the receipt `successful`. A matching successful retry returns that
+response without Git, archive, task, or WebSocket effects; changed content is
+409. Finalization clears the active revision, so the next session receives a
+new ID even when its content is identical. Existing planning scratch is
+backfilled with one revision during migration; empty projects are initialized
+lazily on their first session read.
+
 `GitOperationError.stage` identifies `inspect`, `fetch`, `checkout`, `merge`,
 `write`, `stage`, `commit`, `push`, or `cleanup`. `commitAll()` treats only a
 confirmed empty porcelain status as a no-op; other failures propagate.
@@ -440,12 +455,12 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 | `updateProject` | `PATCH /api/projects/:id` | `UpdateProjectRequest` → `UpdateProjectResponse` |
 | `deleteProject` | `DELETE /api/projects/:id` | → `DeleteProjectResponse` |
 | `planProject` | `POST /api/projects/:id/plan` | `PlanProjectRequest` → `PlanProjectResponse` |
-| `planChat` | `POST /api/projects/:id/plan/chat` | `PlanChatRequest` → `PlanChatResponse` |
-| `planDeconstruct` | `POST /api/projects/:id/plan/deconstruct` | `PlanDeconstructRequest` → `PlanDeconstructResponse` (incl. F38's `agentsMd`; F52 optionally returns `verifiedFigmaReferences`, or typed 409 capability details) |
-| `planCommit` | `POST /api/projects/:id/plan/commit` | `PlanCommitRequest` → `PlanCommitResponse` |
-| `planSession` | `GET /api/projects/:id/plan/session` | → `PlanningSessionResponse` (incl. F38's `agentsMd` and F52's optional verified Figma list) |
+| `planChat` | `POST /api/projects/:id/plan/chat` | `PlanChatRequest` (incl. O3 `revisionId`) → `PlanChatResponse` |
+| `planDeconstruct` | `POST /api/projects/:id/plan/deconstruct` | `PlanDeconstructRequest` (incl. O3 `revisionId`) → `PlanDeconstructResponse` (incl. F38's `agentsMd`; F52 optionally returns `verifiedFigmaReferences`, or typed 409 capability details) |
+| `planCommit` | `POST /api/projects/:id/plan/commit` | `PlanCommitRequest` (incl. O3 `revisionId`) → replayable `PlanCommitResponse` |
+| `planSession` | `GET /api/projects/:id/plan/session` | → `PlanningSessionResponse` (incl. O3 `revisionId`, F38's `agentsMd`, and F52's optional verified Figma list) |
 | `planSessionArchives` | `GET /api/projects/:id/plan/sessions` | → `ListPlanSessionArchivesResponse` |
-| `planSaveDraft` | `POST /api/projects/:id/plan/save-draft` | `SaveDraftRequest` → `SaveDraftResponse` |
+| `planSaveDraft` | `POST /api/projects/:id/plan/save-draft` | `SaveDraftRequest` (incl. O3 `revisionId`) → `SaveDraftResponse` |
 | `listPlanAttachments` | `GET /api/projects/:id/plan/attachments` | (F27) → `ListPlanAttachmentsResponse` |
 | `uploadPlanAttachment` | `POST /api/projects/:id/plan/attachments` | (F27) multipart file upload → `ListPlanAttachmentsResponse` |
 | `deletePlanAttachment` | `DELETE /api/projects/:id/plan/attachments/:name` | (F27) → `ListPlanAttachmentsResponse` |

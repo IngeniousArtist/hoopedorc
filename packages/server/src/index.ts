@@ -83,10 +83,12 @@ import {
 } from "./plan-sessions";
 import {
   commitPlanningDraft,
+  isPlanningRevisionId,
   materializeTasks,
   planningCommitInProgress,
   PlanningCommitError,
   planningPersistenceError,
+  type PlanningGitPersistence,
 } from "./planning-commit";
 import {
   TelegramBot,
@@ -119,8 +121,10 @@ import {
 import type {
   DraftTask,
   Notification,
-  PlanChatMessage,
+  PlanChatRequest,
+  PlanCommitRequest,
   PlanDeconstructRequest,
+  SaveDraftRequest,
   VerifiedFigmaReference,
   Settings as SettingsType,
 } from "@orc/types";
@@ -136,6 +140,7 @@ export interface BuildAppDependencies {
   env: ServerEnvironment;
   repoRoot: string;
   version: string;
+  planningGitPersistence?: PlanningGitPersistence;
   webDist?: string;
   logger?: boolean;
 }
@@ -382,7 +387,10 @@ async function assembleServer(
     repoRoot,
     version,
     webDist,
+    planningGitPersistence: injectedPlanningGitPersistence,
   } = dependencies;
+  const planningPersistence =
+    injectedPlanningGitPersistence ?? planningGitPersistence;
   if (!repo.getSettings(db)) {
     repo.upsertSettings(db, defaultSettings());
   }
@@ -1340,6 +1348,38 @@ async function assembleServer(
         ? "planning commit is in progress — wait for it to finish before editing or retrying"
         : null;
 
+  class PlanningRevisionConflictError extends Error {
+    override name = "PlanningRevisionConflictError";
+  }
+
+  const planningRevisionError = (
+    projectId: string,
+    revisionId: unknown,
+  ): { status: 400 | 409; error: string } | null => {
+    if (!isPlanningRevisionId(revisionId)) {
+      return { status: 400, error: "a valid planning revisionId is required" };
+    }
+    if (repo.getPlanningSession(db, projectId).revisionId !== revisionId) {
+      return {
+        status: 409,
+        error: "planning revision is stale — reload the planning session",
+      };
+    }
+    return null;
+  };
+
+  const savePlanningRevision = (
+    projectId: string,
+    revisionId: string,
+    update: repo.PlanningSessionUpdate,
+  ): void => {
+    if (!repo.savePlanningSessionForRevision(db, projectId, revisionId, update)) {
+      throw new PlanningRevisionConflictError(
+        "planning revision is stale — reload the planning session",
+      );
+    }
+  };
+
   // One conversational turn. The web chat panel sends the full transcript.
   app.post("/api/projects/:id/plan/chat", async (req, reply) => {
     const { id } = req.params as RouteParams;
@@ -1348,7 +1388,12 @@ async function assembleServer(
     const lockErr = planningLockError(project);
     if (lockErr) return reply.code(409).send({ error: lockErr });
 
-    const body = req.body as { messages?: PlanChatMessage[] } | undefined;
+    const body = req.body as Partial<PlanChatRequest> | undefined;
+    const revisionErr = planningRevisionError(id, body?.revisionId);
+    if (revisionErr) {
+      return reply.code(revisionErr.status).send({ error: revisionErr.error });
+    }
+    const revisionId = body!.revisionId!;
     const messages = body?.messages ?? [];
     if (messages.length === 0) {
       return reply.code(400).send({ error: "messages required" });
@@ -1390,7 +1435,7 @@ async function assembleServer(
       // Persist the full conversation (including assistant reply) so the Plan
       // tab can restore it on reload or after a tab switch.
       const updatedMessages = [...messages, { role: "assistant" as const, content: text }];
-      repo.savePlanningSession(db, id, { messages: updatedMessages });
+      savePlanningRevision(id, revisionId, { messages: updatedMessages });
       recordPlanChatTurn(
         db,
         project,
@@ -1401,6 +1446,9 @@ async function assembleServer(
       );
       return { reply: text, costUsd };
     } catch (err) {
+      if (err instanceof PlanningRevisionConflictError) {
+        return reply.code(409).send({ error: err.message });
+      }
       return reply.code(502).send({
         error: `planner chat failed: ${err instanceof Error ? err.message : String(err)}`,
       });
@@ -1418,6 +1466,11 @@ async function assembleServer(
     if (lockErr) return reply.code(409).send({ error: lockErr });
 
     const body = req.body as Partial<PlanDeconstructRequest> | undefined;
+    const revisionErr = planningRevisionError(id, body?.revisionId);
+    if (revisionErr) {
+      return reply.code(revisionErr.status).send({ error: revisionErr.error });
+    }
+    const revisionId = body!.revisionId!;
     const messages = body?.messages ?? [];
     if (messages.length === 0) {
       return reply.code(400).send({ error: "messages required" });
@@ -1470,7 +1523,7 @@ async function assembleServer(
         (event) => recordModelInvocation(event, id),
         planningSession.verifiedFigmaReferences,
         (references) =>
-          repo.savePlanningSession(db, id, {
+          savePlanningRevision(id, revisionId, {
             verifiedFigmaReferences: references,
           }),
         body?.figmaVerification ?? "live",
@@ -1482,7 +1535,7 @@ async function assembleServer(
       );
       // Persist draft tasks + PRD + AGENTS.md (F38) so the Plan tab can
       // restore them on reload.
-      repo.savePlanningSession(db, id, {
+      savePlanningRevision(id, revisionId, {
         messages,
         prd: output.prdMarkdown,
         draftTasks: tasks,
@@ -1507,6 +1560,9 @@ async function assembleServer(
         verifiedFigmaReferences,
       };
     } catch (err) {
+      if (err instanceof PlanningRevisionConflictError) {
+        return reply.code(409).send({ error: err.message });
+      }
       if (err instanceof FigmaVerificationError) {
         return reply.code(409).send({
           error: err.message,
@@ -1526,11 +1582,15 @@ async function assembleServer(
   app.post("/api/projects/:id/plan/save-draft", async (req, reply) => {
     const { id } = req.params as RouteParams;
     if (!repo.getProject(db, id)) return reply.code(404).send({ error: "project not found" });
-    const body = req.body as { prdMarkdown?: string; tasks?: DraftTask[]; agentsMd?: string };
-    repo.savePlanningSession(db, id, {
-      prd: body.prdMarkdown,
-      draftTasks: body.tasks ?? null,
-      agentsMd: body.agentsMd,
+    const body = req.body as Partial<SaveDraftRequest> | undefined;
+    const revisionErr = planningRevisionError(id, body?.revisionId);
+    if (revisionErr) {
+      return reply.code(revisionErr.status).send({ error: revisionErr.error });
+    }
+    savePlanningRevision(id, body!.revisionId!, {
+      prd: body?.prdMarkdown,
+      draftTasks: body?.tasks ?? null,
+      agentsMd: body?.agentsMd,
     });
     return { ok: true };
   });
@@ -1540,6 +1600,7 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     if (!repo.getProject(db, id)) return reply.code(404).send({ error: "project not found" });
     const session = repo.getPlanningSession(db, id);
+    const revisionId = session.revisionId ?? repo.ensurePlanningRevision(db, id);
     const planCostUsd = (
       db.prepare(
         `SELECT COALESCE(SUM(cost_usd), 0) AS total
@@ -1547,7 +1608,7 @@ async function assembleServer(
          WHERE project_id = ? AND stage IN ('planner', 'deconstructor', 'health')`,
       ).get(id) as { total: number }
     ).total;
-    return { ...session, planCostUsd };
+    return { ...session, revisionId, planCostUsd };
   });
 
   // F28 read side: the archived plan-session markdown files, newest first —
@@ -1621,11 +1682,12 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    const lockErr = planningLockError(project);
-    if (lockErr) return reply.code(409).send({ error: lockErr });
 
-    const body = req.body as { prdMarkdown?: string; tasks?: DraftTask[]; agentsMd?: string };
-    if (!Array.isArray(body.tasks) || body.tasks.length === 0) {
+    const body = req.body as Partial<PlanCommitRequest> | undefined;
+    if (!isPlanningRevisionId(body?.revisionId)) {
+      return reply.code(400).send({ error: "a valid planning revisionId is required" });
+    }
+    if (!Array.isArray(body?.tasks) || body.tasks.length === 0) {
       return reply.code(400).send({ error: "tasks required" });
     }
 
@@ -1645,6 +1707,7 @@ async function assembleServer(
         db,
         project,
         {
+          revisionId: body.revisionId,
           prdMarkdown: body.prdMarkdown,
           tasks: body.tasks,
           agentsMd: body.agentsMd,
@@ -1653,23 +1716,29 @@ async function assembleServer(
         committedPlannerLabel,
         env.mock,
         (message) => app.log.warn(message),
-        { git: planningGitPersistence },
+        { git: planningPersistence },
       );
     } catch (err) {
       const current = repo.getProject(db, id)!;
       broadcast({ type: "project.updated", payload: current });
       const message = err instanceof Error ? err.message : String(err);
       app.log.error(`planning commit failed for ${id}: ${message}`);
-      const status = err instanceof PlanningCommitError && err.stage === "busy" ? 409 : 502;
+      const status =
+        err instanceof PlanningCommitError &&
+        (err.stage === "busy" || err.stage === "revision")
+          ? 409
+          : 502;
       return reply.code(status).send({
         error: message,
         stage: err instanceof PlanningCommitError ? err.stage : "unknown",
       });
     }
 
-    broadcast({ type: "project.updated", payload: committed.project });
-    for (const task of committed.createdTasks) {
-      broadcast({ type: "task.updated", payload: task });
+    if (committed.createdTasks.length > 0) {
+      broadcast({ type: "project.updated", payload: committed.project });
+      for (const task of committed.createdTasks) {
+        broadcast({ type: "task.updated", payload: task });
+      }
     }
 
     const { createdTasks: _createdTasks, ...response } = committed;

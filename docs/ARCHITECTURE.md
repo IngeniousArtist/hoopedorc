@@ -114,6 +114,19 @@ never branch before its planning context is present on the remote default
 branch. A retry always pushes a prior local no-diff commit before finalizing DB
 state.
 
+Each editable plan also owns an immutable, server-issued revision UUID. All
+planning writes are conditional on that current revision, preventing a stale
+tab from overwriting later scratch. `planning_commits` is the durable
+idempotency ledger: `(project_id, revision_id)` is unique, `content_hash` binds
+the exact PRD/task/AGENTS input, and a successful row stores the created task
+IDs plus the public response. The pre-Git transaction reserves `pending`; the
+final task/project/scratch transaction publishes `successful`. Same-process
+duplicates share the one active owner promise, while a restart can retry a
+pending receipt through the idempotent Git/archive path or replay a successful
+receipt without repeating external, database, or WebSocket effects. Clearing
+the active revision on success separates a legitimate next planning iteration
+from a retry, even when the content happens to be identical.
+
 Exact Figma task references also cross one explicit execution boundary.
 `EngineRunner` owns the Figma-specific parser, real runner probe, short-lived
 model/file cache, invocation accounting, and durable notification dedupe.

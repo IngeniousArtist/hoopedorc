@@ -142,6 +142,91 @@ test("O27: buildApp injects routes without process handlers or startup services"
   }
 });
 
+test("O3: planning API issues one revision and replays a successful commit", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-o3-app-"));
+  const deps = dependencies(root);
+  let gitCalls = 0;
+  deps.planningGitPersistence = {
+    commitFiles() {
+      gitCalls += 1;
+      return Promise.resolve();
+    },
+  };
+  const app = await buildApp(deps);
+  try {
+    const sessionResponse = await app.inject({
+      method: "GET",
+      url: "/api/projects/project-1/plan/session",
+    });
+    assert.equal(sessionResponse.statusCode, 200);
+    const revisionId = sessionResponse.json<{ revisionId: string }>().revisionId;
+    assert.match(revisionId, /^[0-9a-f-]{36}$/i);
+
+    const missingRevision = await app.inject({
+      method: "POST",
+      url: "/api/projects/project-1/plan/commit",
+      payload: { prdMarkdown: "# API receipt", tasks: [] },
+    });
+    assert.equal(missingRevision.statusCode, 400);
+
+    const payload = {
+      revisionId,
+      prdMarkdown: "# API receipt",
+      tasks: [
+        {
+          title: "API task",
+          description: "Create once",
+          difficulty: "medium",
+          acceptanceCriteria: ["one row"],
+          dependsOn: [],
+          scopePaths: ["packages/server/**"],
+          assignedModel: "deepseek-flash",
+        },
+      ],
+    };
+    const committed = await app.inject({
+      method: "POST",
+      url: "/api/projects/project-1/plan/commit",
+      payload,
+    });
+    assert.equal(committed.statusCode, 200);
+    const first = committed.json<{
+      revisionId: string;
+      tasks: Array<{ id: string }>;
+    }>();
+    assert.equal(first.revisionId, revisionId);
+    assert.equal(first.tasks.length, 1);
+
+    const replayed = await app.inject({
+      method: "POST",
+      url: "/api/projects/project-1/plan/commit",
+      payload,
+    });
+    assert.equal(replayed.statusCode, 200);
+    assert.deepEqual(replayed.json(), first);
+    assert.equal(gitCalls, 1);
+    assert.equal(repo.getTasks(deps.db, "project-1").length, 1);
+
+    const staleSave = await app.inject({
+      method: "POST",
+      url: "/api/projects/project-1/plan/save-draft",
+      payload: { ...payload, tasks: payload.tasks },
+    });
+    assert.equal(staleSave.statusCode, 409);
+
+    const nextSession = await app.inject({
+      method: "GET",
+      url: "/api/projects/project-1/plan/session",
+    });
+    const nextRevision = nextSession.json<{ revisionId: string }>().revisionId;
+    assert.notEqual(nextRevision, revisionId);
+  } finally {
+    await app.close();
+    deps.db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("O36: a project catch-up snapshot reads all runs with one indexed statement", async () => {
   const root = mkdtempSync(join(tmpdir(), "hoopedorc-o36-ws-catchup-"));
   const deps = dependencies(root);
