@@ -16,6 +16,7 @@ import type {
   Task,
   VerifiedFigmaReference,
 } from "@orc/types";
+import { randomUUID } from "node:crypto";
 import type { Db } from "./index";
 import { normalizeSettings } from "../config";
 import { TaskChangeBus, type TaskChangeWaitResult } from "../task-change-bus";
@@ -143,8 +144,9 @@ export function updateProject(
 
 /**
  * Delete a project and every row that references it (tasks, runs, logs,
- * merge decisions, invocations, costs, notifications, audit log). SQLite FKs are enforced
- * (PRAGMA foreign_keys = ON), so children must go first; wrapped in a
+ * merge decisions, invocations, costs, notifications, planning receipts,
+ * audit log). SQLite FKs are enforced (PRAGMA foreign_keys = ON), so children
+ * must go first; wrapped in a
  * transaction so a partial delete can't leave orphans.
  */
 export function deleteProject(db: Db, id: string): void {
@@ -163,6 +165,7 @@ export function deleteProject(db: Db, id: string): void {
     db.prepare("DELETE FROM notifications WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM audit_log WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM rollback_jobs WHERE project_id = ?").run(projectId);
+    db.prepare("DELETE FROM planning_commits WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM tasks WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
   });
@@ -171,30 +174,45 @@ export function deleteProject(db: Db, id: string): void {
 
 // ── Planning session ──
 
-export function savePlanningSession(
-  db: Db,
-  projectId: string,
-  opts: {
-    messages?: PlanChatMessage[];
-    prd?: string | null;
-    draftTasks?: DraftTask[] | null;
-    /** F38: AGENTS.md draft from the last deconstruct, cleared at
-     *  /plan/commit like `prd`. */
-    agentsMd?: string | null;
-    /** F52: small verified exact-node list, retained on failed retries. */
-    verifiedFigmaReferences?: VerifiedFigmaReference[] | null;
-    /** F28: the archived markdown session file this session is being
-     *  written to. `null` clears it (done at /plan/commit, so the next
-     *  chat turn mints a fresh file for the next session). */
-    sessionFile?: string | null;
-  },
-): void {
+export interface PlanningSessionUpdate {
+  messages?: PlanChatMessage[];
+  prd?: string | null;
+  draftTasks?: DraftTask[] | null;
+  /** F38: AGENTS.md draft from the last deconstruct, cleared at
+   *  /plan/commit like `prd`. */
+  agentsMd?: string | null;
+  /** F52: small verified exact-node list, retained on failed retries. */
+  verifiedFigmaReferences?: VerifiedFigmaReference[] | null;
+  /** F28: the archived markdown session file this session is being
+   *  written to. `null` clears it (done at /plan/commit, so the next
+   *  chat turn mints a fresh file for the next session). */
+  sessionFile?: string | null;
+  /** O3: set only when creating or clearing the active revision. */
+  revisionId?: string | null;
+}
+
+function planningSessionAssignments(opts: PlanningSessionUpdate): {
+  sets: string[];
+  vals: unknown[];
+} {
   const sets: string[] = [];
   const vals: unknown[] = [];
-  if (opts.messages !== undefined) { sets.push("planning_messages = ?"); vals.push(JSON.stringify(opts.messages)); }
-  if (opts.prd !== undefined) { sets.push("planning_prd = ?"); vals.push(opts.prd ?? null); }
-  if (opts.draftTasks !== undefined) { sets.push("planning_draft_tasks = ?"); vals.push(opts.draftTasks ? JSON.stringify(opts.draftTasks) : null); }
-  if (opts.agentsMd !== undefined) { sets.push("planning_agents_md = ?"); vals.push(opts.agentsMd ?? null); }
+  if (opts.messages !== undefined) {
+    sets.push("planning_messages = ?");
+    vals.push(JSON.stringify(opts.messages));
+  }
+  if (opts.prd !== undefined) {
+    sets.push("planning_prd = ?");
+    vals.push(opts.prd ?? null);
+  }
+  if (opts.draftTasks !== undefined) {
+    sets.push("planning_draft_tasks = ?");
+    vals.push(opts.draftTasks ? JSON.stringify(opts.draftTasks) : null);
+  }
+  if (opts.agentsMd !== undefined) {
+    sets.push("planning_agents_md = ?");
+    vals.push(opts.agentsMd ?? null);
+  }
   if (opts.verifiedFigmaReferences !== undefined) {
     sets.push("planning_figma_refs = ?");
     vals.push(
@@ -203,10 +221,71 @@ export function savePlanningSession(
         : null,
     );
   }
-  if (opts.sessionFile !== undefined) { sets.push("planning_session_file = ?"); vals.push(opts.sessionFile ?? null); }
+  if (opts.sessionFile !== undefined) {
+    sets.push("planning_session_file = ?");
+    vals.push(opts.sessionFile ?? null);
+  }
+  if (opts.revisionId !== undefined) {
+    sets.push("planning_revision_id = ?");
+    vals.push(opts.revisionId ?? null);
+  }
+  return { sets, vals };
+}
+
+export function savePlanningSession(
+  db: Db,
+  projectId: string,
+  opts: PlanningSessionUpdate,
+): void {
+  const { sets, vals } = planningSessionAssignments(opts);
   if (sets.length === 0) return;
   vals.push(projectId);
   db.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+}
+
+/** O3: update scratch only while the caller still owns this exact revision. */
+export function savePlanningSessionForRevision(
+  db: Db,
+  projectId: string,
+  revisionId: string,
+  opts: PlanningSessionUpdate,
+): boolean {
+  const { sets, vals } = planningSessionAssignments(opts);
+  if (sets.length === 0) return false;
+  vals.push(projectId, revisionId);
+  const result = db
+    .prepare(
+      `UPDATE projects SET ${sets.join(", ")}
+       WHERE id = ? AND planning_revision_id = ?`,
+    )
+    .run(...vals);
+  return result.changes === 1;
+}
+
+/** O3: lazily mint one revision for an otherwise empty planning session. */
+export function ensurePlanningRevision(db: Db, projectId: string): string {
+  const row = db
+    .prepare("SELECT planning_revision_id FROM projects WHERE id = ?")
+    .get(projectId) as { planning_revision_id: string | null } | undefined;
+  if (!row) throw new Error("project not found");
+  if (row.planning_revision_id) return row.planning_revision_id;
+
+  const revisionId = randomUUID();
+  const assigned = db
+    .prepare(
+      `UPDATE projects SET planning_revision_id = ?
+       WHERE id = ? AND planning_revision_id IS NULL`,
+    )
+    .run(revisionId, projectId);
+  if (assigned.changes === 1) return revisionId;
+
+  const current = db
+    .prepare("SELECT planning_revision_id FROM projects WHERE id = ?")
+    .get(projectId) as { planning_revision_id: string | null } | undefined;
+  if (!current?.planning_revision_id) {
+    throw new Error("could not initialize planning revision");
+  }
+  return current.planning_revision_id;
 }
 
 export function getPlanningSession(
@@ -219,10 +298,11 @@ export function getPlanningSession(
   agentsMd?: string;
   verifiedFigmaReferences?: VerifiedFigmaReference[];
   sessionFile?: string;
+  revisionId?: string;
 } {
   const row = db
     .prepare(
-      "SELECT planning_messages, planning_prd, planning_draft_tasks, planning_agents_md, planning_figma_refs, planning_session_file FROM projects WHERE id = ?",
+      "SELECT planning_messages, planning_prd, planning_draft_tasks, planning_agents_md, planning_figma_refs, planning_session_file, planning_revision_id FROM projects WHERE id = ?",
     )
     .get(projectId) as
     | {
@@ -232,6 +312,7 @@ export function getPlanningSession(
         planning_agents_md: string | null;
         planning_figma_refs: string | null;
         planning_session_file: string | null;
+        planning_revision_id: string | null;
       }
     | undefined;
   if (!row) return { messages: [] };
@@ -244,7 +325,90 @@ export function getPlanningSession(
       ? (JSON.parse(row.planning_figma_refs) as VerifiedFigmaReference[])
       : undefined,
     sessionFile: row.planning_session_file ?? undefined,
+    revisionId: row.planning_revision_id ?? undefined,
   };
+}
+
+export interface PlanningCommitReceipt {
+  projectId: string;
+  revisionId: string;
+  state: "pending" | "successful";
+  contentHash: string;
+  createdTaskIds: string[];
+  result?: unknown;
+}
+
+export function getPlanningCommitReceipt(
+  db: Db,
+  projectId: string,
+  revisionId: string,
+): PlanningCommitReceipt | undefined {
+  const row = db
+    .prepare(
+      `SELECT project_id, revision_id, state, content_hash,
+              created_task_ids, result_json
+       FROM planning_commits
+       WHERE project_id = ? AND revision_id = ?`,
+    )
+    .get(projectId, revisionId) as
+    | {
+        project_id: string;
+        revision_id: string;
+        state: "pending" | "successful";
+        content_hash: string;
+        created_task_ids: string;
+        result_json: string | null;
+      }
+    | undefined;
+  if (!row) return undefined;
+  return {
+    projectId: row.project_id,
+    revisionId: row.revision_id,
+    state: row.state,
+    contentHash: row.content_hash,
+    createdTaskIds: json<string[]>(row.created_task_ids),
+    result: row.result_json ? json<unknown>(row.result_json) : undefined,
+  };
+}
+
+export function createPendingPlanningCommit(
+  db: Db,
+  projectId: string,
+  revisionId: string,
+  contentHash: string,
+): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO planning_commits (
+       project_id, revision_id, state, content_hash, created_task_ids,
+       result_json, created_at, updated_at
+     ) VALUES (?, ?, 'pending', ?, '[]', NULL, ?, ?)`,
+  ).run(projectId, revisionId, contentHash, now, now);
+}
+
+export function completePlanningCommit(
+  db: Db,
+  projectId: string,
+  revisionId: string,
+  contentHash: string,
+  createdTaskIds: string[],
+  result: unknown,
+): boolean {
+  const updated = db.prepare(
+    `UPDATE planning_commits
+     SET state = 'successful', created_task_ids = ?, result_json = ?,
+         updated_at = ?
+     WHERE project_id = ? AND revision_id = ? AND content_hash = ?
+       AND state = 'pending'`,
+  ).run(
+    JSON.stringify(createdTaskIds),
+    JSON.stringify(result),
+    new Date().toISOString(),
+    projectId,
+    revisionId,
+    contentHash,
+  );
+  return updated.changes === 1;
 }
 
 // ── Tasks ──

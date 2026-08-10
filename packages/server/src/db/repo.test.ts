@@ -476,6 +476,72 @@ test("getPlanningSession: agentsMd is undefined when never set", () => {
   assert.equal(session.agentsMd, undefined);
 });
 
+test("O3: revision-scoped scratch rejects stale writers", () => {
+  const db = setup();
+  const revisionId = repo.ensurePlanningRevision(db, "proj-1");
+  assert.equal(repo.ensurePlanningRevision(db, "proj-1"), revisionId);
+  assert.equal(
+    repo.savePlanningSessionForRevision(db, "proj-1", revisionId, {
+      prd: "# Current",
+    }),
+    true,
+  );
+  assert.equal(
+    repo.savePlanningSessionForRevision(
+      db,
+      "proj-1",
+      "11111111-1111-4111-8111-111111111111",
+      { prd: "# Stale" },
+    ),
+    false,
+  );
+  assert.equal(repo.getPlanningSession(db, "proj-1").prd, "# Current");
+});
+
+test("O3: migration preserves legacy scratch and backfills only the active revision", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "hoopedorc-o3-migration-")), "orc.db");
+  const original = initDb(path);
+  repo.createProject(original, {
+    id: "active",
+    name: "Active legacy plan",
+    repoUrl: "https://github.com/x/active",
+    defaultBranch: "main",
+    localPath: "/tmp/active",
+    status: "planning",
+  });
+  repo.createProject(original, {
+    id: "empty",
+    name: "Empty legacy plan",
+    repoUrl: "https://github.com/x/empty",
+    defaultBranch: "main",
+    localPath: "/tmp/empty",
+    status: "created",
+  });
+  repo.savePlanningSession(original, "active", {
+    messages: [{ role: "user", content: "preserve me" }],
+    prd: "# Legacy PRD",
+    agentsMd: "# Legacy guidance",
+  });
+  original.exec("ALTER TABLE projects DROP COLUMN planning_revision_id");
+  original.close();
+
+  const migrated = initDb(path);
+  const active = repo.getPlanningSession(migrated, "active");
+  assert.deepEqual(active.messages, [{ role: "user", content: "preserve me" }]);
+  assert.equal(active.prd, "# Legacy PRD");
+  assert.equal(active.agentsMd, "# Legacy guidance");
+  assert.match(active.revisionId ?? "", /^[0-9a-f-]{36}$/i);
+  assert.equal(repo.getPlanningSession(migrated, "empty").revisionId, undefined);
+  const activeRevision = active.revisionId;
+  migrated.close();
+
+  const reopened = initDb(path);
+  assert.equal(repo.getPlanningSession(reopened, "active").revisionId, activeRevision);
+  const emptyRevision = repo.ensurePlanningRevision(reopened, "empty");
+  assert.match(emptyRevision, /^[0-9a-f-]{36}$/i);
+  reopened.close();
+});
+
 test("F52: verified Figma references round-trip and clear with planning scratch", () => {
   const db = setup();
   const references = [

@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,6 +57,9 @@ export function initDb(path: string = ENV.dbPath): Db {
     "ALTER TABLE projects ADD COLUMN planning_agents_md TEXT",
     // F52: verified exact-node metadata only — no raw Figma payload/cache.
     "ALTER TABLE projects ADD COLUMN planning_figma_refs TEXT",
+    // O3: immutable id for the active editable planning revision. Successful
+    // commit receipts keep old ids replayable after this column is cleared.
+    "ALTER TABLE projects ADD COLUMN planning_revision_id TEXT",
     // One-line human-readable terminal outcome ("Merged PR #4" / "Gates
     // kept failing: tests") — set by the orchestrator, shown on Audit cards.
     "ALTER TABLE tasks ADD COLUMN status_reason TEXT",
@@ -91,6 +95,31 @@ export function initDb(path: string = ENV.dbPath): Db {
       throw error;
     }
   }
+  // O3 migration: preserve legacy scratch exactly and assign one stable
+  // revision only where a planning session was already active. Empty projects
+  // receive a revision lazily from GET /plan/session instead.
+  db.transaction(() => {
+    const active = db
+      .prepare(
+        `SELECT id
+         FROM projects
+         WHERE planning_revision_id IS NULL
+           AND (
+             status = 'planning'
+             OR planning_messages IS NOT NULL
+             OR planning_prd IS NOT NULL
+             OR planning_draft_tasks IS NOT NULL
+             OR planning_agents_md IS NOT NULL
+             OR planning_figma_refs IS NOT NULL
+             OR planning_session_file IS NOT NULL
+           )`,
+      )
+      .all() as { id: string }[];
+    const assign = db.prepare(
+      "UPDATE projects SET planning_revision_id = ? WHERE id = ? AND planning_revision_id IS NULL",
+    );
+    for (const project of active) assign.run(randomUUID(), project.id);
+  })();
   // B40 migration/backfill. Deterministic ids + INSERT OR IGNORE make this
   // safe on every boot. Prefer run rows (author/docs), then add historical
   // non-run costs (planner/validator), then model checks (health). Existing

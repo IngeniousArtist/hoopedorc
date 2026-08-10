@@ -157,6 +157,7 @@ export function PlanView({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Draft plan
+  const [revisionId, setRevisionId] = useState<string | null>(null);
   const [prd, setPrd] = useState<string | null>(null);
   // F38: generated AGENTS.md content — operator-editable alongside the PRD,
   // same lifecycle (set on deconstruct, restored on reload, cleared on
@@ -182,6 +183,7 @@ export function PlanView({
     setError(null);
     setFigmaIssue(null);
     setPlannerReady(false);
+    setRevisionId(null);
     Promise.all([
       api<GetProjectResponse>("getProject", { params: { id: projectId } }),
       api<PlanningSessionResponse>("planSession", { params: { id: projectId } }),
@@ -210,6 +212,7 @@ export function PlanView({
           return { ...m, content };
         });
         setMessages(cleaned);
+        setRevisionId(sessionRes.revisionId);
         setPlanCost(sessionRes.planCostUsd);
         setVerifiedFigmaReferences(sessionRes.verifiedFigmaReferences ?? []);
         if (sessionRes.draftTasks && sessionRes.draftTasks.length > 0) {
@@ -275,12 +278,13 @@ export function PlanView({
 
   // Auto-save draft tasks whenever they change (debounced)
   useEffect(() => {
-    if (!tasks || committed || !projectId) return;
+    if (!tasks || committed || !projectId || !revisionId) return;
     if (saveDraftTimer.current) clearTimeout(saveDraftTimer.current);
     saveDraftTimer.current = setTimeout(() => {
       api("planSaveDraft", {
         params: { id: projectId },
         body: {
+          revisionId,
           prdMarkdown: prd ?? "",
           tasks: draftTasksFromUi(tasks),
           agentsMd: agentsMd ?? "",
@@ -290,10 +294,10 @@ export function PlanView({
     return () => {
       if (saveDraftTimer.current) clearTimeout(saveDraftTimer.current);
     };
-  }, [tasks, prd, agentsMd, committed, projectId]);
+  }, [tasks, prd, agentsMd, committed, projectId, revisionId]);
 
   async function sendChat() {
-    if (!projectId || !input.trim() || chatting || running) return;
+    if (!projectId || !revisionId || !input.trim() || chatting || running) return;
     const next: PlanChatMessage[] = [
       ...messages,
       { role: "user", content: input.trim() },
@@ -306,7 +310,7 @@ export function PlanView({
     try {
       const res = await api<PlanChatResponse>("planChat", {
         params: { id: projectId },
-        body: { messages: next },
+        body: { revisionId, messages: next },
       });
       const { content, ready } = extractPlanComplete(res.reply);
       if (ready) setPlannerReady(true);
@@ -323,13 +327,14 @@ export function PlanView({
   async function generateTable(
     figmaVerification: "live" | "attachments" = "live",
   ) {
-    if (!projectId || deconstructing || running) return;
+    if (!projectId || !revisionId || deconstructing || running) return;
     setDeconstructing(true);
     setError(null);
     try {
       const res = await api<PlanDeconstructResponse>("planDeconstruct", {
         params: { id: projectId },
         body: {
+          revisionId,
           messages,
           ...(figmaVerification === "attachments"
             ? { figmaVerification }
@@ -408,13 +413,14 @@ export function PlanView({
   }
 
   async function commit() {
-    if (!projectId || !tasks || tasks.length === 0) return;
+    if (!projectId || !revisionId || !tasks || tasks.length === 0) return;
     setCommitting(true);
     setError(null);
     try {
       const res = await api<PlanCommitResponse>("planCommit", {
         params: { id: projectId },
         body: {
+          revisionId,
           prdMarkdown: prd ?? "",
           tasks: draftTasksFromUi(tasks),
           agentsMd: agentsMd ?? "",
