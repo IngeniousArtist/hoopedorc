@@ -521,6 +521,19 @@ must be appended without rewriting this pre-merge evidence. No live production
 plan was mutated because every external-effect and crash boundary is exercised
 against temporary repositories, archives, and databases.
 
+**Status:** completed in
+[#216](https://github.com/IngeniousArtist/hoopedorc/pull/216)
+(`6a9c7fc`). The hosted Linux `build-and-test` check passed in 2m16s. After
+merge, local `main` and `origin/main` were independently confirmed clean and
+equal at that commit; the full server suite passed 263/263 and the web suite
+passed 27/27 again from the merged tree. This doc-only status follow-up also
+passed typecheck, build, lint at the unchanged 340-finding baseline, engine
+214/214, adapters 12/12, server 263/263, web 27/27, E2E 16/16 at
+360/390/768/1280/1440 px, and `git diff --check`. No production deployment or
+live plan mutation was performed for this persistence-only boundary, so the
+repeatable temporary-repository/archive/database evidence above remains the
+authoritative external-effect and crash verification.
+
 **Fix risk:** medium — must not block legitimate v2-iteration commits.
 
 ### O4. Unserialized git mutations on the shared primary clone — HIGH (robustness)
