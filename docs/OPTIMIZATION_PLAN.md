@@ -288,6 +288,54 @@ dashboard and its hashed JavaScript asset. A real browser loaded the
 production token gate at 390, 768, and 1440 px with no document-level
 horizontal overflow or console errors.
 
+**Security advisory refresh (reopened 2026-08-11):** a fresh registry audit
+after #213 found four new high-severity transitive findings and the previously
+accepted low esbuild finding. The full baseline is four high and one low; the
+production-only baseline is two high. Production paths contain
+`brace-expansion` 5.0.8 through `minimatch`/`glob` and `fast-uri` 3.1.4 through
+Fastify's Ajv serializers. Development paths additionally contain `nanoid`
+3.3.16 through PostCSS and `undici` 7.28.0 through jsdom. The authoritative
+fixed minimums from the registry advisory graph are `brace-expansion` 5.0.9
+([`GHSA-rgw5-rvv9-x895`](https://github.com/advisories/GHSA-rgw5-rvv9-x895)),
+`fast-uri` 3.1.5
+([`GHSA-7p8r-x3mc-p8w7`](https://github.com/advisories/GHSA-7p8r-x3mc-p8w7)),
+`nanoid` 3.3.17
+([`GHSA-2v37-7h3g-55p8`](https://github.com/advisories/GHSA-2v37-7h3g-55p8)),
+and `undici` 7.29.0 (including
+[`GHSA-4cwx-7wf7-3272`](https://github.com/advisories/GHSA-4cwx-7wf7-3272)).
+
+The smallest remediation is lockfile-only because every fixed release is
+inside its current parent's declared range: resolve `brace-expansion` 5.0.9,
+`fast-uri` 3.1.5, the current patched nanoid 3.x release, and `undici` 7.29.0
+without adding a direct dependency or override. Inspect the generated lock
+diff and refuse unrelated package drift. Keep the low Windows-only esbuild
+development-server residual explicit: the installed Vite and tsup lines still
+declare the vulnerable 0.27 range, while the fixed release is 0.28.1; do not
+force an unsupported transitive major through an override.
+
+**Refresh acceptance:** `npm audit --audit-level=high` and
+`npm audit --omit=dev --audit-level=high` both report zero vulnerabilities;
+plain `npm audit` reports only the already-documented low esbuild residual;
+`npm ls` proves the four patched resolutions with no invalid graph; the
+lockfile diff contains no unrelated version changes; the focused real static
+server regressions and every repository gate are green. Because the runtime
+Fastify graph changes, the next production update must record `GET
+/api/health`, dashboard, hashed asset, SPA fallback, API/WS auth/404 behavior,
+and traversal confinement through loopback and Tailscale Serve.
+
+**Refresh implementation result (2026-08-11, pre-merge):** the reviewed
+lockfile-only update resolves `brace-expansion` 5.0.9, `fast-uri` 3.1.5,
+`nanoid` 3.3.18, and `undici` 7.29.0, with no direct dependency, override, or
+unrelated package change. Both high-severity audit commands exit successfully;
+the production-only audit reports zero vulnerabilities, while the full audit
+reports only the accepted low esbuild finding. `npm ls --all` reports a valid
+graph. The focused real static-server regression passes 2/2. Full local gates
+pass typecheck, build, lint at the unchanged 340-finding baseline, engine
+214/214, adapters 12/12, server 255/255, web 26/26, E2E 16/16 at
+360/390/768/1280/1440 px, and `git diff --check`. CI, merged-main verification,
+and the production smoke above remain outstanding until this branch is merged
+and deployed; they must be added without rewriting this pre-merge evidence.
+
 ### O2. Scheduler tick unhandled rejection can shut down the whole server — HIGH (robustness)
 
 **Problem:** `checkSchedules` runs
