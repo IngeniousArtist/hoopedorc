@@ -1,221 +1,227 @@
-# Hoopedorc
+<p align="center">
+  <img src="apps/web/public/icon-192.png" alt="Hoopedorc" width="96" height="96">
+</p>
 
-[![CI](https://github.com/IngeniousArtist/hoopedorc/actions/workflows/ci.yml/badge.svg)](https://github.com/IngeniousArtist/hoopedorc/actions/workflows/ci.yml)
+<h1 align="center">Hoopedorc</h1>
 
-**A self-hosted, multi-model AI coding orchestrator.** Describe what you want
-built in a planning chat; Hoopedorc turns it into a task DAG, runs a team of
-coding agents on it in parallel — each in its own isolated git worktree — and
-auto-merges their PRs to `main` behind hard gates and an independent AI
-reviewer. You watch a live kanban, get pinged on your phone when something
-actually needs you, and step in mid-run without breaking anything.
+<p align="center">
+  <strong>A self-hosted, multi-model AI coding orchestrator.</strong><br>
+  Turn a planning conversation into isolated agent work, gated pull requests,
+  independent review, and safe merges.
+</p>
 
-It exists for developers who hold **several model subscriptions at once**
-(Claude Pro, ChatGPT Plus/Pro, GLM, DeepSeek, Grok, …) and want to combine
-them into one hands-off engineering team instead of juggling terminals —
-while staying inside each plan's usage limits.
+<p align="center">
+  <a href="https://github.com/IngeniousArtist/hoopedorc/actions/workflows/ci.yml"><img src="https://github.com/IngeniousArtist/hoopedorc/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/Node-%3E%3D20-339933?logo=nodedotjs&logoColor=white" alt="Node 20 or newer">
+  <img src="https://img.shields.io/badge/version-0.6.0-525252" alt="Version 0.6.0">
+</p>
 
-## How it works
+<p align="center">
+  <a href="docs/USER_GUIDE.md">User guide</a> ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
+  <a href="docs/CONTRACT.md">API contract</a> ·
+  <a href="AGENTS.md">Contributing</a>
+</p>
 
-1. **Plan** — chat with the planner (Claude Code or Codex, your choice) about
-   what to build; it deconstructs the agreed plan into a dependency-aware
-   task DAG with acceptance criteria, scope paths, and a difficulty-based
-   model assignment per task — plus a PRD and an `AGENTS.md` project-context
-   file, both editable before anything runs.
-2. **Dispatch** — the scheduler runs ready tasks in parallel, each agent in
-   its own git worktree on its own branch. Tasks with overlapping scopes are
-   serialized; per-model concurrency caps hold across every project.
-3. **Gate** — every change must pass the repo's own typecheck/lint/build/test
-   scripts, plus no-merge-conflict and stayed-in-scope checks — run inside a
-   disposable Docker container by default when a daemon is available, so a
-   repo's own scripts can't touch your host. Optionally it also waits for
-   the PR's own GitHub CI.
-4. **Review** — a *different* model than the author grades the diff against
-   the task's acceptance criteria (and your configured engineering
-   guidelines) with a confidence score; a docs-role model then keeps
-   CHANGELOG/README/AGENTS.md current in the same PR.
-5. **Merge** — clean + confident + not risky → auto-merged and logged. DB
-   schema changes, new dependencies, auth/secret files, out-of-scope edits,
-   low confidence, or exhausted gates → an approval lands on your phone via
-   Telegram (Approve/Reject buttons) and in the app — the flagged task waits
-   for your answer while independent tasks keep running.
+Hoopedorc is built for developers who already use several model subscriptions
+and want them to operate as one engineering team. Describe the outcome in a
+planning chat; Hoopedorc creates a dependency-aware task graph, assigns work to
+Claude Code, Codex, or OpenCode-backed models, and runs independent tasks in
+parallel Git worktrees.
 
-If an attempt fails, the task escalates through a fallback model chain before
-giving up. If a model gets rate-limited, it cools down and work routes around
-it. If you declared a subscription's usage window, the scheduler avoids
-exhausting it in the first place.
+Every task passes repository gates and review by a model that did not author
+the change. Clean, low-risk work can merge automatically. Risky changes pause
+for an explicit decision in the web app or Telegram, while unrelated work keeps
+moving.
 
-## Features
+> **Project status:** v0.6.0. The core productization roadmap is complete and
+> CI-covered. The separate post-productization hardening plan is active; its
+> current completion state and evidence live in
+> [`docs/OPTIMIZATION_PLAN.md`](docs/OPTIMIZATION_PLAN.md).
 
-**Planning & execution**
-- Two-tier planning: conversational chat + one high-leverage DAG
-  deconstruction; editable task table, PRD, and `AGENTS.md` before anything
-  runs; upload images/PDFs/files as planning context; every planning session
-  archived as markdown in the repo
-- Three interchangeable runners: **Claude Code** (Claude subscription),
-  **Codex CLI** (ChatGPT subscription), and **OpenCode** (everything else —
-  GLM, DeepSeek, Grok, OpenRouter, …); the planner itself is swappable
-  between the two subscription CLIs
-- Parallel agents in isolated git worktrees; scope-overlap serialization;
-  global per-model concurrency caps; automatic fallback-model escalation
-- Mid-run control: stop a single task (or everything at once), add tasks to
-  a live run, reprioritize by drag, pause-and-drain or hard-stop
+## Quick start
 
-**Safety rails**
-- Hard gates (repo's own scripts, per-project overridable) + independent
-  AI validator + risky-change rules + configurable merge policy
-- Gate scripts and dependency installs run in a disposable Docker sandbox
-  by default when a daemon is reachable (`off`/`auto`/`required` modes,
-  per-project image override)
-- Your own coding/UX/security guidelines injected into both author and
-  validator prompts; a per-task docs stage keeps CHANGELOG/README/AGENTS.md
-  current in the same PR
-- Vacuous-gate detection (a scriptless repo can't "pass" by doing nothing)
-- One-click rollback of any merged task; full audit log
-- Stuck-run detection (max runtime, output idle, spin-loop) with automatic
-  abort and fallback
-- Graceful SIGTERM/SIGINT/fatal-error cleanup with bounded runtime settlement,
-  SQLite checkpointing, restart-safe rate-limit cooldowns, and dependency health
+### Requirements
 
-**Cost & subscription awareness**
-- Per-project and global monthly budget caps with 50%/80% soft warnings
-- Per-model subscription quotas (rolling window + max invocations/spend)
-  enforced across all projects and model-backed stages—even $0 subscription
-  calls—with live window usage in the health panel;
-  rate-limit cooldowns; pre-run cost estimates
-- Rate-limited models wait-and-retry before falling back, with Telegram
-  alerts on waits, fallback switches, and exhausted chains
+- Node.js 20 or newer; Node 22 is recommended.
+- [`gh`](https://cli.github.com/) authenticated for the GitHub account that
+  owns the target repositories.
+- `claude` authenticated for Claude Code.
+- `opencode` authenticated for the non-Claude providers you want to use.
+- Optional: `codex` authenticated when you want ChatGPT-subscription-backed
+  agents in the pool.
+- Optional: Docker for sandboxed project setup and gate execution.
 
-**Away-from-keyboard autonomy**
-- Telegram: approvals with PR link + validator reasons, status digests,
-  inline project controls and prefix-friendly `/status` `/start` `/pause`
-  commands, with deadlines/retry/chunking and visible delivery health; browser
-  notifications when the tab is hidden
-- A pending approval blocks only the flagged task — it waits indefinitely
-  for your decision while independent tasks keep flowing
-- Scheduled runs (nightly / every-N-hours per project); end-of-run report
-  cards; live mission-control strip on the board
-- Remote access over Tailscale with token auth, an in-app login screen,
-  hash-routed deep links, and a PWA manifest (install it on your phone)
-
-**Operations**
-- One process serves API + built web app; systemd unit provided (prebuilt
-  start — no rebuild on restart); Setup & Health can run the guarded
-  pull/rebuild/restart remotely on supported EC2/systemd deployments, with
-  `npm run update` as the terminal fallback; automatic daily DB backup
-  rotation; log pruning; first-run onboarding wizard with CLI health checks,
-  a live Model Slugs catalog for Codex/Claude Code/selected OpenCode
-  providers, and an ordered EC2 deploy checklist in the user guide
-
-## Quickstart
-
-Prereqs: Node ≥ 20 (22 recommended), plus the CLIs the orchestrator
-drives — `gh` (authenticated), `claude` (Claude Code, logged in), and
-`opencode` (authenticated for your non-Claude models). Optionally `codex`
-(Codex CLI, `codex login`) if you want a ChatGPT-subscription-billed model
-in the pool. Docker is optional — with it, gates run sandboxed.
+### Install and run
 
 ```bash
-npm install          # install all workspaces
-npm run setup        # create .env from .env.example, check gh/claude/opencode auth
-npm run start        # build everything + run the server (serves the web app too)
+git clone https://github.com/IngeniousArtist/hoopedorc.git
+cd hoopedorc
+npm install
+npm run setup
+npm run start
 ```
 
-Then open http://127.0.0.1:4317 — a first-run wizard walks you through model
-mapping, routing, budgets, and your first project.
+Open <http://127.0.0.1:4317>. The first-run wizard checks the installed CLIs,
+helps map models and routing, and walks through the first project.
 
-For development:
+For local development:
 
 ```bash
-npm run mock         # frontend dev against mock data on :5173 (no real models)
-npm run dev          # all packages in watch mode
+npm run dev    # all workspaces in watch mode
+npm run mock   # web app on :5173 with a mock API and no model calls
 ```
 
-Contributors and coding agents should start with [`AGENTS.md`](AGENTS.md).
-It contains the concise branch/PR workflow, architecture boundaries,
-load-bearing invariants, and required verification gates; use the larger
-productization plan only for an item's full specification and evidence history.
+## From idea to merged code
 
-See [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) for the full walkthrough
-(first project, the safety model, the gate sandbox, scheduled runs, remote
-setup over Tailscale, an ordered EC2 deploy checklist, troubleshooting) and
-[`deploy/`](deploy/) for the systemd unit and Docker notes.
+1. **Plan** — refine the goal in a conversational planning session. Hoopedorc
+   produces an editable PRD, project guidance, and task DAG with acceptance
+   criteria, scope paths, dependencies, difficulty, and model assignments.
+2. **Dispatch** — ready tasks run in parallel, each on its own branch and Git
+   worktree. Overlapping scopes are serialized and per-model concurrency caps
+   apply across projects.
+3. **Gate** — repository typecheck, lint, build, and test scripts run alongside
+   no-conflict and in-scope checks. Docker-backed gates are used by default when
+   a daemon is available.
+4. **Review** — a different model evaluates the diff against the task's
+   acceptance criteria and configured engineering guidance. A docs stage keeps
+   project documentation current in the same PR.
+5. **Merge or ask** — clean, confident, low-risk work auto-merges. Schema,
+   dependency, credential-sensitive, destructive, out-of-scope, or low-
+   confidence changes wait for human approval.
 
-## Layout
+Failed attempts can move through a configured fallback chain. Rate-limited
+models cool down without blocking other providers, and durable retry state lets
+the scheduler continue safely after a restart.
 
+## What is included
+
+| Area | Capabilities |
+| --- | --- |
+| Planning | Conversational planning, attachments, editable PRD and task graph, repository-persisted planning context, Figma-aware task references |
+| Execution | Parallel worktrees, dependency and scope scheduling, manual dispatch through one scheduler, model fallbacks, mid-run task creation and reprioritization |
+| Quality | Repository gates, vacuous-gate detection, independent validation, risky-change inspection, optional GitHub CI wait, docs stage |
+| Control | Live Kanban, task logs, pause-and-drain, hard stop, retry, rollback PRs, inline approvals, audit history |
+| Models | Claude Code, Codex CLI, and OpenCode providers such as GLM, DeepSeek, Grok, and OpenRouter models |
+| Budgets | Per-project/global limits, subscription invocation quotas, rolling windows, pre-run estimates, exactly-once model-call accounting |
+| Remote operation | Telegram approvals and controls, browser notifications, schedules, run reports, Tailscale guidance, installable PWA |
+| Operations | SQLite persistence and backups, graceful shutdown, guarded self-update, systemd deployment, health and model-slug checks |
+
+## Architecture
+
+```text
+┌────────────────┐    REST + WebSocket    ┌────────────────────────┐
+│ React web app  │◀──────────────────────▶│ Fastify server + SQLite│
+└────────────────┘                        └───────────┬────────────┘
+                                                   │ owns runtimes
+                                           ┌───────▼────────┐
+                                           │ DAG scheduler  │
+                                           │ gates + review │
+                                           └───────┬────────┘
+                                                   │
+                         ┌─────────────────────────┼──────────────────────┐
+                         ▼                         ▼                      ▼
+                  Claude Code                 OpenCode               Codex CLI
+                  subscription           provider/model pool     ChatGPT subscription
 ```
-packages/
-  types/      @orc/types      — shared domain model + REST/WS contract (the contract)
-  engine/     @orc/engine     — scheduler, worktrees, git/PR, gates, validator, sandbox
-  adapters/   @orc/adapters   — Claude Code + OpenCode + Codex runners
-  server/     @orc/server     — Fastify REST+WS API, SQLite persistence, planner, Telegram
-apps/
-  web/        @orc/web        — React kanban UI + live logs + settings
-docs/         USER_GUIDE, ARCHITECTURE, CONTRACT, PRODUCTIZATION_PLAN, specs/
-deploy/       systemd unit + reference Dockerfile/compose
-bin/          `hoopedorc` CLI (start|init)
-scripts/      npm run setup + npm run update implementations
+
+This is one TypeScript npm-workspaces monorepo. `@orc/types` owns the shared
+domain, REST, and WebSocket contract; the web app talks only through that
+contract. The server composes persistence, the engine, and adapters at the
+runtime boundary. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the
+full ownership model and lifecycle invariants.
+
+## Safety and security boundaries
+
+- The server binds to `127.0.0.1` without authentication by default. A
+  non-loopback bind requires `API_TOKEN` unless the operator explicitly enables
+  the unsafe unauthenticated override.
+- Tailscale Serve is the recommended remote-access path: it provides HTTPS
+  without exposing the Fastify listener directly.
+- Settings APIs redact stored Telegram and API tokens; secret values never
+  round-trip back to the browser.
+- Repository setup, dependency installation, and gate commands run in a
+  disposable Docker container by default when Docker is reachable. Only the
+  task worktree is mounted.
+- Agent CLIs run on the host so they can use the current OS user's existing CLI
+  authentication. They receive a sanitized environment allowlist, but they
+  retain that user's filesystem and network access. This is credential hygiene,
+  not process isolation; do not run untrusted repositories.
+- Gates fail closed, destructive changes cannot silently pass, cancellation
+  owns the complete child process group, and unrelated operator changes in the
+  primary clone are never stashed, reset, or auto-committed.
+
+The detailed threat and sandbox boundary is documented in
+[`docs/specs/sandbox.md`](docs/specs/sandbox.md).
+
+## Deployment
+
+The supported always-on deployment is a prebuilt server supervised by systemd.
+The same OS user should own the checkout, run the service, and hold the CLI
+authentication state.
+
+```bash
+npm run build
+npm run start:prebuilt
 ```
 
-This repo is **built by the orchestration pattern it implements**: Claude
-wrote the scaffold and contracts, specialist models built the modules in
-parallel worktrees, and the ongoing fix/feature waves are executed by one
-model and independently audited by another — the full history is in
-[`docs/PRODUCTIZATION_PLAN.md`](docs/PRODUCTIZATION_PLAN.md) and
-[`CHANGELOG.md`](CHANGELOG.md).
+[`deploy/hoopedorc.service`](deploy/hoopedorc.service) is the reference unit.
+[`scripts/update.sh`](scripts/update.sh) powers both `npm run update` and the
+guarded Setup & Health updater; it refuses dirty or diverged checkouts, active
+project runs, and mismatched service working directories. The Docker files in
+[`deploy/`](deploy/) are reference material for gate isolation and adaptation,
+not the supported full-app model-execution deployment.
 
-## Security
+Follow the ordered [EC2 deployment checklist](docs/USER_GUIDE.md#deploying-to-ec2--checklist)
+for host sizing, authentication, Tailscale, systemd, and live verification.
 
-The server binds to `127.0.0.1` and is unauthenticated by default (frictionless
-solo localhost use). For remote access over Tailscale, `tailscale serve` (real
-HTTPS, no non-loopback bind needed) is the recommended path; `HOST=0.0.0.0` +
-`API_TOKEN` is the documented fallback — either way, set `API_TOKEN` so every
-request requires `Authorization: Bearer <token>` — the server refuses to start
-on a non-loopback `HOST` otherwise. See `docs/USER_GUIDE.md`'s Remote setup
-section for the full walkthrough, and `.env.example` for `HOST`,
-`CORS_ORIGINS`, `API_TOKEN`, `ALLOW_UNAUTHENTICATED`.
+## Repository map
 
-Secrets (the Telegram bot token, the API token itself) are stored in the local
-SQLite DB and redacted (`"__SET__"` sentinel) on every read from the settings API
-— they never round-trip back to the browser.
+```text
+packages/types      shared domain types and REST/WebSocket contracts
+packages/adapters   Claude Code, OpenCode, and Codex process adapters
+packages/engine     scheduler, worktrees, Git/PR flow, gates, review, sandbox
+packages/server     Fastify API, SQLite, planner, Telegram, runtime lifecycle
+apps/web            React control plane, live board, settings, and reports
+docs                user, architecture, contract, roadmap, and focused specs
+deploy              systemd unit and reference Docker deployment files
+scripts             setup, guarded update, policy checks, and benchmarks
+bin                 hoopedorc CLI entry point
+```
 
-**Gate scripts, dependency installs, and project setup** — the riskiest
-repo-owned code, including `postinstall` hooks — run inside a disposable Docker container by
-default whenever a daemon is reachable (`Settings.sandboxGates`: `auto` by
-default, `required` to refuse host fallback; see the user guide's
-[Gate sandbox](docs/USER_GUIDE.md#gate-sandbox) section). The container sees
-one task's worktree—not your home directory, the orchestrator's DB, sibling
-worktrees, or your CLI credentials. Node dependencies are selected from the
-repo's declared package manager/lockfile, published atomically to an immutable
-fingerprinted cache outside the clone, and materialized separately per task.
+## Documentation
 
-**Spawned agents** still run directly on the host with the same user's stored
-CLI auth (`claude`, `opencode`, `codex`) — don't run untrusted repos through it.
-Their process environment is built from a small runtime/config allowlist
-(`sanitizedEnv()` in `@orc/adapters`), not inherited from the server. Provider
-keys, GitHub/Telegram/API tokens, SSH agent sockets, npm auth tokens/passwords,
-and arbitrary app variables are not forwarded; safe registry/proxy settings and
-the user's HOME/XDG/CLI config paths remain so existing CLI logins work.
+| Document | Use it for |
+| --- | --- |
+| [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | Installation, first project, model setup, Telegram, Tailscale, deployment, and troubleshooting |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Package ownership, runtime flow, persistence, retries, shutdown, and deployment architecture |
+| [`docs/CONTRACT.md`](docs/CONTRACT.md) | Canonical domain types, REST routes, WebSocket events, and persistence conventions |
+| [`AGENTS.md`](AGENTS.md) | Contributor workflow, invariants, package boundaries, and required gates |
+| [`docs/PRODUCTIZATION_PLAN.md`](docs/PRODUCTIZATION_PLAN.md) | Historical productization specifications, PRs, decisions, and acceptance evidence |
+| [`docs/OPTIMIZATION_PLAN.md`](docs/OPTIMIZATION_PLAN.md) | Active hardening work, dependency order, measurements, and completion evidence |
+| [`CHANGELOG.md`](CHANGELOG.md) | User-facing release history |
 
-This is credential hygiene, not process isolation. Host-run agents retain the
-same user's real filesystem and network access, so they can still read CLI
-credential files or invoke host tools that can. Moving agents into the sandbox
-is phases 2–3 of [`docs/specs/sandbox.md`](docs/specs/sandbox.md), deliberately
-future work.
+## Development and verification
 
-## Status
+Run focused tests while iterating. Before a pull request is ready, run the full
+repository gate:
 
-`v0.4.0`. The full productization plan (Parts 1–7: 7 security items, 29
-bugs, 39+ features across security, the core product loop, away-from-keyboard
-autonomy, packaging, remote QoL, planning context, engineering standards,
-Codex support, and the gates sandbox) is implemented, CI-covered, and
-independently audited wave by wave — see
-[`docs/PRODUCTIZATION_PLAN.md`](docs/PRODUCTIZATION_PLAN.md) (progress
-tables near the top) for the full history and
-[`CHANGELOG.md`](CHANGELOG.md) for the summarized version. Current target
-deployment: an EC2 box inside a Tailscale tailnet, supervised from a phone.
+```bash
+npm run typecheck
+npm run build
+npm run lint
+npm test -w @orc/engine
+npm test -w @orc/adapters
+npm test -w @orc/server
+npm run test:web
+npm run test:e2e
+git diff --check
+```
 
-## The rules every module follows
+Contributors and coding agents must start with [`AGENTS.md`](AGENTS.md). Work
+happens on a descriptive branch, reaches `main` through a reviewed PR with
+green required checks, and preserves the audit trail in the relevant roadmap.
 
-1. **The contract is `@orc/types`.** Don't change it without coordinating — it's shared.
-2. **Each module depends only on `@orc/types`, never on a sibling module's internals.**
-3. **`main` is sacred.** All work happens on branches + worktrees → PR → auto-merge only when green.
+Hoopedorc is dogfooded: its original packages and subsequent feature waves
+were built through the same branch, worktree, gate, review, and merge pattern
+that the product provides.
