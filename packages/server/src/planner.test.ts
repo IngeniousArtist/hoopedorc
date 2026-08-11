@@ -13,11 +13,30 @@ import {
   FigmaVerificationError,
   flattenRawTasks,
   parsePlanOutput,
+  PLANNER_MAX_OUTPUT_BYTES,
+  PlannerOutputLimitError,
   plannerModelLabel,
   resolvePlannerModel,
   runPlannerChat,
   runPlannerDeconstruct,
 } from "./planner.js";
+
+function claudeResponseOfSize(
+  totalBytes: number,
+  resultStart = "",
+  filler = "x",
+): string {
+  assert.equal(Buffer.byteLength(filler, "utf8"), 1);
+  const base = JSON.stringify({ result: resultStart, total_cost_usd: 0 });
+  const fillerBytes = totalBytes - Buffer.byteLength(base, "utf8");
+  assert.ok(fillerBytes >= 0);
+  const response = JSON.stringify({
+    result: resultStart + filler.repeat(fillerBytes),
+    total_cost_usd: 0,
+  });
+  assert.equal(Buffer.byteLength(response, "utf8"), totalBytes);
+  return response;
+}
 
 test("F52: verification prompt requires a real MCP open and secret-free metadata", () => {
   const prompt = buildFigmaVerificationPrompt([
@@ -443,6 +462,246 @@ process.stdin.on("end", () => {
     "completed",
     "running",
     "completed",
+  ]);
+});
+
+test(
+  "O11: an exact-boundary multibyte planner response remains a normal completed turn",
+  { timeout: 15_000 },
+  async () => {
+    const bin = mkdtempSync(join(tmpdir(), "hoopedorc-o11-exact-"));
+    const responseFile = join(bin, "response.json");
+    writeFileSync(
+      responseFile,
+      claudeResponseOfSize(
+        PLANNER_MAX_OUTPUT_BYTES,
+        "界",
+      ),
+    );
+    const fakeCli = `#!/usr/bin/env node
+const fs = require("node:fs");
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(fs.readFileSync(${JSON.stringify(responseFile)}));
+});
+`;
+    const file = join(bin, "claude");
+    writeFileSync(file, fakeCli);
+    chmodSync(file, 0o755);
+
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath ?? ""}`;
+    const events: ModelInvocation[] = [];
+    try {
+      const result = await runPlannerChat(
+        [{ role: "user", content: "boundary" }],
+        "O11 exact boundary",
+        bin,
+        { id: "claude", runner: "claude-code", model: "sonnet" },
+        undefined,
+        undefined,
+        undefined,
+        (event) => events.push(event),
+      );
+      assert.ok(result.reply.startsWith("界"));
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
+    }
+
+    assert.deepEqual(events.map((event) => event.outcome), [
+      "running",
+      "completed",
+    ]);
+  },
+);
+
+test(
+  "O11: one byte over the planner cap settles the resistant process group with a typed failure",
+  { skip: process.platform === "win32", timeout: 15_000 },
+  async () => {
+    const bin = mkdtempSync(join(tmpdir(), "hoopedorc-o11-process-limit-"));
+    const responseFile = join(bin, "response.json");
+    writeFileSync(
+      responseFile,
+      claudeResponseOfSize(PLANNER_MAX_OUTPUT_BYTES + 1),
+    );
+    const childProgram =
+      'process.on("SIGTERM",()=>{});setTimeout(()=>process.exit(0),6000);';
+    const fakeCli = `#!/usr/bin/env node
+const fs = require("node:fs");
+const { spawn } = require("node:child_process");
+process.on("SIGTERM", () => {});
+process.stdin.resume();
+process.stdin.on("end", () => {
+  spawn(process.execPath, ["-e", ${JSON.stringify(childProgram)}], {
+    stdio: ["ignore", "inherit", "inherit"]
+  });
+  setTimeout(() => {
+    process.stdout.write(fs.readFileSync(${JSON.stringify(responseFile)}));
+  }, 100);
+  setTimeout(() => process.exit(0), 6000);
+});
+`;
+    const file = join(bin, "claude");
+    writeFileSync(file, fakeCli);
+    chmodSync(file, 0o755);
+
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath ?? ""}`;
+    const events: ModelInvocation[] = [];
+    const started = Date.now();
+    try {
+      await assert.rejects(
+        runPlannerChat(
+          [{ role: "user", content: "too much" }],
+          "O11 process limit",
+          bin,
+          { id: "claude", runner: "claude-code", model: "sonnet" },
+          undefined,
+          undefined,
+          undefined,
+          (event) => events.push(event),
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof PlannerOutputLimitError);
+          assert.equal(error.limitBytes, PLANNER_MAX_OUTPUT_BYTES);
+          assert.equal(error.runner, "claude-code");
+          assert.match(error.message, /4 MiB limit/);
+          return true;
+        },
+      );
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
+    }
+
+    assert.ok(Date.now() - started < 4_000, "the cap must kill before natural exit");
+    assert.deepEqual(events.map((event) => event.outcome), ["running", "failed"]);
+  },
+);
+
+test("O11: Codex refuses an oversized final-message file before returning it", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-o11-codex-file-"));
+  const fakeCli = `#!/usr/bin/env node
+const fs = require("node:fs");
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const outputIndex = process.argv.indexOf("--output-last-message");
+  fs.writeFileSync(
+    process.argv[outputIndex + 1],
+    Buffer.alloc(${PLANNER_MAX_OUTPUT_BYTES + 1}, "x")
+  );
+  process.stdout.write(JSON.stringify({ type: "turn.completed", usage: {} }) + "\\n");
+});
+`;
+  const file = join(bin, "codex");
+  writeFileSync(file, fakeCli);
+  chmodSync(file, 0o755);
+
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  const events: ModelInvocation[] = [];
+  try {
+    await assert.rejects(
+      runPlannerChat(
+        [{ role: "user", content: "too much" }],
+        "O11 Codex file limit",
+        bin,
+        { id: "codex", runner: "codex", model: "gpt-test" },
+        undefined,
+        undefined,
+        undefined,
+        (event) => events.push(event),
+      ),
+      (error: unknown) =>
+        error instanceof PlannerOutputLimitError &&
+        error.runner === "codex" &&
+        error.limitBytes === PLANNER_MAX_OUTPUT_BYTES,
+    );
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+
+  assert.deepEqual(events.map((event) => event.outcome), ["running", "failed"]);
+});
+
+test("O11: a deconstruction repair retry receives the same output cap", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-o11-retry-limit-"));
+  const counter = join(bin, "count");
+  const oversizedResponse = join(bin, "oversized.json");
+  const valid = JSON.stringify({
+    prd: "# Plan",
+    agentsMd: "# Agents",
+    tasks: [
+      {
+        title: "Build",
+        description: "Build it",
+        difficulty: "medium",
+        acceptanceCriteria: ["works"],
+        dependsOn: [],
+        scopePaths: ["src/**"],
+      },
+    ],
+  });
+  writeFileSync(
+    oversizedResponse,
+    claudeResponseOfSize(
+      PLANNER_MAX_OUTPUT_BYTES + 1,
+      valid,
+      " ",
+    ),
+  );
+  const fakeCli = `#!/usr/bin/env node
+const fs = require("node:fs");
+const counter = ${JSON.stringify(counter)};
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const count = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) : 0;
+  fs.writeFileSync(counter, String(count + 1));
+  if (count === 0) {
+    process.stdout.write(JSON.stringify({ result: "not json", total_cost_usd: 0 }));
+  } else {
+    process.stdout.write(fs.readFileSync(${JSON.stringify(oversizedResponse)}));
+  }
+});
+`;
+  const file = join(bin, "claude");
+  writeFileSync(file, fakeCli);
+  chmodSync(file, 0o755);
+
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  const events: ModelInvocation[] = [];
+  const warnings: string[] = [];
+  try {
+    await assert.rejects(
+      runPlannerDeconstruct(
+        [{ role: "user", content: "retry it" }],
+        "O11 retry",
+        bin,
+        { id: "claude", runner: "claude-code", model: "sonnet" },
+        undefined,
+        undefined,
+        (warning) => warnings.push(warning),
+        undefined,
+        (event) => events.push(event),
+      ),
+      (error: unknown) => error instanceof PlannerOutputLimitError,
+    );
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+
+  assert.equal(readFileSync(counter, "utf8"), "2");
+  assert.equal(warnings.length, 1);
+  assert.deepEqual(events.map((event) => event.outcome), [
+    "running",
+    "completed",
+    "running",
+    "failed",
   ]);
 });
 

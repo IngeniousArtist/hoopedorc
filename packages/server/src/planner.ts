@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execManagedProcess, modelEffortArgs, sanitizedEnv } from "@orc/adapters";
+import {
+  execManagedProcess,
+  ManagedProcessError,
+  modelEffortArgs,
+  sanitizedEnv,
+} from "@orc/adapters";
 import { InvocationLedgerError } from "@orc/types";
 import type {
   Difficulty,
@@ -152,7 +157,32 @@ export interface PlanOutput {
 const PLAN_TIMEOUT_MS = 5 * 60 * 1000;
 const FIGMA_PROBE_TIMEOUT_MS = 90 * 1_000;
 const FIGMA_PROBE_MAX_OUTPUT_BYTES = 1 * 1024 * 1024;
+export const PLANNER_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+const PLANNER_OUTPUT_LIMITS = { maxOutputBytes: PLANNER_MAX_OUTPUT_BYTES } as const;
 const PLANNER_PROCESS_STARTED_AT_MS = Date.now();
+
+export class PlannerOutputLimitError extends Error {
+  override name = "PlannerOutputLimitError";
+
+  constructor(
+    readonly runner: PlannerModel["runner"],
+    readonly limitBytes: number,
+    options?: ErrorOptions,
+  ) {
+    const limitMiB = limitBytes / (1024 * 1024);
+    super(
+      `${runner} planner output exceeded the ${limitMiB} MiB limit; ` +
+        "shorten the planning conversation or split the plan into smaller turns",
+      options,
+    );
+  }
+}
+
+/** The managed-process rail terminates at its threshold, while planner limits
+ * are inclusive: allow exactly N bytes and stop when byte N+1 arrives. */
+function managedOutputThreshold(maxOutputBytes?: number): number | undefined {
+  return maxOutputBytes === undefined ? undefined : maxOutputBytes + 1;
+}
 
 const FIGMA_VERIFICATION_SCHEMA = {
   type: "object",
@@ -636,7 +666,7 @@ async function runClaudeJson(
     input: prompt,
     signal,
     timeoutMs,
-    maxOutputBytes,
+    maxOutputBytes: managedOutputThreshold(maxOutputBytes),
   });
   // claude --output-format json wraps the answer:
   // { ..., "result": "<text>", "total_cost_usd": <n> }
@@ -734,22 +764,29 @@ async function runCodexJson(
         input: prompt,
         signal,
         timeoutMs,
-        maxOutputBytes,
+        maxOutputBytes: managedOutputThreshold(maxOutputBytes),
       });
       // --output-last-message is only written on a successful turn (verified
       // live, F36) — an empty/missing file alongside a nonzero exit means the
       // turn failed before producing a message.
       let text = "";
       try {
+        if (
+          maxOutputBytes !== undefined &&
+          statSync(outputFile).size > maxOutputBytes
+        ) {
+          throw new PlannerOutputLimitError("codex", maxOutputBytes);
+        }
         text = readFileSync(outputFile, "utf8");
-      } catch {
+      } catch (error) {
+        if (error instanceof PlannerOutputLimitError) throw error;
         /* not written — turn failed before completing */
       }
       if (
         maxOutputBytes !== undefined &&
         Buffer.byteLength(text, "utf8") > maxOutputBytes
       ) {
-        throw new Error("codex planner exceeded its output limit");
+        throw new PlannerOutputLimitError("codex", maxOutputBytes);
       }
       if (!text.trim()) {
         throw new Error("codex planner completed without a final message");
@@ -820,7 +857,7 @@ async function runOpencodeJson(
       input: prompt,
       signal,
       timeoutMs,
-      maxOutputBytes,
+      maxOutputBytes: managedOutputThreshold(maxOutputBytes),
     });
     let costUsd = 0;
     let tokensIn = 0;
@@ -931,6 +968,16 @@ async function runPlannerJson(
       );
     }
   } catch (err) {
+    const failure =
+      err instanceof ManagedProcessError &&
+      err.outputLimitExceeded &&
+      limits?.maxOutputBytes !== undefined
+        ? new PlannerOutputLimitError(
+            plannerModel.runner,
+            limits.maxOutputBytes,
+            { cause: err },
+          )
+        : err;
     emitPlannerInvocation(onInvocation, {
       ...base,
       endedAt: new Date().toISOString(),
@@ -941,7 +988,7 @@ async function runPlannerJson(
       tokensOut: 0,
       tokensCached: 0,
     });
-    throw err;
+    throw failure;
   }
   emitPlannerInvocation(onInvocation, {
     ...base,
@@ -1660,6 +1707,7 @@ export async function runPlanner(
     signal,
     "deconstructor",
     onInvocation,
+    PLANNER_OUTPUT_LIMITS,
   );
   try {
     return parsePlanOutput(text, projectName, goal, onWarn);
@@ -1676,6 +1724,7 @@ export async function runPlanner(
       signal,
       "deconstructor",
       onInvocation,
+      PLANNER_OUTPUT_LIMITS,
     );
     return parsePlanOutput(retry.text, projectName, goal, onWarn);
   }
@@ -1700,6 +1749,7 @@ export async function runPlannerChat(
     signal,
     "planner",
     onInvocation,
+    PLANNER_OUTPUT_LIMITS,
   );
   return { reply: text.trim(), costUsd };
 }
@@ -1780,6 +1830,7 @@ export async function runPlannerDeconstruct(
     signal,
     "deconstructor",
     onInvocation,
+    PLANNER_OUTPUT_LIMITS,
   );
   try {
     const parsedOutput = parsePlanOutput(text, projectName, "", onWarn);
@@ -1807,6 +1858,7 @@ export async function runPlannerDeconstruct(
       signal,
       "deconstructor",
       onInvocation,
+      PLANNER_OUTPUT_LIMITS,
     );
     const parsedOutput = parsePlanOutput(retry.text, projectName, "", onWarn);
     const output = useFigmaAttachmentFallback
