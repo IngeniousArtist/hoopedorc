@@ -30,6 +30,7 @@ export {
   inspectNodeDependencies,
   nodeDependencyFingerprint,
   ProjectSetupError,
+  WorktreeCleanupError,
   WorktreeManagerImpl,
 } from "./worktree-manager.js";
 export type {
@@ -39,6 +40,15 @@ export type {
   SetupProcessRequest,
   WorktreeSetupDeps,
 } from "./worktree-manager.js";
+export {
+  RepositoryLock,
+  RepositoryLockResolutionError,
+  repositoryLock,
+} from "./repository-lock.js";
+export type {
+  RepositoryLockKeyResolver,
+  RepositoryLockOptions,
+} from "./repository-lock.js";
 export {
   GitOperationError,
   GitServiceImpl,

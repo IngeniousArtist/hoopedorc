@@ -20,6 +20,10 @@ import { abortableDelay, execManagedProcess, sanitizedEnv } from "@orc/adapters"
 import type { Project, Settings, Task } from "@orc/types";
 import type { GitAcquisition, WorktreeManager } from "./index.js";
 import {
+  RepositoryLock,
+  repositoryLock,
+} from "./repository-lock.js";
+import {
   DEFAULT_GATE_IMAGE,
   resolveSandboxMode,
   sandboxedExecFile,
@@ -146,6 +150,38 @@ export class ProjectSetupError extends Error {
     super(message);
     this.name = "ProjectSetupError";
   }
+}
+
+export class WorktreeCleanupError extends Error {
+  override name = "WorktreeCleanupError";
+
+  constructor(
+    readonly triggeringError: unknown,
+    readonly cleanupFailures: unknown[],
+  ) {
+    const trigger = triggeringError == null
+      ? ""
+      : ` after ${errorDetail(triggeringError)}`;
+    super(
+      `worktree cleanup failed${trigger}: ${cleanupFailures
+        .map(errorDetail)
+        .join("; ")}`,
+    );
+  }
+}
+
+function errorDetail(error: unknown): string {
+  const processError = error as {
+    stderr?: string;
+    stdout?: string;
+    message?: string;
+  };
+  return (
+    processError.stderr?.trim() ||
+    processError.stdout?.trim() ||
+    processError.message ||
+    String(error)
+  );
 }
 
 function slash(path: string): string {
@@ -411,6 +447,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
     // on GateRunnerImpl in gate-runner.ts.
     private readonly settings?: Pick<Settings, "sandboxGates">,
     private readonly setupDeps: WorktreeSetupDeps = {},
+    private readonly sharedRepositoryLock: RepositoryLock = repositoryLock,
   ) {}
 
   async create(
@@ -420,91 +457,182 @@ export class WorktreeManagerImpl implements WorktreeManager {
   ): Promise<{ branch: string; path: string }> {
     const branch = `orc/${task.id}`;
     const path = `${project.localPath}-wt-${task.id}`;
+    let metadataMutationStarted = false;
+    try {
+      await this.sharedRepositoryLock.run(project.localPath, async () => {
+        metadataMutationStarted = true;
+        // Always branch off the latest remote default branch. The entire
+        // stale-ref cleanup + worktree add sequence owns the common Git dir.
+        await git(
+          ["fetch", "origin", project.defaultBranch],
+          project.localPath,
+          signal,
+        );
+        await this.deleteRemoteBranchIfPresent(project, branch, signal);
+        const staleFailures = await this.cleanupSharedMetadata(
+          project,
+          path,
+          branch,
+          signal,
+          task.id,
+        );
+        if (staleFailures.length > 0) {
+          throw new WorktreeCleanupError(undefined, staleFailures);
+        }
+        await git(
+          ["worktree", "add", path, "-b", branch, `origin/${project.defaultBranch}`],
+          project.localPath,
+          signal,
+        );
 
-    // Always branch off the latest remote default branch, not the primary
-    // clone's local HEAD. Sibling tasks merge to origin throughout a run, and
-    // the primary clone is never fast-forwarded in between — branching off a
-    // stale local HEAD makes a new task invisible to work that already
-    // landed, which is how independent tasks end up colliding on the same
-    // files (see e.g. two tasks both creating index.html from scratch).
-    await git(["fetch", "origin", project.defaultBranch], project.localPath, signal);
+        // MUST precede dependency materialization and any agent `git add -A`.
+        // `info/exclude` lives in the common Git dir, so write it under the
+        // same repository lock without recursively acquiring that lock.
+        await this.ensureGitExcludeUnlocked(path, signal);
+      }, signal);
 
-    // Defense in depth: the branch name is deterministic (orc/<taskId>), so a
-    // retried task reuses it. If a prior attempt already pushed to and opened
-    // a PR on this branch, the remote ref has history this fresh local branch
-    // doesn't — pushing later would be rejected as non-fast-forward, failing
-    // every retry regardless of model. The retry endpoint clears the task's
-    // prNumber/branch so a fresh PR gets opened; deleting the stale remote
-    // branch here (best-effort — fine if it doesn't exist) lets that PR's old
-    // branch go away cleanly instead of blocking the new push.
-    try {
-      await git(["push", "origin", "--delete", branch], project.localPath, signal);
-    } catch {
-      signal?.throwIfAborted();
-      /* no remote branch by this name — the common case */
-    }
-
-    // Defense in depth, local side: `remove()` (called from executeTask's
-    // finally) only runs if the process stays alive long enough to reach it.
-    // If the server itself dies mid-task — crash, manual kill, a dev-server
-    // reload — the worktree directory is orphaned on disk with nothing to
-    // ever clean it up, and `git worktree add` fails outright with "already
-    // exists" on every subsequent dispatch of this same task, forever.
-    try {
-      await git(["worktree", "remove", path, "--force"], project.localPath, signal);
-    } catch {
-      signal?.throwIfAborted();
-      /* not a registered worktree — fall through to the raw rmSync below */
-    }
-    try {
-      rmSync(path, { recursive: true, force: true });
-    } catch {
-      /* path didn't exist — the common case */
-    }
-    try {
-      await git(["worktree", "prune"], project.localPath, signal);
-    } catch {
-      signal?.throwIfAborted();
-      /* best effort */
-    }
-    try {
-      await git(["branch", "-D", branch], project.localPath, signal);
-    } catch {
-      signal?.throwIfAborted();
-      /* branch may not exist locally — the common case */
-    }
-
-    try {
-      await git(
-        ["worktree", "add", path, "-b", branch, `origin/${project.defaultBranch}`],
-        project.localPath,
-        signal,
-      );
-
-      // MUST run before ensureDeps materializes dependency artifacts, and before
-      // the agent's `git add -A`: otherwise node_modules can get committed into the
-      // task's PR and the inScope gate fails it as an out-of-scope change. This
-      // is the local safety net; new repos also get a committed .gitignore.
-      await this.ensureGitExclude(path, signal);
+      // Dependency setup is worktree-local and intentionally remains outside
+      // the shared metadata lock so task bursts can install in parallel.
       await this.ensureDeps(project, path, signal);
     } catch (err) {
-      // create() has not returned yet, so the task does not carry the path
-      // that executeTask's finally normally removes. This includes B38's hard
-      // setup failures as well as cancellation; clean every partial worktree
-      // here, and never reuse an aborted signal for cleanup.
-      await git(["worktree", "remove", path, "--force"], project.localPath).catch(
-        () => {},
-      );
-      try {
-        rmSync(path, { recursive: true, force: true });
-      } catch {
-        /* best effort */
+      // A cancellation that never entered the queue must never mutate later.
+      // Once the sequence starts, cleanup reacquires with no aborted signal.
+      if (metadataMutationStarted) {
+        await this.cleanupManagedWorktree(project, path, branch, err, task.id);
       }
-      await git(["branch", "-D", branch], project.localPath).catch(() => {});
       throw err;
     }
 
     return { branch, path };
+  }
+
+  private assertManagedWorktree(
+    project: Project,
+    path: string,
+    branch: string,
+    taskId: string,
+  ): void {
+    const expectedPath = `${project.localPath}-wt-${taskId}`;
+    const expectedBranch = `orc/${taskId}`;
+    if (resolve(path) === resolve(expectedPath) && branch === expectedBranch) return;
+
+    const rollback = /^orc\/rollback-([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(
+      branch,
+    );
+    if (
+      rollback &&
+      resolve(path) === resolve(`${project.localPath}-rollback-${rollback[1]}`)
+    ) {
+      return;
+    }
+    throw new Error(
+      `refusing cleanup outside a managed task or rollback worktree: ${path} (${branch})`,
+    );
+  }
+
+  private async deleteRemoteBranchIfPresent(
+    project: Project,
+    branch: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const remote = await git(
+      ["ls-remote", "--heads", "origin", `refs/heads/${branch}`],
+      project.localPath,
+      signal,
+    );
+    if (!remote.trim()) return;
+    await git(["push", "origin", "--delete", branch], project.localPath, signal);
+  }
+
+  private async cleanupManagedWorktree(
+    project: Project,
+    path: string,
+    branch: string,
+    triggeringError?: unknown,
+    taskId = branch.startsWith("orc/") ? branch.slice("orc/".length) : "",
+  ): Promise<void> {
+    try {
+      const failures = await this.sharedRepositoryLock.run(
+        project.localPath,
+        () => this.cleanupSharedMetadata(project, path, branch, undefined, taskId),
+      );
+      if (failures.length > 0) {
+        throw new WorktreeCleanupError(triggeringError, failures);
+      }
+    } catch (cleanupError) {
+      if (
+        cleanupError instanceof WorktreeCleanupError &&
+        cleanupError.triggeringError === triggeringError
+      ) {
+        throw cleanupError;
+      }
+      const failures = cleanupError instanceof WorktreeCleanupError
+        ? cleanupError.cleanupFailures
+        : [cleanupError];
+      throw new WorktreeCleanupError(triggeringError, failures);
+    }
+  }
+
+  /** Caller owns the repository lock. Expected absence is determined by Git
+   * inspection; mutation failures are accumulated so cleanup remains both
+   * observable and retryable. */
+  private async cleanupSharedMetadata(
+    project: Project,
+    path: string,
+    branch: string,
+    signal?: AbortSignal,
+    taskId = branch.startsWith("orc/") ? branch.slice("orc/".length) : "",
+  ): Promise<unknown[]> {
+    this.assertManagedWorktree(project, path, branch, taskId);
+    const failures: unknown[] = [];
+    const attempt = async (operation: () => Promise<void>): Promise<void> => {
+      try {
+        await operation();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+
+    await attempt(async () => {
+      const listed = await git(
+        ["worktree", "list", "--porcelain", "-z"],
+        project.localPath,
+        signal,
+      );
+      const registered = listed
+        .split("\0")
+        .filter((field) => field.startsWith("worktree "))
+        .map((field) => resolve(field.slice("worktree ".length)));
+      if (registered.includes(resolve(path))) {
+        await git(
+          ["worktree", "remove", path, "--force"],
+          project.localPath,
+          signal,
+        );
+      }
+    });
+
+    try {
+      rmSync(path, { recursive: true, force: true });
+    } catch (error) {
+      failures.push(error);
+    }
+
+    await attempt(async () => {
+      await git(["worktree", "prune"], project.localPath, signal);
+    });
+    await attempt(async () => {
+      const ref = `refs/heads/${branch}`;
+      const local = await git(
+        ["for-each-ref", "--format=%(refname)", ref],
+        project.localPath,
+        signal,
+      );
+      if (local.split("\n").some((line) => line.trim() === ref)) {
+        await git(["branch", "-D", branch], project.localPath, signal);
+      }
+    });
+    return failures;
   }
 
   /**
@@ -514,29 +642,36 @@ export class WorktreeManagerImpl implements WorktreeManager {
    * even for older projects whose repo has no .gitignore.
    */
   private async ensureGitExclude(cwd: string, signal?: AbortSignal): Promise<void> {
+    await this.sharedRepositoryLock.run(
+      cwd,
+      () => this.ensureGitExcludeUnlocked(cwd, signal),
+      signal,
+    );
+  }
+
+  private async ensureGitExcludeUnlocked(
+    cwd: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const rel = (
+      await git(["rev-parse", "--git-path", "info/exclude"], cwd, signal)
+    ).trim();
+    if (!rel) throw new Error("git returned an empty info/exclude path");
+    const abs = isAbsolute(rel) ? rel : join(cwd, rel);
+
+    let content = "";
     try {
-      const rel = (
-        await git(["rev-parse", "--git-path", "info/exclude"], cwd, signal)
-      ).trim();
-      const abs = isAbsolute(rel) ? rel : join(cwd, rel);
-
-      let content = "";
-      try {
-        content = readFileSync(abs, "utf-8");
-      } catch {
-        /* no exclude file yet */
-      }
-      const have = new Set(content.split("\n").map((l) => l.trim()));
-      const missing = GIT_EXCLUDE_ENTRIES.filter((e) => !have.has(e));
-      if (missing.length === 0) return;
-
-      mkdirSync(dirname(abs), { recursive: true });
-      const prefix = content && !content.endsWith("\n") ? content + "\n" : content;
-      writeFileSync(abs, prefix + missing.join("\n") + "\n");
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      /* best effort */
+      content = readFileSync(abs, "utf-8");
+    } catch (error) {
+      if (existsSync(abs)) throw error;
     }
+    const have = new Set(content.split("\n").map((line) => line.trim()));
+    const missing = GIT_EXCLUDE_ENTRIES.filter((entry) => !have.has(entry));
+    if (missing.length === 0) return;
+
+    mkdirSync(dirname(abs), { recursive: true });
+    const prefix = content && !content.endsWith("\n") ? `${content}\n` : content;
+    writeFileSync(abs, `${prefix}${missing.join("\n")}\n`);
   }
 
   private async executeSetup(request: SetupProcessRequest): Promise<{ stdout: string; stderr?: string }> {
@@ -1052,18 +1187,8 @@ export class WorktreeManagerImpl implements WorktreeManager {
     const path = task.worktreePath;
     const branch = task.branch;
     if (!path || !branch) return;
-
-    try {
-      await git(["worktree", "remove", path, "--force"], project.localPath);
-    } catch {
-      /* worktree may already be gone */
-    }
-
-    try {
-      await git(["branch", "-D", branch], project.localPath);
-    } catch {
-      /* branch may already be deleted */
-    }
+    this.assertManagedWorktree(project, path, branch, task.id);
+    await this.cleanupManagedWorktree(project, path, branch, undefined, task.id);
   }
 
   async prepareForGates(

@@ -78,6 +78,26 @@ function rejectsAt(stage: GitOperationError["stage"]): (err: unknown) => boolean
   return (err) => err instanceof GitOperationError && err.stage === stage;
 }
 
+test("O4: concurrent clone bootstrap callers share the canonical target-path lock", async () => {
+  const { root, project } = await rollbackRepo("clone-bootstrap");
+  const cloneProject = {
+    ...project,
+    localPath: join(root, "concurrent-clone"),
+  };
+  const service = new GitServiceImpl();
+
+  await Promise.all([
+    service.ensureClone(cloneProject),
+    service.ensureClone(cloneProject),
+  ]);
+
+  assert.equal(
+    await git(cloneProject.localPath, ["remote", "get-url", "origin"]),
+    project.repoUrl,
+  );
+  assert.equal(await git(cloneProject.localPath, ["status", "--porcelain"]), "");
+});
+
 test("B39: commitAll accepts only a confirmed clean tree as a no-op", async () => {
   const { project } = await rollbackRepo("commit-clean");
   await new GitServiceImpl().commitAll(project.localPath, "clean no-op");

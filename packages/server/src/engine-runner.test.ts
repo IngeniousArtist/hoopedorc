@@ -140,7 +140,10 @@ async function waitForRollback(
   throw new Error(`rollback ${id} did not reach the expected state`);
 }
 
-function fakeRollbackDeps(settings = defaultSettings()): {
+function fakeRollbackDeps(
+  settings = defaultSettings(),
+  removeError?: Error,
+): {
   deps: RollbackExecutionDeps;
   calls: {
     prepare: number;
@@ -174,7 +177,10 @@ function fakeRollbackDeps(settings = defaultSettings()): {
     },
     worktrees: {
       async create() { return { branch: "", path: "" }; },
-      async remove() { calls.remove++; },
+      async remove() {
+        calls.remove++;
+        if (removeError) throw removeError;
+      },
       async prepareForGates() {},
       async changedFiles() { return []; },
       async changedFilesInScope() { return true; },
@@ -662,12 +668,12 @@ test("F44: a run ending non-completed creates a web notification carrying the sa
   const hub = new WsHub();
   const broadcasts: unknown[] = [];
   hub.broadcast = ((e: unknown) => broadcasts.push(e)) as typeof hub.broadcast;
-  const engine = new EngineRunner(db, hub);
-  // repoUrl points nowhere real — ensureClone fails, but start()'s async
-  // IIFE catches that internally and its `finally` still runs against
-  // whatever's already in the DB (same technique F19's scheduler test used
-  // for exercising a real EngineRunner.start() without a real git remote).
-  const proj = project(db, "p1", { repoUrl: "https://github.com/nonexistent/nowhere" });
+  const engine = new EngineRunner(db, hub, {
+    // Fail at the same production boundary without depending on external DNS,
+    // GitHub latency, or a clone attempt finishing inside this test's poll.
+    ensureClone: () => Promise.reject(new Error("deterministic clone failure")),
+  });
+  const proj = project(db, "p1");
   repo.createTask(db, {
     id: "t1", projectId: "p1", title: "T1", description: "", difficulty: "medium",
     status: "failed", dependsOn: [], acceptanceCriteria: [],
@@ -676,8 +682,7 @@ test("F44: a run ending non-completed creates a web notification carrying the sa
 
   await engine.start(proj);
   // start() kicks off a fire-and-forget async IIFE — give it a tick to reach
-  // the finally block (ensureClone's failure is fast, no real network work
-  // beyond attempting the clone).
+  // the finally block after the injected clone failure.
   for (let i = 0; i < 50 && !repo.getNotifications(db, "p1").some((n) => /Run ended/.test(n.title)); i++) {
     await new Promise((r) => setTimeout(r, 20));
   }
@@ -1363,6 +1368,48 @@ test("B36: duplicate rollback clicks share one job and approval merges exactly o
   assert.equal(completed.rollbackPrNumber, 88);
   assert.equal(repo.getTask(db, task.id)!.status, "blocked");
   assert.match(repo.getTask(db, task.id)!.statusReason ?? "", /PR #7 is reverted/);
+});
+
+test("O4: rollback cleanup failures are audited without erasing the terminal outcome", async () => {
+  const db = setup();
+  const proj = project(db, "rollback-cleanup-failure");
+  const task = seedTask(db, proj.id, "task", {
+    status: "done",
+    prNumber: 7,
+  });
+  const fake = fakeRollbackDeps(
+    defaultSettings(),
+    new Error("common Git directory is temporarily unavailable"),
+  );
+  fake.deps.gates = {
+    run() {
+      return Promise.resolve({
+        ...ROLLBACK_GATE,
+        tests: false,
+        details: { tests: "fixture failure" },
+      });
+    },
+  };
+  const engine = new EngineRunner(db, new WsHub(), {
+    rollbackDepsFactory: () => fake.deps,
+  });
+
+  const started = await engine.rollback(proj, task);
+  await waitForRollback(db, started.id, (job) => job.status === "failed");
+  let cleanupAudit = repo.getAuditLog(db, proj.id).find(
+    (entry) => entry.kind === "rollback_cleanup_failed",
+  );
+  for (let attempt = 0; attempt < 200 && !cleanupAudit; attempt++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    cleanupAudit = repo.getAuditLog(db, proj.id).find(
+      (entry) => entry.kind === "rollback_cleanup_failed",
+    );
+  }
+
+  assert.equal(fake.calls.remove, 1);
+  assert.ok(cleanupAudit);
+  assert.match(cleanupAudit.summary, /remains retryable.*temporarily unavailable/i);
+  assert.equal(repo.getRollbackJob(db, started.id)?.status, "failed");
 });
 
 test("B36: a new rollback is rejected unless the source task completed", async () => {
