@@ -499,6 +499,333 @@ test("O16: a late response to a Stop-cancelled approval returns an honest 410", 
   }
 });
 
+test("O14: two response channels race to one durable approval winner", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-o14-approval-race-"));
+  const deps = dependencies(root);
+  const task = repo.createTask(deps.db, {
+    id: "o14-race-task",
+    projectId: "project-1",
+    title: "Race approval",
+    description: "",
+    difficulty: "medium",
+    status: "in_review",
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: [],
+    attempts: 1,
+    maxAttempts: 3,
+  });
+  const notification = repo.createOrReuseApprovalNotification(deps.db, {
+    projectId: "project-1",
+    taskId: task.id,
+    severity: "action_required",
+    title: "Choose once",
+    message: "Only one channel may win",
+    requiresApproval: true,
+    options: ["approve", "reject"],
+  }).notification;
+  const delivered: string[] = [];
+  (
+    deps.engine as unknown as {
+      pendingApprovals: Map<string, (choice: string) => void>;
+    }
+  ).pendingApprovals.set(notification.id, (choice) => delivered.push(choice));
+  const broadcasts: Array<{ type?: string; payload?: { id?: string } }> = [];
+  deps.hub.broadcast = (event) => broadcasts.push(event);
+  const app = await buildApp(deps);
+
+  try {
+    const responses = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/notifications/${notification.id}/respond`,
+        payload: { choice: "approve" },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/notifications/${notification.id}/respond`,
+        payload: { choice: "reject" },
+      }),
+    ]);
+    assert.deepEqual(
+      responses.map((response) => response.statusCode).sort((a, b) => a - b),
+      [200, 409],
+    );
+    assert.equal(delivered.length, 1);
+    const saved = repo.getNotification(deps.db, notification.id)!;
+    assert.equal(saved.respondedWith, delivered[0]);
+    assert.equal(saved.approvalDelivery, "applied");
+    assert.equal(
+      repo.getAuditLog(deps.db, "project-1").filter(
+        (entry) => entry.kind === "approval_resolved",
+      ).length,
+      1,
+    );
+    assert.equal(
+      broadcasts.filter(
+        (event) =>
+          event.type === "notification" && event.payload?.id === notification.id,
+      ).length,
+      1,
+    );
+  } finally {
+    await app.close();
+    deps.db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("O14: a recoverable owner may durably queue a response before its waiter re-arms", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-o14-queued-approval-"));
+  const deps = dependencies(root);
+  const task = repo.createTask(deps.db, {
+    id: "o14-queued-task",
+    projectId: "project-1",
+    title: "Queued approval",
+    description: "",
+    difficulty: "medium",
+    status: "in_review",
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: [],
+    attempts: 1,
+    maxAttempts: 3,
+  });
+  const notification = repo.createOrReuseApprovalNotification(deps.db, {
+    projectId: "project-1",
+    taskId: task.id,
+    severity: "action_required",
+    title: "Queue safely",
+    message: "The recovering engine has not attached yet",
+    requiresApproval: true,
+    options: ["approve", "reject"],
+  }).notification;
+  const app = await buildApp(deps);
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/notifications/${notification.id}/respond`,
+      payload: { choice: "approve" },
+    });
+    assert.equal(response.statusCode, 202);
+    assert.equal(response.json<{ delivery: string }>().delivery, "queued");
+    const queued = repo.getNotification(deps.db, notification.id)!;
+    assert.equal(queued.approvalDelivery, "recorded");
+    assert.equal(queued.respondedWith, "approve");
+    assert.equal(queued.responseAppliedAt, undefined);
+  } finally {
+    await app.close();
+    deps.db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("O14: route persistence faults respect the record-before-release boundary", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-o14-approval-fault-"));
+  const deps = dependencies(root);
+  const task = repo.createTask(deps.db, {
+    id: "o14-approval-fault-task",
+    projectId: "project-1",
+    title: "Approval fault",
+    description: "",
+    difficulty: "medium",
+    status: "in_review",
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: [],
+    attempts: 1,
+    maxAttempts: 3,
+  });
+  const notification = repo.createOrReuseApprovalNotification(deps.db, {
+    projectId: "project-1",
+    taskId: task.id,
+    severity: "action_required",
+    title: "Persist first",
+    message: "Never release before the durable claim",
+    requiresApproval: true,
+    options: ["approve", "reject"],
+  }).notification;
+  const delivered: string[] = [];
+  const resolvers = (
+    deps.engine as unknown as {
+      pendingApprovals: Map<string, (choice: string) => void>;
+    }
+  ).pendingApprovals;
+  resolvers.set(notification.id, (choice) => delivered.push(choice));
+  deps.db.exec(`
+    CREATE TRIGGER o14_route_approval_audit_fault
+    BEFORE INSERT ON audit_log
+    WHEN NEW.kind = 'approval_resolved'
+    BEGIN
+      SELECT RAISE(ABORT, 'route approval audit fault');
+    END;
+  `);
+  const app = await buildApp(deps);
+
+  try {
+    const beforeRecord = await app.inject({
+      method: "POST",
+      url: `/api/notifications/${notification.id}/respond`,
+      payload: { choice: "approve" },
+    });
+    assert.equal(beforeRecord.statusCode, 500);
+    assert.deepEqual(delivered, []);
+    assert.equal(
+      repo.getNotification(deps.db, notification.id)?.approvalDelivery,
+      "pending",
+    );
+
+    deps.db.exec("DROP TRIGGER o14_route_approval_audit_fault");
+    deps.db.exec(`
+      CREATE TRIGGER o14_route_applied_marker_fault
+      BEFORE UPDATE OF approval_delivery ON notifications
+      WHEN NEW.approval_delivery = 'applied'
+      BEGIN
+        SELECT RAISE(ABORT, 'route applied marker fault');
+      END;
+    `);
+    const afterDelivery = await app.inject({
+      method: "POST",
+      url: `/api/notifications/${notification.id}/respond`,
+      payload: { choice: "approve" },
+    });
+    assert.equal(afterDelivery.statusCode, 500);
+    assert.deepEqual(delivered, ["approve"]);
+    const recorded = repo.getNotification(deps.db, notification.id)!;
+    assert.equal(recorded.approvalDelivery, "recorded");
+    assert.equal(recorded.respondedWith, "approve");
+    assert.equal(recorded.responseAppliedAt, undefined);
+  } finally {
+    await app.close();
+    deps.db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("O14: Stop broadcasts only its atomically committed task and run", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-o14-stop-"));
+  const deps = dependencies(root);
+  repo.createTask(deps.db, {
+    id: "o14-stop-task",
+    projectId: "project-1",
+    title: "Stop atomically",
+    description: "",
+    difficulty: "medium",
+    status: "in_progress",
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: [],
+    attempts: 1,
+    maxAttempts: 3,
+  });
+  repo.createRun(deps.db, {
+    id: "o14-stop-run",
+    projectId: "project-1",
+    taskId: "o14-stop-task",
+    model: "deepseek-flash",
+    attempt: 1,
+    status: "running",
+    startedAt: "2026-08-11T00:00:00.000Z",
+    costUsd: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+  });
+  deps.engine.stopTask = () => true;
+  const broadcasts: Array<{
+    type?: string;
+    payload?: { id?: string; status?: string };
+  }> = [];
+  deps.hub.broadcast = (event) => broadcasts.push(event);
+  const app = await buildApp(deps);
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/tasks/o14-stop-task/stop",
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(repo.getTask(deps.db, "o14-stop-task")?.status, "blocked");
+    assert.equal(repo.getRun(deps.db, "o14-stop-run")?.status, "stopped");
+    assert.equal(repo.getAuditLog(deps.db, "project-1").at(0)?.kind, "stopped");
+    assert.deepEqual(
+      broadcasts
+        .filter((event) => event.type === "task.updated" || event.type === "run.updated")
+        .map((event) => [event.type, event.payload?.id, event.payload?.status]),
+      [
+        ["run.updated", "o14-stop-run", "stopped"],
+        ["task.updated", "o14-stop-task", "blocked"],
+      ],
+    );
+  } finally {
+    await app.close();
+    deps.db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("O14: a failed Stop transaction emits nothing and leaves boot-recoverable intent", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-o14-stop-fault-"));
+  const deps = dependencies(root);
+  repo.createTask(deps.db, {
+    id: "o14-stop-fault-task",
+    projectId: "project-1",
+    title: "Stop fault",
+    description: "",
+    difficulty: "medium",
+    status: "in_progress",
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: [],
+    attempts: 1,
+    maxAttempts: 3,
+  });
+  repo.createRun(deps.db, {
+    id: "o14-stop-fault-run",
+    projectId: "project-1",
+    taskId: "o14-stop-fault-task",
+    model: "deepseek-flash",
+    attempt: 1,
+    status: "running",
+    startedAt: "2026-08-11T00:00:00.000Z",
+    costUsd: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+  });
+  deps.db.exec(`
+    CREATE TRIGGER o14_route_stop_fault
+    BEFORE INSERT ON audit_log
+    WHEN NEW.kind = 'stopped'
+    BEGIN
+      SELECT RAISE(ABORT, 'route Stop fault');
+    END;
+  `);
+  deps.engine.stopTask = () => true;
+  const broadcasts: unknown[] = [];
+  deps.hub.broadcast = (event) => broadcasts.push(event);
+  const app = await buildApp(deps);
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/tasks/o14-stop-fault-task/stop",
+    });
+    assert.equal(response.statusCode, 500);
+    assert.equal(repo.getTask(deps.db, "o14-stop-fault-task")?.status, "in_progress");
+    assert.equal(repo.getRun(deps.db, "o14-stop-fault-run")?.status, "running");
+    assert.equal(repo.claimTaskStop(deps.db, "o14-stop-fault-task").pending, true);
+    assert.deepEqual(broadcasts, []);
+  } finally {
+    await app.close();
+    deps.db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("O27: injected auth is optional on loopback and enforced when configured", async () => {
   const root = mkdtempSync(join(tmpdir(), "hoopedorc-auth-routes-"));
   try {

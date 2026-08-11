@@ -578,43 +578,53 @@ async function assembleServer(
     hub.broadcast(e);
   }
 
-  /**
-   * Resolve a pending approval from any channel (HTTP or Telegram). `resolved`
-   * is false when no in-memory resolver was found for this notification id —
-   * always the case for a B10 zombie (server restarted since it was created,
-   * so nothing is actually waiting on it anymore) — in which case the DB is
-   * left as-is (already stamped `expired_restart` from boot) rather than
-   * overwriting that with the human's choice, which would misleadingly read
-   * as a real response having taken effect.
-   */
+  type ApprovalResolutionState =
+    | "applied"
+    | "queued"
+    | "expired"
+    | "conflict"
+    | "invalid";
+
+  /** Record first, then cross the in-memory delivery boundary. No SQLite
+   * transaction spans resolver execution or a broadcast. */
   function resolveNotification(
     id: string,
     choice: string,
-  ): { notification: Notification; resolved: boolean } | null {
-    const resolved = engine.resolveApproval(id, choice);
-    if (!resolved) {
-      const notification = repo.getNotification(db, id);
-      if (!notification) return null;
-      repo.createAuditEntry(db, {
-        projectId: notification.projectId,
-        taskId: notification.taskId,
-        kind: "approval_resolved",
-        actor: "human",
-        summary: `${notification.title} → ${choice} (expired — no active run was waiting on it)`,
-      });
-      return { notification, resolved: false };
+    actor: "human" | "telegram" = "human",
+  ): { notification: Notification; state: ApprovalResolutionState } | null {
+    const recorded = repo.recordApprovalResponse(db, id, choice, actor);
+    if (recorded.outcome === "not_found" || !recorded.notification) return null;
+    if (recorded.outcome === "invalid_choice") {
+      return { notification: recorded.notification, state: "invalid" };
     }
-    const notification = repo.respondToNotification(db, id, choice);
-    if (!notification) return null;
-    repo.createAuditEntry(db, {
-      projectId: notification.projectId,
-      taskId: notification.taskId,
-      kind: "approval_resolved",
-      actor: "human",
-      summary: `${notification.title} → ${choice}`,
-    });
+    if (recorded.outcome === "already_applied") {
+      return { notification: recorded.notification, state: "applied" };
+    }
+    if (
+      recorded.outcome === "terminal" ||
+      recorded.outcome === "conflict"
+    ) {
+      return { notification: recorded.notification, state: "conflict" };
+    }
+
+    const delivered = engine.resolveApproval(id, choice);
+    if (delivered) {
+      const applied = repo.markApprovalApplied(db, id, choice);
+      if (!applied) {
+        throw new Error(`approval ${id} was delivered but not marked applied`);
+      }
+      broadcast({ type: "notification", payload: applied });
+      return { notification: applied, state: "applied" };
+    }
+
+    if (repo.hasRecoverableApprovalOwner(db, id)) {
+      broadcast({ type: "notification", payload: recorded.notification });
+      return { notification: recorded.notification, state: "queued" };
+    }
+    const expired = repo.expireRecordedApprovalNoOwner(db, id);
+    const notification = expired ?? recorded.notification;
     broadcast({ type: "notification", payload: notification });
-    return { notification, resolved: true };
+    return { notification, state: "expired" };
   }
 
   /** Shared planner/health path into B40's exactly-once ledger. */
@@ -842,7 +852,8 @@ async function assembleServer(
       tg.chatId ?? "",
       {
         onApproval: (id, choice) => {
-          return resolveNotification(id, choice)?.resolved ?? false;
+          const result = resolveNotification(id, choice, "telegram");
+          return result?.state === "applied" || result?.state === "queued";
         },
         onCommand: telegramCommand,
         onProjectAction: async (action, projectId) => {
@@ -907,12 +918,15 @@ async function assembleServer(
     scheduleTimer.unref();
     maintenanceTimers.push(scheduleTimer);
 
-    // Zombie approvals (B10): a previous process's in-memory resolver cannot
-    // survive restart. Expire those rows before resume-on-boot can re-dispatch.
-    const expiredApprovals = repo.expireStaleApprovals(db);
-    if (expiredApprovals > 0) {
+    // O14: settle durable Stop intents before any project can enter engine
+    // orphan recovery. New keyed approval rows survive restart and reattach;
+    // initDb expires only legacy rows that lack a recoverable identity.
+    const recoveredStops = repo
+      .recoverInterruptedTaskStops(db)
+      .filter((outcome) => outcome.changed);
+    if (recoveredStops.length > 0) {
       app.log.info(
-        `expired ${expiredApprovals} stale approval notification(s) from before this boot`,
+        `recovered ${recoveredStops.length} interrupted Stop transition(s) from before this boot`,
       );
     }
 
@@ -1975,44 +1989,36 @@ async function assembleServer(
     const task = repo.getTask(db, id);
     if (!task) return reply.code(404).send({ error: "task not found" });
 
-    // Stop is an active-process operation, not a generic status editor.
-    const stoppedLive = engine.stopTask(task.projectId, id);
-    if (!stoppedLive) {
+    // Persist intent before crossing the cancellation boundary. If this
+    // process exits afterward, boot recovery finalizes it before engine resume.
+    const stopClaim = repo.claimTaskStop(db, id);
+    if (!stopClaim.pending) {
       return reply.code(409).send({ error: "task has no active execution to stop" });
     }
 
-    // The WHERE status guard makes a terminal engine update win if it commits
-    // first. Never turn a task that actually completed into "blocked".
-    const stopOutcome = repo.markTaskStoppedIfActive(db, id);
+    // Stop is an active-process operation, not a generic status editor.
+    const stoppedLive = engine.stopTask(task.projectId, id);
+    if (!stoppedLive && stopClaim.claimed) {
+      repo.releaseTaskStop(db, id);
+      return reply.code(409).send({ error: "task has no active execution to stop" });
+    }
+
+    // A retry after cancellation but before this transaction may no longer
+    // find a live process; the durable intent still authorizes finalization.
+    const stopOutcome = repo.finalizeTaskStop(db, id, "human");
     const updatedTask = stopOutcome.task ?? task;
     if (!stopOutcome.changed) {
       return { task: updatedTask };
     }
 
-    const runs = repo.getRuns(db, id);
-    const activeRun = runs.find((r) => r.status === "running");
-    if (activeRun) {
-      const now = new Date().toISOString();
-      repo.updateRun(db, activeRun.id, {
-        status: "stopped",
-        endedAt: now,
-        exitReason: "killed",
-      });
+    for (const run of stopOutcome.runs) {
       broadcast({
         type: "run.updated",
-        payload: repo.getRun(db, activeRun.id)!,
+        payload: run,
       });
     }
 
     broadcast({ type: "task.updated", payload: updatedTask });
-
-    repo.createAuditEntry(db, {
-      projectId: task.projectId,
-      taskId: id,
-      kind: "stopped",
-      actor: "human",
-      summary: `Stopped "${task.title}" — agent process aborted`,
-    });
 
     return { task: updatedTask };
   });
@@ -2283,20 +2289,46 @@ async function assembleServer(
 
     const result = resolveNotification(id, body.choice);
     if (!result) return reply.code(404).send({ error: "notification not found" });
-    if (!result.resolved) {
-      // B10: no in-memory resolver was waiting (the run that requested this
-      // approval — if any — died with a previous server process). Say so
-      // explicitly rather than returning 200 as if the choice took effect.
-      return reply.code(410).send({
+    if (result.state === "invalid") {
+      return reply.code(400).send({
         notification: result.notification,
-        error:
-          result.notification.respondedWith === repo.CANCELLED_STOP
-            ? "approval cancelled by Stop — no choice was applied"
-            : "approval expired — the task will re-request approval if it's still needed",
+        error: "choice is not one of this approval's options",
       });
     }
-
-    return { notification: result.notification };
+    if (result.state === "conflict") {
+      const cancelled =
+        result.notification.approvalDelivery === "cancelled" ||
+        result.notification.respondedWith === repo.CANCELLED_STOP;
+      if (cancelled) {
+        return reply.code(410).send({
+          notification: result.notification,
+          error: "approval cancelled by Stop — no choice was applied",
+        });
+      }
+      if (result.notification.approvalDelivery === "expired_no_owner") {
+        return reply.code(410).send({
+          notification: result.notification,
+          error: "approval expired — no choice was applied",
+        });
+      }
+      return reply.code(409).send({
+        notification: result.notification,
+        error: "approval already has a different or terminal response",
+      });
+    }
+    if (result.state === "expired") {
+      return reply.code(410).send({
+        notification: result.notification,
+        error: "approval recorded but expired — no active or recoverable owner could apply it",
+      });
+    }
+    if (result.state === "queued") {
+      return reply.code(202).send({
+        notification: result.notification,
+        delivery: "queued",
+      });
+    }
+    return { notification: result.notification, delivery: "applied" };
   });
 
   // ── Audit log ──

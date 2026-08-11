@@ -204,13 +204,28 @@ web UI and Telegram use the same decision context. B42's `capabilityKey` is a
 stable, secret-free identity stored only on capability warning notifications;
 the server uses it to suppress the same alert across runtime/server restarts.
 The optional context remains absent on older rows and unrelated notifications.
-Normal approval requests also carry the owning task's abort signal. A hard
-Stop cancels the waiter, conditionally records `respondedWith:
-"cancelled_stop"` while the notification is still pending, and makes any late
-HTTP/Telegram response return expired/cancelled without resuming the task. A
-graceful drain does not abort the signal, so the same approval remains live
-until the operator answers it. `expired_restart` continues to identify a
-different terminal case: the process that owned the waiter disappeared.
+Normal approval requests also carry the owning task's abort signal. O14 gives
+each approval a durable delivery state: `pending` → `recorded` → `applied`, or
+the terminal `cancelled` / `expired_no_owner`. `responseRecordedAt` proves the
+choice and audit committed before its in-memory waiter was released;
+`responseAppliedAt` proves that delivery completed. A `recorded` response may
+return HTTP 202/`delivery: "queued"` while a recovering task or rollback
+re-arms its waiter, and restart reuses the exact notification rather than
+creating another prompt. A hard Stop cancels only a still-`pending` waiter and
+records `respondedWith: "cancelled_stop"`; a late HTTP/Telegram response is
+410 and cannot resume work. A graceful drain leaves the waiter live. Legacy
+pending rows that predate the durable approval identity migrate once to
+`expired_restart`/`expired_no_owner`; new pending or recorded approvals are
+not expired merely because the server restarted.
+
+`POST /api/tasks/:id/stop` first conditionally persists a private
+`stop_requested_at` intent, then asks the owning orchestrator to cancel the
+process. Once cancellation is accepted, task `blocked`, running-run `stopped`,
+the `stopped` audit entry, and intent removal commit in one transaction;
+WebSocket events are emitted only from rows read after that commit. Startup
+settles any leftover intent before project resume, closing the cancellation →
+SQLite crash window without requeueing killed work. If cancellation is
+refused, the intent is removed and no task/run/audit outcome is fabricated.
 
 `POST /api/engine/stop-all` (F23) — the global panic button, one confirmed
 tap from anywhere in the app rather than Projects page → per-row action →
@@ -488,7 +503,7 @@ Base: `/api`. JSON in/out. Errors use `ApiError`.
 | `updateSettings` | `PUT /api/settings` | `UpdateSettingsRequest` → `UpdateSettingsResponse` |
 | `telegramTest` | `POST /api/telegram/test` | `TelegramTestRequest` → `TelegramTestResponse` |
 | `listNotifications` | `GET /api/notifications` | → `ListNotificationsResponse` |
-| `respondNotification` | `POST /api/notifications/:id/respond` | `RespondNotificationRequest` → `{ ok }` |
+| `respondNotification` | `POST /api/notifications/:id/respond` | `RespondNotificationRequest` → `RespondNotificationResponse` (200 applied; 202 durably queued for recovery) |
 | `auditLog` | `GET /api/projects/:id/audit` | → `AuditLogResponse` |
 | `rollbackTask` | `POST /api/tasks/:id/rollback` | → `RollbackTaskResponse` (202; starts or resumes the durable rollback job) |
 | `taskRollback` | `GET /api/tasks/:id/rollback` | → `TaskRollbackResponse` |

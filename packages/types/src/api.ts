@@ -619,6 +619,11 @@ export interface ListNotificationsResponse {
 export interface RespondNotificationRequest {
   choice: string;
 }
+export interface RespondNotificationResponse {
+  notification: Notification;
+  /** `queued` is durable but awaits a recovering task/rollback owner. */
+  delivery: "applied" | "queued";
+}
 
 /** F23: the "Stop all" panic button — one confirmed tap aborts every
  *  currently-running project (autonomous loop and any in-flight manual

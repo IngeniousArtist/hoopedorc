@@ -44,4 +44,34 @@ describe("approval decisions", () => {
 
     expect(await screen.findByText("Error: Error: Approval delivery failed")).toBeVisible();
   });
+
+  it("shows a durable queued choice without pretending it was applied", async () => {
+    apiMock.mockImplementation(async (key) => {
+      if (key === "listNotifications") {
+        return { notifications: [notificationFixture] };
+      }
+      if (key === "respondNotification") {
+        return {
+          notification: {
+            ...notificationFixture,
+            respondedWith: "approve",
+            approvalDelivery: "recorded",
+            responseRecordedAt: "2026-08-11T00:00:00.000Z",
+          },
+          delivery: "queued",
+        };
+      }
+      throw new Error(`Unexpected API call: ${key}`);
+    });
+    const user = userEvent.setup();
+    render(<Notifications projectId={projectFixture.id} />);
+    await user.click(await screen.findByRole("button", { name: "Approve" }));
+
+    expect(
+      await screen.findByText(
+        "Recorded: approve — waiting for the task to recover",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+  });
 });

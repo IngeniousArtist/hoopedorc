@@ -16,7 +16,7 @@
   },
   "packages/server": {
     "@typescript-eslint/no-base-to-string": 12,
-    "@typescript-eslint/no-unnecessary-type-assertion": 33,
+    "@typescript-eslint/no-unnecessary-type-assertion": 32,
     "@typescript-eslint/no-unsafe-argument": 2,
     "@typescript-eslint/no-unsafe-assignment": 2,
     "@typescript-eslint/no-unsafe-member-access": 5,

@@ -30,6 +30,19 @@ const O13_QUERY_INDEX_MIGRATION = `
     WHERE requires_approval = 1 AND responded_with IS NULL;
 `;
 
+// O14: the columns must exist before this index is created on an upgraded
+// database, so this cannot live in schema.sql's pre-migration index section.
+// initDb applies it for both fresh and existing databases.
+const O14_DURABLE_TRANSITION_MIGRATION = `
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_live_approval_key
+    ON notifications(approval_key)
+    WHERE approval_key IS NOT NULL
+      AND approval_delivery IN ('pending', 'recorded');
+  CREATE INDEX IF NOT EXISTS idx_tasks_stop_requested
+    ON tasks(stop_requested_at)
+    WHERE stop_requested_at IS NOT NULL;
+`;
+
 export type Db = Database.Database;
 
 export function openDb(path: string = ENV.dbPath): Db {
@@ -88,6 +101,9 @@ export function initDb(path: string = ENV.dbPath): Db {
     "ALTER TABLE tasks ADD COLUMN status_reason TEXT",
     // B34: durable manual-priority queue intent. Cleared when dispatch starts.
     "ALTER TABLE tasks ADD COLUMN dispatch_requested_at TEXT",
+    // O14: durable intent closes the cancellation -> final transaction crash
+    // window so boot recovery cannot revive a task the operator stopped.
+    "ALTER TABLE tasks ADD COLUMN stop_requested_at TEXT",
     // O34: restart-safe logical-run accounting. Keep max_attempts immutable;
     // these fields own runtime recovery allowance and fallback position.
     "ALTER TABLE tasks ADD COLUMN run_generation INTEGER NOT NULL DEFAULT 0",
@@ -105,6 +121,11 @@ export function initDb(path: string = ENV.dbPath): Db {
     // B40: ties the legacy costs projection to one authoritative invocation.
     "ALTER TABLE costs ADD COLUMN invocation_id TEXT",
     "ALTER TABLE model_checks ADD COLUMN invocation_id TEXT",
+    // O14: a choice is durable before it is delivered to an in-memory waiter.
+    "ALTER TABLE notifications ADD COLUMN approval_key TEXT",
+    "ALTER TABLE notifications ADD COLUMN approval_delivery TEXT",
+    "ALTER TABLE notifications ADD COLUMN response_recorded_at TEXT",
+    "ALTER TABLE notifications ADD COLUMN response_applied_at TEXT",
   ]) {
     try {
       db.exec(col);
@@ -119,6 +140,38 @@ export function initDb(path: string = ENV.dbPath): Db {
     }
   }
   db.exec(O13_QUERY_INDEX_MIGRATION);
+  // Pre-O14 pending approvals cannot be associated with a recoverable waiter.
+  // Expire those once during upgrade; all new rows carry a durable key and
+  // survive ordinary restarts in pending/recorded state.
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE notifications
+       SET responded_with = 'expired_restart',
+           approval_delivery = 'expired_no_owner',
+           response_recorded_at = COALESCE(response_recorded_at, ?)
+       WHERE requires_approval = 1
+         AND approval_delivery IS NULL
+         AND responded_with IS NULL`,
+    ).run(new Date().toISOString());
+    db.exec(`
+      UPDATE notifications
+      SET approval_delivery = CASE
+        WHEN responded_with = 'cancelled_stop' THEN 'cancelled'
+        WHEN responded_with = 'expired_restart' THEN 'expired_no_owner'
+        ELSE 'applied'
+      END,
+      response_recorded_at = COALESCE(response_recorded_at, created_at),
+      response_applied_at = CASE
+        WHEN responded_with NOT IN ('cancelled_stop', 'expired_restart')
+          THEN COALESCE(response_applied_at, created_at)
+        ELSE response_applied_at
+      END
+      WHERE requires_approval = 1
+        AND approval_delivery IS NULL
+        AND responded_with IS NOT NULL;
+    `);
+  })();
+  db.exec(O14_DURABLE_TRANSITION_MIGRATION);
   // O3 migration: preserve legacy scratch exactly and assign one stable
   // revision only where a planning session was already active. Empty projects
   // receive a revision lazily from GET /plan/session instead.

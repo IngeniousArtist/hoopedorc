@@ -119,12 +119,25 @@ function NotificationCard({
           </div>
         )}
 
-      {n.respondedWith === "expired_restart" && (
+      {n.approvalDelivery === "recorded" && (
+        <div className="mt-3 text-xs text-amber-500">
+          Recorded: {n.respondedWith} — waiting for the task to recover
+        </div>
+      )}
+      {n.approvalDelivery === "expired_no_owner" && (
+        <div className="mt-3 text-xs text-amber-500">
+          Not applied: {n.respondedWith ?? "approval expired"} — no recoverable task was waiting
+        </div>
+      )}
+      {!n.approvalDelivery && n.respondedWith === "expired_restart" && (
         <div className="mt-3 text-xs text-amber-500">
           Expired — the server restarted while this was pending
         </div>
       )}
-      {n.respondedWith && n.respondedWith !== "expired_restart" && (
+      {n.respondedWith &&
+        n.approvalDelivery !== "recorded" &&
+        n.approvalDelivery !== "expired_no_owner" &&
+        n.respondedWith !== "expired_restart" && (
         <div className="mt-3 text-xs text-neutral-400">
           Responded: {n.respondedWith}
         </div>
@@ -185,14 +198,17 @@ export function Notifications({
     choice: string,
   ) => {
     try {
-      await api("respondNotification", {
+      const response = await api<{
+        notification: NotifType;
+        delivery: "applied" | "queued";
+      } | undefined>("respondNotification", {
         params: { id: notifId },
         body: { choice },
       });
       setNotifications((prev) =>
         prev.map((n) =>
           n.id === notifId
-            ? { ...n, respondedWith: choice }
+            ? response?.notification ?? { ...n, respondedWith: choice }
             : n,
         ),
       );
