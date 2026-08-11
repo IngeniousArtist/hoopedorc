@@ -695,6 +695,12 @@ The UI path is deliberately narrow and fail-closed:
   through Settings, so the detached updater can authenticate its repeated
   active-project check.
 
+The updater parses only `PORT` and `API_TOKEN` from `.env` with the same
+non-executing dotenv rules as the server. Ordinary, quoted, whitespace-padded,
+and `export`-prefixed assignments are supported, including `#` or `=` inside
+quoted values. The updater never sources or evaluates the file, so shell
+expressions are treated as literal text rather than commands.
+
 The server accepts no update command, branch, path, unit, or argument from the
 browser. It launches the fixed `scripts/update.sh` in
 `hoopedorc-self-update.service`, a separate transient systemd unit running as
