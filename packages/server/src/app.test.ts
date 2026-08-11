@@ -312,12 +312,15 @@ test("O36: a project catch-up snapshot reads all runs with one indexed statement
     );
     const events = socket.sent.map((payload) => JSON.parse(payload) as {
       type: string;
-      payload: { id: string };
+      payload: { id?: string; projectId?: string; totalUsd?: number };
     });
-    assert.equal(events.length, 1 + taskCount * (1 + runsPerTask));
+    assert.equal(events.length, 2 + taskCount * (1 + runsPerTask));
     assert.equal(events[0]?.type, "project.updated");
     assert.equal(events[0]?.payload.id, "project-1");
-    let cursor = 1;
+    assert.equal(events[1]?.type, "cost.snapshot");
+    assert.equal(events[1]?.payload.projectId, "project-1");
+    assert.equal(events[1]?.payload.totalUsd, 0);
+    let cursor = 2;
     for (let taskIndex = 0; taskIndex < taskCount; taskIndex++) {
       assert.equal(events[cursor]?.type, "task.updated");
       assert.equal(events[cursor]?.payload.id, `o36-task-${taskIndex}`);
@@ -328,6 +331,51 @@ test("O36: a project catch-up snapshot reads all runs with one indexed statement
         cursor++;
       }
     }
+  } finally {
+    await app.close();
+    deps.db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("O6: reconnect snapshot reports the authoritative project cost before replay", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-o6-ws-cost-snapshot-"));
+  const deps = dependencies(root);
+  repo.createCost(deps.db, {
+    projectId: "project-1",
+    model: "deepseek-flash",
+    costUsd: 2.75,
+    tokensIn: 10,
+    tokensOut: 20,
+    tokensCached: 0,
+    ts: "2026-08-11T00:00:00.000Z",
+  });
+  const app = await buildApp(deps);
+
+  class FakeSocket extends EventEmitter {
+    readyState = 1;
+    readonly sent: string[] = [];
+
+    send(payload: string): void {
+      this.sent.push(payload);
+    }
+  }
+
+  try {
+    const socket = new FakeSocket();
+    deps.hub.add(socket as unknown as WebSocket);
+    socket.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "subscribe", projectId: "project-1" })),
+    );
+    const events = socket.sent.map((payload) => JSON.parse(payload) as {
+      type: string;
+      payload: { projectId?: string; totalUsd?: number };
+    });
+    assert.equal(events[0]?.type, "project.updated");
+    assert.equal(events[1]?.type, "cost.snapshot");
+    assert.equal(events[1]?.payload.projectId, "project-1");
+    assert.equal(events[1]?.payload.totalUsd, 2.75);
   } finally {
     await app.close();
     deps.db.close();
@@ -633,7 +681,9 @@ test("O14: two response channels race to one durable approval winner", async () 
     }
   ).pendingApprovals.set(notification.id, (choice) => delivered.push(choice));
   const broadcasts: Array<{ type?: string; payload?: { id?: string } }> = [];
-  deps.hub.broadcast = (event) => broadcasts.push(event);
+  deps.hub.broadcast = (event) => {
+    if (event.type === "notification") broadcasts.push(event);
+  };
   const app = await buildApp(deps);
 
   try {
@@ -840,7 +890,11 @@ test("O14: Stop broadcasts only its atomically committed task and run", async ()
     type?: string;
     payload?: { id?: string; status?: string };
   }> = [];
-  deps.hub.broadcast = (event) => broadcasts.push(event);
+  deps.hub.broadcast = (event) => {
+    if (event.type === "task.updated" || event.type === "run.updated") {
+      broadcasts.push(event);
+    }
+  };
   const app = await buildApp(deps);
 
   try {

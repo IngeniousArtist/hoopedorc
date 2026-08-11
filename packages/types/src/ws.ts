@@ -11,6 +11,13 @@ import type {
   Task,
 } from "./domain";
 
+/** Authoritative project-level spend used to reseed clients after a
+ * reconnect. Unlike cost.updated, this is a total rather than a delta. */
+export type CostSnapshot = {
+  projectId: string;
+  totalUsd: number;
+};
+
 /** Server -> client events, pushed over the WS connection at WS_PATH. */
 export type ServerEvent =
   | { type: "log"; payload: LogEvent }
@@ -21,7 +28,8 @@ export type ServerEvent =
   | { type: "merge.decision"; payload: MergeDecision }
   | { type: "rollback.updated"; payload: RollbackJob }
   | { type: "notification"; payload: Notification }
-  | { type: "cost.updated"; payload: CostRecord };
+  | { type: "cost.updated"; payload: CostRecord }
+  | { type: "cost.snapshot"; payload: CostSnapshot };
 
 export type ServerEventType = ServerEvent["type"];
 

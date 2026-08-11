@@ -41,6 +41,7 @@ import {
 } from "./background-operations";
 import * as repo from "./db/repo";
 import { WsHub } from "./ws-hub";
+import { startMockLogStream } from "./mock-stream";
 import { EngineRunner } from "./engine-runner";
 import {
   FigmaVerificationError,
@@ -1014,6 +1015,16 @@ async function assembleServer(
       for (const notification of seed().notifications) {
         repo.createNotification(db, notification);
       }
+      maintenanceTimers.push(
+        startMockLogStream(
+          () =>
+            repo.getProjects(db).map((project) => ({
+              projectId: project.id,
+              taskId: repo.getTasks(db, project.id)[0]?.id ?? "t1",
+            })),
+          broadcast,
+        ),
+      );
     }
 
   }
@@ -2573,6 +2584,13 @@ async function assembleServer(
     }
     const events: ServerEvent[] = [
       { type: "project.updated", payload: project },
+      {
+        type: "cost.snapshot",
+        payload: {
+          projectId,
+          totalUsd: repo.getCostSummary(db, projectId).totalUsd,
+        },
+      },
     ];
     for (const t of tasks) {
       events.push({ type: "task.updated", payload: t });
@@ -2592,27 +2610,6 @@ async function assembleServer(
       socket.send(JSON.stringify({ type: "project.updated", payload: p }));
     }
 
-    // MOCK mode: synthetic log stream
-    if (env.mock) {
-      const tasks = repo.getTasks(db, "proj-hoopedorc");
-      const interval = setInterval(() => {
-        const log: ServerEvent = {
-          type: "log",
-          payload: {
-            id: crypto.randomUUID(),
-            projectId: "proj-hoopedorc",
-            runId: "run-mock",
-            taskId: tasks[0]?.id ?? "t1",
-            ts: new Date().toISOString(),
-            level: "info",
-            source: "agent",
-            message: `mock log @ ${new Date().toLocaleTimeString()}`,
-          },
-        };
-        socket.send(JSON.stringify(log));
-      }, 2000);
-      socket.on("close", () => clearInterval(interval));
-    }
   });
 
   function resumeAfterListen(): void {

@@ -782,60 +782,161 @@ green.
 
 **Fix risk:** medium because event ordering is the invariant.
 
-**Paused implementation checkpoint (2026-08-11; incomplete — do not merge):**
-the combined O6 + O12 + O26 `useWS` ownership work is preserved on branch
-`o6-o12-ws-ownership` at WIP commit
-`8df75c65b25894856bb112b5347f11ab4deca8a8`, based on clean `main`
-`5f47469421adc029cb847fc703163d58518a3c08`. The WIP branch was pushed only
-for durable continuation; it has no implementation PR and must not be merged
-until the remaining work below is completed and independently reviewed.
+**Implementation decision (2026-08-11, O6/O12/O26 WebSocket group):** the
+shared contract adds a `cost.snapshot` event with `{ projectId, totalUsd }`.
+The server derives `totalUsd` from the same `model_invocations` aggregate as
+the REST analytics route and places this event in the synchronous subscribe
+snapshot immediately after `project.updated`, before task/run replay. A
+snapshot is therefore the first authoritative project-cost value a
+connection receives; the Board applies later `cost.updated` events as deltas
+and ignores an older in-flight REST seed once either WebSocket event has been
+observed. `task.updated` uses update-or-prepend so task creation outside the
+current tab is visible without a reload.
 
-The checkpoint already contains the shared `cost.snapshot` contract and
-ordered server replay, unknown-task insertion, bounded `WsHub` delivery with
-the 1 MiB/`4008` slow-client policy, fail-closed snapshot/send handling,
-project-scoped mock logs, a per-project reference-counted browser connection
-manager, contract/architecture documentation, and focused hub/mock/Board/hook
-coverage. Independent Sol/xhigh review found and drove fixes for provider and
-serialization failures, asynchronous send errors, mock cross-project leaks,
-subscriber isolation, stale sockets, A-B-A project switching, and real-hub
-`4008` -> replacement snapshot -> delta coverage. Before the interrupted
-final refactor, focused suites passed hub/mock 11/11, Board 5/5, hook 8/8,
-client transport 1/1, web 48/48, engine 231/231, adapters 15/15, and E2E
-18/18. The three sandbox-blocked listener cases independently passed 3/3
-outside the sandbox. These are historical checkpoint results, not evidence
-that the current WIP commit is ready.
+The hub uses a documented 1 MiB per-client `bufferedAmount` ceiling. A client
+at or above the ceiling is closed with application code `4008` and reason
+`slow client; resync required` before the current event is skipped. Each
+socket send is independently observed; a thrown send closes that socket with
+`1011` (or terminates if close itself fails) while healthy clients continue to
+receive the broadcast. The browser reconnects through the existing bounded
+backoff and receives the same authoritative snapshot again.
 
-Two Board correctness gaps were still open in the final Sol/xhigh audit:
+`useWS` becomes a reference-counted manager keyed by `projectId`: all
+same-project subscribers share one socket, simultaneous different projects
+have isolated sockets and dispatch registries, and zero-subscriber managers
+defer teardown for one tick to survive React effect churn. This is a client
+ownership fix only; there is no REST, database, scheduler, or multi-project
+server subscription change. Non-goals are log replay/catch-up beyond the
+existing task/run snapshot, changing global notification/project event
+semantics, and inventing a second reconnect path.
 
-1. A subscribe snapshot for task T can precede a newer local
-   drag/model/retry/stop mutation while the initial REST list is pending; the
-   older split WS authority can then overwrite the newer local state when REST
-   resolves.
-2. Keying Board by project unmounts the old instance without changing its
-   `projectIdRef`, so a late success/refusal can still emit a stale toast into
-   the newly selected project.
+**Acceptance additions:** contract and mock/server snapshot tests cover the
+new event and ordering; Board tests cover unknown insertion, snapshot-before-
+delta application, and REST race protection; hub tests cover the measured
+backpressure close code, per-client send failure isolation, and snapshot
+replay; hook tests cover same-project sharing/reference counts, different-
+project isolation, reconnect, and stale cleanup. Focused tests, all repository
+gates, and real-browser checks at 360, 390, 768, 1280, and 1440px remain
+required before this group is considered ready. A live `npm run mock` browser
+smoke is required; no EC2/model check is needed for this browser/server
+contract boundary.
 
-Work stopped mid-fix. `Board.tsx` now has the intended monotonic per-task
-authority structure and an active-instance/request-generation guard, but five
-action paths still reference the removed `markTaskMutation` helper. The WIP
-commit intentionally fails `npm run typecheck` with `TS2304` at the checkpoint
-`Board.tsx` lines 423, 441, 454, 522, and 557. Resume with:
+**Sol follow-up implementation (2026-08-11, pre-merge):** the review found
+six hardening gaps and this branch now closes each one. Snapshot construction
+is transactional: a provider or replay serialization failure clears the
+subscription and closes with `1011` (`WebSocket snapshot failed; resync
+required`) before deltas can arrive. `ws.send` completion callbacks now close
+only the still-live originating client on async errors, with removal/generation
+guards and terminate fallback when `close()` throws. Board task seeding merges
+per-project WS task authority and current optimistic state over an older REST
+list, with project identity guards; the Board is also keyed by selected
+project and preserves only mutation versions recorded after the REST request
+began, so an A-B-A switch cannot reuse stale rows. Mock logs now come from one
+maintenance timer through `hub.broadcast`, scoped per project and cleared by
+shutdown. `useWS` isolates subscriber exceptions, reports only the project
+identifier, ignores malformed frames, rejects late frames from replaced
+sockets, and preserves same-tick StrictMode churn. The server-side joined
+regression uses the real `WsHub` for the buffered-amount threshold, `4008`
+close, snapshot-provider ordering, replacement subscription, and later delta;
+the web transport harness remains a package-local client reconnect/dispatch
+check. Final verification evidence is recorded below.
 
-```bash
-git switch o6-o12-ws-ownership
-git pull --ff-only
-```
+**Implementation result (2026-08-11, pre-merge):** `cost.snapshot` is now part
+of the canonical WebSocket types and contract. The server emits the database
+aggregate before task/run replay; the Board's update-or-insert task reducer
+and monotonic WebSocket cost authority preserve state across unknown-task,
+snapshot/delta, and REST-race cases. `WsHub` bounds each client at 1 MiB,
+closes slow clients with `4008` and isolates per-client send failures with
+`1011`; `useWS` owns one reference-counted socket per project with bounded
+reconnect and stale-manager cleanup. O26's `useWS` ownership bullet is
+implemented here; the other O26 bullets remain pending.
 
-Then convert those handlers to record each concrete optimistic task,
-successful response, and failure rollback through `recordTaskAuthority`; use
-the instance/request guard on every late retry/stop/drag/model success,
-refusal, and toast. Add regressions for snapshot -> local mutation -> delayed
-REST, failed mutation -> rollback -> delayed REST, WS-after-local ordering,
-and keyed project changes with pending success/refusal and no stale toast.
-Run every repository gate plus the live mock at 360, 390, 768, 1280, and
-1440px, then obtain a fresh independent Sol/xhigh review before opening the
-implementation PR. Preserve the existing real-hub, serialization, mock
-scoping, connection ownership, and listener evidence while finishing.
+Focused regressions passed: server hub 3/3, Board 2/2, and hook 4/4. Full
+verification passed for typecheck, build, lint (338 pre-existing findings),
+engine 231/231, adapters 15/15, web 40/40, E2E 18/18, and `git diff --check`.
+The explicit Node 22 server run passed 310/313; the three failures are the
+pre-existing listen tests blocked by the sandbox's `listen EPERM` on
+`127.0.0.1`. The default server script additionally selects Node 26 against
+the repository's Node 22 `better-sqlite3` binary, so its native DB tests fail
+before exercising this change. A live `npm run mock` smoke passed at 360,
+390, 768, 1280, and 1440px with zero document overflow at each width; Board
+and Costs navigation worked at 390px, the browser reported no errors, and the
+mock log showed one `/ws` connection for the project. No deployment or model
+smoke is required for this contract-only change.
+
+**Sol first follow-up verification result (2026-08-11, superseded below):**
+the focused regressions passed: WsHub plus mock stream 9/9, Board 4/4,
+`useWS` 8/8, and
+the reconnect transport integration 1/1. The full web suite passed 16 files /
+47 tests; engine passed 231/231; adapters passed 15/15; E2E passed 18/18;
+typecheck, build, lint, and `git diff --check` passed. Lint reported 330
+legacy findings, matching the updated non-increasing baseline. The server
+suite reached 316/319: the three failures are the existing real-listener
+tests blocked by the sandbox's `listen EPERM`; all non-listener server tests,
+including the new hub, mock, and snapshot regressions, passed. A live
+`npm run mock` smoke at 360, 390, 768, 1280, and 1440px found no document
+overflow; Board and Costs navigation worked at 390px, the browser reported no
+errors, and the mock log showed one project WebSocket connection. The only
+outstanding verification risk is the sandbox listener restriction; no
+production WebSocket or project-ownership issue remains identified.
+
+**Sol second-audit correction result (2026-08-11, pre-merge):** the confirmed
+A-B-A same-task-ID REST regression failed before the correction (the fresh A
+row was absent and the stale A row remained) and now passes. It is fixed by
+selected-project Board remounting plus post-request mutation-version merging.
+Snapshot serialization failure is covered with an adversarial `BigInt` payload
+and closes `1011` before any send or later delta. The real-hub joined regression
+(`ws-hub.test.ts`) executes threshold detection, `4008`, ordered provider
+snapshot, replacement socket subscription, and a later `cost.updated`; the
+web `useWS.integration.test.tsx` remains a separate client-only transport
+harness, while the hook unit suite covers bounded reconnect.
+
+Focused regressions passed: WsHub plus mock stream 11/11, Board 5/5,
+`useWS` unit tests 8/8, and the client transport integration 1/1. The full web
+suite passed 16 files / 48 tests; engine passed 231/231; adapters passed 15/15;
+E2E passed 18/18; typecheck, build, lint, and `git diff --check` passed. Lint
+reported 330 legacy findings, matching the non-increasing baseline. The full
+server suite reached 318/321: the same three loopback listener cases are
+blocked only by sandbox `listen EPERM`; all other server tests, including the
+new serialization and joined real-hub regressions, passed. Independent
+unsandboxed evidence separately passed the real entrypoint listener 1/1 and
+the two static listener tests 2/2, so there is no remaining listener product
+risk. A fresh live `npm run mock` smoke passed at 360, 390, 768, 1280, and
+1440px with no document overflow; Board and Costs navigation worked at 390px,
+the browser reported no errors, and the project stream remained isolated.
+The sandbox listener restriction is the only environmental caveat; no
+production WebSocket, Board ownership, or mock-stream issue remains
+identified.
+
+**Paused/incomplete checkpoint (2026-08-11 — do not merge):** work stopped on
+branch `o6-o12-ws-ownership`, based on
+`5f47469421adc029cb847fc703163d58518a3c08`, after the final independent
+Sol/xhigh audit found two remaining Board correctness gaps. First, when a
+subscribe snapshot records task T and the user makes a later local
+drag/model/retry/stop mutation while the initial REST list is pending, the
+current split WS/local authority can still let the older snapshot overwrite
+the newer local state. Second, keying Board by project unmounts the old
+instance without changing its `projectIdRef`, so a late success/refusal can
+still emit a stale toast into the newly selected project. The earlier
+pre-merge readiness statements above are therefore superseded; O6/O12 and
+O26's `useWS` ownership bullet remain incomplete.
+
+The final correction was interrupted mid-refactor. `Board.tsx` now defines the
+monotonic per-task authority record and active-instance/request-generation
+guard, but the action handlers still contain five old `markTaskMutation`
+references. The checkpoint therefore intentionally does not typecheck:
+`npm run typecheck` fails at `Board.tsx` lines 423, 441, 454, 522, and 557 with
+`TS2304`. Resume by converting those handlers to record each concrete
+optimistic task, successful response, and failure rollback through
+`recordTaskAuthority`, then finish guarding all late success/refusal/toast
+paths. Required regressions are snapshot -> local mutation -> delayed REST,
+failed mutation -> rollback -> delayed REST, WS-after-local ordering, and
+keyed project switching with pending success and refusal proving no stale
+toast. Rerun the focused Board suite, all repository gates, and the five-width
+live mock smoke; then obtain a fresh independent Sol/xhigh review before
+opening an implementation PR. The existing real-hub/backpressure,
+serialization, mock scoping, keyed connection-manager, and listener evidence
+should be preserved and rechecked.
 
 **Checkpoint record status:** merged as documentation-only
 [#242](https://github.com/IngeniousArtist/hoopedorc/pull/242)
@@ -844,8 +945,9 @@ passed in 2m29s. Local verification on the checkpoint-record tree passed
 typecheck, build, lint at the 338-finding baseline, engine 231/231, adapters
 15/15, permissioned server 309/309, web 35/35, E2E 18/18, and
 `git diff --check`. After merge, clean local `main` and `origin/main` were
-confirmed equal at the full merge SHA above. This records and preserves the
-pause only; it does not complete O6, O12, or O26's `useWS` ownership bullet.
+confirmed equal at `74a87c6b4a9aca10fc467885b03eb2a228b2681a`. This records
+and preserves the pause only; it does not complete O6, O12, or O26's `useWS`
+ownership bullet.
 
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
@@ -1176,6 +1278,11 @@ when one `send` throws; reconnect restores authoritative task and cost state;
 the ceiling has a measured/documented memory rationale; full gates green.
 
 **Fix risk:** low (only affects clients already failing).
+
+**Implementation result (2026-08-11, pre-merge):** delivered with O6. The
+1 MiB cap, `4008` slow-client close, per-socket `1011` send-failure isolation,
+and bounded `useWS` reconnect are covered by the hub and hook regressions
+recorded above; the authoritative O6 snapshot is the reconnect/resync path.
 
 ### O13. Missing SQLite indexes on hot, ever-growing tables + orphaned rows — MEDIUM (efficiency)
 

@@ -520,6 +520,7 @@ export function App() {
             )}
             {page === "board" && (
               <Board
+                key={selectedProjectId}
                 projectId={selectedProjectId}
                 repoUrl={selectedProject?.repoUrl}
                 onViewNotifications={() => setPage("notifications")}

@@ -47,6 +47,17 @@ const COLUMNS: { status: TaskStatus; label: string }[] = TASK_STATUSES.map(
   (status) => ({ status, label: COLUMN_LABELS[status] }),
 );
 
+type TaskAuthority = {
+  projectId: string;
+  version: number;
+  tasks: Map<string, { task: Task; version: number }>;
+};
+
+type BoardRequest = {
+  projectId: string;
+  generation: number;
+};
+
 export function Board({
   projectId,
   repoUrl,
@@ -106,6 +117,58 @@ export function Board({
   // events without making the callback (and the WS subscription) churn.
   const projectIdRef = useRef(projectId);
   projectIdRef.current = projectId;
+  // A keyed Board unmount can leave an awaited action holding the old
+  // projectIdRef alive long enough to mutate state or emit a toast. The
+  // instance generation is invalidated by cleanup so every action can guard
+  // both project identity and the lifetime of the instance that started it.
+  const lifecycleRef = useRef({ active: true, generation: 0 });
+  useEffect(() => {
+    const generation = lifecycleRef.current.generation + 1;
+    lifecycleRef.current = { active: true, generation };
+    return () => {
+      if (lifecycleRef.current.generation !== generation) return;
+      lifecycleRef.current.active = false;
+      lifecycleRef.current.generation++;
+    };
+  }, []);
+  const isActiveRequest = useCallback((request: BoardRequest) => {
+    const lifecycle = lifecycleRef.current;
+    return (
+      lifecycle.active &&
+      lifecycle.generation === request.generation &&
+      projectIdRef.current === request.projectId
+    );
+  }, []);
+  // A REST analytics response may resolve after the socket's synchronous
+  // subscribe snapshot (or a live delta). Keep a per-project receive counter
+  // so an older REST seed cannot overwrite authoritative WebSocket state.
+  const costAuthorityRef = useRef({ projectId, wsEvents: 0 });
+  if (costAuthorityRef.current.projectId !== projectId) {
+    costAuthorityRef.current = { projectId, wsEvents: 0 };
+  }
+  // Keep one monotonic authority stream per project so an older in-flight REST
+  // list cannot erase any concrete task state accepted after that request
+  // began. WS events, optimistic mutations, API responses, and rollbacks all
+  // use this same ordering; the REST merge compares the captured request
+  // version instead of applying source-specific precedence rules.
+  const taskAuthorityRef = useRef<TaskAuthority>({
+    projectId,
+    version: 0,
+    tasks: new Map(),
+  });
+  if (taskAuthorityRef.current.projectId !== projectId) {
+    taskAuthorityRef.current = { projectId, version: 0, tasks: new Map() };
+  }
+  const recordTaskAuthority = useCallback(
+    (task: Task, expectedProjectId: string) => {
+      const authority = taskAuthorityRef.current;
+      if (authority.projectId !== expectedProjectId) return;
+      authority.version++;
+      authority.tasks.set(task.id, { task, version: authority.version });
+      return authority.version;
+    },
+    [],
+  );
 
   const selectedTask =
     tasks.find((t) => t.id === selectedTaskId) ?? null;
@@ -124,6 +187,9 @@ export function Board({
 
   useEffect(() => {
     let cancelled = false;
+    const taskAuthorityAtRequest = taskAuthorityRef.current;
+    const taskAuthorityVersionAtRequest = taskAuthorityAtRequest.version;
+    const costEventsAtRequest = costAuthorityRef.current.wsEvents;
     async function load() {
       try {
         const [tasksRes, settingsRes, costRes] = await Promise.all([
@@ -135,11 +201,38 @@ export function Board({
             params: { id: projectId },
           }).catch(() => ({ totalUsd: 0, budgetUsd: undefined })),
         ]);
-        if (cancelled) return;
-        setTasks(tasksRes.tasks);
+        if (
+          cancelled ||
+          taskAuthorityRef.current.projectId !== projectId ||
+          taskAuthorityRef.current !== taskAuthorityAtRequest
+        ) {
+          return;
+        }
+        setTasks((current) => {
+          const merged = tasksRes.tasks.map((task) => {
+            const authority = taskAuthorityRef.current.tasks.get(task.id);
+            return authority && authority.version > taskAuthorityVersionAtRequest
+              ? authority.task
+              : task;
+          });
+          const included = new Set(merged.map((task) => task.id));
+          // A task created or otherwise accepted after this request began may
+          // not exist in the REST response captured before that event. Keep
+          // those concrete authority entries, including unknown task IDs.
+          for (const authority of taskAuthorityRef.current.tasks.values()) {
+            if (authority.version <= taskAuthorityVersionAtRequest) continue;
+            if (!included.has(authority.task.id)) merged.unshift(authority.task);
+          }
+          return merged;
+        });
         setSettings(settingsRes.settings);
-        setCostUsd(costRes.totalUsd);
         setBudgetUsd(costRes.budgetUsd);
+        if (
+          costAuthorityRef.current.projectId === projectId &&
+          costAuthorityRef.current.wsEvents === costEventsAtRequest
+        ) {
+          setCostUsd(costRes.totalUsd);
+        }
         fetchEstimates();
       } catch (e) {
         if (!cancelled) setError(String(e));
@@ -204,6 +297,8 @@ export function Board({
       switch (event.type) {
         case "task.updated": {
           const updated = event.payload;
+          if (updated.projectId !== projectIdRef.current) break;
+          recordTaskAuthority(updated, updated.projectId);
           const wasActive = (() => {
             const prevStatus = tasksRef.current.find((t) => t.id === updated.id)?.status;
             return prevStatus === "in_progress" || prevStatus === "in_review";
@@ -220,9 +315,12 @@ export function Board({
               return next;
             });
           }
-          setTasks((prev) =>
-            prev.map((t) => (t.id === updated.id ? updated : t)),
-          );
+          setTasks((prev) => {
+            const existing = prev.some((t) => t.id === updated.id);
+            return existing
+              ? prev.map((t) => (t.id === updated.id ? updated : t))
+              : [updated, ...prev];
+          });
           // Seed/refresh the heartbeat (covers a freshly-dispatched task).
           markActivity(updated.id);
           // F7: a status change can move a task off the non-terminal set the
@@ -243,10 +341,18 @@ export function Board({
           }));
           break;
         }
+        case "cost.snapshot": {
+          if (event.payload.projectId === projectIdRef.current) {
+            costAuthorityRef.current.wsEvents++;
+            setCostUsd(event.payload.totalUsd);
+          }
+          break;
+        }
         case "cost.updated": {
           // The hub broadcasts to all clients; only count this project's spend
           // (a concurrently-running project would otherwise inflate the total).
           if (event.payload.projectId === projectIdRef.current) {
+            costAuthorityRef.current.wsEvents++;
             setCostUsd((c) => c + event.payload.costUsd);
           }
           break;
@@ -262,7 +368,7 @@ export function Board({
         }
       }
     },
-    [markActivity, fetchEstimates],
+    [markActivity, fetchEstimates, recordTaskAuthority],
   );
 
   useWS(projectId, handleWSEvent);
@@ -307,11 +413,14 @@ export function Board({
   };
 
   const handleRetry = async (taskId: string) => {
+    const actionProjectId = projectId;
     setActionBusy(true);
     try {
       const res = await api<RetryTaskResponse>("retryTask", {
         params: { id: taskId },
       });
+      if (projectIdRef.current !== actionProjectId) return;
+      markTaskMutation(taskId, actionProjectId);
       setTasks((prev) => prev.map((t) => (t.id === taskId ? res.task : t)));
       toast("Retry queued with priority.", "success");
     } catch (e) {
@@ -322,11 +431,14 @@ export function Board({
   };
 
   const handleStop = async (taskId: string) => {
+    const actionProjectId = projectId;
     setStoppingIds((prev) => new Set(prev).add(taskId));
     try {
       const res = await api<StopTaskResponse>("stopTask", {
         params: { id: taskId },
       });
+      if (projectIdRef.current !== actionProjectId) return;
+      markTaskMutation(taskId, actionProjectId);
       setTasks((prev) => prev.map((t) => (t.id === taskId ? res.task : t)));
       toast("Stopped — task moved to Blocked.", "success");
     } finally {
@@ -339,6 +451,7 @@ export function Board({
   };
 
   const handleTaskAdded = (t: Task) => {
+    markTaskMutation(t.id, projectId);
     setTasks((prev) => [...prev, t]);
     setShowAddTask(false);
     toast(`Added "${t.title}".`, "success");
@@ -404,7 +517,9 @@ export function Board({
 
     const task = tasksRef.current.find((t) => t.id === taskId);
     if (!task || task.status === status) return;
+    const actionProjectId = projectId;
 
+    markTaskMutation(taskId, actionProjectId);
     setTasks((prev) =>
       prev.map((t) =>
         t.id === taskId ? { ...t, status } : t,
@@ -417,6 +532,7 @@ export function Board({
         body: { status },
       });
     } catch (e) {
+      if (projectIdRef.current !== actionProjectId) return;
       // B21: B5's server rules reject most invalid moves with a genuinely
       // useful message ("can only requeue to backlog/ready", "stop it first")
       // — surface it instead of letting the card silently snap back, which
@@ -436,7 +552,9 @@ export function Board({
   ) => {
     const task = tasksRef.current.find((t) => t.id === taskId);
     if (!task || task.assignedModel === model) return;
+    const actionProjectId = projectId;
 
+    markTaskMutation(taskId, actionProjectId);
     setTasks((prev) =>
       prev.map((t) =>
         t.id === taskId ? { ...t, assignedModel: model } : t,
@@ -449,6 +567,7 @@ export function Board({
         body: { assignedModel: model },
       });
     } catch (e) {
+      if (projectIdRef.current !== actionProjectId) return;
       toast(String(e), "error");
       setTasks((prev) =>
         prev.map((t) =>

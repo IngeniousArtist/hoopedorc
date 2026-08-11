@@ -533,14 +533,33 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 
 ## WebSocket (`@orc/types/ws.ts`, `WS_PATH = /ws`)
 Server → client `ServerEvent`: `log`, `task.updated`, `run.updated`,
-`project.updated`, `merge.decision`, `notification`, `cost.updated`.
+`project.updated`, `merge.decision`, `rollback.updated`, `notification`,
+`cost.updated`, `cost.snapshot`.
 Client → server `ClientEvent`: `subscribe`, `unsubscribe`, `ping`.
 
 Broadcast scoping: `log`/`task.updated`/`run.updated`/`merge.decision`/
-`cost.updated` only reach clients currently `subscribe`d to that event's
-`projectId` (`LogEvent`/`Run`/`MergeDecision` all carry one). `project.updated`,
-`project.deleted`, and `notification` are global — every connected client gets
-them regardless of subscription.
+`rollback.updated`/`cost.updated`/`cost.snapshot` only reach clients currently
+`subscribe`d to that event's `projectId` (`LogEvent`/`Run`/`MergeDecision` all
+carry one).
+`project.updated`, `project.deleted`, and `notification` are global — every
+connected client gets them regardless of subscription.
+
+`cost.updated` carries one newly persisted cost record and is a delta.
+`cost.snapshot` carries the authoritative project total `{ projectId,
+totalUsd }` and is sent synchronously during subscribe/reconnect catch-up
+before task/run replay and before any later broadcast deltas on that socket.
+The web Board replaces its total on a snapshot and only adds subsequent cost
+deltas. A WebSocket client whose `bufferedAmount` is at least 1 MiB is closed
+with application code `4008` (`slow client; resync required`) before the
+current event is skipped; the client must reconnect and consume a new
+snapshot. Per-socket send failures close only that socket with `1011` (or
+terminate if closing fails), so healthy subscribers still receive the event.
+A snapshot-provider or snapshot-serialization failure also closes the socket
+with `1011` (`WebSocket snapshot failed; resync required`) before its
+subscription becomes active; it must not receive deltas without a baseline.
+Async write-completion
+errors use the per-socket `1011` send-failure path, and a late completion from
+a removed socket cannot close a replacement client.
 
 ## Conventions
 - IDs are strings; timestamps are ISO 8601 strings.
@@ -548,4 +567,5 @@ them regardless of subscription.
   `scope_paths`, `reasons`, `options`, `gate`).
 - Money is USD floats; tokens are integers.
 - The mock server (`npm run mock`) implements all GET endpoints + a synthetic
-  `log` stream so the UI is buildable before the real backend exists.
+  project-scoped `log` stream broadcast through the same hub/backpressure path
+  as production; its server-owned timer is cleared during shutdown.
