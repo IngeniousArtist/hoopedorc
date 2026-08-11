@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import type { SelfUpdateState } from "@orc/types";
 import {
   SELF_UPDATE_UNIT,
   SelfUpdater,
@@ -57,6 +58,137 @@ function fixture() {
   const statusFile = join(root, "state", "status.json");
   return { root, repoRoot, statusFile };
 }
+
+function writeActiveStatus(
+  statusFile: string,
+  state: SelfUpdateState,
+  updatedAt: string,
+): void {
+  mkdirSync(join(statusFile, ".."), { recursive: true });
+  writeFileSync(
+    statusFile,
+    JSON.stringify({
+      state,
+      message: `Update is ${state}.`,
+      startedAt: updatedAt,
+      updatedAt,
+      fromCommit: "abc1234",
+      updateUnit: SELF_UPDATE_UNIT,
+    }),
+  );
+}
+
+test("O17: every active update state expires only after its own deadline", async () => {
+  const base = Date.parse("2026-08-11T00:00:00.000Z");
+  const cases: Array<{ state: SelfUpdateState; deadlineMs: number }> = [
+    { state: "queued", deadlineMs: 5 * 60 * 1000 },
+    { state: "checking", deadlineMs: 5 * 60 * 1000 },
+    { state: "pulling", deadlineMs: 2 * 60 * 60 * 1000 },
+    { state: "installing", deadlineMs: 2 * 60 * 60 * 1000 },
+    { state: "building", deadlineMs: 2 * 60 * 60 * 1000 },
+    { state: "restarting", deadlineMs: 2 * 60 * 60 * 1000 },
+  ];
+
+  for (const { state, deadlineMs } of cases) {
+    const { repoRoot, statusFile } = fixture();
+    writeActiveStatus(statusFile, state, new Date(base).toISOString());
+    let nowMs = base - 1;
+    const updater = new SelfUpdater({
+      repoRoot,
+      statusFile,
+      mock: false,
+      platform: "linux",
+      uid: 1000,
+      username: "deploy",
+      homeDir: "/home/deploy",
+      runCommand: fakeRunner({ repoRoot }),
+      now: () => new Date(nowMs),
+    });
+
+    nowMs = base + deadlineMs;
+    const boundary = await updater.status();
+    assert.equal(boundary.state, state, `${state} remains active at its boundary`);
+    assert.match(boundary.blockedReason ?? "", /already in progress/i);
+
+    nowMs += 1;
+    const expired = await updater.status();
+    assert.equal(expired.state, "failed", `${state} expires after its boundary`);
+    assert.match(expired.message, new RegExp(state));
+    assert.match(expired.message, deadlineMs === 300_000 ? /5 minutes/ : /2 hours/);
+    assert.equal(expired.blockedReason, undefined);
+    assert.ok(expired.finishedAt);
+  }
+});
+
+test("O17: clock skew stays active while stale early state survives restart and permits retry", async () => {
+  const base = Date.parse("2026-08-11T00:00:00.000Z");
+
+  const skewed = fixture();
+  writeActiveStatus(
+    skewed.statusFile,
+    "checking",
+    new Date(base + 60_000).toISOString(),
+  );
+  const skewedUpdater = new SelfUpdater({
+    repoRoot: skewed.repoRoot,
+    statusFile: skewed.statusFile,
+    mock: false,
+    platform: "linux",
+    uid: 1000,
+    username: "deploy",
+    homeDir: "/home/deploy",
+    runCommand: fakeRunner({ repoRoot: skewed.repoRoot }),
+    now: () => new Date(base),
+  });
+  const skewedStatus = await skewedUpdater.status();
+  assert.equal(skewedStatus.state, "checking");
+  assert.match(skewedStatus.blockedReason ?? "", /already in progress/i);
+
+  const stale = fixture();
+  writeActiveStatus(stale.statusFile, "queued", new Date(base).toISOString());
+  let nowMs = base - 1;
+  const firstBoot = new SelfUpdater({
+    repoRoot: stale.repoRoot,
+    statusFile: stale.statusFile,
+    mock: false,
+    platform: "linux",
+    uid: 1000,
+    username: "deploy",
+    homeDir: "/home/deploy",
+    runCommand: fakeRunner({ repoRoot: stale.repoRoot }),
+    now: () => new Date(nowMs),
+  });
+  nowMs = base + 5 * 60 * 1000 + 1;
+  const failed = await firstBoot.status();
+  assert.equal(failed.state, "failed");
+  assert.match(failed.message, /queued.*5 minutes/i);
+
+  const calls: Array<{ file: string; args: string[] }> = [];
+  const restarted = new SelfUpdater({
+    repoRoot: stale.repoRoot,
+    statusFile: stale.statusFile,
+    mock: false,
+    platform: "linux",
+    uid: 1000,
+    username: "deploy",
+    homeDir: "/home/deploy",
+    runCommand: fakeRunner({ repoRoot: stale.repoRoot, calls }),
+    now: () => new Date(nowMs),
+  });
+  const recovered = await restarted.status();
+  assert.equal(recovered.state, "failed", "the explanatory failure survives restart");
+  assert.equal(recovered.blockedReason, undefined);
+
+  const retried = await restarted.start();
+  assert.equal(retried.state, "queued");
+  assert.equal(
+    calls.filter(
+      (call) =>
+        call.file === "sudo" && call.args.includes("--unit=hoopedorc-self-update"),
+    ).length,
+    1,
+  );
+});
 
 test("F50: a clean main systemd deployment is available for UI updates", async () => {
   const { repoRoot, statusFile } = fixture();

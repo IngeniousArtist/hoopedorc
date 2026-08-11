@@ -27,7 +27,16 @@ const ALL_STATES = new Set<SelfUpdateState>([
   "succeeded",
   "failed",
 ]);
-const STALE_UPDATE_MS = 2 * 60 * 60 * 1000;
+const EARLY_STALE_UPDATE_MS = 5 * 60 * 1000;
+const LONG_STALE_UPDATE_MS = 2 * 60 * 60 * 1000;
+const STALE_UPDATE_DEADLINES: Partial<Record<SelfUpdateState, number>> = {
+  queued: EARLY_STALE_UPDATE_MS,
+  checking: EARLY_STALE_UPDATE_MS,
+  pulling: LONG_STALE_UPDATE_MS,
+  installing: LONG_STALE_UPDATE_MS,
+  building: LONG_STALE_UPDATE_MS,
+  restarting: LONG_STALE_UPDATE_MS,
+};
 
 interface PersistedSelfUpdateStatus {
   state: SelfUpdateState;
@@ -233,16 +242,20 @@ export class SelfUpdater {
       return succeeded;
     }
 
+    const staleAfterMs = STALE_UPDATE_DEADLINES[status.state];
     if (
-      ACTIVE_STATES.has(status.state) &&
+      staleAfterMs !== undefined &&
       Number.isFinite(updatedAtMs) &&
-      now.getTime() - updatedAtMs > STALE_UPDATE_MS
+      now.getTime() - updatedAtMs > staleAfterMs
     ) {
+      const deadlineLabel =
+        staleAfterMs === EARLY_STALE_UPDATE_MS ? "5 minutes" : "2 hours";
       const failed: PersistedSelfUpdateStatus = {
         ...status,
         state: "failed",
         message:
-          `The update stopped reporting progress. Inspect ` +
+          `The update stopped reporting progress while ${status.state} for more than ` +
+          `${deadlineLabel}. Inspect ` +
           `journalctl -u ${SELF_UPDATE_UNIT}.`,
         updatedAt: now.toISOString(),
         finishedAt: now.toISOString(),

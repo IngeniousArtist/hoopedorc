@@ -1390,6 +1390,35 @@ fresh early state and long-running build remain active; a live EC2 smoke
 records observed state transition times and successful recovery from a
 deliberately stale fixture; full gates green.
 
+**Implementation decision (2026-08-11):** keep expiry a pure persisted-state
+policy inside `normalizePersistedStatus`; normal status reads continue to use
+no updater-unit probe. An explicit deadline table gives `queued` and
+`checking` five minutes and `pulling`, `installing`, `building`, and
+`restarting` two hours. The deadline is measured from the last valid
+`updatedAt`; an exact boundary remains active, one millisecond beyond becomes
+`failed`, and a future progress timestamp remains active rather than risking a
+second updater during wall-clock rollback. Expiry preserves the original
+fields, records `updatedAt`/`finishedAt`, and names the expired state and
+deadline in its durable failure message. The existing new-boot proof for a
+`restarting` marker remains higher priority than same-process staleness.
+
+One table-driven test covers both sides of all six deadlines without host
+commands; another proves future-clock safety plus failed-state survival across
+server reconstruction and a successful retry launch. No API, schema, timer,
+command, or systemd behavior changes. Rollback is the focused server/test/docs
+commit. After merge, deploy through the canonical updater and record real
+phase timestamps plus recovery from a deliberately stale early-state fixture.
+
+Pre-fix, both focused O17 regressions failed: an early `queued` marker remained
+active one millisecond past five minutes, including after server
+reconstruction. With the implementation, the focused suite passes 2/2. Full
+local verification passes typecheck, build, lint (150 files; the 338 legacy
+findings exactly match the non-increasing baseline), engine 231/231, adapters
+12/12, server 300/300, web 28/28, E2E 16/16 at
+360/390/768/1280/1440 px, and `git diff --check`. The live EC2 smoke remains a
+post-merge requirement so it exercises the canonical deployed updater rather
+than an unmerged checkout.
+
 **Fix risk:** low.
 
 ### O18. Malformed request bodies produce 500s instead of 400s — LOW-MEDIUM (robustness)
