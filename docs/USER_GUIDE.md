@@ -706,6 +706,13 @@ the same OS user. That separate control group is what lets the updater survive
 journalctl -u hoopedorc-self-update.service
 ```
 
+If the detached updater dies before meaningful work begins, a stale `queued`
+or `checking` status becomes a retryable failure after five minutes. Later
+pull/install/build/restart phases retain a two-hour allowance for slow hosts.
+The Setup card names the phase that stopped reporting progress; after checking
+the updater journal, the operator can start the update again without waiting
+for the longer build deadline.
+
 If the card says UI update is unavailable, use the terminal fallback from the
 repo root on the deployed box:
 
