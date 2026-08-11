@@ -983,6 +983,46 @@ pending approvals, and capability lookup; delete-project tests leave no row
 for the project in logs or budget alerts (including an empty-task-id log) and
 preserve other projects; full gates green.
 
+**Implementation decision (2026-08-11):** keep O13 additive and repository-
+owned. A representative in-memory measurement with 20,000 model invocations,
+10,000 merge decisions, and 20,000 notifications confirmed full scans plus
+temporary ORDER BY B-trees for every uncovered query; the existing
+`(model, started_at)` index already served model-month cost. Add only the
+seven indexes whose after-plans select them:
+`model_invocations(started_at)`, `merge_decisions(task_id, ts DESC)`, global,
+project, and task notification chronology, plus global and project partial
+pending-approval chronology. Put the same `IF NOT EXISTS` definitions in the
+fresh schema and an explicit idempotent migration for existing databases.
+Delete logs directly by `project_id` and delete only
+`budget_alerts.scope = 'project:' || project_id` inside the existing project
+transaction. Preserve every other project's rows and all invocation history.
+No REST, WebSocket, UI, engine, deployment, or retention behavior changes.
+
+**Implementation result (2026-08-11, pre-merge):** fresh schema and the
+existing-database migration now install the seven measured indexes
+idempotently. At 20,000 invocation, 10,000 merge-decision, and 20,000
+notification rows, global month cost changed from a table scan to
+`idx_model_invocations_started`; model-month cost retained the existing
+`idx_model_invocations_model_started`; merge history changed from scan plus
+temporary sort to `idx_merge_decisions_task_ts`; global/project newest and
+pending UNION branches selected their respective full/partial chronology
+indexes; and task capability lookup selected
+`idx_notifications_task_created`. A second file-backed database boot is a
+no-op, while an independently initialized fresh database exposes the same
+index names.
+
+Project deletion now removes logs directly by `project_id`, including empty
+or stale task IDs, and removes only the exact `project:<id>` budget-alert
+scope in the same transaction. Regression coverage proves other-project logs,
+other-project alerts, and global alerts survive. The full local gates pass
+typecheck, build, lint at the unchanged 339-finding baseline, engine 231/231,
+adapters 12/12, server 267/267, web 27/27, E2E 16/16 at
+360/390/768/1280/1440 px, and `git diff --check`. CI, merge commit, and
+independent merged-main verification remain outstanding and must be appended
+without rewriting this pre-merge evidence. No live deployment is required;
+the real file-backed migration/reopen and representative planner evidence
+exercise O13's SQLite boundary.
+
 **Fix risk:** low (additive).
 
 ### O14. Multi-write route sequences run outside transactions — LOW-MEDIUM (robustness)

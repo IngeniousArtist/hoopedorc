@@ -144,9 +144,9 @@ export function updateProject(
 
 /**
  * Delete a project and every row that references it (tasks, runs, logs,
- * merge decisions, invocations, costs, notifications, planning receipts,
- * audit log). SQLite FKs are enforced (PRAGMA foreign_keys = ON), so children
- * must go first; wrapped in a
+ * merge decisions, invocations, costs, notifications, project budget alerts,
+ * planning receipts, audit log). SQLite FKs are enforced
+ * (PRAGMA foreign_keys = ON), so children must go first; wrapped in a
  * transaction so a partial delete can't leave orphans.
  */
 export function deleteProject(db: Db, id: string): void {
@@ -155,14 +155,15 @@ export function deleteProject(db: Db, id: string): void {
       db.prepare("SELECT id FROM tasks WHERE project_id = ?").all(projectId) as { id: string }[]
     ).map((r) => r.id);
 
+    db.prepare("DELETE FROM logs WHERE project_id = ?").run(projectId);
     for (const taskId of taskIds) {
-      db.prepare("DELETE FROM logs WHERE task_id = ?").run(taskId);
       db.prepare("DELETE FROM merge_decisions WHERE task_id = ?").run(taskId);
       db.prepare("DELETE FROM runs WHERE task_id = ?").run(taskId);
     }
     db.prepare("DELETE FROM costs WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM model_invocations WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM notifications WHERE project_id = ?").run(projectId);
+    db.prepare("DELETE FROM budget_alerts WHERE scope = ?").run(`project:${projectId}`);
     db.prepare("DELETE FROM audit_log WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM rollback_jobs WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM planning_commits WHERE project_id = ?").run(projectId);
