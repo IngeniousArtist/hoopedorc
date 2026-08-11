@@ -52,9 +52,11 @@ export type {
 export {
   GitOperationError,
   GitServiceImpl,
+  PullRequestStateError,
   RollbackConflictError,
 } from "./git-service.js";
 export type {
+  GitServiceRuntime,
   GitOperationStage,
   RepositoryFileWrite,
 } from "./git-service.js";

@@ -17,6 +17,7 @@ import type { Project, RollbackJob, Task } from "@orc/types";
 import {
   GitOperationError,
   GitServiceImpl,
+  PullRequestStateError,
   RollbackConflictError,
 } from "./git-service.js";
 
@@ -77,6 +78,246 @@ function rollbackJob(root: string, sourceCommit: string): RollbackJob {
 function rejectsAt(stage: GitOperationError["stage"]): (err: unknown) => boolean {
   return (err) => err instanceof GitOperationError && err.stage === stage;
 }
+
+const OPEN_PR = JSON.stringify({
+  state: "OPEN",
+  mergedAt: null,
+  mergeCommit: null,
+});
+
+const CLOSED_PR = JSON.stringify({
+  state: "CLOSED",
+  mergedAt: null,
+  mergeCommit: null,
+});
+
+const MERGED_PR = JSON.stringify({
+  state: "MERGED",
+  mergedAt: "2026-08-11T08:00:00Z",
+  mergeCommit: { oid: "a".repeat(40) },
+});
+
+function isPrStateProbe(args: string[]): boolean {
+  return args.includes("state,mergedAt,mergeCommit");
+}
+
+function isMergeabilityProbe(args: string[]): boolean {
+  return args.includes("mergeable");
+}
+
+function isMergeCommand(args: string[]): boolean {
+  return args[0] === "pr" && args[1] === "merge";
+}
+
+test("O7: failed state reads retry before a previously merged PR is accepted", async () => {
+  const { project } = await rollbackRepo("merge-state-retry");
+  const delays: number[] = [];
+  let stateReads = 0;
+  let mergeAttempts = 0;
+  const service = new GitServiceImpl(undefined, {
+    runGh(args) {
+      if (isPrStateProbe(args)) {
+        stateReads++;
+        return stateReads < 3
+          ? Promise.reject(new Error("transient API failure"))
+          : Promise.resolve(MERGED_PR);
+      }
+      if (isMergeCommand(args)) mergeAttempts++;
+      return Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
+    },
+    delay(ms) {
+      delays.push(ms);
+      return Promise.resolve();
+    },
+  });
+
+  await service.mergePr(project, 7);
+
+  assert.equal(stateReads, 3);
+  assert.equal(mergeAttempts, 0);
+  assert.deepEqual(delays, [1_000, 2_000]);
+});
+
+test("O7: a failed merge command succeeds only after a confirmed merged follow-up", async () => {
+  const { root, project } = await rollbackRepo("merge-follow-up");
+  const publisher = join(root, "publisher");
+  await git(root, ["clone", "-q", "--branch", "main", project.repoUrl, publisher]);
+  await git(publisher, ["config", "user.email", "merge@test.local"]);
+  await git(publisher, ["config", "user.name", "Merge Test"]);
+  writeFileSync(join(publisher, "merged.txt"), "remote merge landed\n");
+  await git(publisher, ["add", "merged.txt"]);
+  await git(publisher, ["commit", "-q", "-m", "remote merge"]);
+
+  let stateReads = 0;
+  let mergeAttempts = 0;
+  const service = new GitServiceImpl(undefined, {
+    runGh(args) {
+      if (isPrStateProbe(args)) {
+        stateReads++;
+        return Promise.resolve(stateReads === 1 ? OPEN_PR : MERGED_PR);
+      }
+      if (isMergeabilityProbe(args)) return Promise.resolve("MERGEABLE\n");
+      if (isMergeCommand(args)) {
+        mergeAttempts++;
+        return git(publisher, ["push", "-q", "origin", "main"]).then(() =>
+          Promise.reject(new Error("connection dropped after merge")),
+        );
+      }
+      return Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
+    },
+    delay() {
+      return Promise.resolve();
+    },
+  });
+
+  await service.mergePr(project, 8);
+
+  assert.equal(stateReads, 2);
+  assert.equal(mergeAttempts, 1);
+  assert.equal(readFileSync(join(project.localPath, "merged.txt"), "utf8"), "remote merge landed\n");
+});
+
+test("O7: OPEN after failed merge exhausts bounded command retries", async () => {
+  const { project } = await rollbackRepo("merge-still-open");
+  const delays: number[] = [];
+  let mergeAttempts = 0;
+  const service = new GitServiceImpl(undefined, {
+    runGh(args) {
+      if (isPrStateProbe(args)) return Promise.resolve(OPEN_PR);
+      if (isMergeabilityProbe(args)) return Promise.resolve("MERGEABLE");
+      if (isMergeCommand(args)) {
+        mergeAttempts++;
+        return Promise.reject(new Error("pull request is already merged"));
+      }
+      return Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
+    },
+    delay(ms) {
+      delays.push(ms);
+      return Promise.resolve();
+    },
+  });
+
+  await assert.rejects(service.mergePr(project, 9), rejectsAt("merge"));
+  assert.equal(mergeAttempts, 3);
+  assert.deepEqual(delays, [3_000, 3_000]);
+});
+
+test("O7: CLOSED after a failed merge is a terminal merge failure", async () => {
+  const { project } = await rollbackRepo("merge-closed");
+  let stateReads = 0;
+  let mergeAttempts = 0;
+  const service = new GitServiceImpl(undefined, {
+    runGh(args) {
+      if (isPrStateProbe(args)) {
+        stateReads++;
+        return Promise.resolve(stateReads === 1 ? OPEN_PR : CLOSED_PR);
+      }
+      if (isMergeabilityProbe(args)) return Promise.resolve("MERGEABLE");
+      if (isMergeCommand(args)) {
+        mergeAttempts++;
+        return Promise.reject(new Error("merge rejected"));
+      }
+      return Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
+    },
+    delay() {
+      return Promise.resolve();
+    },
+  });
+
+  await assert.rejects(
+    service.mergePr(project, 10),
+    (err: unknown) => rejectsAt("merge")(err) && /closed after/.test((err as Error).message),
+  );
+  assert.equal(mergeAttempts, 1);
+});
+
+test("O7: malformed or unavailable follow-up state is typed retryable failure", async (t) => {
+  for (const scenario of ["malformed", "unavailable"] as const) {
+    await t.test(scenario, async () => {
+      const { project } = await rollbackRepo(`merge-${scenario}`);
+      let stateReads = 0;
+      let mergeAttempts = 0;
+      const service = new GitServiceImpl(undefined, {
+        runGh(args) {
+          if (isPrStateProbe(args)) {
+            stateReads++;
+            if (stateReads === 1) return Promise.resolve(OPEN_PR);
+            return scenario === "malformed"
+              ? Promise.resolve("{not-json")
+              : Promise.reject(new Error("state API unavailable"));
+          }
+          if (isMergeabilityProbe(args)) return Promise.resolve("MERGEABLE");
+          if (isMergeCommand(args)) {
+            mergeAttempts++;
+            return Promise.reject(new Error("ambiguous merge failure"));
+          }
+          return Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
+        },
+        delay() {
+          return Promise.resolve();
+        },
+      });
+
+      await assert.rejects(
+        service.mergePr(project, 11),
+        (err: unknown) =>
+          err instanceof PullRequestStateError &&
+          err.retryable &&
+          err.stage === "merge",
+      );
+      assert.equal(stateReads, 4);
+      assert.equal(mergeAttempts, 1);
+    });
+  }
+});
+
+test("O7: MERGED without evidence is never accepted as success", async () => {
+  const { project } = await rollbackRepo("merge-missing-evidence");
+  let mergeAttempts = 0;
+  const service = new GitServiceImpl(undefined, {
+    runGh(args) {
+      if (isPrStateProbe(args)) {
+        return Promise.resolve(JSON.stringify({
+          state: "MERGED",
+          mergedAt: null,
+          mergeCommit: null,
+        }));
+      }
+      if (isMergeCommand(args)) mergeAttempts++;
+      return Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
+    },
+    delay() {
+      return Promise.resolve();
+    },
+  });
+
+  await assert.rejects(service.mergePr(project, 12), PullRequestStateError);
+  assert.equal(mergeAttempts, 0);
+});
+
+test("O7: cancellation interrupts PR-state probe backoff", async () => {
+  const { project } = await rollbackRepo("merge-state-abort");
+  const controller = new AbortController();
+  let stateReads = 0;
+  const service = new GitServiceImpl(undefined, {
+    runGh() {
+      stateReads++;
+      return Promise.reject(new Error("transient state failure"));
+    },
+    delay() {
+      controller.abort();
+      return Promise.reject(
+        Object.assign(new Error("aborted"), { name: "AbortError" }),
+      );
+    },
+  });
+
+  await assert.rejects(
+    service.mergePr(project, 13, controller.signal),
+    { name: "AbortError" },
+  );
+  assert.equal(stateReads, 1);
+});
 
 test("O4: concurrent clone bootstrap callers share the canonical target-path lock", async () => {
   const { root, project } = await rollbackRepo("clone-bootstrap");
