@@ -144,6 +144,7 @@ export class ClaudeAdapter implements AgentAdapter {
           env: sanitizedEnv({ PWD: opts.cwd }),
           signal: opts.signal,
           input: opts.prompt,
+          captureOutput: false,
         },
       );
       void managed.settled.catch(() => {});
@@ -347,6 +348,7 @@ export class OpenCodeAdapter implements AgentAdapter {
         env: sanitizedEnv({ PWD: opts.cwd }),
         signal: opts.signal,
         input: opts.prompt,
+        captureOutput: false,
       });
       void managed.settled.catch(() => {});
       const proc = managed.child;
@@ -543,6 +545,7 @@ export class CodexAdapter implements AgentAdapter {
         env: sanitizedEnv({ PWD: opts.cwd }),
         signal: opts.signal,
         input: opts.prompt,
+        captureOutput: false,
       });
       void managed.settled.catch(() => {});
       const proc = managed.child;

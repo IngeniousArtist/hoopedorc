@@ -59,6 +59,72 @@ test("output limit terminates a noisy process", async () => {
   );
 });
 
+test("execManagedProcess captures stdout and stderr by default", async () => {
+  const result = await execManagedProcess(process.execPath, [
+    "-e",
+    'process.stdout.write("stdout-value");process.stderr.write("stderr-value");',
+  ]);
+
+  assert.equal(result.stdout, "stdout-value");
+  assert.equal(result.stderr, "stderr-value");
+});
+
+test("captureOutput false streams stdout and stderr without retaining them", async () => {
+  const managed = spawnManagedProcess(
+    process.execPath,
+    [
+      "-e",
+      'process.stdout.write("streamed-stdout");process.stderr.write("streamed-stderr");',
+    ],
+    { captureOutput: false },
+  );
+  let streamedStdout = "";
+  let streamedStderr = "";
+  managed.child.stdout.on("data", (chunk: Buffer) => {
+    streamedStdout += chunk.toString("utf8");
+  });
+  managed.child.stderr.on("data", (chunk: Buffer) => {
+    streamedStderr += chunk.toString("utf8");
+  });
+
+  const result = await managed.settled;
+
+  assert.equal(result.code, 0);
+  assert.equal(streamedStdout, "streamed-stdout");
+  assert.equal(streamedStderr, "streamed-stderr");
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
+});
+
+test(
+  "captureOutput false still applies the shared output cap to the process group",
+  { skip: process.platform === "win32", timeout: 10_000 },
+  async () => {
+    const childProgram =
+      'process.on("SIGTERM",()=>{});setInterval(()=>{},1000);';
+    const parentProgram = [
+      'const {spawn}=require("node:child_process");',
+      'process.on("SIGTERM",()=>{});',
+      `spawn(process.execPath,["-e",${JSON.stringify(childProgram)}],{stdio:["ignore","inherit","inherit"]});`,
+      'process.stdout.write("o".repeat(80));',
+      'process.stderr.write("e".repeat(80));',
+      "setInterval(()=>{},1000);",
+    ].join("");
+    const managed = spawnManagedProcess(process.execPath, ["-e", parentProgram], {
+      captureOutput: false,
+      maxOutputBytes: 128,
+      killGraceMs: 100,
+    });
+
+    const result = await managed.settled;
+
+    assert.equal(result.outputLimitExceeded, true);
+    assert.equal(result.signal, "SIGKILL");
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+  },
+);
+
 test("abortableDelay rejects promptly and clears its wait", async () => {
   const controller = new AbortController();
   const started = Date.now();

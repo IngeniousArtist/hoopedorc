@@ -13,6 +13,8 @@ export interface ManagedProcessOptions extends SpawnOptionsWithoutStdio {
   timeoutMs?: number;
   killGraceMs?: number;
   maxOutputBytes?: number;
+  /** Retain stdout/stderr in the settled result; stream listeners are unaffected. */
+  captureOutput?: boolean;
 }
 
 export interface ManagedProcessResult {
@@ -100,6 +102,7 @@ export function spawnManagedProcess(
     timeoutMs,
     killGraceMs = DEFAULT_KILL_GRACE_MS,
     maxOutputBytes = DEFAULT_MAX_OUTPUT_BYTES,
+    captureOutput = true,
     ...spawnOptions
   } = options;
   const child = spawn(command, [...args], {
@@ -134,11 +137,11 @@ export function spawnManagedProcess(
 
   const capture = (target: Buffer[], chunk: Buffer): void => {
     const remaining = Math.max(0, maxOutputBytes - outputBytes);
-    if (remaining > 0) {
-      const kept = chunk.byteLength <= remaining ? chunk : chunk.subarray(0, remaining);
-      target.push(Buffer.from(kept));
-      outputBytes += kept.byteLength;
+    const countedBytes = Math.min(chunk.byteLength, remaining);
+    if (captureOutput && countedBytes > 0) {
+      target.push(Buffer.from(chunk.subarray(0, countedBytes)));
     }
+    outputBytes += countedBytes;
     if (chunk.byteLength > remaining || outputBytes >= maxOutputBytes) {
       terminate("output");
     }

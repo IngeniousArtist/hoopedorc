@@ -838,15 +838,16 @@ refactor.
 
 ## Workstream 2 — Resource bounds and durability
 
-### O9. Adapters retain up to 128 MB of captured output they never read — HIGH on small hosts (efficiency)
+### O9. Adapters retain up to 64 MiB of captured output they never read — HIGH on small hosts (efficiency)
 
 **Problem:** `spawnManagedProcess` copies every stdout/stderr chunk into
-capture arrays up to `DEFAULT_MAX_OUTPUT_BYTES = 64 MiB` per stream
+capture arrays up to one shared `DEFAULT_MAX_OUTPUT_BYTES = 64 MiB` ceiling
 (`packages/adapters/src/managed-process.ts:7,135-145`), but all three
 streaming adapters parse via their own `onData` and discard the settled
 result (`packages/adapters/src/index.ts:149,351,547` —
 `void managed.settled.catch(() => {})`). Concurrent chatty
-`--output-format stream-json` runs holding duplicate multi-MB buffers is a
+`--output-format stream-json` runs each holding an unnecessary duplicate
+multi-MB buffer is a
 real OOM path on the 1–2 GB EC2 target
 (`deploy/hoopedorc.service:29-30` already worries about this). Secondary: the
 64 MiB cap SIGTERM-kills a long legitimate session mid-work with an
@@ -855,18 +856,53 @@ undistinguished error.
 **Fix:** add `captureOutput?: boolean` (default `true`) to
 `ManagedProcessOptions`; when `false`, still count bytes toward
 `maxOutputBytes` (keeping the runaway-kill rail) but retain nothing. Pass
-`captureOutput: false` from the three streaming adapters (they already keep
-their own bounded `stderrTail`). Consider parameterizing the streaming cap so
-long legitimate runs aren't killed, and make an output-cap kill
-distinguishable in the error reason.
+`captureOutput: false` from the three streaming adapters (OpenCode already
+keeps the only required bounded `stderrTail`). Keep the existing shared byte
+ceiling and typed `outputLimitExceeded` result unchanged in this PR; changing
+cap policy or adapter result semantics without production-size evidence is a
+non-goal.
+
+**Implementation decision (2026-08-11):** keep ownership entirely in the
+adapter process boundary. The additive option defaults to capture so every
+`execManagedProcess` caller remains byte-for-byte compatible. With capture
+disabled, the same stdout/stderr listeners and one shared counter remain
+active, but chunks are not copied into the settled result. No API, persistence,
+timer, queue, retry, CLI flag, parser, or process-termination behavior changes.
+Concurrent stdout/stderr callbacks remain serialized by the Node event loop
+and share the existing cap counter. Rollback is the option, its three explicit
+call-site values, tests, and this documentation. A real Node child process is
+the process-boundary acceptance fixture; no authenticated model or deployment
+smoke is required because O9 changes neither external CLI arguments nor host
+configuration.
+
+Pre-fix evidence is a child that streams stdout and stderr while requesting
+non-retention: the option does not exist, so its settled result retains both
+streams. A second noisy-child case proves the non-retaining path must still
+count both streams and terminate at the existing cap. The default-capture
+case guards engine/Git/gate callers that consume settled stdout/stderr.
 
 **Likely files:** `packages/adapters/src/managed-process.ts`,
 `packages/adapters/src/index.ts`, adapter tests. `execManagedProcess` callers
 (engine git/gh/gates) keep the default and are untouched.
 
-**Acceptance:** test proves no buffer retention with `captureOutput: false`
-while byte-counting/kill still triggers at the cap; engine callers still get
-`result.stdout`; full gates green.
+**Acceptance:** tests prove stdout/stderr still reach streaming listeners but
+the settled result retains neither with `captureOutput: false`; combined
+byte-counting/kill still triggers at the existing shared cap and settles the
+whole process group; default-capture callers still receive both streams; all
+three streaming adapters opt out explicitly; full gates green.
+
+The two pre-fix non-retention regressions failed because both settled results
+still contained captured output; the default-capture guard passed. With the
+additive option and three explicit streaming call sites, the complete adapter
+suite passes 15/15, including a real SIGTERM-resistant parent/child group that
+settles through the existing shared output cap. Full local verification passes
+typecheck, build, lint (150 files; the exact 338 legacy findings still match
+the non-increasing baseline), engine 231/231, adapters 15/15, server 305/305,
+web 28/28, E2E 16/16 at 360/390/768/1280/1440 px, and `git diff --check`.
+The socket-restricted sandbox initially refused the server suite's three
+loopback listeners with `EPERM`; the exact server gate rerun outside that
+restriction passed all 305 tests. CI, merge, and independent merged-main
+verification remain to be recorded.
 
 **Fix risk:** low (additive option).
 
@@ -1962,12 +1998,15 @@ verification passed typecheck, build, lint, engine 184/184, adapters 12/12,
 server 236/236, web 25/25, E2E 16/16 at 360/390/768/1280/1440 px, and
 `git diff --check`. Linux `build-and-test` CI passed in 2m19s.
 
-The post-merge EC2 update/health smoke remains outstanding: the current
-execution environment has no SSH identity, Tailscale CLI, or configured
-production endpoint with which to identify the authorized box safely. Run
-`scripts/update.sh` from that known production checkout, then record the exact
-checkout commit, clean/idle preconditions, matching `hoopedorc.service`
-restart, `GET /api/health`, and loopback/Tailscale dashboard results.
+The post-merge EC2 update/health acceptance was completed on 2026-08-11 using
+the subsequently authorized `ubuntu@hooped` host. The clean, idle
+`/opt/hoopedorc` checkout updated through the canonical UI updater to
+`992ea6d6b04fe22831b0cedd612044d7caed2574`; the fixed
+`hoopedorc.service` whose `WorkingDirectory` matches that checkout restarted
+and remained active. The final checkout was clean on `main`, and loopback
+health plus the Tailscale health/dashboard routes returned HTTP 200. O17 and
+O19 record the phase-level and same-commit retry evidence from the same live
+acceptance sequence.
 
 ### O28. Deterministic fixes for local-only test failures — MEDIUM (testing)
 
