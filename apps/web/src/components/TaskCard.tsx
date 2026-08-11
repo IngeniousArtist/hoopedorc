@@ -1,4 +1,5 @@
 import type { ModelConfig, Task, TaskEstimate } from "@orc/types";
+import { errorMessage, useConfirmation } from "./ConfirmationDialog";
 
 // Mirrors STUCK_DETECTION.idleMs in @orc/engine: if the model emits no output
 // for this long, the engine kills the run and falls back. The heartbeat turns
@@ -67,9 +68,10 @@ export function TaskCard({
   /** F3 — "Stop this task" on a running card. Omitted while a stop is
    *  already in flight for this task, so the button just disappears rather
    *  than allowing a double-click. */
-  onStop?: () => void;
+  onStop?: () => void | Promise<void>;
   isSelected?: boolean;
 }) {
+  const { requestConfirmation, confirmationDialog } = useConfirmation();
   const depTasks = task.dependsOn
     .map((id) => allTasks.find((t) => t.id === id))
     .filter(Boolean) as Task[];
@@ -91,6 +93,7 @@ export function TaskCard({
           : "border-neutral-800 bg-neutral-900 hover:border-neutral-700")
       }
     >
+      {confirmationDialog}
       <div className="text-sm font-medium">{task.title}</div>
 
       {(task.status === "in_progress" || task.status === "in_review") && (
@@ -100,9 +103,17 @@ export function TaskCard({
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                if (window.confirm(`Stop "${task.title}"? The agent process will be killed and the task moved to Blocked.`)) {
-                  onStop();
-                }
+                requestConfirmation({
+                  title: `Stop "${task.title}"?`,
+                  description:
+                    "The agent process will be killed and the task moved to Blocked.",
+                  confirmLabel: "Stop task",
+                  pendingLabel: "Stopping…",
+                  tone: "danger",
+                  action: onStop,
+                  errorMessage: (error) =>
+                    `Could not stop the task: ${errorMessage(error)}`,
+                });
               }}
               className="shrink-0 rounded border border-red-900 px-1.5 py-0.5 text-[10px] text-red-400 hover:bg-red-950/50"
             >

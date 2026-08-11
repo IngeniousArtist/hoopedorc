@@ -9,8 +9,9 @@ import type {
   Task,
   TaskDecisionsResponse,
 } from "@orc/types";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { api } from "../api/client";
+import { Dialog } from "./Dialog";
 import { LogPanel } from "./LogPanel";
 import { ModelSelect } from "./ModelSelect";
 
@@ -80,6 +81,7 @@ export function TaskDrawer({
    *  (only non-active tasks), but the card now just shows a static chip. */
   onModelChange: (m: ModelId) => void;
 }) {
+  const titleId = useId();
   const [tab, setTab] = useState<Tab>("overview");
   const [runs, setRuns] = useState<Run[]>([]);
   const [decisions, setDecisions] = useState<MergeDecision[]>([]);
@@ -113,9 +115,14 @@ export function TaskDrawer({
     task.status === "blocked";
 
   return (
-    <div className="fixed bottom-0 right-0 top-0 z-50 flex w-full flex-col border-l border-neutral-700 bg-neutral-900 pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] shadow-2xl sm:w-[420px]">
+    <Dialog
+      labelledBy={titleId}
+      onDismiss={onClose}
+      className="bottom-0 left-auto right-0 top-0 m-0 flex h-[100dvh] max-h-none w-full max-w-none flex-col border-0 border-l border-neutral-700 bg-neutral-900 p-0 pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] text-neutral-100 shadow-2xl sm:w-[420px]"
+    >
       <div className="flex min-h-12 items-center justify-between border-b border-neutral-700 px-4 py-2">
         <div
+          id={titleId}
           className="min-w-0 flex-1 truncate text-sm font-medium text-neutral-200"
           title={task.title}
         >
@@ -123,6 +130,7 @@ export function TaskDrawer({
         </div>
         <button
           onClick={onClose}
+          data-dialog-initial-focus
           className="ml-2 min-h-10 min-w-10 rounded p-1 text-neutral-400 hover:text-neutral-200"
           aria-label="Close task drawer"
         >
@@ -438,6 +446,6 @@ export function TaskDrawer({
           </div>
         )}
       </div>
-    </div>
+    </Dialog>
   );
 }

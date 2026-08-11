@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { apiUrl } from "../api/client";
+import { Dialog } from "./Dialog";
 
 /**
  * S6: replaces the old blocking browser-prompt stopgap. Rendered by App.tsx
@@ -13,6 +14,8 @@ export function TokenGate({
 }: {
   onAuthenticated: (token: string) => void;
 }) {
+  const titleId = useId();
+  const descriptionId = useId();
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
@@ -41,12 +44,16 @@ export function TokenGate({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/80 p-4">
+    <Dialog
+      labelledBy={titleId}
+      describedBy={descriptionId}
+      className="m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-sm overflow-y-auto border-0 bg-transparent p-0 text-neutral-100"
+    >
       <div className="w-full max-w-sm rounded-lg border border-neutral-800 bg-neutral-900 p-6">
-        <h2 className="text-sm font-semibold text-neutral-100">
+        <h2 id={titleId} className="text-sm font-semibold text-neutral-100">
           Hoopedorc requires a token
         </h2>
-        <p className="mt-1 text-xs text-neutral-400">
+        <p id={descriptionId} className="mt-1 text-xs text-neutral-400">
           This server is configured with an API token. Enter it to continue.
         </p>
         <label htmlFor="api-token-gate" className="mt-4 block text-xs text-neutral-300">
@@ -55,7 +62,7 @@ export function TokenGate({
         <input
           id="api-token-gate"
           type="password"
-          autoFocus
+          data-dialog-initial-focus
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
@@ -73,6 +80,6 @@ export function TokenGate({
           {checking ? "Checking…" : "Continue"}
         </button>
       </div>
-    </div>
+    </Dialog>
   );
 }

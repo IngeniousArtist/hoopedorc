@@ -27,6 +27,14 @@ input[type="radio"] {
   accent-color: theme(colors.blue.600);
 }
 
+/* O5/O26: shared native-dialog foundation. The platform top layer keeps the
+   backdrop above sticky navigation and nested drawers without another z-index
+   convention, while the dim/blur makes the current safety decision explicit. */
+dialog.hoop-dialog::backdrop {
+  background: rgb(10 10 10 / 82%);
+  backdrop-filter: blur(2px);
+}
+
 /* U19: phone layouts need controls that remain comfortable to tap even when
    the desktop UI intentionally stays dense. Keep this scoped to compact
    viewports so tablet/desktop information density does not change. */

@@ -156,8 +156,13 @@ for (const viewport of TARGET_VIEWPORTS) {
       await captureViewport(page, testInfo, `${viewport.name}-task-drawer`);
       await page.getByRole("button", { name: "Close task drawer" }).click();
 
-      page.once("dialog", (dialog) => dialog.accept());
       await activeTask.getByRole("button", { name: "Stop" }).click();
+      await expect(
+        page.getByRole("dialog", { name: 'Stop "Kanban board UI"?' }),
+      ).toBeVisible();
+      await expectResponsivePage(page, viewport.width < 640);
+      await captureViewport(page, testInfo, `${viewport.name}-stop-confirmation`);
+      await page.getByRole("button", { name: "Stop task" }).click();
       await expect(page.getByText("Stopped — task moved to Blocked.")).toBeVisible();
 
       await activeTask.click();

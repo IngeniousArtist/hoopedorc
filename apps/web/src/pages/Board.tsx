@@ -24,6 +24,10 @@ import { TaskCard } from "../components/TaskCard";
 import { BoardSummary } from "../components/BoardSummary";
 import { AddTaskForm } from "../components/AddTaskForm";
 import { MissionControl } from "../components/MissionControl";
+import {
+  errorMessage,
+  useConfirmation,
+} from "../components/ConfirmationDialog";
 
 // Record so adding a TaskStatus in @orc/types is a compile error here until
 // it gets a label too — the column list itself is derived from TASK_STATUSES
@@ -54,6 +58,7 @@ export function Board({
   onViewNotifications?: () => void;
 }) {
   const toast = useToast();
+  const { requestConfirmation, confirmationDialog } = useConfirmation();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [settings, setSettings] = useState<SettingsType | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -273,28 +278,32 @@ export function Board({
     return () => clearInterval(id);
   }, [hasRunning]);
 
-  const handleRollback = async (taskId: string, prNumber: number) => {
-    if (
-      !window.confirm(
-        `Create a rollback PR for #${prNumber}? Hoopedorc will run gates and an independent review, then require your approval before merging it.`,
-      )
-    )
-      return;
-    setActionBusy(true);
-    try {
-      const res = await api<RollbackTaskResponse>("rollbackTask", {
-        params: { id: taskId },
-      });
-      setRollbackJobs((current) => ({
-        ...current,
-        [taskId]: res.rollback,
-      }));
-      toast(`Rollback job started for PR #${prNumber}.`, "success");
-    } catch (e) {
-      toast(String(e), "error");
-    } finally {
-      setActionBusy(false);
-    }
+  const handleRollback = (taskId: string, prNumber: number) => {
+    requestConfirmation({
+      title: `Create a rollback PR for #${prNumber}?`,
+      description:
+        "Hoopedorc will run gates and an independent review, then require your approval before merging it.",
+      confirmLabel: "Create rollback PR",
+      pendingLabel: "Starting rollback…",
+      tone: "warning",
+      action: async () => {
+        setActionBusy(true);
+        try {
+          const res = await api<RollbackTaskResponse>("rollbackTask", {
+            params: { id: taskId },
+          });
+          setRollbackJobs((current) => ({
+            ...current,
+            [taskId]: res.rollback,
+          }));
+          toast(`Rollback job started for PR #${prNumber}.`, "success");
+        } finally {
+          setActionBusy(false);
+        }
+      },
+      errorMessage: (error) =>
+        `Could not start the rollback: ${errorMessage(error)}`,
+    });
   };
 
   const handleRetry = async (taskId: string) => {
@@ -320,8 +329,6 @@ export function Board({
       });
       setTasks((prev) => prev.map((t) => (t.id === taskId ? res.task : t)));
       toast("Stopped — task moved to Blocked.", "success");
-    } catch (e) {
-      toast(String(e), "error");
     } finally {
       setStoppingIds((prev) => {
         const next = new Set(prev);
@@ -455,6 +462,7 @@ export function Board({
 
   return (
     <div>
+      {confirmationDialog}
       {error && (
         <div className="mb-4 rounded border border-red-800 bg-red-950/50 px-4 py-2 text-sm text-red-400">
           {error}

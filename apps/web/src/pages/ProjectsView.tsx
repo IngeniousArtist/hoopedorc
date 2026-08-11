@@ -1,6 +1,7 @@
 import type { ListProjectsResponse, Project, RouteKey } from "@orc/types";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
+import { errorMessage, useConfirmation } from "../components/ConfirmationDialog";
 import { useToast } from "../hooks/useToast";
 import { formatSchedule } from "../lib/format";
 
@@ -34,6 +35,7 @@ export function ProjectsView({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const { requestConfirmation, confirmationDialog } = useConfirmation();
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -81,12 +83,38 @@ export function ProjectsView({
     }
   }
 
+  function stopNow(project: Project) {
+    requestConfirmation({
+      title: "Stop now?",
+      description:
+        "Any task currently running will be aborted and requeued to backlog.",
+      confirmLabel: "Stop now",
+      pendingLabel: "Stopping…",
+      tone: "danger",
+      action: async () => {
+        setBusyId(project.id);
+        try {
+          await api("pauseProject", {
+            params: { id: project.id },
+            body: { drain: false },
+          });
+          await refresh();
+        } finally {
+          setBusyId(null);
+        }
+      },
+      errorMessage: (error) =>
+        `Could not stop the project: ${errorMessage(error)}`,
+    });
+  }
+
   if (loading) {
     return <div className="text-sm text-neutral-400">Loading projects…</div>;
   }
 
   return (
     <div className="max-w-4xl space-y-4">
+      {confirmationDialog}
       <h2 className="text-lg font-semibold">Projects</h2>
 
       {error && (
@@ -168,15 +196,7 @@ export function ProjectsView({
                     {busyId === p.id ? "…" : "⏸ Pause"}
                   </button>
                   <button
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          "Stop now? Any task currently running will be aborted and requeued to backlog.",
-                        )
-                      ) {
-                        act(p.id, "pauseProject", { drain: false });
-                      }
-                    }}
+                    onClick={() => stopNow(p)}
                     disabled={busyId === p.id}
                     title="Abort any running task immediately and requeue it to backlog"
                     className="rounded border border-red-800 px-2 py-1 text-[11px] text-red-300 hover:bg-red-950/40 disabled:opacity-50"
