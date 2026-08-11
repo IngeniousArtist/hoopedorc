@@ -782,6 +782,61 @@ green.
 
 **Fix risk:** medium because event ordering is the invariant.
 
+**Paused implementation checkpoint (2026-08-11; incomplete — do not merge):**
+the combined O6 + O12 + O26 `useWS` ownership work is preserved on branch
+`o6-o12-ws-ownership` at WIP commit
+`8df75c65b25894856bb112b5347f11ab4deca8a8`, based on clean `main`
+`5f47469421adc029cb847fc703163d58518a3c08`. The WIP branch was pushed only
+for durable continuation; it has no implementation PR and must not be merged
+until the remaining work below is completed and independently reviewed.
+
+The checkpoint already contains the shared `cost.snapshot` contract and
+ordered server replay, unknown-task insertion, bounded `WsHub` delivery with
+the 1 MiB/`4008` slow-client policy, fail-closed snapshot/send handling,
+project-scoped mock logs, a per-project reference-counted browser connection
+manager, contract/architecture documentation, and focused hub/mock/Board/hook
+coverage. Independent Sol/xhigh review found and drove fixes for provider and
+serialization failures, asynchronous send errors, mock cross-project leaks,
+subscriber isolation, stale sockets, A-B-A project switching, and real-hub
+`4008` -> replacement snapshot -> delta coverage. Before the interrupted
+final refactor, focused suites passed hub/mock 11/11, Board 5/5, hook 8/8,
+client transport 1/1, web 48/48, engine 231/231, adapters 15/15, and E2E
+18/18. The three sandbox-blocked listener cases independently passed 3/3
+outside the sandbox. These are historical checkpoint results, not evidence
+that the current WIP commit is ready.
+
+Two Board correctness gaps were still open in the final Sol/xhigh audit:
+
+1. A subscribe snapshot for task T can precede a newer local
+   drag/model/retry/stop mutation while the initial REST list is pending; the
+   older split WS authority can then overwrite the newer local state when REST
+   resolves.
+2. Keying Board by project unmounts the old instance without changing its
+   `projectIdRef`, so a late success/refusal can still emit a stale toast into
+   the newly selected project.
+
+Work stopped mid-fix. `Board.tsx` now has the intended monotonic per-task
+authority structure and an active-instance/request-generation guard, but five
+action paths still reference the removed `markTaskMutation` helper. The WIP
+commit intentionally fails `npm run typecheck` with `TS2304` at the checkpoint
+`Board.tsx` lines 423, 441, 454, 522, and 557. Resume with:
+
+```bash
+git switch o6-o12-ws-ownership
+git pull --ff-only
+```
+
+Then convert those handlers to record each concrete optimistic task,
+successful response, and failure rollback through `recordTaskAuthority`; use
+the instance/request guard on every late retry/stop/drag/model success,
+refusal, and toast. Add regressions for snapshot -> local mutation -> delayed
+REST, failed mutation -> rollback -> delayed REST, WS-after-local ordering,
+and keyed project changes with pending success/refusal and no stale toast.
+Run every repository gate plus the live mock at 360, 390, 768, 1280, and
+1440px, then obtain a fresh independent Sol/xhigh review before opening the
+implementation PR. Preserve the existing real-hub, serialization, mock
+scoping, connection ownership, and listener evidence while finishing.
+
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
 **Problem:** the already-merged idempotency shortcut depends on a single
