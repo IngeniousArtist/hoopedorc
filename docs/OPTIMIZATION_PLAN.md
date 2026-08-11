@@ -1009,8 +1009,17 @@ oversized result. With the fixed bound, the focused planner file passes 45/45,
 including all four O11 cases. Full local verification passes typecheck, build,
 lint (150 files; the exact 338 legacy findings still match the non-increasing
 baseline), engine 231/231, adapters 15/15, server 309/309, web 28/28, E2E
-16/16 at 360/390/768/1280/1440 px, and `git diff --check`. CI, merge, and
-independent merged-main verification remain to be recorded.
+16/16 at 360/390/768/1280/1440 px, and `git diff --check`.
+
+**Status:** completed in
+[#238](https://github.com/IngeniousArtist/hoopedorc/pull/238)
+(`abdd8a9`). Planner chat, legacy planning, deconstruction, and repair retries
+now share the measured 4 MiB inclusive bound; Codex checks its separate final
+message before reading, and every violation reaches one typed, actionable
+failure after process-group settlement. Linux `build-and-test` CI passed at
+reviewed head `c9c2964` in 2m06s. After merge, clean local `main` and
+`origin/main` matched `abdd8a94b00dd3bb02e62ab6de304fc36d897659`, and the
+complete planner file passed 45/45 again on that exact commit.
 
 **Fix risk:** low (set the cap comfortably above real deconstruct output).
 
