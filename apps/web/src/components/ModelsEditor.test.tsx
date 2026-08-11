@@ -72,4 +72,33 @@ describe("ModelsEditor effort controls", () => {
       "opencode-model-catalog",
     );
   });
+
+  it("retains a routed model until its named confirmation succeeds", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ModelsEditor
+        models={[modelFixture]}
+        routing={settingsFixture().routing}
+        onChange={onChange}
+      />,
+    );
+
+    const remove = screen.getByRole("button", { name: "Remove Codex" });
+    await user.click(remove);
+    expect(
+      screen.getByRole("dialog", { name: 'Remove "Codex" anyway?' }),
+    ).toBeVisible();
+    expect(screen.getByText("Planner")).toBeVisible();
+    expect(screen.getByText("Author by difficulty → hard")).toBeVisible();
+    expect(onChange).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(remove).toHaveFocus();
+    expect(onChange).not.toHaveBeenCalled();
+
+    await user.click(remove);
+    await user.click(screen.getByRole("button", { name: "Remove model" }));
+    expect(onChange).toHaveBeenCalledWith([]);
+  });
 });

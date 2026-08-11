@@ -1,6 +1,7 @@
 import type { Project, RouteKey } from "@orc/types";
 import { useState } from "react";
 import { api } from "../api/client";
+import { errorMessage, useConfirmation } from "./ConfirmationDialog";
 import { useToast } from "../hooks/useToast";
 import { formatSchedule } from "../lib/format";
 import {
@@ -35,6 +36,7 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
   const [budget, setBudget] = useState(origBudget);
   const origConfigForm = projectConfigToForm(project.config);
   const [configForm, setConfigForm] = useState(origConfigForm);
+  const { requestConfirmation, confirmationDialog } = useConfirmation();
 
   async function act(route: RouteKey, body?: unknown) {
     setBusy(true);
@@ -49,13 +51,27 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
   }
 
   function stopNow() {
-    if (
-      window.confirm(
-        "Stop now? Any task currently running will be aborted and requeued to backlog.",
-      )
-    ) {
-      act("pauseProject", { drain: false });
-    }
+    requestConfirmation({
+      title: "Stop now?",
+      description:
+        "Any task currently running will be aborted and requeued to backlog.",
+      confirmLabel: "Stop now",
+      pendingLabel: "Stopping…",
+      tone: "danger",
+      action: async () => {
+        setBusy(true);
+        try {
+          await api("pauseProject", {
+            params: { id: project.id },
+            body: { drain: false },
+          });
+        } finally {
+          setBusy(false);
+        }
+      },
+      errorMessage: (error) =>
+        `Could not stop the project: ${errorMessage(error)}`,
+    });
   }
 
   async function saveBudget() {
@@ -102,6 +118,7 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
 
   return (
     <div className="mb-4 rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3">
+      {confirmationDialog}
       <div className="flex flex-wrap items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-neutral-100">

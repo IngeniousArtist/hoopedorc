@@ -10,7 +10,10 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { api, setUnauthorizedHandler } from "./api/client";
 import { useWS } from "./hooks/useWS";
 import { useBrowserNotify } from "./hooks/useBrowserNotify";
-import { useToast } from "./hooks/useToast";
+import {
+  errorMessage,
+  useConfirmation,
+} from "./components/ConfirmationDialog";
 import { ProjectHeader } from "./components/ProjectHeader";
 import { TokenGate } from "./components/TokenGate";
 import { AuditView } from "./pages/AuditView";
@@ -105,6 +108,7 @@ const initialHashState =
   typeof window !== "undefined" ? parseHash(window.location.hash) : null;
 
 export function App() {
+  const { requestConfirmation, confirmationDialog } = useConfirmation();
   // F21: a valid project id parsed from the hash wins over localStorage —
   // this only matters on first mount (a fresh load or a pasted deep link);
   // an invalid/empty hash falls through to the exact pre-F21 defaults.
@@ -145,18 +149,26 @@ export function App() {
   const handleSettingsDirtyChange = useCallback((dirty: boolean) => {
     settingsDirtyRef.current = dirty;
   }, []);
+  const confirmDiscardSettings = useCallback(
+    (action: () => void) => {
+      requestConfirmation({
+        title: "Discard unsaved settings changes?",
+        confirmLabel: "Discard changes",
+        tone: "danger",
+        action,
+      });
+    },
+    [requestConfirmation],
+  );
   const navigate = useCallback(
     (next: Page) => {
-      if (
-        page === "settings" &&
-        settingsDirtyRef.current &&
-        !window.confirm("Discard unsaved settings changes?")
-      ) {
+      if (page === "settings" && settingsDirtyRef.current) {
+        confirmDiscardSettings(() => setPage(next));
         return;
       }
       setPage(next);
     },
-    [page],
+    [confirmDiscardSettings, page],
   );
 
   // F21: keep the URL hash in sync with (page, selectedProjectId), covering
@@ -205,12 +217,12 @@ export function App() {
         history.replaceState(null, "", hashFor(page, selectedProjectId));
         return;
       }
-      if (
-        page === "settings" &&
-        settingsDirtyRef.current &&
-        !window.confirm("Discard unsaved settings changes?")
-      ) {
+      if (page === "settings" && settingsDirtyRef.current) {
         history.pushState(null, "", hashFor(page, selectedProjectId));
+        confirmDiscardSettings(() => {
+          if (parsed.projectId) setSelectedProjectId(parsed.projectId);
+          setPage(parsed.page);
+        });
         return;
       }
       if (parsed.projectId) setSelectedProjectId(parsed.projectId);
@@ -218,7 +230,7 @@ export function App() {
     }
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
-  }, [page, selectedProjectId]);
+  }, [confirmDiscardSettings, page, selectedProjectId]);
 
   useEffect(() => {
     setUnauthorizedHandler(
@@ -289,7 +301,6 @@ export function App() {
 
   // Keep names/status fresh as the engine runs (update existing entries in place).
   const { notify } = useBrowserNotify();
-  const toast = useToast();
 
   const onWS = useCallback(
     (e: ServerEvent) => {
@@ -348,28 +359,30 @@ export function App() {
   // events App already tracks, not a separate poll).
   const [stopAllBusy, setStopAllBusy] = useState(false);
   const runningProjects = projects.filter((p) => p.status === "running");
-  const handleStopAll = useCallback(async () => {
+  const handleStopAll = useCallback(() => {
     if (runningProjects.length === 0) return;
     const names = runningProjects.map((p) => p.name).join(", ");
-    if (
-      !window.confirm(
-        `Stop all running projects now? Every active agent is aborted immediately: ${names}.`,
-      )
-    ) {
-      return;
-    }
-    setStopAllBusy(true);
-    try {
-      await api("stopAll");
-      // Project statuses update via the project.updated broadcasts the
-      // route itself fires (the same pattern every other pause/start
-      // control in this app already relies on) — no local state patch here.
-    } catch (e) {
-      toast(String(e), "error");
-    } finally {
-      setStopAllBusy(false);
-    }
-  }, [runningProjects, toast]);
+    requestConfirmation({
+      title: "Stop all running projects now?",
+      description: `Every active agent is aborted immediately: ${names}.`,
+      confirmLabel: "Stop all",
+      pendingLabel: "Stopping all…",
+      tone: "danger",
+      action: async () => {
+        setStopAllBusy(true);
+        try {
+          await api("stopAll");
+          // Project statuses update via the project.updated broadcasts the
+          // route itself fires (the same pattern every other pause/start
+          // control in this app already relies on) — no local state patch here.
+        } finally {
+          setStopAllBusy(false);
+        }
+      },
+      errorMessage: (error) =>
+        `Could not stop all running projects: ${errorMessage(error)}`,
+    });
+  }, [requestConfirmation, runningProjects]);
 
   const needsProject = PROJECT_PAGES.includes(page);
   const hasProject = Boolean(selectedProjectId);
@@ -387,6 +400,7 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100">
+      {confirmationDialog}
       {tokenGateOpen && (
         <TokenGate onAuthenticated={handleTokenAuthenticated} />
       )}

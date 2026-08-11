@@ -267,6 +267,158 @@ test.describe.serial("critical operator workflows", () => {
     ).toHaveCount(0);
   });
 
+  test("destructive dialogs preserve settings and recover stop-all and rollback failures", async ({
+    page,
+  }) => {
+    await page.goto("/#/settings");
+    const effort = page.getByLabel("Claude (planner / reviewer) reasoning effort");
+    const nextEffort = (await effort.inputValue()) === "high" ? "medium" : "high";
+    await effort.selectOption(nextEffort);
+    const boardNav = page.getByRole("button", { name: "Board", exact: true });
+
+    await boardNav.click();
+    const discard = page.getByRole("dialog", {
+      name: "Discard unsaved settings changes?",
+    });
+    await expect(discard).toBeVisible();
+    await expect(page.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(discard).toHaveCount(0);
+    await expect(boardNav).toBeFocused();
+    await expect(effort).toHaveValue(nextEffort);
+
+    await page.evaluate(
+      (id) => {
+        location.hash = `#/p/${id}/board`;
+      },
+      projectId,
+    );
+    await expect(discard).toBeVisible();
+    await page.getByRole("button", { name: "Discard changes" }).click();
+    await expect(page).toHaveURL(new RegExp(`#/p/${projectId}/board$`));
+
+    let stopAllAttempts = 0;
+    await page.route("**/api/engine/stop-all", async (route) => {
+      stopAllAttempts += 1;
+      if (stopAllAttempts === 1) {
+        await route.fulfill({
+          status: 500,
+          json: { error: "Injected Stop-all failure" },
+        });
+        return;
+      }
+      await route.fulfill({ status: 204 });
+    });
+
+    const stopAllTrigger = page.getByRole("button", { name: "⏹ Stop all" });
+    await stopAllTrigger.click();
+    await expect(
+      page.getByRole("dialog", { name: "Stop all running projects now?" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: /^Stop all$/ }).click();
+    await expect(page.getByRole("alert")).toContainText(
+      "Could not stop all running projects: Injected Stop-all failure",
+    );
+    await expect(
+      page.getByRole("dialog", { name: "Stop all running projects now?" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: /^Stop all$/ }).click();
+    await expect(
+      page.getByRole("dialog", { name: "Stop all running projects now?" }),
+    ).toHaveCount(0);
+    expect(stopAllAttempts).toBe(2);
+    await expect(stopAllTrigger).toBeFocused();
+  });
+
+  test("rollback confirmation retains its drawer context after a rejected action", async ({
+    page,
+  }) => {
+    const now = new Date().toISOString();
+    const rollbackTask = {
+      id: "t-rollback",
+      projectId,
+      title: "Merged feature",
+      description: "A completed task with a merged PR.",
+      difficulty: "medium",
+      status: "done",
+      dependsOn: [],
+      acceptanceCriteria: ["Can be rolled back"],
+      assignedModel: "deepseek-flash",
+      scopePaths: ["apps/web/**"],
+      attempts: 1,
+      maxAttempts: 3,
+      runGeneration: 0,
+      runExtraAttempts: 0,
+      runExhaustedModels: [],
+      runRateLimitRetries: 0,
+      prNumber: 77,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await page.route(`**/api/projects/${projectId}/tasks`, async (route) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as {
+        tasks: Array<Record<string, unknown>>;
+      };
+      await route.fulfill({
+        response,
+        json: { tasks: [...body.tasks, rollbackTask] },
+      });
+    });
+    let rollbackAttempts = 0;
+    await page.route("**/api/tasks/t-rollback/rollback", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({ json: { rollback: null } });
+        return;
+      }
+      rollbackAttempts += 1;
+      if (rollbackAttempts === 1) {
+        await route.fulfill({
+          status: 409,
+          json: { error: "Injected rollback failure" },
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 202,
+        json: {
+          task: rollbackTask,
+          rollback: {
+            id: "rollback-1",
+            projectId,
+            taskId: rollbackTask.id,
+            sourcePrNumber: rollbackTask.prNumber,
+            branch: "rollback/t-rollback",
+            worktreePath: "/tmp/rollback-t-rollback",
+            status: "requested",
+            createdAt: now,
+            updatedAt: now,
+          },
+        },
+      });
+    });
+
+    await page.goto(`/#/p/${projectId}/board`);
+    await page.locator("article").filter({ hasText: "Merged feature" }).click();
+    await page.getByRole("button", { name: "PR", exact: true }).click();
+    const rollbackTrigger = page.getByRole("button", { name: "↩ Rollback merge" });
+    await rollbackTrigger.click();
+    await expect(
+      page.getByRole("dialog", { name: "Create a rollback PR for #77?" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Create rollback PR" }).click();
+    await expect(page.getByRole("alert")).toContainText(
+      "Could not start the rollback: Injected rollback failure",
+    );
+    await expect(rollbackTrigger).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Create rollback PR" }),
+    ).toBeEnabled();
+    await page.getByRole("button", { name: "Create rollback PR" }).click();
+    await expect(page.getByText("Rollback requested")).toBeVisible();
+    expect(rollbackAttempts).toBe(2);
+  });
+
   test("phone navigation is usable without accidental document overflow", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/#/p/proj-hoopedorc/board");

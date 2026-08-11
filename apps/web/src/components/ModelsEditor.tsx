@@ -8,6 +8,7 @@ import {
   type RoutingPolicy,
   type RunnerKind,
 } from "@orc/types";
+import { useConfirmation } from "./ConfirmationDialog";
 
 const ALL_ROLES: Role[] = [
   "planner",
@@ -85,20 +86,36 @@ export function ModelsEditor({
    *  this just tells the user why up front, naming what references it). */
   routing?: RoutingPolicy;
 }) {
+  const { requestConfirmation, confirmationDialog } = useConfirmation();
+
   function patch(idx: number, partial: Partial<ModelConfig>) {
     onChange(models.map((m, i) => (i === idx ? { ...m, ...partial } : m)));
   }
   function remove(idx: number) {
     const model = models[idx];
     const refs = model ? routingReferences(routing, model.id) : [];
-    if (
-      refs.length > 0 &&
-      !window.confirm(
-        `"${model!.displayName}" is still assigned in Settings → Routing:\n\n` +
-          refs.map((r) => `- ${r}`).join("\n") +
-          `\n\nRemoving it will fail to save until you reassign those. Remove anyway?`,
-      )
-    ) {
+    if (model && refs.length > 0) {
+      requestConfirmation({
+        title: `Remove "${model.displayName}" anyway?`,
+        description: (
+          <>
+            <p>
+              "{model.displayName}" is still assigned in Settings → Routing:
+            </p>
+            <ul className="mt-2 list-disc space-y-1 pl-5">
+              {refs.map((ref) => (
+                <li key={ref}>{ref}</li>
+              ))}
+            </ul>
+            <p className="mt-2">
+              Removing it will fail to save until you reassign those.
+            </p>
+          </>
+        ),
+        confirmLabel: "Remove model",
+        tone: "danger",
+        action: () => onChange(models.filter((_, i) => i !== idx)),
+      });
       return;
     }
     onChange(models.filter((_, i) => i !== idx));
@@ -120,6 +137,7 @@ export function ModelsEditor({
 
   return (
     <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+      {confirmationDialog}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-medium text-neutral-300">Models</h3>
         <button

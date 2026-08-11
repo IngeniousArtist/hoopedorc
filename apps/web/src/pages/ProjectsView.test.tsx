@@ -34,16 +34,22 @@ describe("project destructive guards", () => {
 
   it("blocks deletion while running and confirms an immediate stop", async () => {
     const user = userEvent.setup();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     renderProjects();
     const stop = await screen.findByRole("button", { name: "⏹ Stop now" });
 
     expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
     await user.click(stop);
+    expect(
+      screen.getByRole("dialog", { name: "Stop now?" }),
+    ).toBeVisible();
     expect(apiMock.mock.calls.some(([key]) => key === "pauseProject")).toBe(false);
 
-    confirm.mockReturnValue(true);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Stop now?" })).not.toBeInTheDocument();
+    expect(stop).toHaveFocus();
+
     await user.click(stop);
+    await user.click(screen.getByRole("button", { name: /^Stop now$/ }));
     expect(apiMock).toHaveBeenCalledWith("pauseProject", {
       params: { id: projectFixture.id },
       body: { drain: false },
@@ -56,11 +62,14 @@ describe("project destructive guards", () => {
       if (key === "pauseProject") throw new Error("Stop failed");
       throw new Error(`Unexpected API call: ${key}`);
     });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
     renderProjects();
     await user.click(await screen.findByRole("button", { name: "⏹ Stop now" }));
+    await user.click(screen.getByRole("button", { name: /^Stop now$/ }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("Error: Stop failed");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not stop the project: Stop failed",
+    );
+    expect(screen.getByRole("dialog", { name: "Stop now?" })).toBeVisible();
   });
 });

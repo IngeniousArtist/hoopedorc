@@ -676,6 +676,61 @@ widths; full gates green.
 **Fix risk:** low-medium (several interaction flows touched — the tests are
 the point).
 
+**Implementation decision (2026-08-11):** land O5 with only O26's dialog-
+semantics sub-item. Add one dependency-free shared dialog foundation that
+uses the platform `<dialog>` top layer and `::backdrop`, while explicitly
+owning accessible name/description wiring, initial focus, focus containment
+and return, Escape dismissal, and a test-environment fallback. Build the
+confirmation controller on that foundation so destructive confirmations
+start on Cancel, remain open while an action is pending, reject duplicate
+submission, and retain an actionable inline error on failure. Migrate exactly
+the eight `window.confirm` call sites without changing their route, payload,
+or successful effect; the settings guard must also preserve a pending hash or
+tab destination until confirmation. Reuse the same foundation for
+`TaskDrawer` and `TokenGate`; the token gate remains intentionally non-
+dismissible because an authenticated server has no usable background state.
+
+The existing Setup update and Projects deletion inline confirmations already
+satisfy the no-browser-dialog rule and remain out of scope, as do the other
+independently owned O26 bullets. No API, WebSocket, database, server, engine,
+deployment, or dependency change is needed. Regression coverage must prove
+confirm, cancel/Escape, initial/contained/returned focus, one-call behavior
+under repeated clicks, and retained failure recovery for stop, stop-all,
+rollback, and discard-settings. The real mock-backed browser suite will walk
+the modal at 360, 390, 768, 1280, and 1440 px, including keyboard operation,
+touch targets, fixed-surface containment, and document overflow. No EC2 check
+is required because the changed boundary is entirely browser-local and every
+network effect remains covered by the real mock HTTP routes.
+
+**Implementation result (2026-08-11, pre-merge):** the shared `Dialog` uses
+the native modal top layer with dimmed `::backdrop`, explicit accessible
+name/description wiring, initial focus, top-dialog focus containment, Escape,
+scroll locking, and focus return. `useConfirmation` captures one immutable
+action, focuses Cancel first, blocks dismissal and repeat submission while
+pending, and keeps failures inline and retryable. All eight browser-confirm
+call sites now use it, and `TaskDrawer` plus `TokenGate` share the same modal
+semantics; source contains zero `window.confirm`, `window.alert`, or `alert(`
+occurrences. No route, payload, server behavior, or dependency changed.
+
+The pre-fix Projects interaction reproduced 2/2 failures because Stop exposed
+no accessible dialog or retained error. Focused component regressions now
+cover forward focus wrapping, Escape/cancel and return focus, pending duplicate
+suppression, retained caller input, Stop success/failure, Projects Stop-now,
+routed-model removal, TaskDrawer, and TokenGate. The complete web suite passes
+35/35. The real Playwright gate passes 18/18 at 360, 390, 768, 1280, and 1440
+px, including Settings tab and hash destinations, Stop, Stop-all failure/retry,
+nested rollback failure/retry, modal touch targets, fixed-surface containment,
+and document overflow. That run caught and closed two browser-only gaps: focus
+return racing a trigger re-enable and a confirmation click bubbling into its
+task card.
+
+Full local verification passes typecheck, build, lint across 154 files at the
+unchanged 338-finding baseline, engine 231/231, adapters 15/15, server 309/309,
+web 35/35, E2E 18/18, and `git diff --check`. CI, merge commit, and independent
+merged-main verification remain outstanding and must be appended without
+rewriting this pre-merge evidence. No EC2 check is required for this entirely
+browser-local boundary.
+
 ### O6. Board state diverges after WS reconnect or external task creation — MEDIUM-HIGH (correctness)
 
 **Problem:** two related gaps in `apps/web/src/pages/Board.tsx`:
@@ -1968,6 +2023,11 @@ receive only their own events while same-project subscribers share one socket;
 keyboard walkthrough and full gates green for each owning PR.
 
 **Fix risk:** minimal.
+
+**Implementation decision (2026-08-11, dialog sub-item):** O5 owns the shared
+dialog foundation and its migration of `TaskDrawer` and `TokenGate` in this
+PR. The toast-timer, LogPanel, dead-button, and multi-project WebSocket bullets
+remain paired with their separately ordered owning items as specified above.
 
 ---
 
