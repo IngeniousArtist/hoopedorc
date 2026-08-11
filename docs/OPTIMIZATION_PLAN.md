@@ -1561,6 +1561,26 @@ non-increasing baseline), engine 231/231, adapters 12/12, server 305/305, web
 merge, independent merged-main verification, and the live EC2 update using
 the new parser remain to be recorded.
 
+**Status:** completed in
+[#234](https://github.com/IngeniousArtist/hoopedorc/pull/234)
+(`992ea6d`). The fixed-key Node helper uses the installed dotenv parser and a
+NUL-delimited handoff; the canonical updater no longer interprets `.env` with
+`grep|cut`, never evaluates its content, and keeps credential values out of
+diagnostics. Linux `build-and-test` CI passed at reviewed head `c9fb32d` in
+2m24s. After merge, clean local `main` and `origin/main` matched
+`992ea6d6b04fe22831b0cedd612044d7caed2574`, and the focused O19 checks passed
+5/5 again on that exact commit.
+
+Live EC2 acceptance passed on `ubuntu@hooped`. The first fixed UI update
+deployed `21254e4` to `992ea6d` from 08:40:45 to 08:41:05 UTC. On the deployed
+commit, the new helper read the real `.env`'s `PORT` and `API_TOKEN` as present
+without emitting either value. A second UI update then exercised the new
+parser inside the canonical updater: checking/pull/install began at 08:41:43,
+building at 08:41:51, and restart/success at 08:42:02 with `fromCommit` and
+`toCommit` both `992ea6d`. It remained available and unblocked, the checkout
+was clean on `main`, `hoopedorc.service` was active, and Tailscale health and
+dashboard requests both returned HTTP 200.
+
 **Fix risk:** low.
 
 ### O20. Silent log-flush failures and a lost-cost planner edge — LOW (robustness)
