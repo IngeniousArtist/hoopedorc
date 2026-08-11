@@ -837,6 +837,16 @@ Run every repository gate plus the live mock at 360, 390, 768, 1280, and
 implementation PR. Preserve the existing real-hub, serialization, mock
 scoping, connection ownership, and listener evidence while finishing.
 
+**Checkpoint record status:** merged as documentation-only
+[#242](https://github.com/IngeniousArtist/hoopedorc/pull/242)
+(`73e6400db637dfefbefd23ea039c044073db4e01`). Linux `build-and-test` CI
+passed in 2m29s. Local verification on the checkpoint-record tree passed
+typecheck, build, lint at the 338-finding baseline, engine 231/231, adapters
+15/15, permissioned server 309/309, web 35/35, E2E 18/18, and
+`git diff --check`. After merge, clean local `main` and `origin/main` were
+confirmed equal at the full merge SHA above. This records and preserves the
+pause only; it does not complete O6, O12, or O26's `useWS` ownership bullet.
+
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
 **Problem:** the already-merged idempotency shortcut depends on a single
