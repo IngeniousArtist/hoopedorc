@@ -1277,6 +1277,17 @@ must be appended without rewriting this pre-merge evidence. No live Telegram
 token is required; file-backed SQLite and deterministic raw Bot API fakes
 exercise the changed persistence and transport boundaries.
 
+**Status:** completed in
+[#226](https://github.com/IngeniousArtist/hoopedorc/pull/226)
+(`db50bc8`). Linux `build-and-test` CI passed in 2m18s. After merge, local
+`main` and `origin/main` independently matched the squash commit, the engine
+suite passed 231/231, and the server suite passed 295/295. The docs-only
+evidence branch also passed typecheck, build, lint at the unchanged
+338-finding baseline, engine 231/231, adapters 12/12, server 295/295, web
+28/28, E2E 16/16 at 360/390/768/1280/1440 px, and `git diff --check`. Its CI
+and merge commit remain outstanding and will be recorded by the PR itself
+without altering the implementation evidence above.
+
 **Fix risk:** medium; this is a durable inbox/outbox, not an offset-only patch.
 
 ### O16. Human-approval waits are not abort-aware — MEDIUM (robustness)
