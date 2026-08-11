@@ -141,7 +141,7 @@ test("O7: failed state reads retry before a previously merged PR is accepted", a
 test("O7: a failed merge command succeeds only after a confirmed merged follow-up", async () => {
   const { root, project } = await rollbackRepo("merge-follow-up");
   const publisher = join(root, "publisher");
-  await git(root, ["clone", "-q", project.repoUrl, publisher]);
+  await git(root, ["clone", "-q", "--branch", "main", project.repoUrl, publisher]);
   await git(publisher, ["config", "user.email", "merge@test.local"]);
   await git(publisher, ["config", "user.name", "Merge Test"]);
   writeFileSync(join(publisher, "merged.txt"), "remote merge landed\n");
