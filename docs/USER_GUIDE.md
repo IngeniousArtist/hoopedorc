@@ -335,6 +335,13 @@ bypasses destructive-change holds or a validator's explicit escalation.
 
 Telegram requests have deadlines and bounded retry (including Bot API
 `retry_after`), and long replies are split below Telegram's message limit.
+Commands are durably claimed before execution: after a restart, unfinished
+updates run with the same action identity before the bot polls anything newer.
+Start/Pause/Retry/Stop-all/approval/settings effects therefore apply once even
+if Telegram delivers the update again. A reply itself can repeat around a
+crash because Telegram does not accept Hoopedorc's idempotency key. Completed
+incoming update payloads and action receipts are retained in SQLite for 30 days
+and then pruned without resetting the poll high-water mark.
 Settings and Setup & Health show delivery state, last success, and the last safe
 error. If an approval still cannot be delivered after Markdown fallback and
 transport retries, the web Notifications bell gets a warning while the approval

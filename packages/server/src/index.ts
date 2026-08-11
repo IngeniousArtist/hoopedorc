@@ -63,6 +63,7 @@ import {
   resendPendingApprovals,
   retryTask,
   setMergePolicy,
+  setTelegramDigest,
   startProject,
   stopAllProjects,
 } from "./commands";
@@ -93,9 +94,14 @@ import {
 import {
   TelegramBot,
   sendTelegramMessage,
+  type TelegramActionContext,
   type TelegramCommandReply,
   type TelegramDeliveryHealth,
 } from "./telegram";
+import {
+  commitTelegramActionEffect,
+  SqliteTelegramUpdateStore,
+} from "./telegram-inbox";
 import {
   getModelCatalog,
   getModelRoster,
@@ -662,6 +668,7 @@ async function assembleServer(
   async function telegramCommand(
     cmd: string,
     args: string[],
+    context?: TelegramActionContext,
   ): Promise<string | TelegramCommandReply> {
     switch (cmd) {
       case "help":
@@ -717,11 +724,24 @@ async function assembleServer(
         if (!found.ok) return found.error;
         const project = found.project;
         if (cmd === "start") {
-          const result = await startProject(db, engine, broadcast, project.id);
+          const result = await startProject(
+            db,
+            engine,
+            broadcast,
+            project.id,
+            context?.idempotencyKey,
+          );
           if (!result.ok) return `Could not start ${project.name}: ${result.error}`;
           return `Started ${project.name}`;
         }
-        const result = await pauseProject(db, engine, broadcast, project.id, true);
+        const result = await pauseProject(
+          db,
+          engine,
+          broadcast,
+          project.id,
+          true,
+          context?.idempotencyKey,
+        );
         if (!result.ok) return `Could not pause ${project.name}: ${result.error}`;
         return `Paused ${project.name}`;
       }
@@ -735,7 +755,7 @@ async function assembleServer(
         }
         if (arg !== "on" && arg !== "off") return "Usage: /autonomous [on|off]";
         const policy: MergePolicy = arg === "on" ? "fully_autonomous" : "hard_gate_flag_risky";
-        setMergePolicy(db, policy, "telegram");
+        setMergePolicy(db, policy, "telegram", context?.idempotencyKey);
         return arg === "on"
           ? "Autonomous mode ON — validated changes auto-merge; destructive-change rails and validator escalations still require a human."
           : `Autonomous mode OFF — back to "${policy}" (risky changes ask before merging again).`;
@@ -771,7 +791,14 @@ async function assembleServer(
         if (!prefix) return "Usage: /retry <taskId-or-prefix>";
         const found = findTaskByIdPrefix(db, prefix);
         if (!found.ok) return found.error;
-        const result = await retryTask(db, engine, broadcast, found.task.id, "telegram");
+        const result = await retryTask(
+          db,
+          engine,
+          broadcast,
+          found.task.id,
+          "telegram",
+          context?.idempotencyKey,
+        );
         return result.ok ? `Retrying "${result.task.title}".` : `Could not retry: ${result.error}`;
       }
       case "digest": {
@@ -782,10 +809,7 @@ async function assembleServer(
           return "Usage: /digest [off|terminal|all]";
         }
         if (!settings.telegram) return "Telegram isn't configured in Settings yet.";
-        repo.upsertSettings(db, {
-          ...settings,
-          telegram: { ...settings.telegram, digest: arg },
-        });
+        setTelegramDigest(db, arg, context?.idempotencyKey);
         return `Digest set to: ${arg}`;
       }
       case "health": {
@@ -851,12 +875,18 @@ async function assembleServer(
       token,
       tg.chatId ?? "",
       {
-        onApproval: (id, choice) => {
+        onApproval: (id, choice, context) => {
           const result = resolveNotification(id, choice, "telegram");
-          return result?.state === "applied" || result?.state === "queued";
+          const resolved = result?.state === "applied" || result?.state === "queued";
+          if (!context?.idempotencyKey) return resolved;
+          return commitTelegramActionEffect(
+            db,
+            context.idempotencyKey,
+            () => ({ resolved }),
+          ).result.resolved;
         },
         onCommand: telegramCommand,
-        onProjectAction: async (action, projectId) => {
+        onProjectAction: async (action, projectId, context) => {
           const project = repo.getProject(db, projectId);
           if (!project) return "Project no longer exists.";
           if (action === "status") {
@@ -866,8 +896,21 @@ async function assembleServer(
             return `${project.name} [${project.status}] ${done}/${tasks.length} done${failed ? `, ${failed} failed` : ""}`;
           }
           const result = action === "start"
-            ? await startProject(db, engine, broadcast, projectId)
-            : await pauseProject(db, engine, broadcast, projectId, true);
+            ? await startProject(
+                db,
+                engine,
+                broadcast,
+                projectId,
+                context?.idempotencyKey,
+              )
+            : await pauseProject(
+                db,
+                engine,
+                broadcast,
+                projectId,
+                true,
+                context?.idempotencyKey,
+              );
           return result.ok
             ? `${action === "start" ? "Started" : "Paused"} ${result.project.name}`
             : `Could not ${action} ${project.name}: ${result.error}`;
@@ -875,15 +918,29 @@ async function assembleServer(
         onApprovalDeliveryFailure: (notificationId, error) => {
           notifyTelegramApprovalFailure(db, broadcast, notificationId, error);
         },
-        onStopAllConfirm: async (confirmed) => {
-          if (!confirmed) return "Cancelled — nothing was stopped.";
-          const stoppedIds = await stopAllProjects(db, engine, broadcast, "telegram");
+        onStopAllConfirm: async (confirmed, context) => {
+          if (!confirmed) {
+            if (context?.idempotencyKey) {
+              commitTelegramActionEffect(db, context.idempotencyKey, () => ({
+                confirmed: false,
+              }));
+            }
+            return "Cancelled — nothing was stopped.";
+          }
+          const stoppedIds = await stopAllProjects(
+            db,
+            engine,
+            broadcast,
+            "telegram",
+            context?.idempotencyKey,
+          );
           return stoppedIds.length > 0
             ? `Stopped ${stoppedIds.length} project${stoppedIds.length === 1 ? "" : "s"}.`
             : "Nothing to stop (already idle).";
         },
       },
       (m) => app.log.info(m),
+      { updateStore: new SqliteTelegramUpdateStore(db) },
     );
     telegram.start();
     telegramHealth = telegram.health;
@@ -938,7 +995,6 @@ async function assembleServer(
       }
     }
 
-    configureTelegram();
   }
 
   let engineShutdown: ReturnType<EngineRunner["shutdown"]> | undefined;
@@ -2555,6 +2611,9 @@ async function assembleServer(
         }
       }
     }
+    // O15: only expose Telegram mutations after project/rollback/queued-work
+    // recovery has re-established the process's single runtime owners.
+    configureTelegram();
   }
 
   return {

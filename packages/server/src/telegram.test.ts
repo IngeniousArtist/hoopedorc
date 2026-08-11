@@ -2,12 +2,19 @@ import assert from "node:assert/strict";
 import { setImmediate as waitImmediate } from "node:timers/promises";
 import { test } from "node:test";
 import type { Notification } from "@orc/types";
+import { initDb } from "./db/index.js";
 import {
+  commitTelegramActionEffect,
+  SqliteTelegramUpdateStore,
+} from "./telegram-inbox.js";
+import {
+  classifyTelegramUpdate,
   TELEGRAM_COMMANDS,
   TELEGRAM_MESSAGE_LIMIT,
   TelegramBot,
   splitTelegramMessage,
   type TgUpdate,
+  type TelegramUpdateStore,
 } from "./telegram.js";
 
 function response(
@@ -28,6 +35,182 @@ const privateMessage = {
   chat: { id: 42, type: "private" },
   from: { id: 42 },
 };
+
+test("O15: every Telegram domain mutation is classified before handling", () => {
+  const cases: Array<[TgUpdate, string | undefined]> = [
+    [update({ message: { ...privateMessage, text: "/start p1" } }), "command_start"],
+    [update({ message: { ...privateMessage, text: "/pause p1" } }), "command_pause"],
+    [update({ message: { ...privateMessage, text: "/retry task" } }), "command_retry"],
+    [update({ message: { ...privateMessage, text: "/autonomous on" } }), "settings_autonomous"],
+    [update({ message: { ...privateMessage, text: "/digest all" } }), "settings_digest"],
+    [update({ callback_query: { id: "1", data: "appr:n1:approve" } }), "approval"],
+    [update({ callback_query: { id: "2", data: "stopall:yes" } }), "stop_all"],
+    [update({ callback_query: { id: "3", data: "proj:start:p1" } }), "project_start"],
+    [update({ callback_query: { id: "4", data: "proj:pause:p1" } }), "project_pause"],
+    [update({ message: { ...privateMessage, text: "/status" } }), undefined],
+    [update({ message: { ...privateMessage, text: "/pending" } }), undefined],
+    [update({ message: { ...privateMessage, text: "/stopall" } }), undefined],
+    [update({ callback_query: { id: "5", data: "proj:status:p1" } }), undefined],
+  ];
+  for (const [telegramUpdate, kind] of cases) {
+    assert.equal(
+      classifyTelegramUpdate(telegramUpdate).action?.kind,
+      kind,
+      JSON.stringify(telegramUpdate),
+    );
+  }
+});
+
+test("O15: a failure before claim has no receipt and Telegram redelivery remains processable", async () => {
+  const db = initDb(":memory:");
+  const durable = new SqliteTelegramUpdateStore(db);
+  let failClaim = true;
+  const store: TelegramUpdateStore = {
+    claim: (...args) => {
+      if (failClaim) {
+        failClaim = false;
+        throw new Error("injected crash before claim");
+      }
+      return durable.claim(...args);
+    },
+    tryStart: (updateId) => durable.tryStart(updateId),
+    recover: () => durable.recover(),
+    release: (updateId) => durable.release(updateId),
+    complete: (updateId) => durable.complete(updateId),
+    nextOffset: () => durable.nextOffset(),
+    prune: (days) => durable.prune(days),
+  };
+  let handled = 0;
+  const bot = new TelegramBot(
+    "token",
+    "42",
+    {
+      onApproval: () => true,
+      onCommand: (_cmd, _args, context) => {
+        handled++;
+        const key = context?.idempotencyKey;
+        assert.ok(key);
+        commitTelegramActionEffect(db, key, () => ({ ok: true }));
+        return "Started";
+      },
+    },
+    () => {},
+    {
+      fetchImpl: () => Promise.resolve(response({ ok: true, result: true })),
+      maxRetries: 0,
+      updateStore: store,
+    },
+  );
+  const command = update({ message: { ...privateMessage, text: "/start p1" } });
+
+  await assert.rejects(bot.processUpdate(command), /before claim/);
+  assert.equal(durable.getUpdate(1), null);
+  assert.equal(durable.nextOffset(), 0);
+  await bot.processUpdate(command);
+  assert.equal(handled, 1);
+  assert.equal(durable.getUpdate(1)?.state, "processed");
+  db.close();
+});
+
+test("O15: handler crash after an effect retries the same key without duplicating it", async () => {
+  const db = initDb(":memory:");
+  const store = new SqliteTelegramUpdateStore(db);
+  let attempts = 0;
+  let effects = 0;
+  const fetchImpl = (() =>
+    Promise.resolve(response({ ok: true, result: true }))) as typeof fetch;
+  const bot = new TelegramBot(
+    "token",
+    "42",
+    {
+      onApproval: () => true,
+      onCommand: (_cmd, _args, context) => {
+        attempts++;
+        const key = context?.idempotencyKey;
+        assert.equal(key, "telegram:1");
+        commitTelegramActionEffect(db, key, () => ({
+          effects: ++effects,
+        }));
+        if (attempts === 1) throw new Error("injected crash after effect");
+        return "Recovered";
+      },
+    },
+    () => {},
+    { fetchImpl, maxRetries: 0, updateStore: store },
+  );
+  const command = update({ message: { ...privateMessage, text: "/start p1" } });
+
+  await assert.rejects(bot.processUpdate(command), /injected crash/);
+  assert.equal(store.getUpdate(1)?.state, "claimed");
+  assert.equal(store.getAction(1)?.state, "effect_committed");
+  await bot.processUpdate(command);
+  await bot.processUpdate(command);
+
+  assert.equal(attempts, 2, "processed duplicate is skipped");
+  assert.equal(effects, 1);
+  assert.equal(store.getUpdate(1)?.state, "processed");
+  assert.equal(store.nextOffset(), 2);
+  db.close();
+});
+
+test("O15: startup drains durable claims before requesting newer updates", async () => {
+  const db = initDb(":memory:");
+  const store = new SqliteTelegramUpdateStore(db);
+  const claimed = {
+    update_id: 41,
+    message: { ...privateMessage, text: "/start p1" },
+  } satisfies TgUpdate;
+  const classified = classifyTelegramUpdate(claimed);
+  store.claim(claimed, classified.identity, classified.action);
+  const calls: string[] = [];
+  const fetchImpl = ((url: string | URL | Request, init?: RequestInit) => {
+    const rawUrl = typeof url === "string"
+      ? url
+      : url instanceof URL
+        ? url.href
+        : url.url;
+    const method = rawUrl.split("/").pop()!;
+    calls.push(method);
+    if (method !== "getUpdates") {
+      return Promise.resolve(response({ ok: true, result: true }));
+    }
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener(
+        "abort",
+        () => reject(new DOMException("aborted", "AbortError")),
+        { once: true },
+      );
+    });
+  }) as typeof fetch;
+  const handled: number[] = [];
+  const bot = new TelegramBot(
+    "token",
+    "42",
+    {
+      onApproval: () => true,
+      onCommand: (_cmd, _args, context) => {
+        const key = context?.idempotencyKey;
+        assert.ok(key);
+        handled.push(context.updateId);
+        commitTelegramActionEffect(db, key, () => ({ ok: true }));
+        return "Recovered";
+      },
+    },
+    () => {},
+    { fetchImpl, maxRetries: 0, updateStore: store },
+  );
+
+  bot.start();
+  await waitImmediate();
+  await waitImmediate();
+  bot.stop();
+  await waitImmediate();
+
+  assert.deepEqual(handled, [41]);
+  assert.equal(store.getUpdate(41)?.state, "processed");
+  assert.ok(calls.indexOf("sendMessage") < calls.indexOf("getUpdates"));
+  db.close();
+});
 
 test("F49: start registers BotFather commands before long polling", async () => {
   const calls: Array<{ method: string; body: Record<string, unknown> }> = [];

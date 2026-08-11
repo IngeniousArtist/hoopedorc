@@ -43,6 +43,43 @@ const O14_DURABLE_TRANSITION_MIGRATION = `
     WHERE stop_requested_at IS NOT NULL;
 `;
 
+// O15: schema.sql owns fresh installs; repeat the complete idempotent DDL here
+// so the existing-database upgrade boundary remains explicit and testable.
+const O15_TELEGRAM_INBOX_MIGRATION = `
+  CREATE TABLE IF NOT EXISTS telegram_updates (
+    update_id             INTEGER PRIMARY KEY,
+    payload               TEXT NOT NULL,
+    identity              TEXT NOT NULL,
+    action_kind           TEXT,
+    action_payload        TEXT,
+    state                 TEXT NOT NULL CHECK (state IN ('claimed', 'processing', 'processed')),
+    received_at           TEXT NOT NULL,
+    processing_started_at TEXT,
+    processed_at          TEXT,
+    updated_at            TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_telegram_updates_state
+    ON telegram_updates(state, update_id);
+  CREATE TABLE IF NOT EXISTS telegram_actions (
+    update_id       INTEGER PRIMARY KEY REFERENCES telegram_updates(update_id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    kind            TEXT NOT NULL,
+    payload         TEXT NOT NULL,
+    state           TEXT NOT NULL CHECK (state IN ('pending', 'effect_committed', 'completed')),
+    result          TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    completed_at    TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_telegram_actions_state
+    ON telegram_actions(state, update_id);
+  CREATE TABLE IF NOT EXISTS telegram_poll_state (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    next_offset INTEGER NOT NULL,
+    updated_at  TEXT NOT NULL
+  );
+`;
+
 export type Db = Database.Database;
 
 export function openDb(path: string = ENV.dbPath): Db {
@@ -172,6 +209,7 @@ export function initDb(path: string = ENV.dbPath): Db {
     `);
   })();
   db.exec(O14_DURABLE_TRANSITION_MIGRATION);
+  db.exec(O15_TELEGRAM_INBOX_MIGRATION);
   // O3 migration: preserve legacy scratch exactly and assign one stable
   // revision only where a planning session was already active. Empty projects
   // receive a revision lazily from GET /plan/session instead.

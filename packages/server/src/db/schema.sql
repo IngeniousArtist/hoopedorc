@@ -231,6 +231,43 @@ CREATE INDEX IF NOT EXISTS idx_notifications_project_pending_created
   ON notifications(project_id, created_at DESC)
   WHERE requires_approval = 1 AND responded_with IS NULL;
 
+-- O15: durable Telegram inbox/outbox. The update row owns transport progress;
+-- the action row owns exactly-once Hoopedorc domain-effect progress.
+CREATE TABLE IF NOT EXISTS telegram_updates (
+  update_id             INTEGER PRIMARY KEY,
+  payload               TEXT NOT NULL,
+  identity              TEXT NOT NULL,
+  action_kind           TEXT,
+  action_payload        TEXT,
+  state                 TEXT NOT NULL CHECK (state IN ('claimed', 'processing', 'processed')),
+  received_at           TEXT NOT NULL,
+  processing_started_at TEXT,
+  processed_at          TEXT,
+  updated_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_updates_state
+  ON telegram_updates(state, update_id);
+
+CREATE TABLE IF NOT EXISTS telegram_actions (
+  update_id       INTEGER PRIMARY KEY REFERENCES telegram_updates(update_id) ON DELETE CASCADE,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  kind            TEXT NOT NULL,
+  payload         TEXT NOT NULL,
+  state           TEXT NOT NULL CHECK (state IN ('pending', 'effect_committed', 'completed')),
+  result          TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  completed_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_actions_state
+  ON telegram_actions(state, update_id);
+
+CREATE TABLE IF NOT EXISTS telegram_poll_state (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  next_offset INTEGER NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
 -- F6: one row per "Test models" click per model — the health panel's
 -- "last check" column. Not pruned (small, low-volume — a handful of manual
 -- clicks, unlike the logs table B14 had to bound).

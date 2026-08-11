@@ -5,6 +5,7 @@ import { initDb } from "./db/index.js";
 import * as repo from "./db/repo.js";
 import { EngineRunner } from "./engine-runner.js";
 import { WsHub } from "./ws-hub.js";
+import { SqliteTelegramUpdateStore } from "./telegram-inbox.js";
 import {
   findProjectByPrefix,
   findTaskByIdPrefix,
@@ -13,6 +14,7 @@ import {
   resendPendingApprovals,
   retryTask,
   setMergePolicy,
+  setTelegramDigest,
   startProject,
   stopAllProjects,
 } from "./commands.js";
@@ -58,6 +60,26 @@ function task(
     runExhaustedModels: [],
     runRateLimitRetries: 0,
   });
+}
+
+function telegramAction(
+  db: ReturnType<typeof initDb>,
+  updateId: number,
+  kind: string,
+): string {
+  new SqliteTelegramUpdateStore(db).claim(
+    {
+      update_id: updateId,
+      message: {
+        chat: { id: 42, type: "private" },
+        from: { id: 42 },
+        text: `/${kind}`,
+      },
+    },
+    `command:${kind}`,
+    { kind, payload: {} },
+  );
+  return `telegram:${updateId}`;
 }
 
 test("setMergePolicy: flips the policy, persists it, and audit-logs against every project", () => {
@@ -164,6 +186,74 @@ test("F49: HTTP and Telegram can share the same Start/Pause runtime actions", as
   assert.equal(paused.ok && paused.project.status, "paused");
   assert.deepEqual(calls, ["start", "pause"]);
   assert.equal(broadcasts.length, 2);
+});
+
+test("O15: replayed Telegram Start cannot start a completed run again", async () => {
+  const db = setup();
+  project(db, "p1");
+  const key = telegramAction(db, 10, "command_start");
+  let active = false;
+  let starts = 0;
+  const engine = {
+    hasActivity: () => active,
+    start: () => {
+      starts++;
+      active = true;
+      return Promise.resolve();
+    },
+  } as unknown as EngineRunner;
+
+  assert.equal((await startProject(db, engine, () => {}, "p1", key)).ok, true);
+  // The run settled after the first handler, but the process lost the inbox
+  // completion write. Its replay must observe the newer terminal state.
+  active = false;
+  repo.updateProject(db, "p1", { status: "completed" });
+  assert.equal((await startProject(db, engine, () => {}, "p1", key)).ok, true);
+  assert.equal(starts, 1);
+  assert.equal(repo.getProject(db, "p1")?.status, "completed");
+});
+
+test("O15: refused Telegram Start atomically restores status and replays the refusal", async () => {
+  const db = setup();
+  project(db, "p1");
+  const key = telegramAction(db, 15, "command_start");
+  let starts = 0;
+  const engine = {
+    hasActivity: () => false,
+    start: () => {
+      starts++;
+      return Promise.reject(new Error("rollback active"));
+    },
+  } as unknown as EngineRunner;
+
+  const first = await startProject(db, engine, () => {}, "p1", key);
+  const replay = await startProject(db, engine, () => {}, "p1", key);
+  assert.equal(first.ok, false);
+  assert.deepEqual(replay, first);
+  assert.equal(starts, 1);
+  assert.equal(repo.getProject(db, "p1")?.status, "created");
+});
+
+test("O15: Telegram Pause persists desired state once and reconciles one runtime", async () => {
+  const db = setup();
+  project(db, "p1");
+  repo.updateProject(db, "p1", { status: "running" });
+  const key = telegramAction(db, 11, "command_pause");
+  let active = true;
+  let pauses = 0;
+  const engine = {
+    hasActivity: () => active,
+    pause: () => {
+      pauses++;
+      active = false;
+      return Promise.resolve();
+    },
+  } as unknown as EngineRunner;
+
+  await pauseProject(db, engine, () => {}, "p1", true, key);
+  await pauseProject(db, engine, () => {}, "p1", true, key);
+  assert.equal(pauses, 1);
+  assert.equal(repo.getProject(db, "p1")?.status, "paused");
 });
 
 test("F49: restart recovery re-sends only still-pending approvals", () => {
@@ -335,6 +425,36 @@ test("O34: concurrent Retry requests start one logical run and create one audit 
   );
 });
 
+test("O15: Telegram Retry replay keeps one generation, audit, and dispatch", async () => {
+  const db = setup();
+  project(db, "p1");
+  task(db, "retry-once", "p1", "failed");
+  const key = telegramAction(db, 12, "command_retry");
+  let dispatches = 0;
+  const engine = {
+    dispatchOne: (_project: unknown, taskId: string) => {
+      dispatches++;
+      return Promise.resolve(repo.getTask(db, taskId)!);
+    },
+    resumeQueued: () => false,
+  } as unknown as EngineRunner;
+
+  assert.equal(
+    (await retryTask(db, engine, () => {}, "retry-once", "telegram", key)).ok,
+    true,
+  );
+  assert.equal(
+    (await retryTask(db, engine, () => {}, "retry-once", "telegram", key)).ok,
+    true,
+  );
+  assert.equal(dispatches, 1);
+  assert.equal(repo.getTask(db, "retry-once")?.runGeneration, 1);
+  assert.equal(
+    repo.getAuditLog(db, "p1").filter((entry) => entry.kind === "retry").length,
+    1,
+  );
+});
+
 test("stopAllProjects: updates status, broadcasts, and audit-logs only for whatever the engine reports as actually stopped", async () => {
   const db = setup();
   project(db, "p1");
@@ -357,4 +477,65 @@ test("stopAllProjects: updates status, broadcasts, and audit-logs only for whate
   assert.ok(audit, "expected a stopped audit entry for p1");
   assert.equal(audit!.actor, "telegram");
   assert.equal(broadcasts.length, 1, "one project.updated broadcast for the one stopped project");
+});
+
+test("O15: Telegram Stop-all confirmation persists one target set and one audit", async () => {
+  const db = setup();
+  project(db, "p1");
+  project(db, "p2");
+  repo.updateProject(db, "p1", { status: "running" });
+  const key = telegramAction(db, 13, "stop_all");
+  const active = new Set(["p1"]);
+  let pauses = 0;
+  const engine = {
+    hasActivity: (id: string) => active.has(id),
+    pause: (p: { id: string }) => {
+      pauses++;
+      active.delete(p.id);
+      return Promise.resolve();
+    },
+  } as unknown as EngineRunner;
+
+  assert.deepEqual(
+    await stopAllProjects(db, engine, () => {}, "telegram", key),
+    ["p1"],
+  );
+  assert.deepEqual(
+    await stopAllProjects(db, engine, () => {}, "telegram", key),
+    ["p1"],
+  );
+  assert.equal(pauses, 1);
+  assert.equal(repo.getProject(db, "p1")?.status, "paused");
+  assert.equal(
+    repo.getAuditLog(db, "p1").filter((entry) => entry.kind === "stopped").length,
+    1,
+  );
+});
+
+test("O15: Telegram settings actions replay without duplicate audit entries", () => {
+  const db = setup();
+  project(db, "p1");
+  const key = telegramAction(db, 14, "settings_autonomous");
+  setMergePolicy(db, "fully_autonomous", "telegram", key);
+  setMergePolicy(db, "fully_autonomous", "telegram", key);
+  assert.equal(repo.getSettings(db)?.mergePolicy, "fully_autonomous");
+  assert.equal(
+    repo
+      .getAuditLog(db, "p1")
+      .filter((entry) => entry.kind === "settings_changed").length,
+    1,
+  );
+});
+
+test("O15: Telegram digest changes replay one normalized settings write", () => {
+  const db = setup();
+  const key = telegramAction(db, 16, "settings_digest");
+  assert.equal(setTelegramDigest(db, "all", key), true);
+  assert.equal(setTelegramDigest(db, "all", key), true);
+  assert.equal(repo.getSettings(db)?.telegram?.digest, "all");
+  const row = db
+    .prepare("SELECT state, result FROM telegram_actions WHERE idempotency_key = ?")
+    .get(key) as { state: string; result: string };
+  assert.equal(row.state, "effect_committed");
+  assert.equal(JSON.parse(row.result), true);
 });

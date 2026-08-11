@@ -88,16 +88,19 @@ export interface TelegramHandlers {
   onApproval: (
     notificationId: string,
     choice: string,
+    context?: TelegramActionContext,
   ) => Promise<boolean> | boolean;
   /** A slash command arrived; return the reply text. */
   onCommand: (
     cmd: string,
     args: string[],
+    context?: TelegramActionContext,
   ) => Promise<string | TelegramCommandReply> | string | TelegramCommandReply;
   /** Inline Start/Pause/Status control from a project row. */
   onProjectAction?: (
     action: "start" | "pause" | "status",
     projectId: string,
+    context?: TelegramActionContext,
   ) => Promise<string | TelegramCommandReply> | string | TelegramCommandReply;
   /** Permanent approval delivery failure after bounded retry/fallback. */
   onApprovalDeliveryFailure?: (notificationId: string, error: string) => void;
@@ -106,7 +109,16 @@ export interface TelegramHandlers {
    * (confirmStopAll below). Returns the text to edit into that message —
    * optional so a bot wired up without it just answers the tap silently.
    */
-  onStopAllConfirm?: (confirmed: boolean) => Promise<string> | string;
+  onStopAllConfirm?: (
+    confirmed: boolean,
+    context?: TelegramActionContext,
+  ) => Promise<string> | string;
+}
+
+export interface TelegramActionContext {
+  updateId: number;
+  /** Present only for a server-classified mutating action. */
+  idempotencyKey?: string;
 }
 
 /** Everything worth telling a human about a task that just finished. */
@@ -173,12 +185,69 @@ export interface TgUpdate {
   };
 }
 
+export interface TelegramUpdateStore {
+  claim(
+    update: TgUpdate,
+    identity: string,
+    action?: { kind: string; payload: Record<string, unknown> },
+  ): { state: "claimed" | "processing" | "processed" };
+  tryStart(updateId: number): boolean;
+  recover(): TgUpdate[];
+  release(updateId: number): void;
+  complete(updateId: number): void;
+  nextOffset(): number;
+  prune(retentionDays?: number): number;
+}
+
 export interface TelegramBotOptions {
   fetchImpl?: typeof fetch;
   requestTimeoutMs?: number;
   pollRequestTimeoutMs?: number;
   maxRetries?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  updateStore?: TelegramUpdateStore;
+}
+
+export function classifyTelegramUpdate(update: TgUpdate): {
+  identity: string;
+  action?: { kind: string; payload: Record<string, unknown> };
+} {
+  const callback = update.callback_query;
+  if (callback) {
+    const data = callback.data ?? "";
+    const base = { data };
+    if (data.startsWith("appr:")) {
+      return { identity: `callback:${data}`, action: { kind: "approval", payload: base } };
+    }
+    if (data.startsWith("stopall:")) {
+      return { identity: `callback:${data}`, action: { kind: "stop_all", payload: base } };
+    }
+    const [, action, projectId] = data.split(":");
+    if (data.startsWith("proj:") && (action === "start" || action === "pause")) {
+      return {
+        identity: `callback:${data}`,
+        action: { kind: `project_${action}`, payload: { action, projectId } },
+      };
+    }
+    return { identity: `callback:${data || "empty"}` };
+  }
+
+  const text = update.message?.text?.trim() ?? "";
+  if (!text.startsWith("/")) return { identity: `message:${text || "empty"}` };
+  const [raw, ...args] = text.slice(1).split(/\s+/);
+  const cmd = (raw ?? "").toLowerCase();
+  const actionKinds: Record<string, string> = {
+    start: "command_start",
+    pause: "command_pause",
+    retry: "command_retry",
+    autonomous: "settings_autonomous",
+    digest: "settings_digest",
+  };
+  const kind = actionKinds[cmd];
+  return {
+    identity: `command:${cmd}:${args.join(" ")}`,
+    ...(kind ? { action: { kind, payload: { cmd, args } } } : {}),
+  };
 }
 
 function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -351,6 +420,37 @@ export class TelegramBot implements ServerNotifier {
 
   private async bootstrap(): Promise<void> {
     await this.tg("setMyCommands", { commands: TELEGRAM_COMMANDS }, this.abort?.signal);
+    const store = this.options.updateStore;
+    if (store) {
+      try {
+        const pruned = store.prune();
+        if (pruned > 0) this.log(`[telegram] pruned ${pruned} completed update(s)`);
+        for (const update of store.recover()) {
+          while (this.running) {
+            try {
+              await this.processUpdate(update);
+              break;
+            } catch (err) {
+              this.deliveryFailed(
+                `inbox update ${update.update_id} failed: ${(err as Error).message}`,
+              );
+              this.log(
+                `[telegram] recovered update ${update.update_id} failed: ${(err as Error).message}`,
+              );
+              try {
+                await (this.options.sleep ?? abortableSleep)(2_000, this.abort?.signal);
+              } catch {
+                return;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        this.deliveryFailed(`inbox recovery failed: ${(err as Error).message}`);
+        this.log(`[telegram] inbox recovery failed: ${(err as Error).message}`);
+        return;
+      }
+    }
     if (this.running) await this.loop();
   }
 
@@ -358,7 +458,10 @@ export class TelegramBot implements ServerNotifier {
     while (this.running) {
       const { result: updates } = await this.tg<TgUpdate[]>(
         "getUpdates",
-        { offset: this.offset, timeout: 30 },
+        {
+          offset: this.options.updateStore?.nextOffset() ?? this.offset,
+          timeout: 30,
+        },
         this.abort?.signal,
       );
       if (!updates) {
@@ -370,12 +473,23 @@ export class TelegramBot implements ServerNotifier {
         }
         continue;
       }
-      for (const u of updates) {
-        this.offset = u.update_id + 1;
+      let failed = false;
+      for (const u of [...updates].sort((a, b) => a.update_id - b.update_id)) {
         try {
           await this.processUpdate(u);
         } catch (err) {
           this.log(`[telegram] update error: ${(err as Error).message}`);
+          // Preserve ordering: an older failed update must be retried before
+          // this loop claims anything newer from the same batch.
+          failed = true;
+          break;
+        }
+      }
+      if (failed) {
+        try {
+          await (this.options.sleep ?? abortableSleep)(2_000, this.abort?.signal);
+        } catch {
+          break;
         }
       }
     }
@@ -397,6 +511,37 @@ export class TelegramBot implements ServerNotifier {
 
   /** Public for deterministic transport/identity integration tests. */
   async processUpdate(u: TgUpdate): Promise<void> {
+    const store = this.options.updateStore;
+    const classified = classifyTelegramUpdate(u);
+    if (store) {
+      const claimed = store.claim(u, classified.identity, classified.action);
+      if (claimed.state === "processed" || !store.tryStart(u.update_id)) return;
+    }
+    const context: TelegramActionContext = {
+      updateId: u.update_id,
+      ...(classified.action
+        ? { idempotencyKey: `telegram:${u.update_id}` }
+        : {}),
+    };
+    try {
+      await this.processUpdateRaw(u, context);
+      if (store) store.complete(u.update_id);
+      else this.offset = Math.max(this.offset, u.update_id + 1);
+    } catch (err) {
+      store?.release(u.update_id);
+      if (!store && u.message) {
+        await this.send(`Command failed: ${(err as Error).message}`);
+        this.offset = Math.max(this.offset, u.update_id + 1);
+        return;
+      }
+      throw err;
+    }
+  }
+
+  private async processUpdateRaw(
+    u: TgUpdate,
+    context: TelegramActionContext,
+  ): Promise<void> {
     if (u.callback_query) {
       const cq = u.callback_query;
       const data = cq.data ?? "";
@@ -417,7 +562,11 @@ export class TelegramBot implements ServerNotifier {
       if (data.startsWith("appr:")) {
         const [, notificationId, choice] = data.split(":");
         if (notificationId && choice) {
-          const resolved = await this.handlers.onApproval(notificationId, choice);
+          const resolved = await this.handlers.onApproval(
+            notificationId,
+            choice,
+            context,
+          );
           await this.tg("answerCallbackQuery", {
             callback_query_id: cq.id,
             text: resolved
@@ -440,7 +589,7 @@ export class TelegramBot implements ServerNotifier {
         this.handlers.onStopAllConfirm
       ) {
         const confirmed = data === "stopall:yes";
-        const resultText = await this.handlers.onStopAllConfirm(confirmed);
+        const resultText = await this.handlers.onStopAllConfirm(confirmed, context);
         await this.tg("answerCallbackQuery", { callback_query_id: cq.id });
         if (cq.message) {
           await this.tg("editMessageText", {
@@ -455,17 +604,13 @@ export class TelegramBot implements ServerNotifier {
           (action === "start" || action === "pause" || action === "status") &&
           projectId
         ) {
-          try {
-            const reply = await this.handlers.onProjectAction(action, projectId);
-            await this.tg("answerCallbackQuery", { callback_query_id: cq.id });
-            await this.sendReply(reply);
-          } catch (err) {
-            await this.tg("answerCallbackQuery", {
-              callback_query_id: cq.id,
-              text: `Failed: ${(err as Error).message}`.slice(0, 180),
-              show_alert: true,
-            });
-          }
+          const reply = await this.handlers.onProjectAction(
+            action,
+            projectId,
+            context,
+          );
+          await this.tg("answerCallbackQuery", { callback_query_id: cq.id });
+          await this.sendReply(reply);
         }
       } else {
         await this.tg("answerCallbackQuery", { callback_query_id: cq.id });
@@ -490,17 +635,15 @@ export class TelegramBot implements ServerNotifier {
     if (!text.startsWith("/")) return;
     const [raw, ...args] = text.slice(1).split(/\s+/);
     const cmd = (raw ?? "").toLowerCase();
-    try {
-      const reply = await this.handlers.onCommand(cmd, args);
-      await this.sendReply(reply);
-    } catch (err) {
-      await this.send(`Command failed: ${(err as Error).message}`);
-    }
+    const reply = await this.handlers.onCommand(cmd, args, context);
+    await this.sendReply(reply);
   }
 
   private async sendReply(reply: string | TelegramCommandReply): Promise<void> {
     if (typeof reply === "string") {
-      if (reply) await this.send(reply);
+      if (reply && !(await this.send(reply))) {
+        throw new Error("Telegram reply delivery failed");
+      }
       return;
     }
     if (!reply.text) return;
@@ -514,7 +657,9 @@ export class TelegramBot implements ServerNotifier {
           ),
         }
       : undefined;
-    await this.send(reply.text, undefined, replyMarkup);
+    if (!(await this.send(reply.text, undefined, replyMarkup))) {
+      throw new Error("Telegram reply delivery failed");
+    }
   }
 
   /** Send a plain message to the configured chat (or an explicit chat). */

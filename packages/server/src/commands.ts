@@ -12,6 +12,10 @@ import type { Db } from "./db/index";
 import * as repo from "./db/repo";
 import type { EngineRunner } from "./engine-runner";
 import type { ServerNotifier } from "./telegram";
+import {
+  commitTelegramActionEffect,
+  replaceTelegramActionEffectResult,
+} from "./telegram-inbox";
 
 export type ProjectActionResult =
   | { ok: true; project: Project }
@@ -63,7 +67,58 @@ export async function startProject(
   engine: EngineRunner,
   broadcast: (e: ServerEvent) => void,
   id: string,
+  idempotencyKey?: string,
 ): Promise<ProjectActionResult> {
+  if (idempotencyKey) {
+    type StartActionResult =
+      | { ok: true; project: Project; previousStatus: Project["status"] }
+      | { ok: false; status: number; error: string };
+    const action = commitTelegramActionEffect<StartActionResult>(
+      db,
+      idempotencyKey,
+      () => {
+        const project = repo.getProject(db, id);
+        if (!project) {
+          return { ok: false, status: 404, error: "project not found" };
+        }
+        return {
+          ok: true,
+          project: repo.updateProject(db, id, { status: "running" })!,
+          previousStatus: project.status,
+        };
+      },
+    );
+    if (!action.result.ok) return action.result;
+    const previousStatus = action.result.previousStatus;
+    const running = repo.getProject(db, id) ?? action.result.project;
+    try {
+      if (running.status === "running" && !engine.hasActivity(id)) {
+        await engine.start(running);
+      }
+    } catch (err) {
+      if (!action.committed) throw err;
+      return replaceTelegramActionEffectResult<ProjectActionResult>(
+        db,
+        idempotencyKey,
+        () => {
+          const current = repo.getProject(db, id);
+          if (current?.status === "running") {
+            repo.updateProject(db, id, { status: previousStatus });
+          }
+          return {
+            ok: false,
+            status: 409,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        },
+      );
+    }
+    if (action.committed) {
+      broadcast({ type: "project.updated", payload: running });
+    }
+    return { ok: true, project: running };
+  }
+
   const project = repo.getProject(db, id);
   if (!project) return { ok: false, status: 404, error: "project not found" };
   try {
@@ -87,7 +142,34 @@ export async function pauseProject(
   broadcast: (e: ServerEvent) => void,
   id: string,
   drain?: boolean,
+  idempotencyKey?: string,
 ): Promise<ProjectActionResult> {
+  if (idempotencyKey) {
+    const action = commitTelegramActionEffect<ProjectActionResult>(
+      db,
+      idempotencyKey,
+      () => {
+        const project = repo.getProject(db, id);
+        if (!project) {
+          return { ok: false, status: 404, error: "project not found" };
+        }
+        return {
+          ok: true,
+          project: repo.updateProject(db, id, { status: "paused" })!,
+        };
+      },
+    );
+    if (!action.result.ok) return action.result;
+    const paused = repo.getProject(db, id) ?? action.result.project;
+    if (paused.status === "paused" && engine.hasActivity(id)) {
+      await engine.pause(paused, { drain });
+    }
+    if (action.committed) {
+      broadcast({ type: "project.updated", payload: paused });
+    }
+    return { ok: true, project: paused };
+  }
+
   const project = repo.getProject(db, id);
   if (!project) return { ok: false, status: 404, error: "project not found" };
   try {
@@ -151,8 +233,41 @@ export async function stopAllProjects(
   engine: EngineRunner,
   broadcast: (e: ServerEvent) => void,
   actor: "human" | "telegram",
+  idempotencyKey?: string,
 ): Promise<string[]> {
   const projects = repo.getProjects(db);
+  if (idempotencyKey) {
+    const activeIds = projects
+      .filter((project) => engine.hasActivity(project.id))
+      .map((project) => project.id);
+    const action = commitTelegramActionEffect<string[]>(db, idempotencyKey, () => {
+      for (const id of activeIds) {
+        repo.updateProject(db, id, { status: "paused" });
+        repo.createAuditEntry(db, {
+          projectId: id,
+          kind: "stopped",
+          actor,
+          summary: `Stopped via global "Stop all" (${activeIds.length} project${activeIds.length === 1 ? "" : "s"} affected)`,
+          detail: { affectedProjectIds: activeIds },
+        });
+      }
+      return activeIds;
+    });
+    for (const id of action.result) {
+      const project = repo.getProject(db, id);
+      if (project?.status === "paused" && engine.hasActivity(id)) {
+        await engine.pause(project, { drain: false });
+      }
+    }
+    if (action.committed) {
+      for (const id of action.result) {
+        const updated = repo.getProject(db, id);
+        if (updated) broadcast({ type: "project.updated", payload: updated });
+      }
+    }
+    return action.result;
+  }
+
   const stoppedIds = await engine.stopAll(projects);
   for (const id of stoppedIds) {
     repo.updateProject(db, id, { status: "paused" });
@@ -180,7 +295,53 @@ export async function retryTask(
   broadcast: (e: ServerEvent) => void,
   id: string,
   actor: "human" | "telegram",
+  idempotencyKey?: string,
 ): Promise<{ ok: true; task: Task } | { ok: false; status: number; error: string }> {
+  if (idempotencyKey) {
+    const action = commitTelegramActionEffect<
+      { ok: true; task: Task } | { ok: false; status: number; error: string }
+    >(db, idempotencyKey, () => {
+      const task = repo.getTask(db, id);
+      if (!task) return { ok: false, status: 404, error: "task not found" };
+      const retryable = ["failed", "changes_requested", "blocked"];
+      if (!retryable.includes(task.status)) {
+        return {
+          ok: false,
+          status: 409,
+          error: `task is ${task.status}; only ${retryable.join("/")} can be retried`,
+        };
+      }
+      const settings = repo.getSettings(db);
+      if (!settings) return { ok: false, status: 500, error: "settings not found" };
+      const budgetMsg = checkBudget(db, task.projectId, task.assignedModel, settings);
+      if (budgetMsg) {
+        return { ok: false, status: 403, error: `budget cap: ${budgetMsg}` };
+      }
+      const resetTask = repo.resetTaskForRetry(db, id, actor);
+      return resetTask
+        ? { ok: true, task: resetTask }
+        : { ok: false, status: 409, error: "task lost the retry race" };
+    });
+    if (!action.result.ok) return action.result;
+    const current = repo.getTask(db, id) ?? action.result.task;
+    if (action.committed) broadcast({ type: "task.updated", payload: current });
+    const project = repo.getProject(db, current.projectId)!;
+    try {
+      if (action.committed) {
+        await engine.dispatchOne(project, id);
+      } else {
+        engine.resumeQueued(project);
+      }
+      return { ok: true, task: repo.getTask(db, id) ?? current };
+    } catch (err) {
+      return {
+        ok: false,
+        status: 409,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   const task = repo.getTask(db, id);
   if (!task) return { ok: false, status: 404, error: "task not found" };
 
@@ -266,7 +427,15 @@ export function setMergePolicy(
   db: Db,
   policy: MergePolicy,
   actor: "human" | "telegram",
+  idempotencyKey?: string,
 ): void {
+  if (idempotencyKey) {
+    commitTelegramActionEffect(db, idempotencyKey, () => {
+      setMergePolicy(db, policy, actor);
+      return { policy };
+    });
+    return;
+  }
   const current = repo.getSettings(db) ?? defaultSettings();
   repo.upsertSettings(db, { ...current, mergePolicy: policy });
   for (const p of repo.getProjects(db)) {
@@ -277,6 +446,25 @@ export function setMergePolicy(
       summary: `Merge policy changed to "${policy}"`,
     });
   }
+}
+
+export function setTelegramDigest(
+  db: Db,
+  digest: "off" | "terminal" | "all",
+  idempotencyKey?: string,
+): boolean {
+  const apply = () => {
+    const settings = repo.getSettings(db) ?? defaultSettings();
+    if (!settings.telegram) return false;
+    repo.upsertSettings(db, {
+      ...settings,
+      telegram: { ...settings.telegram, digest },
+    });
+    return true;
+  };
+  return idempotencyKey
+    ? commitTelegramActionEffect(db, idempotencyKey, apply).result
+    : apply();
 }
 
 /**
