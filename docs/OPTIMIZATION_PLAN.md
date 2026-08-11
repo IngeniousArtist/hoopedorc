@@ -901,8 +901,18 @@ the non-increasing baseline), engine 231/231, adapters 15/15, server 305/305,
 web 28/28, E2E 16/16 at 360/390/768/1280/1440 px, and `git diff --check`.
 The socket-restricted sandbox initially refused the server suite's three
 loopback listeners with `EPERM`; the exact server gate rerun outside that
-restriction passed all 305 tests. CI, merge, and independent merged-main
-verification remain to be recorded.
+restriction passed all 305 tests.
+
+**Status:** completed in
+[#236](https://github.com/IngeniousArtist/hoopedorc/pull/236)
+(`fbcdc00`). Claude, OpenCode, and Codex now stream through the existing
+listeners and shared byte ceiling without retaining a second settled-output
+copy. Default capture remains unchanged for engine, Git, gate, planner, and
+other exec-style callers. Linux `build-and-test` CI passed at reviewed head
+`582fa08` in 2m15s. After merge, clean local `main` and `origin/main` matched
+`fbcdc00c25fdfdf42b811a8ba6f1f5a432ef57c5`, and the complete adapter suite
+passed 15/15 again on that exact commit, including non-retention, default
+capture, shared-cap, and resistant process-group settlement.
 
 **Fix risk:** low (additive option).
 
