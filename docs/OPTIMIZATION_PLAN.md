@@ -1421,6 +1421,34 @@ than an unmerged checkout.
 
 **Fix risk:** low.
 
+**Status:** implementation completed in
+[#232](https://github.com/IngeniousArtist/hoopedorc/pull/232)
+(`9c6fa8e`). Persisted `queued` and `checking` states now expire after five
+minutes while `pulling`, `installing`, `building`, and `restarting` retain the
+two-hour deadline. Expiry durably records a retryable failure that names the
+last state and deadline; exact-boundary, future-clock, restart, and retry
+behavior are covered without adding a normal-status systemd probe.
+
+Pre-fix, both focused O17 regressions failed because a stale `queued` marker
+remained active. The implementation passed the focused checks 2/2 and every
+local repository gate: typecheck, build, lint (150 files with the exact 338
+legacy-finding baseline), engine 231/231, adapters 12/12, server 300/300, web
+28/28, E2E 16/16 at 360/390/768/1280/1440 px, and `git diff --check`. Linux
+`build-and-test` CI passed at reviewed head `10c2672` in 2m34s. After merge,
+local `main` and `origin/main` matched
+`9c6fa8e9e203afa409072dbaa59f2ea5349765f3`, and the focused O17 checks passed
+2/2 again on that exact commit.
+
+The required live EC2 transition/recovery smoke remains outstanding. This
+execution environment has no Tailscale CLI, SSH config, loaded SSH identity,
+or configured production endpoint with which to identify the authorized box
+safely. On the known clean, idle production checkout, run the canonical
+updater and record every status transition time; then back up the status file,
+write a deliberately stale early-state fixture, confirm the Setup status
+normalizes it to the explanatory retryable failure, retry successfully, and
+record the final commit plus loopback/Tailscale health before restoring any
+needed fixture backup.
+
 ### O18. Malformed request bodies produce 500s instead of 400s — LOW-MEDIUM (robustness)
 
 **Problem:** handlers cast `req.body as {...}` without schemas. Example:
