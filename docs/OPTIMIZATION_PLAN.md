@@ -1439,15 +1439,17 @@ local `main` and `origin/main` matched
 `9c6fa8e9e203afa409072dbaa59f2ea5349765f3`, and the focused O17 checks passed
 2/2 again on that exact commit.
 
-The required live EC2 transition/recovery smoke remains outstanding. This
-execution environment has no Tailscale CLI, SSH config, loaded SSH identity,
-or configured production endpoint with which to identify the authorized box
-safely. On the known clean, idle production checkout, run the canonical
-updater and record every status transition time; then back up the status file,
-write a deliberately stale early-state fixture, confirm the Setup status
-normalizes it to the explanatory retryable failure, retry successfully, and
-record the final commit plus loopback/Tailscale health before restoring any
-needed fixture backup.
+Live EC2 acceptance passed on `ubuntu@hooped` on 2026-08-11. The clean, idle
+`/opt/hoopedorc` checkout updated through the fixed UI endpoint from
+`3e4c793` to `21254e4`: checking/pull began at 08:29:50 UTC, install at
+08:29:52, build at 08:30:00, and restart/success at 08:30:11. A backed-up
+`queued` fixture last updated at 08:21:02 normalized at 08:31:15 to an
+unblocked durable `failed` result naming `queued` and the five-minute
+deadline. Its canonical retry entered checking at 08:31:30, was observed
+building at 08:31:39, and succeeded at 08:31:49 with `fromCommit` and
+`toCommit` both `21254e4`. The final checkout was clean on `main`, the exact
+service was active, loopback health and the Tailscale health/dashboard routes
+returned HTTP 200, and the temporary fixture backup was removed.
 
 ### O18. Malformed request bodies produce 500s instead of 400s — LOW-MEDIUM (robustness)
 
@@ -1522,8 +1524,42 @@ than adding a second update path.
 **Acceptance:** automated cases cover unquoted, single/double quoted,
 `export`-prefixed, whitespace, comments, embedded `#`/`=`, empty, malformed,
 and command-substitution-looking values; no input is executed and no token is
-logged; interactive and non-interactive paths still fail closed when the
-server is genuinely unreachable; live EC2 UI-update smoke recorded.
+logged; the non-interactive UI path still fails closed when the server is
+genuinely unreachable, while the interactive recovery path retains its
+existing explicit warning and build/restart fallback; live EC2 UI-update smoke
+recorded.
+
+**Implementation decision (2026-08-11):** add one dependency-free executable
+boundary under `scripts/` that imports the already-installed `dotenv` parser,
+accepts only the fixed `PORT` or `API_TOKEN` key, and emits that single value
+followed by a NUL delimiter. `update.sh` reads the delimiter without `source`,
+`eval`, generated shell, or token-bearing arguments; absence of the delimiter
+means the helper itself failed and the update refuses before contacting the
+server. Dotenv's non-executing parse result supplies quoted/export-prefixed
+values and leaves command-substitution-looking text literal. Missing,
+malformed, or empty named entries normalize to an empty value, preserving the
+default port and unauthenticated-probe behavior; a real 401/malformed response
+continues to fail closed on the UI path.
+
+Direct helper tests cover the complete syntax matrix, the fixed-key allowlist,
+literal command-looking input, and credential-free errors. An updater-level
+regression proves the parsed port and token reach the existing curl probe
+without appearing in stdout/stderr, plus unreachable behavior for both the
+non-interactive UI path and the intentionally recoverable interactive path.
+No API, schema, service, or second updater path is introduced. Rollback is the
+helper/script/test/docs commit; after merge, exercise the canonical UI update
+against the deployed host's real `.env` and record its phase/health evidence.
+
+Pre-fix, the focused quoted/export-prefixed updater regression failed because
+the project response could not prove every project was idle; the fake server
+had received the default port and quoted token instead of the configured
+values. With the helper, the focused O19 suite passes 5/5 and the complete
+updater-script suite passes 11/11. Full local verification passes typecheck,
+build, lint (150 files; the 338 legacy findings exactly match the
+non-increasing baseline), engine 231/231, adapters 12/12, server 305/305, web
+28/28, E2E 16/16 at 360/390/768/1280/1440 px, and `git diff --check`. CI,
+merge, independent merged-main verification, and the live EC2 update using
+the new parser remain to be recorded.
 
 **Fix risk:** low.
 

@@ -195,9 +195,20 @@ fi
 port="4317"
 token=""
 if [ -f .env ]; then
-  env_port="$(grep -E '^PORT=' .env | tail -1 | cut -d= -f2- || true)"
+  read_env_value() {
+    local key="$1"
+    local destination="$2"
+    local value
+    if ! IFS= read -r -d '' value < <(node scripts/read-update-env.mjs .env "$key"); then
+      fail "Refusing to update: .env could not be parsed safely."
+    fi
+    printf -v "$destination" '%s' "$value"
+  }
+
+  env_port=""
+  read_env_value "PORT" env_port
   [ -n "$env_port" ] && port="$env_port"
-  token="$(grep -E '^API_TOKEN=' .env | tail -1 | cut -d= -f2- || true)"
+  read_env_value "API_TOKEN" token
 fi
 
 if [ -n "$token" ]; then
