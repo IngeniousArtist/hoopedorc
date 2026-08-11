@@ -335,6 +335,107 @@ test("O36: a project catch-up snapshot reads all runs with one indexed statement
   }
 });
 
+test("O18: task routes reject malformed arrays and preserve valid request shapes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-o18-validation-"));
+  const deps = dependencies(root);
+  const dependency = repo.createTask(deps.db, {
+    id: "dependency-task",
+    projectId: "project-1",
+    title: "Existing dependency",
+    description: "Available to the added task",
+    difficulty: "easy",
+    status: "done",
+    dependsOn: [],
+    acceptanceCriteria: [],
+    assignedModel: "deepseek-flash",
+    scopePaths: ["packages/server/**"],
+    attempts: 1,
+    maxAttempts: 3,
+  });
+  const app = await buildApp(deps);
+
+  try {
+    const invalidRequests = [
+      {
+        method: "POST" as const,
+        url: "/api/projects/project-1/tasks",
+        payload: { title: "Bad dependencies", dependsOn: "dependency-task" },
+        field: "dependsOn",
+      },
+      {
+        method: "POST" as const,
+        url: "/api/projects/project-1/tasks",
+        payload: { title: "Bad criteria", acceptanceCriteria: [42] },
+        field: "acceptanceCriteria",
+      },
+      {
+        method: "POST" as const,
+        url: "/api/projects/project-1/tasks",
+        payload: { title: "Bad scope", scopePaths: { path: "src/**" } },
+        field: "scopePaths",
+      },
+      {
+        method: "PATCH" as const,
+        url: `/api/tasks/${dependency.id}`,
+        payload: { acceptanceCriteria: [null] },
+        field: "acceptanceCriteria",
+      },
+      {
+        method: "PATCH" as const,
+        url: `/api/tasks/${dependency.id}`,
+        payload: { scopePaths: "src/**" },
+        field: "scopePaths",
+      },
+    ];
+
+    for (const request of invalidRequests) {
+      const response = await app.inject(request);
+      assert.equal(response.statusCode, 400, request.field);
+      assert.match(
+        response.json<{ error: string }>().error,
+        new RegExp(request.field),
+        `${request.field} error should identify the malformed field`,
+      );
+    }
+
+    const createdResponse = await app.inject({
+      method: "POST",
+      url: "/api/projects/project-1/tasks",
+      payload: {
+        title: "Valid task",
+        description: "Every existing request field remains accepted",
+        difficulty: "hard",
+        role: "backend",
+        acceptanceCriteria: ["persists criteria"],
+        dependsOn: [dependency.id],
+        scopePaths: ["packages/server/**"],
+        assignedModel: "deepseek-flash",
+      },
+    });
+    assert.equal(createdResponse.statusCode, 200);
+    const created = createdResponse.json<{ task: { id: string } }>().task;
+
+    const updatedResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/tasks/${created.id}`,
+      payload: {
+        status: "ready",
+        assignedModel: "deepseek-flash",
+        acceptanceCriteria: [],
+        scopePaths: [],
+      },
+    });
+    assert.equal(updatedResponse.statusCode, 200);
+    const persisted = repo.getTask(deps.db, created.id);
+    assert.deepEqual(persisted?.acceptanceCriteria, []);
+    assert.deepEqual(persisted?.scopePaths, []);
+  } finally {
+    await app.close();
+    deps.db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("O36: a settings save checks dangling task models with one indexed statement", async () => {
   const root = mkdtempSync(join(tmpdir(), "hoopedorc-o36-settings-scan-"));
   const deps = dependencies(root);

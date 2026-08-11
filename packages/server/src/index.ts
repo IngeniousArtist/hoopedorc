@@ -137,6 +137,27 @@ import type {
 
 type RouteParams = { id: string };
 type ServerEnvironment = typeof ENV;
+type TaskArrayField = "dependsOn" | "acceptanceCriteria" | "scopePaths";
+
+function taskArrayFieldError(
+  input: unknown,
+  fields: readonly TaskArrayField[],
+): string | undefined {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return "request body must be an object";
+  }
+  const body = input as Record<string, unknown>;
+  for (const field of fields) {
+    const value = body[field];
+    if (
+      value !== undefined &&
+      (!Array.isArray(value) || value.some((item) => typeof item !== "string"))
+    ) {
+      return `${field} must be an array of strings`;
+    }
+  }
+  return undefined;
+}
 
 export interface BuildAppDependencies {
   db: Db;
@@ -1862,6 +1883,13 @@ async function assembleServer(
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
 
+    const bodyError = taskArrayFieldError(req.body, [
+      "dependsOn",
+      "acceptanceCriteria",
+      "scopePaths",
+    ]);
+    if (bodyError) return reply.code(400).send({ error: bodyError });
+
     const body = req.body as {
       title?: string;
       description?: string;
@@ -1872,7 +1900,7 @@ async function assembleServer(
       scopePaths?: string[];
       assignedModel?: string;
     };
-    const title = body.title?.trim();
+    const title = typeof body.title === "string" ? body.title.trim() : undefined;
     if (!title) return reply.code(400).send({ error: "title is required" });
 
     const difficulty = body.difficulty ?? "medium";
@@ -1933,6 +1961,12 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     const existing = repo.getTask(db, id);
     if (!existing) return reply.code(404).send({ error: "task not found" });
+
+    const bodyError = taskArrayFieldError(req.body, [
+      "acceptanceCriteria",
+      "scopePaths",
+    ]);
+    if (bodyError) return reply.code(400).send({ error: bodyError });
 
     const body = req.body as {
       status?: string;

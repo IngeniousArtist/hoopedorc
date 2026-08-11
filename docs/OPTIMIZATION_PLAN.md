@@ -1413,6 +1413,29 @@ route tests (lands naturally with O27).
 get 400 with a useful message; all currently-valid client payloads still
 accepted (web test suite as the oracle); full gates green.
 
+**Implementation decision (2026-08-11):** enforce the existing string-array
+fields with one focused parser at the two owning Fastify route boundaries.
+This is explicit rather than an Ajv array schema because Fastify's default
+scalar-to-array coercion would accept the malformed payload this item must
+refuse. Keep unknown properties accepted and retain the handlers' existing
+semantic checks and error responses; the guard only rejects a non-object body
+or `dependsOn`, `acceptanceCriteria`, and `scopePaths` values that are not
+arrays containing only strings. This prevents malformed JSON from reaching
+`.find()`, SQLite JSON serialization, or task broadcasts without narrowing any
+valid web payload. Injected-route regressions cover each array field on both
+owning routes where applicable, useful field-specific 400 errors, and valid
+full-shape create/update requests. There is no API path, response, persistence,
+timer, retry, or deployment change, so rollback is the single server/test/docs
+commit and no live-system smoke is required.
+
+Pre-fix, the focused injected-route regression failed on the first malformed
+`dependsOn` payload with `500 !== 400`; after the guard it passed 1/1. Full
+local verification passed typecheck, build, lint across 150 files with the
+unchanged 338-finding baseline, engine 231/231, adapters 12/12, server 296/296,
+web 28/28, E2E 16/16 at 360/390/768/1280/1440 px, and `git diff --check`.
+CI, merge commit, and independent merged-main verification remain outstanding
+and must be appended without rewriting this pre-merge evidence.
+
 **Fix risk:** low.
 
 ### O19. `update.sh` parses `.env` naively and can spuriously abort UI updates — LOW (robustness)
