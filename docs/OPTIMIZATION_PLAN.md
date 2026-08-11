@@ -779,6 +779,22 @@ independent merged-main verification remain outstanding and must be appended
 without rewriting this pre-merge evidence. No live deployment is required for
 this engine-only GitHub confirmation boundary.
 
+**Status:** completed in
+[#220](https://github.com/IngeniousArtist/hoopedorc/pull/220)
+(`4a4dc63`). The first hosted run exposed that the new remote-merge fixture
+implicitly depended on the machine's default Git branch; the fixture was made
+portable with an explicit `--branch main`, its focused engine/typecheck/lint
+checks passed locally, and the replacement hosted Linux `build-and-test` check
+passed in 2m16s. After merge, local `main` and `origin/main` were independently
+confirmed clean and equal at that squash commit; the engine suite passed
+231/231 and the server suite passed 264/264 again from the merged tree. This
+doc-only status follow-up also passed typecheck, build, lint at the reduced
+339-finding baseline, engine 231/231, adapters 12/12, server 264/264, web
+27/27, E2E 16/16 at 360/390/768/1280/1440 px, and `git diff --check`. No live
+deployment is required because O7 changes only the engine's GitHub PR-state
+confirmation boundary; the read-only live `gh` shape check and real temporary
+Git repositories remain the authoritative integration evidence.
+
 **Fix risk:** low.
 
 ### O8. Killed/stuck runs report zero cost — MEDIUM (correctness/accounting)
