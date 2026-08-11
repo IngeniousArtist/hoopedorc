@@ -1530,6 +1530,14 @@ verification passed typecheck, build, lint across 150 files with the unchanged
 merge commit, and independent merged-main verification remain outstanding and
 must be appended without rewriting this pre-merge evidence.
 
+**Status:** completed in
+[#230](https://github.com/IngeniousArtist/hoopedorc/pull/230)
+(`b0e9357`). Linux `build-and-test` CI passed in 2m23s. After merge, clean
+local `main` and `origin/main` independently matched the squash commit and the
+focused O20 log-retry plus planner-accounting regressions passed 2/2. No live
+EC2 check is required because this changes in-process buffering and accounting
+failure classification without changing deployment or host behavior.
+
 **Fix risk:** low.
 
 ### O21. Engine lifecycle hygiene: unpruned `mergeConflicts`, pause/status race — LOW-MEDIUM (robustness)
