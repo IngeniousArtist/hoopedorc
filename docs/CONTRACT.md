@@ -472,6 +472,11 @@ description, DAG, and acceptance policy are preserved.
 
 Base: `/api`. JSON in/out. Errors use `ApiError`.
 
+O18: task create/update requests reject malformed `dependsOn`,
+`acceptanceCriteria`, and `scopePaths` values with a field-specific 400 before
+any task row, audit entry, or WebSocket event is written. These optional
+fields retain their `@orc/types` contract of arrays containing only strings.
+
 <!-- ROUTES:START -->
 | `ROUTES` key | Route | Body → Response |
 |---|---|---|
