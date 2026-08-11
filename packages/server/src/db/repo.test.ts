@@ -329,6 +329,46 @@ test("O16: cancelPendingApproval is single-winner and never overwrites a human r
   );
 });
 
+test("O13: deleteProject removes direct project logs and scoped alerts only", () => {
+  const db = setup();
+  repo.createProject(db, {
+    id: "proj-2",
+    name: "Other project",
+    repoUrl: "https://github.com/x/other",
+    defaultBranch: "main",
+    localPath: "/tmp/other",
+    status: "paused",
+  });
+  const insertLog = db.prepare(
+    `INSERT INTO logs (id, project_id, run_id, task_id, ts, level, source, message)
+     VALUES (?, ?, '', ?, '2026-08-11T00:00:00.000Z', 'info', 'test', 'message')`,
+  );
+  insertLog.run("project-log", "proj-1", "");
+  insertLog.run("task-log", "proj-1", "task-that-no-longer-exists");
+  insertLog.run("other-log", "proj-2", "");
+
+  const insertAlert = db.prepare(
+    `INSERT INTO budget_alerts (id, scope, threshold, ts)
+     VALUES (?, ?, 50, '2026-08-11T00:00:00.000Z')`,
+  );
+  insertAlert.run("project-alert", "project:proj-1");
+  insertAlert.run("other-alert", "project:proj-2");
+  insertAlert.run("global-alert", "global:2026-08");
+
+  repo.deleteProject(db, "proj-1");
+
+  assert.equal(repo.getProject(db, "proj-1"), null);
+  assert.deepEqual(
+    db.prepare("SELECT id FROM logs ORDER BY id").all(),
+    [{ id: "other-log" }],
+  );
+  assert.deepEqual(
+    db.prepare("SELECT id FROM budget_alerts ORDER BY id").all(),
+    [{ id: "global-alert" }, { id: "other-alert" }],
+  );
+  assert.notEqual(repo.getProject(db, "proj-2"), null);
+});
+
 // ── B26: getNotifications' LIMIT must not drop a pending approval ──
 
 test("getNotifications: an old pending approval survives past 250 newer responded notifications (default limit)", () => {

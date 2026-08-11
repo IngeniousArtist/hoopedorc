@@ -7,6 +7,29 @@ import { ENV, normalizeSettings } from "../config";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+// O13: schema.sql owns fresh databases; this explicit idempotent migration
+// keeps the existing-database upgrade path reviewable and independently
+// testable. The partial indexes are justified by the sparse pending-approval
+// UNION branches rather than by generic notification reads.
+const O13_QUERY_INDEX_MIGRATION = `
+  CREATE INDEX IF NOT EXISTS idx_model_invocations_started
+    ON model_invocations(started_at);
+  CREATE INDEX IF NOT EXISTS idx_merge_decisions_task_ts
+    ON merge_decisions(task_id, ts DESC);
+  CREATE INDEX IF NOT EXISTS idx_notifications_created
+    ON notifications(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_notifications_project_created
+    ON notifications(project_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_notifications_task_created
+    ON notifications(task_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_notifications_pending_created
+    ON notifications(created_at DESC)
+    WHERE requires_approval = 1 AND responded_with IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_notifications_project_pending_created
+    ON notifications(project_id, created_at DESC)
+    WHERE requires_approval = 1 AND responded_with IS NULL;
+`;
+
 export type Db = Database.Database;
 
 export function openDb(path: string = ENV.dbPath): Db {
@@ -95,6 +118,7 @@ export function initDb(path: string = ENV.dbPath): Db {
       throw error;
     }
   }
+  db.exec(O13_QUERY_INDEX_MIGRATION);
   // O3 migration: preserve legacy scratch exactly and assign one stable
   // revision only where a planning session was already active. Empty projects
   // receive a revision lazily from GET /plan/session instead.

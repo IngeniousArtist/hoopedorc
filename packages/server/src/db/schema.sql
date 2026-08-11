@@ -141,6 +141,9 @@ CREATE INDEX IF NOT EXISTS idx_model_invocations_project_started
   ON model_invocations(project_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_model_invocations_task
   ON model_invocations(task_id, started_at);
+-- O13: global monthly spend has no leading model/project predicate.
+CREATE INDEX IF NOT EXISTS idx_model_invocations_started
+  ON model_invocations(started_at);
 
 CREATE TABLE IF NOT EXISTS logs (
   id         TEXT PRIMARY KEY,
@@ -167,6 +170,8 @@ CREATE TABLE IF NOT EXISTS merge_decisions (
   gate            TEXT NOT NULL,               -- JSON GateResult
   ts              TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_merge_decisions_task_ts
+  ON merge_decisions(task_id, ts DESC);
 
 CREATE TABLE IF NOT EXISTS costs (
   id         TEXT PRIMARY KEY,
@@ -208,6 +213,18 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at        TEXT NOT NULL,
   context           TEXT                        -- F22: JSON { prUrl?, reasons? }
 );
+CREATE INDEX IF NOT EXISTS idx_notifications_created
+  ON notifications(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_project_created
+  ON notifications(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_task_created
+  ON notifications(task_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_pending_created
+  ON notifications(created_at DESC)
+  WHERE requires_approval = 1 AND responded_with IS NULL;
+CREATE INDEX IF NOT EXISTS idx_notifications_project_pending_created
+  ON notifications(project_id, created_at DESC)
+  WHERE requires_approval = 1 AND responded_with IS NULL;
 
 -- F6: one row per "Test models" click per model — the health panel's
 -- "last check" column. Not pruned (small, low-volume — a handful of manual
