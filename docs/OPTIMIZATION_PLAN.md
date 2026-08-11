@@ -1436,6 +1436,14 @@ web 28/28, E2E 16/16 at 360/390/768/1280/1440 px, and `git diff --check`.
 CI, merge commit, and independent merged-main verification remain outstanding
 and must be appended without rewriting this pre-merge evidence.
 
+**Status:** completed in
+[#228](https://github.com/IngeniousArtist/hoopedorc/pull/228)
+(`ec34068`). Linux `build-and-test` CI passed in 1m59s. After merge, clean
+local `main` and `origin/main` independently matched the squash commit and the
+focused O18 injected-route regression passed 1/1. No live EC2 check is required
+because this change only enforces the existing HTTP request contract before
+in-process persistence and does not alter deployment or host behavior.
+
 **Fix risk:** low.
 
 ### O19. `update.sh` parses `.env` naively and can spuriously abort UI updates — LOW (robustness)
