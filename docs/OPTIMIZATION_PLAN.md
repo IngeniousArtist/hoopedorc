@@ -1023,6 +1023,17 @@ without rewriting this pre-merge evidence. No live deployment is required;
 the real file-backed migration/reopen and representative planner evidence
 exercise O13's SQLite boundary.
 
+**Status:** completed in
+[#222](https://github.com/IngeniousArtist/hoopedorc/pull/222)
+(`769e5d2`). Linux `build-and-test` CI passed in 2m10s. After merge, local
+`main` and `origin/main` independently matched the squash commit, the engine
+suite passed 231/231, and the server suite passed 267/267. The docs-only
+evidence branch also passed typecheck, build, lint at the unchanged
+339-finding baseline, engine 231/231, adapters 12/12, server 267/267, web
+27/27, E2E 16/16 at 360/390/768/1280/1440 px, and `git diff --check`. Its CI
+and merge commit remain outstanding and will be recorded by the PR itself
+without altering the implementation evidence above.
+
 **Fix risk:** low (additive).
 
 ### O14. Multi-write route sequences run outside transactions — LOW-MEDIUM (robustness)
