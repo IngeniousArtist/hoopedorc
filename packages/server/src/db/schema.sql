@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   run_exhausted_models TEXT NOT NULL DEFAULT '[]', -- JSON ModelId[]
   run_rate_limit_retries INTEGER NOT NULL DEFAULT 0,
   dispatch_requested_at TEXT,  -- B34: persisted manual-priority queue request
+  stop_requested_at   TEXT,    -- O14: survives cancellation -> transaction crash window
   status_reason       TEXT,    -- one-line human-readable terminal outcome
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL
@@ -210,6 +211,10 @@ CREATE TABLE IF NOT EXISTS notifications (
   requires_approval INTEGER NOT NULL DEFAULT 0,
   options           TEXT,                       -- JSON array
   responded_with    TEXT,
+  approval_key      TEXT,                       -- O14: stable while pending/recorded
+  approval_delivery TEXT,                       -- pending/recorded/applied/cancelled/expired_no_owner
+  response_recorded_at TEXT,
+  response_applied_at  TEXT,
   created_at        TEXT NOT NULL,
   context           TEXT                        -- F22: JSON { prUrl?, reasons? }
 );

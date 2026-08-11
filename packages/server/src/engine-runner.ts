@@ -17,6 +17,7 @@ import type {
   FigmaCapabilityIssue,
   ModelId,
   ModelInvocation,
+  Notification,
   Project,
   RollbackJob,
   RunSummaryDetail,
@@ -353,9 +354,87 @@ export class EngineRunner {
   resolveApproval(notificationId: string, choice: string): boolean {
     const resolver = this.pendingApprovals.get(notificationId);
     if (!resolver) return false;
-    this.pendingApprovals.delete(notificationId);
+    // The resolver may have its own durable transition (rollback approval).
+    // Keep it armed if that write throws; a recorded response can then retry
+    // without releasing a waiter whose owning state was not persisted.
     resolver(choice);
+    if (this.pendingApprovals.get(notificationId) === resolver) {
+      this.pendingApprovals.delete(notificationId);
+    }
     return true;
+  }
+
+  /** Arm one durable notification row. Recorded choices are replayed only
+   * after the new waiter exists, then marked applied after delivery. */
+  private waitForApproval(
+    notif: Notification,
+    signal?: AbortSignal,
+    beforeResolve?: (choice: string) => void,
+  ): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener("abort", onAbort);
+        this.pendingApprovals.delete(notif.id);
+        const cancelled = repo.cancelPendingApproval(this.db, notif.id);
+        if (cancelled) {
+          repo.createAuditEntry(this.db, {
+            projectId: notif.projectId,
+            taskId: notif.taskId,
+            kind: "approval_cancelled",
+            actor: "engine",
+            summary: `${notif.title} → cancelled by hard Stop`,
+          });
+          this.hub.broadcast({ type: "notification", payload: cancelled });
+        }
+        reject(
+          new DOMException("Approval interrupted by hard Stop", "AbortError"),
+        );
+      };
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.pendingApprovals.set(notif.id, (choice) => {
+        if (settled) return;
+        // Run owner-specific persistence before releasing the promise. If it
+        // throws, resolveApproval leaves this resolver armed for retry.
+        beforeResolve?.(choice);
+        settled = true;
+        signal?.removeEventListener("abort", onAbort);
+        resolve(choice);
+      });
+
+      if (
+        notif.approvalDelivery === "recorded" &&
+        notif.respondedWith
+      ) {
+        queueMicrotask(() => {
+          try {
+            if (!this.resolveApproval(notif.id, notif.respondedWith!)) return;
+            const applied = repo.markApprovalApplied(
+              this.db,
+              notif.id,
+              notif.respondedWith!,
+            );
+            if (!applied) {
+              throw new Error(
+                `recorded approval ${notif.id} could not be marked applied`,
+              );
+            }
+            this.hub.broadcast({ type: "notification", payload: applied });
+          } catch (error) {
+            this.logError(
+              notif.projectId,
+              `Recorded approval ${notif.id} remains retryable after delivery failure: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        });
+      }
+    });
   }
 
   private buildOrchestrator(project: Project): Orchestrator {
@@ -798,7 +877,8 @@ export class EngineRunner {
             prUrl || latestDecision?.reasons?.length
               ? { prUrl, reasons: latestDecision?.reasons }
               : undefined;
-          const notif = repo.createNotification(this.db, {
+          const { notification: notif, created } =
+            repo.createOrReuseApprovalNotification(this.db, {
             projectId: project.id,
             taskId: args.taskId,
             severity: "action_required",
@@ -808,56 +888,24 @@ export class EngineRunner {
             options: args.options,
             context,
           });
-          repo.createAuditEntry(this.db, {
-            projectId: project.id,
-            taskId: args.taskId,
-            kind: "approval_requested",
-            actor: "engine",
-            summary: args.title,
-            detail: { message: args.message, options: args.options },
-          });
-          this.hub.broadcast({ type: "notification", payload: notif });
-          this.notifier?.approvalRequested(notif, { prUrl, reasons: latestDecision?.reasons });
-          return new Promise<string>((resolve, reject) => {
-            let settled = false;
-            const onAbort = () => {
-              if (settled) return;
-              settled = true;
-              args.signal?.removeEventListener("abort", onAbort);
-              this.pendingApprovals.delete(notif.id);
-              const cancelled = repo.cancelPendingApproval(this.db, notif.id);
-              if (cancelled) {
-                repo.createAuditEntry(this.db, {
-                  projectId: project.id,
-                  taskId: args.taskId,
-                  kind: "approval_cancelled",
-                  actor: "engine",
-                  summary: `${args.title} → cancelled by hard Stop`,
-                });
-                this.hub.broadcast({
-                  type: "notification",
-                  payload: cancelled,
-                });
-              }
-              reject(
-                new DOMException(
-                  "Approval interrupted by hard Stop",
-                  "AbortError",
-                ),
-              );
-            };
-            if (args.signal?.aborted) {
-              onAbort();
-              return;
-            }
-            args.signal?.addEventListener("abort", onAbort, { once: true });
-            this.pendingApprovals.set(notif.id, (choice) => {
-              if (settled) return;
-              settled = true;
-              args.signal?.removeEventListener("abort", onAbort);
-              resolve(choice);
+          if (created) {
+            repo.createAuditEntry(this.db, {
+              projectId: project.id,
+              taskId: args.taskId,
+              kind: "approval_requested",
+              actor: "engine",
+              summary: args.title,
+              detail: { message: args.message, options: args.options },
             });
-          });
+          }
+          this.hub.broadcast({ type: "notification", payload: notif });
+          if (notif.approvalDelivery === "pending") {
+            this.notifier?.approvalRequested(notif, {
+              prUrl,
+              reasons: latestDecision?.reasons,
+            });
+          }
+          return this.waitForApproval(notif, args.signal);
         },
       },
     };
@@ -937,7 +985,8 @@ export class EngineRunner {
     const prUrl = `${project.repoUrl}/pull/${job.rollbackPrNumber}`;
     const reasons = job.decision?.reasons ?? [];
     const checkDetail = job.statusReason ? `\n\n${job.statusReason}` : "";
-    const notif = repo.createNotification(this.db, {
+    const { notification: notif, created } =
+      repo.createOrReuseApprovalNotification(this.db, {
       projectId: project.id,
       taskId: task.id,
       severity: "action_required",
@@ -951,37 +1000,31 @@ export class EngineRunner {
     });
     this.updateRollback(job.id, {
       approvalNotificationId: notif.id,
-      approvalChoice: undefined,
+      ...(created ? { approvalChoice: undefined } : {}),
     });
-    repo.createAuditEntry(this.db, {
-      projectId: project.id,
-      taskId: task.id,
-      kind: "approval_requested",
-      actor: "engine",
-      summary: notif.title,
-      detail: {
-        rollbackJobId: job.id,
-        rollbackPrNumber: job.rollbackPrNumber,
-        sourcePrNumber: job.sourcePrNumber,
-        reasons,
-      },
-    });
-    this.hub.broadcast({ type: "notification", payload: notif });
-    this.notifier?.approvalRequested(notif, { prUrl, reasons });
-    return new Promise<string>((resolve, reject) => {
-      const onAbort = () => {
-        this.pendingApprovals.delete(notif.id);
-        reject(new DOMException("Rollback approval interrupted", "AbortError"));
-      };
-      if (signal?.aborted) return onAbort();
-      signal?.addEventListener("abort", onAbort, { once: true });
-      this.pendingApprovals.set(notif.id, (choice) => {
-        signal?.removeEventListener("abort", onAbort);
-        // Persist before resolving the waiter. A crash immediately after the
-        // HTTP/Telegram response can then resume the chosen path on boot.
-        this.updateRollback(job.id, { approvalChoice: choice });
-        resolve(choice);
+    if (created) {
+      repo.createAuditEntry(this.db, {
+        projectId: project.id,
+        taskId: task.id,
+        kind: "approval_requested",
+        actor: "engine",
+        summary: notif.title,
+        detail: {
+          rollbackJobId: job.id,
+          rollbackPrNumber: job.rollbackPrNumber,
+          sourcePrNumber: job.sourcePrNumber,
+          reasons,
+        },
       });
+    }
+    this.hub.broadcast({ type: "notification", payload: notif });
+    if (notif.approvalDelivery === "pending") {
+      this.notifier?.approvalRequested(notif, { prUrl, reasons });
+    }
+    return this.waitForApproval(notif, signal, (choice) => {
+      // Persist before resolving the waiter. A crash immediately after the
+      // HTTP/Telegram response can then resume the chosen path on boot.
+      this.updateRollback(job.id, { approvalChoice: choice });
     });
   }
 
@@ -1478,6 +1521,22 @@ export class EngineRunner {
       }
 
       if (job.status === "awaiting_approval") {
+        if (job.approvalChoice && job.approvalNotificationId) {
+          const recorded = repo.getNotification(
+            this.db,
+            job.approvalNotificationId,
+          );
+          if (recorded?.approvalDelivery === "recorded") {
+            const applied = repo.markApprovalApplied(
+              this.db,
+              recorded.id,
+              job.approvalChoice,
+            );
+            if (applied) {
+              this.hub.broadcast({ type: "notification", payload: applied });
+            }
+          }
+        }
         const choice =
           job.approvalChoice ??
           (await this.requestRollbackApproval(project, sourceTask, job, signal));

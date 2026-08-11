@@ -1324,6 +1324,79 @@ test("O16: aborting a normal approval removes its resolver and persists a cancel
   );
 });
 
+test("O14: restart replays a choice recorded before delivery onto the re-armed waiter", async () => {
+  const db = setup();
+  const projectRow = project(db, "recorded-before-delivery");
+  const task = seedTask(db, projectRow.id, "task", { status: "in_review" });
+  const firstEngine = new EngineRunner(db, new WsHub());
+  const firstDeps = buildDeps(firstEngine, projectRow);
+  const firstController = new AbortController();
+  const args = {
+    taskId: task.id,
+    title: "Durable approval",
+    message: "Apply once after recovery?",
+    options: ["approve_merge", "reject"],
+    signal: firstController.signal,
+  };
+  const abandoned = firstDeps.events.requestApproval(args);
+  const notification = repo.getNotifications(db, projectRow.id)[0]!;
+  assert.equal(
+    repo.recordApprovalResponse(db, notification.id, "approve_merge").outcome,
+    "recorded",
+  );
+
+  const resumedEngine = new EngineRunner(db, new WsHub());
+  const resumed = buildDeps(resumedEngine, projectRow).events.requestApproval(args);
+  assert.equal(await resumed, "approve_merge");
+  const applied = repo.getNotification(db, notification.id)!;
+  assert.equal(applied.approvalDelivery, "applied");
+  assert.ok(applied.responseAppliedAt);
+  assert.equal(repo.getNotifications(db, projectRow.id).length, 1);
+  assert.equal(
+    repo.getAuditLog(db, projectRow.id).filter((entry) => entry.kind === "approval_resolved")
+      .length,
+    1,
+  );
+
+  firstController.abort();
+  await assert.rejects(abandoned, { name: "AbortError" });
+});
+
+test("O14: crash after delivery but before the applied marker replays the same row safely", async () => {
+  const db = setup();
+  const projectRow = project(db, "delivered-before-applied");
+  const task = seedTask(db, projectRow.id, "task", { status: "in_review" });
+  const args = {
+    taskId: task.id,
+    title: "Crash-window approval",
+    message: "Recover the exact recorded choice",
+    options: ["approve_merge", "reject"],
+  };
+  const firstEngine = new EngineRunner(db, new WsHub());
+  const firstWaiter = buildDeps(firstEngine, projectRow).events.requestApproval(args);
+  const notification = repo.getNotifications(db, projectRow.id)[0]!;
+  assert.equal(
+    repo.recordApprovalResponse(db, notification.id, "approve_merge").outcome,
+    "recorded",
+  );
+  assert.equal(firstEngine.resolveApproval(notification.id, "approve_merge"), true);
+  assert.equal(await firstWaiter, "approve_merge");
+  assert.equal(
+    repo.getNotification(db, notification.id)?.approvalDelivery,
+    "recorded",
+    "simulated crash leaves the post-delivery marker outstanding",
+  );
+
+  const resumedEngine = new EngineRunner(db, new WsHub());
+  const resumedWaiter = buildDeps(resumedEngine, projectRow).events.requestApproval(args);
+  assert.equal(await resumedWaiter, "approve_merge");
+  assert.equal(
+    repo.getNotification(db, notification.id)?.approvalDelivery,
+    "applied",
+  );
+  assert.equal(repo.getNotifications(db, projectRow.id).length, 1);
+});
+
 test("B36: duplicate rollback clicks share one job and approval merges exactly once", async () => {
   const db = setup();
   const hub = new WsHub();
@@ -1457,7 +1530,7 @@ test("B36: rejecting mandatory approval closes the rollback PR without changing 
   assert.equal(repo.getTask(db, task.id)!.status, "done");
 });
 
-test("B36: restart recovery re-arms approval without preparing a second revert", async () => {
+test("O14/B36: restart recovery re-arms the same durable approval without preparing a second revert", async () => {
   const db = setup();
   const proj = project(db, "rollback-restart");
   const task = seedTask(db, proj.id, "task", {
@@ -1474,8 +1547,6 @@ test("B36: restart recovery re-arms approval without preparing a second revert",
     started.id,
     (job) => job.status === "awaiting_approval" && !!job.approvalNotificationId,
   );
-  repo.expireStaleApprovals(db);
-
   const resumedEngine = new EngineRunner(db, new WsHub(), {
     rollbackDepsFactory: () => fake.deps,
   });
@@ -1485,8 +1556,12 @@ test("B36: restart recovery re-arms approval without preparing a second revert",
     started.id,
     (job) =>
       job.status === "awaiting_approval" &&
-      !!job.approvalNotificationId &&
-      job.approvalNotificationId !== firstApproval.approvalNotificationId,
+      !!job.approvalNotificationId,
+  );
+  assert.equal(
+    secondApproval.approvalNotificationId,
+    firstApproval.approvalNotificationId,
+    "a restart reattaches to the same pending notification row",
   );
   assert.equal(fake.calls.prepare, 1, "recovery must reuse the prepared revert");
   assert.equal(fake.calls.open, 1, "recovery must reuse the open rollback PR");

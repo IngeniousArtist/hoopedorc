@@ -1075,6 +1075,69 @@ decision; two channels racing one notification yield one winner; Stop leaves
 task/run/audit consistent and broadcasts only committed rows; no transaction
 spans an external side effect; full gates green.
 
+**Implementation decision (2026-08-11):** model approval delivery explicitly
+on the notification row as `pending` → `recorded` → `applied`, with distinct
+`cancelled` and `expired_no_owner` terminals plus recorded/applied timestamps.
+An approval identity derived from its project, task, title, message, and
+options is unique only while `pending` or `recorded`: restart recovery reuses
+that exact row and choice, while a genuinely later identical prompt may create
+a new row after the earlier delivery is terminal. Legacy pending rows have no
+recoverable owner identity and migrate once to `expired_restart`; new pending
+and recorded rows are never swept merely because the process restarted.
+
+The HTTP and Telegram paths first conditionally record the choice and audit in
+one SQLite transaction. Only the winner may call the in-memory resolver; a
+resolver-side persistence error keeps both the durable choice and waiter
+retryable. Successful delivery is marked `applied` afterward. A recorded row
+with a recoverable active task or rollback remains queued for the re-armed
+waiter; an actually ownerless row transitions transactionally to
+`expired_no_owner` and is never described as applied. Recovery registers the
+waiter before replaying a recorded choice. Git merge replay continues through
+the existing idempotent PR-state confirmation path, so the crash between
+delivery and its applied marker cannot create a second merge effect.
+
+For Stop, persist a conditional `stop_requested_at` intent before asking the
+orchestrator to cancel. After cancellation is accepted, one repository
+transaction conditionally blocks the still-active task, terminalizes its
+running run, clears the intent, and writes the audit; only rows read after
+commit are broadcast. If the process exits anywhere after the intent, boot
+recovery performs that same transaction before project resume, so orphan
+recovery cannot requeue work the operator killed. A refused cancellation
+clears the intent without changing task/run/audit state. Tests will inject
+SQLite failures into the approval audit, Stop audit, and applied-marker
+boundaries; simulate both approval crash windows, same/different-choice races,
+legacy migration, Stop interruption/recovery, and committed-only broadcasts.
+No SQLite transaction crosses a resolver, process cancellation, Git call, or
+WebSocket/Telegram send. The REST notification response exposes delivery
+state through the shared contract; no deployment or live external-service
+check is required because the change is exercised through file-backed SQLite,
+real route injection, and deterministic engine restart boundaries.
+
+**Implementation result (2026-08-11):** the notification contract now exposes
+`approvalDelivery`, `responseRecordedAt`, and `responseAppliedAt`, backed by an
+idempotent existing-database migration and a partial unique live-approval
+identity. Normal and rollback waiters reuse pending/recorded rows, register
+before replay, and mark only the exact recorded choice applied after delivery.
+HTTP returns 202 for a durable choice queued ahead of owner recovery; the web
+UI distinguishes queued and ownerless responses from applied ones. Recorded
+rows are excluded from retention pruning. Stop now claims
+`stop_requested_at`, crosses cancellation, and commits task/run/audit/intent in
+one transaction; boot settles interrupted intents before engine resume.
+
+Thirteen focused O14 regressions cover record-before-delivery and
+delivery-before-applied restarts, same-row rollback recovery, different-choice
+channel races, queued HTTP semantics, legacy migration/reopen, retention, and
+faults in approval audit, applied marker, ownerless-expiry audit, and Stop
+audit. The existing O7 merged-PR confirmation suite remains the engine-side
+idempotency proof for replay at the Git boundary. Full local gates pass
+typecheck, build, lint with the baseline reduced from 339 to 338 findings,
+engine 231/231, adapters 12/12, server 279/279, web 28/28, E2E 16/16 at
+360/390/768/1280/1440 px, and `git diff --check`. CI, merge commit, and
+independent merged-main verification remain outstanding and must be appended
+without rewriting this pre-merge evidence. No live deployment is required for
+these deterministic SQLite, route-injection, engine-restart, and browser
+boundaries.
+
 **Fix risk:** medium; the recovery tests are mandatory.
 
 ### O15. Telegram poll offset is memory-only; commands can re-execute after restart — MEDIUM (robustness)

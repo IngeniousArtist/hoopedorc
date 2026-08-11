@@ -520,6 +520,12 @@ export interface RollbackJob {
 }
 
 export type NotificationSeverity = "info" | "warn" | "action_required";
+export type ApprovalDeliveryState =
+  | "pending"
+  | "recorded"
+  | "applied"
+  | "cancelled"
+  | "expired_no_owner";
 
 /**
  * Surfaced in the UI and over Telegram. `action_required` notifications with
@@ -536,6 +542,10 @@ export interface Notification {
   /** Choices to present, e.g. ["approve", "reject"]. */
   options?: string[];
   respondedWith?: string;
+  /** O14: durable choice delivery, distinct from merely recording a click. */
+  approvalDelivery?: ApprovalDeliveryState;
+  responseRecordedAt?: string;
+  responseAppliedAt?: string;
   createdAt: string;
   /**
    * F22: the same PR link + top validator reasons Telegram's approval

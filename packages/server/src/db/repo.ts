@@ -16,7 +16,7 @@ import type {
   Task,
   VerifiedFigmaReference,
 } from "@orc/types";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "./index";
 import { normalizeSettings } from "../config";
 import { TaskChangeBus, type TaskChangeWaitResult } from "../task-change-bus";
@@ -720,6 +720,136 @@ export function markTaskStoppedIfActive(
   const task = getTask(db, id);
   if (result.changes > 0 && task) publishTaskChange(db, task.projectId);
   return { changed: result.changes > 0, task };
+}
+
+/**
+ * O14 phase one: durably claim a still-active task before crossing the
+ * process-cancellation boundary. A crash after this write is recovered on
+ * boot by finalizeTaskStop(); no unrelated task state is changed here.
+ */
+export function claimTaskStop(
+  db: Db,
+  id: string,
+): { claimed: boolean; pending: boolean; task: Task | null } {
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `UPDATE tasks
+       SET stop_requested_at = ?, updated_at = ?
+       WHERE id = ?
+         AND status IN ('in_progress', 'in_review')
+         AND stop_requested_at IS NULL`,
+    )
+    .run(now, now, id);
+  const task = getTask(db, id);
+  const pending = Boolean(
+    db
+      .prepare("SELECT 1 FROM tasks WHERE id = ? AND stop_requested_at IS NOT NULL")
+      .get(id),
+  );
+  if (result.changes > 0 && task) publishTaskChange(db, task.projectId);
+  return { claimed: result.changes === 1, pending, task };
+}
+
+/** Cancellation was refused before any process was signalled; release only
+ * the matching durable intent and leave task/run/audit state untouched. */
+export function releaseTaskStop(db: Db, id: string): Task | null {
+  const result = db
+    .prepare(
+      `UPDATE tasks
+       SET stop_requested_at = NULL, updated_at = ?
+       WHERE id = ? AND stop_requested_at IS NOT NULL`,
+    )
+    .run(new Date().toISOString(), id);
+  const task = getTask(db, id);
+  if (result.changes > 0 && task) publishTaskChange(db, task.projectId);
+  return task;
+}
+
+export interface TaskStopTransition {
+  changed: boolean;
+  task: Task | null;
+  runs: Run[];
+  audit?: AuditEntry;
+}
+
+/**
+ * O14 phase two: after cancellation is accepted, commit the task, every
+ * still-running attempt, the audit entry, and intent removal atomically.
+ * Callers broadcast only the returned post-commit rows.
+ */
+export function finalizeTaskStop(
+  db: Db,
+  id: string,
+  actor: "human" | "telegram" = "human",
+  reason = "Stopped by user",
+): TaskStopTransition {
+  let projectId: string | undefined;
+  const outcome = db.transaction((): TaskStopTransition => {
+    const before = db
+      .prepare("SELECT project_id, title, stop_requested_at FROM tasks WHERE id = ?")
+      .get(id) as
+      | { project_id: string; title: string; stop_requested_at: string | null }
+      | undefined;
+    if (!before) return { changed: false, task: null, runs: [] };
+    projectId = before.project_id;
+    if (!before.stop_requested_at) {
+      return { changed: false, task: getTask(db, id), runs: [] };
+    }
+
+    const now = new Date().toISOString();
+    const changed = db
+      .prepare(
+        `UPDATE tasks
+         SET status = 'blocked', status_reason = ?, dispatch_requested_at = NULL,
+             stop_requested_at = NULL, updated_at = ?
+         WHERE id = ?
+           AND stop_requested_at IS NOT NULL
+           AND status IN ('in_progress', 'in_review')`,
+      )
+      .run(reason, now, id).changes === 1;
+
+    if (!changed) {
+      db.prepare(
+        "UPDATE tasks SET stop_requested_at = NULL, updated_at = ? WHERE id = ?",
+      ).run(now, id);
+      return { changed: false, task: getTask(db, id), runs: [] };
+    }
+
+    const runningIds = db
+      .prepare("SELECT id FROM runs WHERE task_id = ? AND status = 'running'")
+      .all(id) as { id: string }[];
+    db.prepare(
+      `UPDATE runs
+       SET status = 'stopped', ended_at = ?, exit_reason = 'killed'
+       WHERE task_id = ? AND status = 'running'`,
+    ).run(now, id);
+    const runs = runningIds.flatMap(({ id: runId }) => {
+      const run = getRun(db, runId);
+      return run ? [run] : [];
+    });
+    const audit = createAuditEntry(db, {
+      projectId: before.project_id,
+      taskId: id,
+      kind: "stopped",
+      actor,
+      summary: `Stopped "${before.title}" — agent process aborted`,
+    });
+    return { changed: true, task: getTask(db, id), runs, audit };
+  })();
+  if (projectId) publishTaskChange(db, projectId);
+  return outcome;
+}
+
+/** Complete every Stop intent left between cancellation and commit. This is
+ * called before engine resume, so killed work can never enter orphan requeue. */
+export function recoverInterruptedTaskStops(db: Db): TaskStopTransition[] {
+  const ids = db
+    .prepare("SELECT id FROM tasks WHERE stop_requested_at IS NOT NULL ORDER BY id")
+    .all() as { id: string }[];
+  return ids.map(({ id }) =>
+    finalizeTaskStop(db, id, "human", "Stopped by user (recovered after restart)"),
+  );
 }
 
 // ── Rollback jobs ──
@@ -1637,6 +1767,15 @@ function mapNotification(row: Record<string, unknown>): Notification {
     requiresApproval: Number(row.requires_approval) === 1,
     options: row.options ? json<string[]>(row.options) : undefined,
     respondedWith: row.responded_with ? asStr(row.responded_with) : undefined,
+    approvalDelivery: row.approval_delivery
+      ? (asStr(row.approval_delivery) as Notification["approvalDelivery"])
+      : undefined,
+    responseRecordedAt: row.response_recorded_at
+      ? asStr(row.response_recorded_at)
+      : undefined,
+    responseAppliedAt: row.response_applied_at
+      ? asStr(row.response_applied_at)
+      : undefined,
     createdAt: asStr(row.created_at),
     // F22: absent on pre-migration rows (NULL) exactly like any other
     // optional field here — no special-casing needed.
@@ -1721,10 +1860,10 @@ export function getNotifications(
 /**
  * B23: mirrors pruneLogs' shape — delete notifications older than
  * `retentionDays`, called on boot and once a day (see index.ts main()).
- * Never deletes a pending approval (requires_approval with no
- * responded_with) regardless of age — B10 already expires those on boot,
- * but an approval a human hasn't seen yet must never just vanish. Returns
- * the number of rows deleted, for a boot-time log line.
+ * Never deletes a pending or recorded-but-unapplied approval regardless of
+ * age. O14 may need either row after restart, so retention cannot erase the
+ * durable inbox/outbox before delivery. Returns the number of rows deleted,
+ * for a boot-time log line.
  */
 export function pruneNotifications(db: Db, retentionDays: number): number {
   const cutoff = new Date(
@@ -1734,7 +1873,10 @@ export function pruneNotifications(db: Db, retentionDays: number): number {
     .prepare(
       `DELETE FROM notifications
        WHERE created_at < ?
-         AND NOT (requires_approval = 1 AND responded_with IS NULL)`,
+         AND NOT (
+           requires_approval = 1
+           AND approval_delivery IN ('pending', 'recorded')
+         )`,
     )
     .run(cutoff);
   return result.changes;
@@ -1742,13 +1884,32 @@ export function pruneNotifications(db: Db, retentionDays: number): number {
 
 export function createNotification(
   db: Db,
-  n: Omit<Notification, "id" | "createdAt"> & { id?: string },
+  n: Omit<
+    Notification,
+    | "id"
+    | "createdAt"
+    | "approvalDelivery"
+    | "responseRecordedAt"
+    | "responseAppliedAt"
+  > & { id?: string; approvalKey?: string },
 ): Notification {
   const id = n.id ?? crypto.randomUUID();
   const now = new Date().toISOString();
+  const delivery = n.requiresApproval
+    ? n.respondedWith === CANCELLED_STOP
+      ? "cancelled"
+      : n.respondedWith === EXPIRED_RESTART
+        ? "expired_no_owner"
+        : n.respondedWith
+          ? "applied"
+          : "pending"
+    : null;
   db.prepare(
-    `INSERT INTO notifications (id, project_id, task_id, severity, title, message, requires_approval, options, created_at, context)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO notifications
+       (id, project_id, task_id, severity, title, message, requires_approval,
+        options, responded_with, approval_key, approval_delivery,
+        response_recorded_at, response_applied_at, created_at, context)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     n.projectId,
@@ -1758,22 +1919,230 @@ export function createNotification(
     n.message,
     n.requiresApproval ? 1 : 0,
     n.options ? JSON.stringify(n.options) : null,
+    n.respondedWith ?? null,
+    n.approvalKey ?? null,
+    delivery,
+    n.respondedWith ? now : null,
+    delivery === "applied" ? now : null,
     now,
     n.context ? JSON.stringify(n.context) : null,
   );
-  return { ...n, id, createdAt: now } as Notification;
+  return getNotification(db, id)!;
 }
 
+type ApprovalNotificationInput = Omit<
+  Parameters<typeof createNotification>[1],
+  "id" | "approvalKey" | "respondedWith" | "requiresApproval"
+> & { requiresApproval: true };
+
+function approvalKey(n: ApprovalNotificationInput): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        n.projectId,
+        n.taskId ?? null,
+        n.title,
+        n.message,
+        n.options ?? [],
+      ]),
+    )
+    .digest("hex");
+}
+
+/** Reattach restart recovery to the exact pending/recorded prompt. The
+ * partial unique index is the final guard if two owners race this lookup. */
+export function createOrReuseApprovalNotification(
+  db: Db,
+  n: ApprovalNotificationInput,
+): { notification: Notification; created: boolean } {
+  const key = approvalKey(n);
+  return db.transaction(() => {
+    const existing = db
+      .prepare(
+        `SELECT * FROM notifications
+         WHERE approval_key = ?
+           AND approval_delivery IN ('pending', 'recorded')
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(key) as Record<string, unknown> | undefined;
+    if (existing) {
+      return { notification: mapNotification(existing), created: false };
+    }
+    return {
+      notification: createNotification(db, { ...n, approvalKey: key }),
+      created: true,
+    };
+  })();
+}
+
+export type ApprovalResponseOutcome =
+  | "recorded"
+  | "retry_recorded"
+  | "already_applied"
+  | "invalid_choice"
+  | "conflict"
+  | "terminal"
+  | "not_found";
+
+export interface ApprovalResponseResult {
+  outcome: ApprovalResponseOutcome;
+  notification: Notification | null;
+}
+
+/** O14 durable inbox claim: the choice and audit either both commit or both
+ * roll back. No resolver, Git call, or broadcast runs inside this transaction. */
+export function recordApprovalResponse(
+  db: Db,
+  id: string,
+  choice: string,
+  actor: "human" | "telegram" = "human",
+): ApprovalResponseResult {
+  return db.transaction((): ApprovalResponseResult => {
+    const current = getNotification(db, id);
+    if (!current) return { outcome: "not_found", notification: null };
+    if (!current.requiresApproval) {
+      return { outcome: "terminal", notification: current };
+    }
+    if (current.options && !current.options.includes(choice)) {
+      return { outcome: "invalid_choice", notification: current };
+    }
+    if (current.approvalDelivery === "pending" && !current.respondedWith) {
+      const now = new Date().toISOString();
+      const won = db
+        .prepare(
+          `UPDATE notifications
+           SET responded_with = ?, approval_delivery = 'recorded',
+               response_recorded_at = ?
+           WHERE id = ?
+             AND responded_with IS NULL
+             AND approval_delivery = 'pending'`,
+        )
+        .run(choice, now, id);
+      if (won.changes !== 1) {
+        const raced = getNotification(db, id);
+        return { outcome: "conflict", notification: raced };
+      }
+      createAuditEntry(db, {
+        projectId: current.projectId,
+        taskId: current.taskId,
+        kind: "approval_resolved",
+        actor,
+        summary: `${current.title} → ${choice} (recorded for delivery)`,
+        detail: { approvalNotificationId: id, choice },
+      });
+      return { outcome: "recorded", notification: getNotification(db, id) };
+    }
+    if (
+      current.approvalDelivery === "recorded" &&
+      current.respondedWith === choice
+    ) {
+      return { outcome: "retry_recorded", notification: current };
+    }
+    if (
+      current.approvalDelivery === "applied" &&
+      current.respondedWith === choice
+    ) {
+      return { outcome: "already_applied", notification: current };
+    }
+    return {
+      outcome:
+        current.approvalDelivery === "cancelled" ||
+        current.approvalDelivery === "expired_no_owner"
+          ? "terminal"
+          : "conflict",
+      notification: current,
+    };
+  })();
+}
+
+/** Mark only the exact recorded choice as delivered. */
+export function markApprovalApplied(
+  db: Db,
+  id: string,
+  choice: string,
+): Notification | null {
+  const result = db
+    .prepare(
+      `UPDATE notifications
+       SET approval_delivery = 'applied', response_applied_at = ?
+       WHERE id = ?
+         AND approval_delivery = 'recorded'
+         AND responded_with = ?`,
+    )
+    .run(new Date().toISOString(), id, choice);
+  if (result.changes !== 1) return null;
+  return getNotification(db, id);
+}
+
+/** True when a recorded choice can still be attached after runtime recovery. */
+export function hasRecoverableApprovalOwner(db: Db, id: string): boolean {
+  const task = db
+    .prepare(
+      `SELECT 1
+       FROM notifications n
+       JOIN tasks t ON t.id = n.task_id
+       WHERE n.id = ?
+         AND n.approval_key IS NOT NULL
+         AND t.status IN ('in_progress', 'in_review')`,
+    )
+    .get(id);
+  if (task) return true;
+  return Boolean(
+    db
+      .prepare(
+        `SELECT 1 FROM rollback_jobs
+         WHERE approval_notification_id = ?
+           AND status NOT IN ('completed', 'rejected', 'conflicted', 'failed')`,
+      )
+      .get(id),
+  );
+}
+
+/** A recorded response with no live or recoverable owner is terminal, but its
+ * human choice remains visible and is never labeled as applied. */
+export function expireRecordedApprovalNoOwner(
+  db: Db,
+  id: string,
+): Notification | null {
+  return db.transaction(() => {
+    const current = getNotification(db, id);
+    if (!current || current.approvalDelivery !== "recorded") return null;
+    const changed = db
+      .prepare(
+        `UPDATE notifications
+         SET approval_delivery = 'expired_no_owner'
+         WHERE id = ? AND approval_delivery = 'recorded'`,
+      )
+      .run(id);
+    if (changed.changes !== 1) return null;
+    createAuditEntry(db, {
+      projectId: current.projectId,
+      taskId: current.taskId,
+      kind: "approval_delivery_expired",
+      actor: "engine",
+      summary: `${current.title} → ${current.respondedWith ?? "unknown"} (not applied — no owner)`,
+      detail: { approvalNotificationId: id },
+    });
+    return getNotification(db, id);
+  })();
+}
+
+/** Compatibility helper for already-owned delivery sites. New route paths
+ * must use recordApprovalResponse() before releasing a waiter. */
 export function respondToNotification(
   db: Db,
   id: string,
   choice: string,
 ): Notification | null {
-  db.prepare("UPDATE notifications SET responded_with = ? WHERE id = ?").run(choice, id);
-  const row = db.prepare("SELECT * FROM notifications WHERE id = ?").get(id) as
-    | Record<string, unknown>
-    | undefined;
-  return row ? mapNotification(row) : null;
+  const recorded = recordApprovalResponse(db, id, choice);
+  if (
+    recorded.outcome !== "recorded" &&
+    recorded.outcome !== "retry_recorded" &&
+    recorded.outcome !== "already_applied"
+  ) {
+    return recorded.notification;
+  }
+  return markApprovalApplied(db, id, choice) ?? recorded.notification;
 }
 
 /** Terminal response recorded when hard Stop aborts a live approval waiter. */
@@ -1791,37 +2160,39 @@ export function cancelPendingApproval(
   const result = db
     .prepare(
       `UPDATE notifications
-       SET responded_with = ?
+       SET responded_with = ?, approval_delivery = 'cancelled',
+           response_recorded_at = ?
        WHERE id = ?
          AND requires_approval = 1
-         AND responded_with IS NULL`,
+         AND responded_with IS NULL
+         AND approval_delivery = 'pending'`,
     )
-    .run(CANCELLED_STOP, id);
+    .run(CANCELLED_STOP, new Date().toISOString(), id);
   return result.changes === 1 ? getNotification(db, id) : null;
 }
 
 /**
- * The literal `responded_with` value stamped on every still-pending
- * approval at boot (B10) — the process that would have resolved them (the
- * `EngineRunner.pendingApprovals` promise) died with the previous process,
- * so nothing is actually waiting on them anymore.
+ * The legacy `responded_with` value used only for an unkeyed pre-O14 pending
+ * row. Keyed pending/recorded rows now reattach after restart instead.
  */
 export const EXPIRED_RESTART = "expired_restart";
 
 /**
- * On boot, mark every still-unresolved approval notification as expired: the
- * in-memory resolver each was blocking on lived only in the previous
- * process, so after a restart there is nothing left to unblock even though
- * the notification still looks live (dead Approve/Reject buttons in the UI
- * and in any already-sent Telegram message). Returns the number of rows
- * updated.
+ * Compatibility migration/helper: expire only pending rows that lack O14's
+ * durable approval identity. New engine-created approvals are never swept.
  */
 export function expireStaleApprovals(db: Db): number {
   const result = db
     .prepare(
-      "UPDATE notifications SET responded_with = ? WHERE requires_approval = 1 AND responded_with IS NULL",
+      `UPDATE notifications
+       SET responded_with = ?, approval_delivery = 'expired_no_owner',
+           response_recorded_at = ?
+       WHERE requires_approval = 1
+         AND responded_with IS NULL
+         AND approval_delivery = 'pending'
+         AND approval_key IS NULL`,
     )
-    .run(EXPIRED_RESTART);
+    .run(EXPIRED_RESTART, new Date().toISOString());
   return result.changes;
 }
 

@@ -198,10 +198,12 @@ function seedNotification(
     requiresApproval: opts.requiresApproval,
     options: opts.requiresApproval ? ["approve", "reject"] : undefined,
   });
+  if (opts.respondedWith) {
+    repo.respondToNotification(db, n.id, opts.respondedWith);
+  }
   const createdAt = new Date(Date.now() - opts.ageMs).toISOString();
-  db.prepare("UPDATE notifications SET created_at = ?, responded_with = ? WHERE id = ?").run(
+  db.prepare("UPDATE notifications SET created_at = ? WHERE id = ?").run(
     createdAt,
-    opts.respondedWith ?? null,
     n.id,
   );
 }
@@ -280,6 +282,24 @@ test("pruneNotifications: never deletes an old pending approval", () => {
   const deleted = repo.pruneNotifications(db, 30);
   assert.equal(deleted, 0);
   assert.notEqual(repo.getNotification(db, "old-pending"), null);
+});
+
+test("O14: pruneNotifications preserves an old recorded choice until delivery", () => {
+  const db = setup();
+  seedNotification(db, {
+    id: "old-recorded",
+    requiresApproval: true,
+    ageMs: 90 * DAY_MS,
+  });
+  assert.equal(
+    repo.recordApprovalResponse(db, "old-recorded", "approve").outcome,
+    "recorded",
+  );
+  assert.equal(repo.pruneNotifications(db, 30), 0);
+  assert.equal(
+    repo.getNotification(db, "old-recorded")?.approvalDelivery,
+    "recorded",
+  );
 });
 
 test("pruneNotifications: a resolved-but-old approval is fair game (only unresponded ones are exempt)", () => {
