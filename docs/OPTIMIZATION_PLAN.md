@@ -628,6 +628,19 @@ independent merged-main verification remain outstanding and must be appended
 without rewriting this pre-merge evidence. No live deployment is required for
 this engine-only serialization boundary.
 
+**Status:** completed in
+[#218](https://github.com/IngeniousArtist/hoopedorc/pull/218)
+(`a1609a5`). The hosted Linux `build-and-test` check passed in 2m09s. After
+merge, local `main` and `origin/main` were independently confirmed clean and
+equal at that squash commit; the engine suite passed 222/222 and the server
+suite passed 264/264 again from the merged tree. This doc-only status follow-up
+also passed typecheck, build, lint at the unchanged 340-finding baseline,
+engine 222/222, adapters 12/12, server 264/264, web 27/27, E2E 16/16 at
+360/390/768/1280/1440 px, and `git diff --check`. No live deployment is
+required because O4 changes only the engine's local Git serialization and
+cleanup boundary; temporary real repositories remain the authoritative
+concurrency and failure-recovery verification.
+
 **Fix risk:** low; watch for over-broad locking slowing task bursts.
 
 ### O5. Destructive controls use `window.confirm` and can silently no-op — HIGH (robustness/ux)
