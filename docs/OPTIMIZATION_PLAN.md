@@ -961,12 +961,56 @@ multibyte JSON), subject to the target-host memory budget. Reuse the managed
 process byte cap and return a typed, actionable limit error; do not silently
 truncate JSON into a misleading parser failure.
 
+**Implementation decision (2026-08-11):** a read-only measurement on the
+authorized `ubuntu@hooped` deployment emitted byte counts only. Across its
+stored production evidence, the largest archived assistant reply was 726
+bytes, the largest deconstructed-plan section was 3,883 bytes, the largest
+complete planning-session archive was 6,243 bytes, and the committed PRD was
+3,008 bytes. No active deconstruction draft remained in SQLite. Choose a 4
+MiB inclusive planner-output limit: it is more than 670 times the largest
+whole stored session and more than 1,000 times the deconstructed section,
+while bounding one captured CLI channel to under one percent of the service
+unit's documented optional 512 MiB memory cap. Codex's JSONL stdout and final
+message file are separate channels and each receives the same bound.
+
+Keep ownership in `planner.ts`. Every chat, legacy-plan, first deconstruction,
+and JSON-repair invocation receives the same fixed limit. Because the shared
+managed-process rail terminates when its internal threshold is reached, pass
+one guard byte beyond the public limit so exactly 4 MiB succeeds and the first
+byte over terminates. Before reading Codex's separately written final-message
+file, check its byte size and refuse an oversized file without loading it.
+Normalize both process-output and Codex-file violations to one exported
+`PlannerOutputLimitError` whose message names the runner and 4 MiB limit; the
+existing invocation ledger records one failed terminal and the route returns
+an actionable 502 instead of entering JSON repair. A parse-triggered retry
+gets a fresh identical cap and cannot bypass the bound.
+
+No API shape, persistence, timer, queue, cache, retry count, model routing,
+CLI argument, or output parser changes. Concurrent requests own independent
+bounded processes; cancellation and the existing process-group SIGTERM →
+SIGKILL settlement remain authoritative. Rollback is the fixed limit, typed
+normalization, Codex pre-read check, tests, and this documentation. Real fake
+CLI processes cover all three runner boundaries without spending an
+authenticated model call; no deployment change is required.
+
 **Likely files:** `packages/server/src/planner.ts`, planner tests.
 
 **Acceptance:** the chosen byte value and observed maximum are recorded in the
 PR; exact-boundary, one-byte-over, multibyte, normal-plan, and retry cases are
-tested; cap termination settles the whole process group and reports the limit;
-normal plans are unaffected; full gates green.
+tested across the process-output and Codex-file paths; cap termination settles
+the whole process group, records one failed invocation, and reports the runner
+plus 4 MiB limit; normal plans are unaffected; full gates green.
+
+Pre-fix, the exact 4 MiB multibyte response completed normally, while three
+regressions failed: a one-byte-over Claude response survived until its
+resistant process group exited naturally, Codex loaded and returned a
+4-MiB-plus-one final-message file, and a JSON-repair retry accepted an
+oversized result. With the fixed bound, the focused planner file passes 45/45,
+including all four O11 cases. Full local verification passes typecheck, build,
+lint (150 files; the exact 338 legacy findings still match the non-increasing
+baseline), engine 231/231, adapters 15/15, server 309/309, web 28/28, E2E
+16/16 at 360/390/768/1280/1440 px, and `git diff --check`. CI, merge, and
+independent merged-main verification remain to be recorded.
 
 **Fix risk:** low (set the cap comfortably above real deconstruct output).
 
