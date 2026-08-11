@@ -44,6 +44,31 @@ async function gh(
   return stdout;
 }
 
+type GhCommand = (
+  args: string[],
+  cwd?: string,
+  signal?: AbortSignal,
+) => Promise<string>;
+
+type Delay = (ms: number, signal?: AbortSignal) => Promise<void>;
+
+export interface GitServiceRuntime {
+  runGh: GhCommand;
+  delay: Delay;
+}
+
+type PullRequestState =
+  | { state: "OPEN" | "CLOSED"; mergedAt: null; mergeCommit: null }
+  | {
+      state: "MERGED";
+      mergedAt: string;
+      mergeCommit: { oid: string };
+    };
+
+const PR_STATE_PROBE_DELAYS_MS = [1_000, 2_000] as const;
+const MERGE_ATTEMPTS = 3;
+const MERGE_RETRY_DELAY_MS = 3_000;
+
 export type GitOperationStage =
   | "inspect"
   | "fetch"
@@ -65,6 +90,41 @@ function processErrorDetail(err: unknown): string {
   );
 }
 
+function parsePullRequestState(output: string): PullRequestState {
+  const parsed: unknown = JSON.parse(output);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("PR state response is not an object");
+  }
+  const value = parsed as Record<string, unknown>;
+  const { state, mergedAt, mergeCommit } = value;
+  if (state !== "OPEN" && state !== "CLOSED" && state !== "MERGED") {
+    throw new Error(`PR state response has an unknown state: ${String(state)}`);
+  }
+  if (state === "MERGED") {
+    const oid =
+      mergeCommit && typeof mergeCommit === "object" && !Array.isArray(mergeCommit)
+        ? (mergeCommit as Record<string, unknown>).oid
+        : undefined;
+    if (
+      typeof mergedAt !== "string" ||
+      mergedAt.trim() === "" ||
+      typeof oid !== "string" ||
+      oid.trim() === ""
+    ) {
+      throw new Error("MERGED PR state is missing merge timestamp or commit evidence");
+    }
+    return {
+      state,
+      mergedAt,
+      mergeCommit: { oid },
+    };
+  }
+  if (mergedAt !== null || mergeCommit !== null) {
+    throw new Error(`${state} PR state contains unexpected merge evidence`);
+  }
+  return { state, mergedAt, mergeCommit };
+}
+
 /** B39: infrastructure failures remain machine-identifiable while retaining
  * the underlying Git/OS detail needed for an operator to fix them. */
 export class GitOperationError extends Error {
@@ -77,6 +137,21 @@ export class GitOperationError extends Error {
   ) {
     super(
       `${stage}: ${message}${originalError ? ` (${processErrorDetail(originalError)})` : ""}`,
+    );
+  }
+}
+
+/** O7: GitHub state could not be confirmed, so callers may safely retry the
+ * task but must never infer that the PR merged from CLI error text. */
+export class PullRequestStateError extends GitOperationError {
+  override name = "PullRequestStateError";
+  readonly retryable = true;
+
+  constructor(readonly prNumber: number, originalError?: unknown) {
+    super(
+      "merge",
+      `could not confirm the authoritative state of PR #${prNumber}`,
+      originalError,
     );
   }
 }
@@ -130,9 +205,16 @@ function safeRepositoryPath(
 }
 
 export class GitServiceImpl implements GitService {
+  private readonly runGh: GhCommand;
+  private readonly delay: Delay;
+
   constructor(
     private readonly sharedRepositoryLock: RepositoryLock = repositoryLock,
-  ) {}
+    runtime: Partial<GitServiceRuntime> = {},
+  ) {
+    this.runGh = runtime.runGh ?? gh;
+    this.delay = runtime.delay ?? abortableDelay;
+  }
 
   async ensureClone(project: Project, signal?: AbortSignal): Promise<void> {
     await this.sharedRepositoryLock.run(project.localPath, async () => {
@@ -305,7 +387,7 @@ export class GitServiceImpl implements GitService {
       "\n\n## Acceptance Criteria\n" +
       task.acceptanceCriteria.map((c) => `- ${c}`).join("\n");
 
-    const output = await gh(
+    const output = await this.runGh(
       [
         "pr",
         "create",
@@ -335,35 +417,18 @@ export class GitServiceImpl implements GitService {
 
   async mergePr(project: Project, prNumber: number, signal?: AbortSignal): Promise<void> {
     // Restart idempotency: a process can die after GitHub merged the PR but
-    // before the durable caller records completion. Treat that state as done
-    // instead of trying to merge the already-merged PR again.
-    let alreadyMerged = false;
-    try {
-      const state = (
-        await gh(
-          [
-            "pr",
-            "view",
-            String(prNumber),
-            "--repo",
-            project.repoUrl,
-            "--json",
-            "state",
-            "--jq",
-            ".state",
-          ],
-          undefined,
-          signal,
-        )
-      ).trim();
-      alreadyMerged = state === "MERGED";
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      // A transient state lookup must not prevent the normal merge path.
-    }
-    if (alreadyMerged) {
+    // before the durable caller records completion. Confirm that state from
+    // structured evidence instead of inferring it from a merge-command error.
+    const initialState = await this.probePullRequestState(project, prNumber, signal);
+    if (initialState.state === "MERGED") {
       await this.syncPrimaryAfterMerge(project, prNumber);
       return;
+    }
+    if (initialState.state === "CLOSED") {
+      throw new GitOperationError(
+        "merge",
+        `PR #${prNumber} is closed without authoritative merge evidence`,
+      );
     }
 
     // GitHub computes a PR's mergeability asynchronously; for the first few
@@ -376,9 +441,9 @@ export class GitServiceImpl implements GitService {
     // Even once mergeable, the merge call can hit a transient API state —
     // retry a couple of times with a short backoff before giving up.
     let lastErr: unknown;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < MERGE_ATTEMPTS; attempt++) {
       try {
-        await gh([
+        await this.runGh([
           "pr",
           "merge",
           String(prNumber),
@@ -387,20 +452,37 @@ export class GitServiceImpl implements GitService {
           "--repo",
           project.repoUrl,
         ], undefined, signal);
-        lastErr = undefined;
-        break;
+        await this.syncPrimaryAfterMerge(project, prNumber);
+        return;
       } catch (err) {
         if (signal?.aborted) throw err;
         lastErr = err;
-        await abortableDelay(3000, signal);
+        const followUpState = await this.probePullRequestState(
+          project,
+          prNumber,
+          signal,
+        );
+        if (followUpState.state === "MERGED") {
+          await this.syncPrimaryAfterMerge(project, prNumber);
+          return;
+        }
+        if (followUpState.state === "CLOSED") {
+          throw new GitOperationError(
+            "merge",
+            `PR #${prNumber} closed after the merge command failed`,
+            err,
+          );
+        }
+        if (attempt + 1 < MERGE_ATTEMPTS) {
+          await this.delay(MERGE_RETRY_DELAY_MS, signal);
+        }
       }
     }
-    if (lastErr) throw lastErr;
-
-    // The GitHub merge is already durable. Refresh the primary clone, but do
-    // not turn a remotely completed task into a failure if this housekeeping
-    // step fails; later strict primary-clone writes fetch again.
-    await this.syncPrimaryAfterMerge(project, prNumber);
+    throw new GitOperationError(
+      "merge",
+      `could not merge PR #${prNumber} after ${MERGE_ATTEMPTS} attempts`,
+      lastErr,
+    );
   }
 
   async appendChangelogEntry(
@@ -548,7 +630,7 @@ export class GitServiceImpl implements GitService {
       // writing this, per the plan's instruction not to trust assumptions
       // about CLI exit-code semantics.
       try {
-        const stdout = await gh([
+        const stdout = await this.runGh([
           "pr",
           "checks",
           String(prNumber),
@@ -580,7 +662,7 @@ export class GitServiceImpl implements GitService {
         // over one bad poll.
       }
       if (Date.now() - start >= timeoutMs) return "timeout";
-      await abortableDelay(POLL_MS, signal);
+      await this.delay(POLL_MS, signal);
     }
   }
 
@@ -754,6 +836,40 @@ export class GitServiceImpl implements GitService {
     }
   }
 
+  private async probePullRequestState(
+    project: Project,
+    prNumber: number,
+    signal?: AbortSignal,
+  ): Promise<PullRequestState> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= PR_STATE_PROBE_DELAYS_MS.length; attempt++) {
+      try {
+        const output = await this.runGh(
+          [
+            "pr",
+            "view",
+            String(prNumber),
+            "--repo",
+            project.repoUrl,
+            "--json",
+            "state,mergedAt,mergeCommit",
+          ],
+          undefined,
+          signal,
+        );
+        return parsePullRequestState(output);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        lastErr = err;
+        const delayMs = PR_STATE_PROBE_DELAYS_MS[attempt];
+        if (delayMs !== undefined) {
+          await this.delay(delayMs, signal);
+        }
+      }
+    }
+    throw new PullRequestStateError(prNumber, lastErr);
+  }
+
   /**
    * Poll a PR's GitHub-computed mergeability until it's no longer UNKNOWN.
    * Resolves on MERGEABLE; throws on CONFLICTING. On persistent UNKNOWN it
@@ -768,7 +884,7 @@ export class GitServiceImpl implements GitService {
       let state = "UNKNOWN";
       try {
         state = (
-          await gh([
+          await this.runGh([
             "pr",
             "view",
             String(prNumber),
@@ -790,7 +906,7 @@ export class GitServiceImpl implements GitService {
           `PR #${prNumber} conflicts with ${project.defaultBranch} and can't be auto-merged`,
         );
       }
-      await abortableDelay(2000, signal); // UNKNOWN — give GitHub a moment to compute
+      await this.delay(2000, signal); // UNKNOWN — give GitHub a moment to compute
     }
   }
 
@@ -800,7 +916,7 @@ export class GitServiceImpl implements GitService {
     // the head branch alone would auto-close the PR but silently.
     if (task.prNumber != null) {
       try {
-        await gh([
+        await this.runGh([
           "pr",
           "close",
           String(task.prNumber),
@@ -842,7 +958,7 @@ export class GitServiceImpl implements GitService {
     signal?: AbortSignal,
   ): Promise<string> {
     const mergeCommit = (
-      await gh(
+      await this.runGh(
         [
           "pr",
           "view",
@@ -1087,7 +1203,7 @@ export class GitServiceImpl implements GitService {
     signal?: AbortSignal,
   ): Promise<number> {
     const existing = (
-      await gh(
+      await this.runGh(
         [
           "pr",
           "list",
@@ -1123,7 +1239,7 @@ export class GitServiceImpl implements GitService {
     const reasons = job.decision?.reasons?.length
       ? job.decision.reasons.map((reason) => `- ${reason}`).join("\n")
       : "- validator supplied no reasons";
-    const output = await gh(
+    const output = await this.runGh(
       [
         "pr",
         "create",
@@ -1155,7 +1271,7 @@ export class GitServiceImpl implements GitService {
   ): Promise<void> {
     if (job.rollbackPrNumber != null) {
       const state = (
-        await gh(
+        await this.runGh(
           [
             "pr",
             "view",
@@ -1177,7 +1293,7 @@ export class GitServiceImpl implements GitService {
           `Rollback PR #${job.rollbackPrNumber} was already merged and cannot be rejected`,
         );
       }
-      await gh(
+      await this.runGh(
         [
           "pr",
           "close",

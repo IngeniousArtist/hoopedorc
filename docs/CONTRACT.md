@@ -66,6 +66,10 @@ lazily on their first session read.
 `GitOperationError.stage` identifies `inspect`, `fetch`, `checkout`, `merge`,
 `write`, `stage`, `commit`, `push`, or `cleanup`. `commitAll()` treats only a
 confirmed empty porcelain status as a no-op; other failures propagate.
+`PullRequestStateError` is the retryable `merge` subtype used when GitHub PR
+state remains unavailable, unknown, malformed, or lacks authoritative merge
+evidence after bounded probes; callers must not infer success from CLI error
+text.
 Cosmetic changelog publication and disposable worktree/branch cleanup remain
 best-effort, but their callers emit warnings instead of hiding failures.
 

@@ -742,6 +742,43 @@ the same command error followed by `OPEN`, `CLOSED`, malformed JSON, or probe
 exhaustion is not success; retry/backoff is bounded and cancellation-aware;
 normal merge/local-sync paths are unchanged; full gates green.
 
+**Implementation decision (2026-08-11):** keep O7 inside the engine Git
+service. Add one structured PR-state parser and an authoritative probe that
+attempts `gh pr view --json state,mergedAt,mergeCommit` at most three times
+with bounded abortable backoff. `MERGED` is accepted only when both a merge
+timestamp and merge-commit OID are present; `OPEN` continues the existing
+mergeability/merge path; `CLOSED` fails immediately; malformed, unknown, or
+unavailable state exhausts as an exported typed retryable error. Retain three
+merge-command attempts and the existing primary-clone refresh. After each
+failed merge command, probe again before deciding whether to retry: confirmed
+`MERGED` succeeds, `OPEN` permits another bounded merge attempt, and every
+other result fails closed. Inject only the existing `gh` command and delay
+boundaries for deterministic regression tests. No API, database, UI,
+orchestrator, cleanup-policy, or deployment behavior is in scope.
+
+**Implementation result (2026-08-11, pre-merge):** `mergePr` now requires a
+bounded structured state probe before issuing a merge and after every failed
+merge command. It accepts restart or ambiguous-command success only for
+`MERGED` plus non-empty `mergedAt` and `mergeCommit.oid` evidence; `CLOSED`
+fails immediately, `OPEN` alone permits the existing bounded merge path, and
+unknown, malformed, missing-evidence, or unavailable state becomes a typed
+retryable `PullRequestStateError`. No CLI error string is treated as proof.
+The installed `gh` 2.96.0 was checked against merged PR #219 and returned the
+exact structured shape used by the probe. The normal three merge attempts,
+abortable waits, and best-effort locked primary refresh remain intact.
+
+Seven focused O7 scenarios (nine Node test results including table subtests)
+pass for two transient reads before restart recovery, ambiguous command
+failure followed by a real remote merge and local refresh, misleading
+"already merged" text followed by `OPEN`, `CLOSED`, malformed JSON, exhausted
+state access, missing merge evidence, and cancellation during probe backoff.
+The full local gates pass typecheck, build, lint at the reduced 339-finding
+baseline, engine 231/231, adapters 12/12, server 264/264, web 27/27, E2E 16/16
+at 360/390/768/1280/1440 px, and `git diff --check`. CI, merge commit, and
+independent merged-main verification remain outstanding and must be appended
+without rewriting this pre-merge evidence. No live deployment is required for
+this engine-only GitHub confirmation boundary.
+
 **Fix risk:** low.
 
 ### O8. Killed/stuck runs report zero cost — MEDIUM (correctness/accounting)
