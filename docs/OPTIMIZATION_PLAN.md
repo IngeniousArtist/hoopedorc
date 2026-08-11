@@ -1138,6 +1138,17 @@ without rewriting this pre-merge evidence. No live deployment is required for
 these deterministic SQLite, route-injection, engine-restart, and browser
 boundaries.
 
+**Status:** completed in
+[#224](https://github.com/IngeniousArtist/hoopedorc/pull/224)
+(`ef8e888`). Linux `build-and-test` CI passed in 2m13s. After merge, local
+`main` and `origin/main` independently matched the squash commit, the engine
+suite passed 231/231, and the server suite passed 279/279. The docs-only
+evidence branch also passed typecheck, build, lint at the 338-finding
+baseline, engine 231/231, adapters 12/12, server 279/279, web 28/28, E2E
+16/16 at 360/390/768/1280/1440 px, and `git diff --check`. Its CI and merge
+commit remain outstanding and will be recorded by the PR itself without
+altering the implementation evidence above.
+
 **Fix risk:** medium; the recovery tests are mandatory.
 
 ### O15. Telegram poll offset is memory-only; commands can re-execute after restart — MEDIUM (robustness)
