@@ -731,6 +731,17 @@ merged-main verification remain outstanding and must be appended without
 rewriting this pre-merge evidence. No EC2 check is required for this entirely
 browser-local boundary.
 
+**Status:** completed in
+[#240](https://github.com/IngeniousArtist/hoopedorc/pull/240)
+(`5ddec2a`). Linux `build-and-test` CI passed at the unchanged reviewed head
+`b5fa8fc` in 2m15s. After squash merge, local `main` and `origin/main` were
+independently confirmed clean and equal at full SHA
+`5ddec2ae5c15bd62a5333f08d4c6cee8da8ab122`; the reviewed and merged web/doc
+trees had no diff. The merged web suite passed 35/35, and the critical real-
+browser Settings/Stop-all plus nested rollback failure/retry checks passed 2/2
+again. O26's dialog-semantics sub-item is complete in the same PR; its other
+independently owned bullets remain pending with their specified items.
+
 ### O6. Board state diverges after WS reconnect or external task creation — MEDIUM-HIGH (correctness)
 
 **Problem:** two related gaps in `apps/web/src/pages/Board.tsx`:
@@ -2028,6 +2039,11 @@ keyboard walkthrough and full gates green for each owning PR.
 dialog foundation and its migration of `TaskDrawer` and `TokenGate` in this
 PR. The toast-timer, LogPanel, dead-button, and multi-project WebSocket bullets
 remain paired with their separately ordered owning items as specified above.
+
+**Dialog sub-item status:** completed with O5 in
+[#240](https://github.com/IngeniousArtist/hoopedorc/pull/240)
+(`5ddec2a`); merge and post-merge evidence are recorded under O5. This does not
+mark the remaining O26 bullets complete.
 
 ---
 
