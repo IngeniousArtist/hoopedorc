@@ -1500,6 +1500,36 @@ callback attempt, no fabricated failed/$0 callback, and a typed failure that
 halts the owning planner flow; exactly-once ledger tests remain green; full
 gates green.
 
+**Implementation decision (2026-08-11):** keep log buffering in memory and
+make its failure mode explicit and bounded: retain the latest 1,000 unsaved
+lines, retry a failed SQLite batch after five seconds, and rate-limit the
+credential-free stderr/reporter signal to once per minute. The one timer is
+always `unref()`ed; a hard threshold may flush a healthy queue immediately,
+but new lines cannot bypass a scheduled failure retry and hammer SQLite.
+Shutdown clears the timer and makes one final synchronous attempt without
+arming work past database close. This does not add a second durable log spool;
+the existing SQLite table remains authoritative.
+
+Move only the completed accounting callback outside `runPlannerJson`'s model
+execution catch. Any sink exception is normalized to `InvocationLedgerError`,
+the completed event is attempted once with the real usage, and the owning
+planner exits without a repair/model retry or a fabricated failed/$0 terminal.
+Actual model execution failures retain their one failed terminal callback.
+Regression tests use a failing SQLite trigger and a real fake CLI, covering
+rate limiting, the 1,000-line cap, recovery, timer settlement, one process
+execution, one completed callback, and typed propagation. No API, WebSocket,
+schema, migration, or deployment behavior changes; rollback is the focused
+server/test/docs commit and no live-system smoke is required.
+
+Pre-fix, the focused O20 regressions failed because the flush timer remained
+referenced (`true !== false`) and the completed-sink exception was not an
+`InvocationLedgerError`; after implementation both passed 2/2. Full local
+verification passed typecheck, build, lint across 150 files with the unchanged
+338-finding baseline, engine 231/231, adapters 12/12, server 298/298, web
+28/28, E2E 16/16 at 360/390/768/1280/1440 px, and `git diff --check`. CI,
+merge commit, and independent merged-main verification remain outstanding and
+must be appended without rewriting this pre-merge evidence.
+
 **Fix risk:** low.
 
 ### O21. Engine lifecycle hygiene: unpruned `mergeConflicts`, pause/status race — LOW-MEDIUM (robustness)

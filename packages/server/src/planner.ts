@@ -597,6 +597,22 @@ interface ClaudeJsonResult {
 
 export type PlannerInvocationSink = (event: ModelInvocation) => void;
 
+function emitPlannerInvocation(
+  onInvocation: PlannerInvocationSink | undefined,
+  event: ModelInvocation,
+): void {
+  if (!onInvocation) return;
+  try {
+    onInvocation(event);
+  } catch (error) {
+    if (error instanceof InvocationLedgerError) throw error;
+    throw new InvocationLedgerError(
+      `failed to persist ${event.stage} invocation ${event.id} (${event.outcome})`,
+      { cause: error },
+    );
+  }
+}
+
 /** Run `claude -p --output-format json` and return its text + reported cost. */
 async function runClaudeJson(
   prompt: string,
@@ -868,7 +884,7 @@ async function runPlannerJson(
     ModelInvocation,
     "id" | "stage" | "model" | "runner" | "effort" | "startedAt"
   >;
-  onInvocation?.({
+  emitPlannerInvocation(onInvocation, {
     ...base,
     outcome: "running",
     costUsd: 0,
@@ -876,8 +892,8 @@ async function runPlannerJson(
     tokensOut: 0,
     tokensCached: 0,
   });
+  let result: ClaudeJsonResult;
   try {
-    let result: ClaudeJsonResult;
     if (plannerModel.runner === "codex") {
       result = await runCodexJson(
         prompt,
@@ -914,19 +930,8 @@ async function runPlannerJson(
         limits?.maxOutputBytes,
       );
     }
-    onInvocation?.({
-      ...base,
-      endedAt: new Date().toISOString(),
-      outcome: "completed",
-      exitReason: "completed",
-      costUsd: result.costUsd,
-      tokensIn: result.tokensIn,
-      tokensOut: result.tokensOut,
-      tokensCached: result.tokensCached,
-    });
-    return result;
   } catch (err) {
-    onInvocation?.({
+    emitPlannerInvocation(onInvocation, {
       ...base,
       endedAt: new Date().toISOString(),
       outcome: signal?.aborted ? "stopped" : "failed",
@@ -938,6 +943,17 @@ async function runPlannerJson(
     });
     throw err;
   }
+  emitPlannerInvocation(onInvocation, {
+    ...base,
+    endedAt: new Date().toISOString(),
+    outcome: "completed",
+    exitReason: "completed",
+    costUsd: result.costUsd,
+    tokensIn: result.tokensIn,
+    tokensOut: result.tokensOut,
+    tokensCached: result.tokensCached,
+  });
+  return result;
 }
 
 /**
