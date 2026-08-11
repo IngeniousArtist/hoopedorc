@@ -579,6 +579,55 @@ while queued never later executes the mutation; a failed cleanup is observable
 and retryable; different repositories still operate concurrently; the lock
 registry returns to its baseline size after settlement; full gates green.
 
+**Implementation decision (2026-08-11):** add one engine-owned repository-lock
+primitive whose key is the real path of `git rev-parse --git-common-dir`, so
+the primary clone, linked worktrees, and symlinked spellings of either all join
+the same queue while unrelated repositories remain independent. A missing
+clone uses a canonical target-path bootstrap key only for `ensureClone`; every
+existing repository must resolve and validate its common Git directory before
+the mutation can enter the queue. Queue links check cancellation before their
+callback starts, wait for an already-started managed process to settle, and
+delete themselves from the registry when the last waiter settles.
+
+`GitServiceImpl` and `WorktreeManagerImpl` share the module singleton by
+default, with narrow constructor injection retained for deterministic lock
+tests. Worktree creation holds one lock across fetch, deterministic stale
+remote/local branch cleanup, worktree remove/prune/add, and the shared
+`info/exclude` write, then releases it before dependency setup. Failed setup or
+cancellation reacquires a fresh, non-aborted lock for cleanup. Normal removal
+uses the same cleanup routine. Missing worktrees/branches are established by
+Git inspection rather than swallowed mutation errors; a real cleanup failure
+is returned as a typed error carrying both the triggering failure and cleanup
+details, so the persisted task can retry. Real temporary-repository tests will
+cover concurrent create/primary-sync/remove sequences, symlink identity,
+queued cancellation, cross-repository concurrency, observable cleanup failure,
+retry, and registry eviction. No API, persistence, UI, deployment, or live
+production behavior changes are required for O4.
+
+**Implementation result (2026-08-11, pre-merge):** the engine now owns one
+common-Git-directory-keyed lock shared by Git service and worktree manager
+instances. Primary-clone persistence, task commits/pushes/sync, rollback
+preparation, deterministic worktree/ref cleanup, creation, removal, and the
+shared exclude write serialize per repository; dependency installation remains
+outside the lock. Cleanup validates both task and rollback worktree shapes,
+uses Git inspection to distinguish absence from failure, surfaces typed retry
+details, and is audited by the rollback owner instead of swallowed.
+
+Eight focused O4 tests pass for clone-bootstrap identity,
+primary/linked-worktree/symlink identity, queued cancellation,
+unrelated-repository concurrency, four concurrent real worktree pipelines
+interleaved with primary sync and cleanup, typed cleanup failure/repair/retry,
+rollback cleanup, and registry eviction. The full local
+gates pass typecheck, build, lint at the unchanged 340-finding baseline, engine
+222/222, adapters 12/12, server 264/264, web 27/27, E2E 16/16 at
+360/390/768/1280/1440 px, and `git diff --check`. During the full gate, the
+existing F44 server test's external nonexistent-GitHub clone was replaced with
+its existing injected clone-failure seam; this preserves the tested boundary
+while removing DNS/network timing from the gate. CI, merge commit, and
+independent merged-main verification remain outstanding and must be appended
+without rewriting this pre-merge evidence. No live deployment is required for
+this engine-only serialization boundary.
+
 **Fix risk:** low; watch for over-broad locking slowing task bursts.
 
 ### O5. Destructive controls use `window.confirm` and can silently no-op — HIGH (robustness/ux)

@@ -55,6 +55,15 @@ primary clone nor sibling tasks share mutable `node_modules`. Agents themselves
 still run on the host (sandbox phases 2–3 are future work; see
 `docs/specs/sandbox.md`).
 
+Git worktrees isolate task files but still share refs, configuration, and the
+common Git directory. The engine's repository lock resolves that canonical
+common directory for every primary-clone and worktree mutation, so fetch,
+branch/worktree lifecycle, commit, push, primary sync, rollback, and the shared
+`info/exclude` write cannot overlap within one repository. Different
+repositories still run concurrently, queued cancellation never starts later,
+and idle lock entries are evicted. Dependency installation and task-local work
+remain outside this lock.
+
 Every author, validator, documenter, and planner CLI receives the same
 `sanitizedEnv()` boundary: an explicit runtime/config allowlist containing the
 same user's HOME/XDG/CLI config roots, locale, PATH, platform requirements, and

@@ -1312,7 +1312,17 @@ export class EngineRunner {
     };
     const cleanupWorktree = async (): Promise<void> => {
       const task = this.rollbackTask(sourceTask, refresh());
-      await deps.worktrees.remove(project, task).catch(() => {});
+      try {
+        await deps.worktrees.remove(project, task);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        audit(
+          "rollback_cleanup_failed",
+          `Rollback worktree cleanup remains retryable: ${message}`,
+          { worktreePath: task.worktreePath, branch: task.branch },
+        );
+        this.logError(project.id, `Rollback ${job.id} cleanup: ${message}`);
+      }
     };
     let preparedWorktree = false;
 

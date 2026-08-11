@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -18,19 +19,23 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
 import type { Project, ProjectConfig, Task } from "@orc/types";
+import { GitServiceImpl } from "./git-service.js";
 import { detectDestructiveChanges } from "./orchestrator.js";
+import { RepositoryLock } from "./repository-lock.js";
 import {
   frozenInstallArgs,
   inspectNodeDependencies,
   nodeDependencyFingerprint,
   type NodePackageManager,
   type SetupProcessRequest,
+  WorktreeCleanupError,
   WorktreeManagerImpl,
 } from "./worktree-manager.js";
 
 const pexecFile = promisify(execFile);
-async function git(args: string[], cwd: string): Promise<void> {
-  await pexecFile("git", args, { cwd });
+async function git(args: string[], cwd: string): Promise<string> {
+  const { stdout } = await pexecFile("git", args, { cwd });
+  return stdout.trim();
 }
 
 function project(localPath: string, config?: ProjectConfig): Project {
@@ -49,6 +54,32 @@ function project(localPath: string, config?: ProjectConfig): Project {
 
 function tmpDir(name: string): string {
   return mkdtempSync(join(tmpdir(), `hoopedorc-${name}-`));
+}
+
+async function sharedRepositoryFixture(name: string): Promise<{
+  project: Project;
+  root: string;
+}> {
+  const root = tmpDir(`o4-${name}`);
+  const primary = join(root, "primary");
+  const remote = join(root, "origin.git");
+  mkdirSync(primary);
+  await git(["init", "--bare", "-q", remote], root);
+  await git(["init", "-q", "-b", "main"], primary);
+  await git(["config", "user.email", "o4@test.local"], primary);
+  await git(["config", "user.name", "O4 Test"], primary);
+  writeFileSync(join(primary, "README.md"), "shared metadata fixture\n");
+  await git(["add", "README.md"], primary);
+  await git(["commit", "-q", "-m", "fixture"], primary);
+  await git(["remote", "add", "origin", remote], primary);
+  await git(["push", "-q", "-u", "origin", "main"], primary);
+  return {
+    root,
+    project: {
+      ...project(primary),
+      repoUrl: remote,
+    },
+  };
 }
 
 type TestWorktreeManager = {
@@ -136,9 +167,9 @@ function writeNodeProject(
   writeFileSync(join(dir, lockfile), lockContent);
 }
 
-function worktreeTask(path: string): Task {
+function worktreeTask(path: string, id = "t1"): Task {
   return {
-    id: "t1",
+    id,
     projectId: "p1",
     title: "task",
     description: "",
@@ -709,4 +740,151 @@ test("S9: restoreToHead removes tracked, untracked, and nested-repository gate o
   assert.equal(existsSync(join(repo, "generated.txt")), false);
   assert.equal(existsSync(join(repo, "nested")), false);
   assert.deepEqual((await runner.worktreeChanges(task)).value, []);
+});
+
+test("O4: concurrent create, primary sync, and cleanup leave no shared Git debris", async () => {
+  const fixture = await sharedRepositoryFixture("concurrent");
+  const sharedLock = new RepositoryLock();
+  const manager = new WorktreeManagerImpl(
+    { sandboxGates: "off" },
+    {},
+    sharedLock,
+  );
+  const service = new GitServiceImpl(sharedLock);
+  const tasks = Array.from({ length: 4 }, (_, index) =>
+    worktreeTask("", `concurrent-${index}`));
+
+  const taskPipelines = tasks.map(async (task) => {
+    const created = await manager.create(fixture.project, task);
+    task.branch = created.branch;
+    task.worktreePath = created.path;
+    await manager.remove(fixture.project, task);
+  });
+  const primarySync = service.commitFiles(
+    fixture.project,
+    [{ path: "docs/PRD.md", content: "# O4 lock fixture" }],
+    "O4 shared primary sync",
+  );
+  await Promise.all([...taskPipelines, primarySync]);
+
+  const worktrees = await git(
+    ["worktree", "list", "--porcelain"],
+    fixture.project.localPath,
+  );
+  const branches = await git(
+    ["for-each-ref", "--format=%(refname)", "refs/heads/orc"],
+    fixture.project.localPath,
+  );
+  assert.equal(
+    worktrees.split("\n").filter((line) => line.startsWith("worktree ")).length,
+    1,
+  );
+  assert.equal(branches, "");
+  assert.equal(existsSync(join(fixture.project.localPath, ".git", "index.lock")), false);
+  assert.equal(await git(["fsck", "--no-dangling"], fixture.project.localPath), "");
+  assert.equal(sharedLock.activeKeyCount, 0);
+});
+
+test("O4: queued create cancellation never creates its branch or worktree", async () => {
+  const fixture = await sharedRepositoryFixture("cancel");
+  const sharedLock = new RepositoryLock();
+  const manager = new WorktreeManagerImpl(
+    { sandboxGates: "off" },
+    {},
+    sharedLock,
+  );
+  const task = worktreeTask("", "cancelled");
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let started!: () => void;
+  const didStart = new Promise<void>((resolve) => { started = resolve; });
+  const blocker = sharedLock.run(fixture.project.localPath, async () => {
+    started();
+    await gate;
+  });
+  await didStart;
+
+  const controller = new AbortController();
+  const create = manager.create(fixture.project, task, controller.signal);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(create, { name: "AbortError" });
+  release();
+  await blocker;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(existsSync(`${fixture.project.localPath}-wt-${task.id}`), false);
+  assert.equal(
+    await git(
+      ["for-each-ref", "--format=%(refname)", `refs/heads/orc/${task.id}`],
+      fixture.project.localPath,
+    ),
+    "",
+  );
+  assert.equal(sharedLock.activeKeyCount, 0);
+});
+
+test("O4: failed cleanup is typed, leaves retry evidence, and succeeds after repair", async () => {
+  const fixture = await sharedRepositoryFixture("cleanup-retry");
+  const sharedLock = new RepositoryLock();
+  const manager = new WorktreeManagerImpl(
+    { sandboxGates: "off" },
+    {},
+    sharedLock,
+  );
+  const task = worktreeTask("", "cleanup-retry");
+  const created = await manager.create(fixture.project, task);
+  task.branch = created.branch;
+  task.worktreePath = created.path;
+
+  const gitDir = join(fixture.project.localPath, ".git");
+  const unavailableGitDir = join(fixture.root, "git-temporarily-unavailable");
+  renameSync(gitDir, unavailableGitDir);
+  try {
+    await assert.rejects(
+      manager.remove(fixture.project, task),
+      (error: unknown) => error instanceof WorktreeCleanupError &&
+        /could not resolve the common Git directory/i.test(error.message),
+    );
+    assert.equal(existsSync(created.path), true);
+  } finally {
+    renameSync(unavailableGitDir, gitDir);
+  }
+
+  await manager.remove(fixture.project, task);
+  assert.equal(existsSync(created.path), false);
+  assert.equal(
+    await git(
+      ["for-each-ref", "--format=%(refname)", `refs/heads/${created.branch}`],
+      fixture.project.localPath,
+    ),
+    "",
+  );
+  assert.equal(sharedLock.activeKeyCount, 0);
+});
+
+test("O4: cleanup preserves the validated rollback worktree shape", async () => {
+  const fixture = await sharedRepositoryFixture("rollback-shape");
+  const rollbackId = randomUUID();
+  const branch = `orc/rollback-${rollbackId}`;
+  const path = `${fixture.project.localPath}-rollback-${rollbackId}`;
+  await git(
+    ["worktree", "add", path, "-b", branch, "origin/main"],
+    fixture.project.localPath,
+  );
+  const task = worktreeTask(path, randomUUID());
+  task.branch = branch;
+  task.worktreePath = path;
+  const manager = new WorktreeManagerImpl({ sandboxGates: "off" });
+
+  await manager.remove(fixture.project, task);
+
+  assert.equal(existsSync(path), false);
+  assert.equal(
+    await git(
+      ["for-each-ref", "--format=%(refname)", `refs/heads/${branch}`],
+      fixture.project.localPath,
+    ),
+    "",
+  );
 });

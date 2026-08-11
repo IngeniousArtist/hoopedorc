@@ -9,6 +9,10 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { abortableDelay, execManagedProcess } from "@orc/adapters";
 import type { Project, RollbackJob, Task } from "@orc/types";
 import type { GitService } from "./index.js";
+import {
+  RepositoryLock,
+  repositoryLock,
+} from "./repository-lock.js";
 
 // All commands use the managed process runner with argument arrays (no shell), so task titles,
 // descriptions, branch names, and repo URLs can't inject shell commands. Async
@@ -38,59 +42,6 @@ async function gh(
     maxOutputBytes: 64 * 1024 * 1024,
   });
   return stdout;
-}
-
-// Per-repo serialization. Several operations mutate the PRIMARY clone's working
-// tree (checkout main, ff-merge, write+commit+push CHANGELOG/PRD, revert). If
-// two tasks finish at nearly the same time, concurrent git on the same working
-// tree collides on index.lock and one fails. Chaining them per localPath keeps
-// each repo's mutations serialized while different projects still run freely.
-const repoChains = new Map<string, Promise<unknown>>();
-async function withRepoLock<T>(
-  key: string,
-  fn: () => Promise<T>,
-  signal?: AbortSignal,
-): Promise<T> {
-  const prev = repoChains.get(key) ?? Promise.resolve();
-  let started = false;
-  const guarded = () => {
-    signal?.throwIfAborted();
-    started = true;
-    return fn();
-  };
-  const run = prev.then(guarded, guarded);
-  // Swallow rejections on the chain link so one failure doesn't reject the next.
-  repoChains.set(
-    key,
-    run.then(
-      () => undefined,
-      () => undefined,
-    ),
-  );
-  if (!signal) return run;
-  signal.throwIfAborted();
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      fn();
-    };
-    const onAbort = () => {
-      // A queued operation can stop immediately; guarded() will observe the
-      // signal and never run it later. Once fn() has started, however, its
-      // managed child owns settlement and we wait for that child to close.
-      if (!started) {
-        finish(() => reject(new DOMException("The operation was aborted", "AbortError")));
-      }
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    run.then(
-      (value) => finish(() => resolve(value)),
-      (err) => finish(() => reject(err)),
-    );
-  });
 }
 
 export type GitOperationStage =
@@ -179,8 +130,12 @@ function safeRepositoryPath(
 }
 
 export class GitServiceImpl implements GitService {
+  constructor(
+    private readonly sharedRepositoryLock: RepositoryLock = repositoryLock,
+  ) {}
+
   async ensureClone(project: Project, signal?: AbortSignal): Promise<void> {
-    await withRepoLock(project.localPath, async () => {
+    await this.sharedRepositoryLock.run(project.localPath, async () => {
       if (existsSync(project.localPath)) {
         try {
           await git(["remote", "get-url", "origin"], project.localPath, signal);
@@ -190,30 +145,35 @@ export class GitServiceImpl implements GitService {
         }
       }
       await git(["clone", project.repoUrl, project.localPath], undefined, signal);
-    }, signal);
+    }, signal, {
+      allowMissingRepository: true,
+      useCanonicalTargetPath: true,
+    });
   }
 
   async commitAll(worktreePath: string, message: string, signal?: AbortSignal): Promise<void> {
-    try {
-      await git(["add", "-A"], worktreePath, signal);
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      throw new GitOperationError("stage", "could not stage task changes", err);
-    }
-    let status: string;
-    try {
-      status = await git(["status", "--porcelain=v1"], worktreePath, signal);
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      throw new GitOperationError("inspect", "could not verify whether the task has changes", err);
-    }
-    if (!status.trim()) return;
-    try {
-      await git(["commit", "-m", message], worktreePath, signal);
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      throw new GitOperationError("commit", "task commit failed", err);
-    }
+    await this.sharedRepositoryLock.run(worktreePath, async () => {
+      try {
+        await git(["add", "-A"], worktreePath, signal);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new GitOperationError("stage", "could not stage task changes", err);
+      }
+      let status: string;
+      try {
+        status = await git(["status", "--porcelain=v1"], worktreePath, signal);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new GitOperationError("inspect", "could not verify whether the task has changes", err);
+      }
+      if (!status.trim()) return;
+      try {
+        await git(["commit", "-m", message], worktreePath, signal);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new GitOperationError("commit", "task commit failed", err);
+      }
+    }, signal);
   }
 
   /** B39: write one planning artifact set as one commit, then push it before
@@ -246,7 +206,7 @@ export class GitServiceImpl implements GitService {
       throw new GitOperationError("fetch", "could not prepare the project clone", err);
     }
 
-    await withRepoLock(project.localPath, async () => {
+    await this.sharedRepositoryLock.run(project.localPath, async () => {
       let managed = await this.managedRepositoryFiles(
         resolved,
         project.localPath,
@@ -329,12 +289,14 @@ export class GitServiceImpl implements GitService {
   }
 
   async push(worktreePath: string, branch: string, signal?: AbortSignal): Promise<void> {
-    try {
-      await git(["push", "origin", branch], worktreePath, signal);
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      throw new GitOperationError("push", `could not push ${branch}`, err);
-    }
+    await this.sharedRepositoryLock.run(worktreePath, async () => {
+      try {
+        await git(["push", "origin", branch], worktreePath, signal);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new GitOperationError("push", `could not push ${branch}`, err);
+      }
+    }, signal);
   }
 
   async openPr(project: Project, task: Task, signal?: AbortSignal): Promise<number> {
@@ -454,7 +416,7 @@ export class GitServiceImpl implements GitService {
       `- **${task.title}** (${task.difficulty}, ${task.assignedModel}) — ` +
       `${oneLineSummary} — PR #${prNumber}\n`;
 
-    await withRepoLock(project.localPath, async () => {
+    await this.sharedRepositoryLock.run(project.localPath, async () => {
       await this.syncPrimary(project, signal);
 
       let lines: string[];
@@ -505,62 +467,65 @@ export class GitServiceImpl implements GitService {
   ): Promise<"clean" | "conflict"> {
     const wt = task.worktreePath;
     if (!wt || !task.branch) return "clean"; // nothing to sync
-    try {
-      await git(["fetch", "origin", project.defaultBranch], wt, signal);
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      throw new GitOperationError(
-        "fetch",
-        `could not fetch ${project.defaultBranch} before merging the task PR`,
-        err,
-      );
-    }
-    try {
-      // 3-way merge of latest main into the branch. Exits 0 on a clean merge
-      // OR "already up to date"; non-zero only on a real content conflict.
-      await git(
-        ["merge", "--no-edit", `origin/${project.defaultBranch}`],
-        wt,
-        signal,
-      );
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      // Only an actual unmerged path is a content conflict. Identity, hook,
-      // permission, index-lock, and other merge failures are infrastructure
-      // errors and must not masquerade as a clean/retryable conflict.
-      let conflicts = "";
+    const branch = task.branch;
+    return this.sharedRepositoryLock.run(wt, async () => {
       try {
-        conflicts = await git(["diff", "--name-only", "--diff-filter=U"], wt, signal);
-      } catch (inspectError) {
+        await git(["fetch", "origin", project.defaultBranch], wt, signal);
+      } catch (err) {
+        if (signal?.aborted) throw err;
         throw new GitOperationError(
-          "inspect",
-          "could not inspect a failed branch sync",
-          inspectError,
+          "fetch",
+          `could not fetch ${project.defaultBranch} before merging the task PR`,
+          err,
         );
       }
-      if (conflicts.trim()) {
+      try {
+        // 3-way merge of latest main into the branch. Exits 0 on a clean merge
+        // OR "already up to date"; non-zero only on a real content conflict.
+        await git(
+          ["merge", "--no-edit", `origin/${project.defaultBranch}`],
+          wt,
+          signal,
+        );
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        // Only an actual unmerged path is a content conflict. Identity, hook,
+        // permission, index-lock, and other merge failures are infrastructure
+        // errors and must not masquerade as a clean/retryable conflict.
+        let conflicts = "";
         try {
-          await git(["merge", "--abort"], wt, signal);
-        } catch {
-          /* best-effort cleanup; the reported conflict remains the cause */
+          conflicts = await git(["diff", "--name-only", "--diff-filter=U"], wt, signal);
+        } catch (inspectError) {
+          throw new GitOperationError(
+            "inspect",
+            "could not inspect a failed branch sync",
+            inspectError,
+          );
         }
-        return "conflict";
+        if (conflicts.trim()) {
+          try {
+            await git(["merge", "--abort"], wt, signal);
+          } catch {
+            /* best-effort cleanup; the reported conflict remains the cause */
+          }
+          return "conflict";
+        }
+        throw new GitOperationError(
+          "merge",
+          "task branch sync failed without a content conflict",
+          err,
+        );
       }
-      throw new GitOperationError(
-        "merge",
-        "task branch sync failed without a content conflict",
-        err,
-      );
-    }
-    // Push the (possibly merge-commit-bearing) branch so the PR is current.
-    // No-op if the merge changed nothing.
-    try {
-      await git(["push", "origin", task.branch], wt, signal);
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      throw new GitOperationError("push", "could not push the synchronized task branch", err);
-    }
-    return "clean";
+      // Push the (possibly merge-commit-bearing) branch so the PR is current.
+      // No-op if the merge changed nothing.
+      try {
+        await git(["push", "origin", branch], wt, signal);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new GitOperationError("push", "could not push the synchronized task branch", err);
+      }
+      return "clean";
+    }, signal);
   }
 
   async waitForChecks(
@@ -777,7 +742,10 @@ export class GitServiceImpl implements GitService {
     prNumber: number,
   ): Promise<void> {
     try {
-      await withRepoLock(project.localPath, () => this.syncPrimary(project));
+      await this.sharedRepositoryLock.run(
+        project.localPath,
+        () => this.syncPrimary(project),
+      );
     } catch (err) {
       const detail = err instanceof Error ? `: ${err.message}` : "";
       console.warn(
@@ -853,7 +821,9 @@ export class GitServiceImpl implements GitService {
     // PR creation failed), and `--delete-branch` above can itself fail.
     if (task.branch) {
       try {
-        await git(["push", "origin", "--delete", task.branch], project.localPath);
+        await this.sharedRepositoryLock.run(project.localPath, () =>
+          git(["push", "origin", "--delete", task.branch!], project.localPath),
+        );
       } catch (err) {
         const detail = processErrorDetail(err);
         if (!/remote ref does not exist|unable to delete/i.test(detail)) {
@@ -911,7 +881,7 @@ export class GitServiceImpl implements GitService {
       throw new Error(`Invalid rollback source commit: ${sourceCommit}`);
     }
 
-    return withRepoLock(
+    return this.sharedRepositoryLock.run(
       project.localPath,
       async () => {
         await git(
@@ -1224,9 +1194,13 @@ export class GitServiceImpl implements GitService {
       return;
     }
     try {
-      await git(
-        ["push", "origin", "--delete", job.branch],
+      await this.sharedRepositoryLock.run(
         project.localPath,
+        () => git(
+          ["push", "origin", "--delete", job.branch],
+          project.localPath,
+          signal,
+        ),
         signal,
       );
     } catch (err) {
