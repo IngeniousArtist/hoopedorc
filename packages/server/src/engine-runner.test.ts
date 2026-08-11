@@ -250,6 +250,79 @@ function countSettingsReads(db: ReturnType<typeof initDb>): () => number {
   return () => reads;
 }
 
+test("O20: failed log batches retry within a bounded, rate-limited, shutdown-safe queue", () => {
+  const db = setup();
+  const hub = new WsHub();
+  const broadcasts: unknown[] = [];
+  hub.broadcast = (event) => {
+    broadcasts.push(event);
+  };
+  let clock = Date.parse("2026-08-11T00:00:00.000Z");
+  const failures: Array<{ message: string; error: unknown }> = [];
+  const engine = new EngineRunner(db, hub, {
+    now: () => clock,
+    logFlushFailureReporter: (message, error) => failures.push({ message, error }),
+  });
+  const proj = project(db, "o20-log-flush");
+  const deps = buildDeps(engine, proj);
+  const internals = engine as unknown as {
+    logQueue: unknown[];
+    logFlushTimer: (ReturnType<typeof setTimeout> & { hasRef(): boolean }) | null;
+    flushLogs(): void;
+  };
+  const emit = (sequence: number, prefix = "retry") => {
+    deps.events.onLog({
+      projectId: proj.id,
+      runId: "o20-run",
+      taskId: "o20-task",
+      ts: new Date(clock + sequence).toISOString(),
+      level: "info",
+      source: "agent",
+      message: `${prefix}-${sequence}`,
+    });
+  };
+
+  db.exec(`CREATE TRIGGER fail_o20_logs BEFORE INSERT ON logs
+           BEGIN SELECT RAISE(FAIL, 'simulated full disk'); END`);
+  emit(0);
+  assert.equal(internals.logFlushTimer?.hasRef(), false, "flush timer must not hold the service open");
+
+  internals.flushLogs();
+  assert.equal(internals.logQueue.length, 1, "a failed batch must remain retryable");
+  assert.equal(failures.length, 1);
+  assert.match(failures[0]!.message, /retaining.*retry/i);
+
+  internals.flushLogs();
+  assert.equal(failures.length, 1, "repeated failure inside the window is suppressed");
+  clock += 60_000;
+  internals.flushLogs();
+  assert.equal(failures.length, 2, "the operator signal resumes after its window");
+
+  db.exec("DROP TRIGGER fail_o20_logs");
+  internals.flushLogs();
+  assert.equal(internals.logQueue.length, 0);
+  assert.deepEqual(repo.getLogs(db, "o20-run").map((log) => log.message), ["retry-0"]);
+  assert.equal(broadcasts.length, 1, "recovery publishes the retained row once");
+
+  db.exec(`CREATE TRIGGER fail_o20_logs BEFORE INSERT ON logs
+           BEGIN SELECT RAISE(FAIL, 'simulated full disk'); END`);
+  for (let sequence = 0; sequence < 1_005; sequence++) emit(sequence, "bounded");
+  assert.equal(internals.logQueue.length, 1_000, "memory remains bounded during an outage");
+  assert.equal(internals.logFlushTimer?.hasRef(), false);
+
+  engine.flushPendingLogs();
+  assert.equal(internals.logQueue.length, 1_000);
+  assert.equal(internals.logFlushTimer, null, "shutdown flush must settle its timer");
+
+  db.exec("DROP TRIGGER fail_o20_logs");
+  internals.flushLogs();
+  const recovered = repo.getLogs(db, "o20-run");
+  assert.equal(recovered.length, 1_001);
+  assert.equal(recovered.at(-1)?.message, "bounded-1004");
+  assert.equal(broadcasts.length, 1_001, "each recovered row is published exactly once");
+  db.close();
+});
+
 test("F44: a model-trouble event creates exactly one web notification + broadcast, a repeat for the same task+event creates none", () => {
   const db = setup();
   const hub = new WsHub();

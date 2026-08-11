@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -321,6 +321,65 @@ process.stdin.on("end", () => {
   assert.equal(events[1]?.tokensIn, 9);
   assert.equal(events[1]?.tokensCached, 3);
   assert.equal(events[1]?.tokensOut, 4);
+});
+
+test("O20: a completed accounting failure is typed without a second terminal or model retry", async () => {
+  const bin = mkdtempSync(join(tmpdir(), "hoopedorc-o20-planner-ledger-"));
+  const counter = join(bin, "executions");
+  const fakeCli = `#!/usr/bin/env node
+const fs = require("node:fs");
+const counter = ${JSON.stringify(counter)};
+const count = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) : 0;
+fs.writeFileSync(counter, String(count + 1));
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({
+    result: "paid result",
+    total_cost_usd: 0.42,
+    usage: { input_tokens: 9, output_tokens: 3 }
+  }));
+});
+`;
+  const file = join(bin, "claude");
+  writeFileSync(file, fakeCli);
+  chmodSync(file, 0o755);
+
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  const events: ModelInvocation[] = [];
+  try {
+    await assert.rejects(
+      runPlannerChat(
+        [{ role: "user", content: "complete once" }],
+        "O20 accounting",
+        bin,
+        { id: "claude", runner: "claude-code", model: "sonnet" },
+        undefined,
+        undefined,
+        undefined,
+        (event) => {
+          events.push(event);
+          if (event.outcome === "completed") {
+            throw new Error("simulated ledger write failure");
+          }
+        },
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof InvocationLedgerError);
+        assert.match(String(error.cause), /simulated ledger write failure/);
+        return true;
+      },
+    );
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+
+  assert.equal(readFileSync(counter, "utf8"), "1", "the paid process executes once");
+  assert.deepEqual(events.map((event) => event.outcome), ["running", "completed"]);
+  assert.equal(events[1]?.costUsd, 0.42);
+  assert.equal(events[1]?.tokensIn, 9);
+  assert.equal(events[1]?.tokensOut, 3);
 });
 
 test("B40: deconstructor repair retry records two separate invocations", async () => {

@@ -125,6 +125,9 @@ export interface EngineRunnerOptions {
   /** B46 test seam for the Figma access cache's TTL clock; production uses
    * the real wall clock. */
   now?: () => number;
+  /** O20 test/embedding seam. Production writes the rate-limited signal to
+   * stderr so it remains visible even when SQLite itself is unavailable. */
+  logFlushFailureReporter?: (message: string, error: unknown) => void;
 }
 
 export interface RollbackExecutionDeps {
@@ -180,7 +183,13 @@ export class EngineRunner {
   // them and flush in one transaction every ~300ms.
   private logQueue: Parameters<typeof repo.createLogs>[1] = [];
   private logFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private logFlushRetryScheduled = false;
+  private lastLogFlushFailureReportAt?: number;
   private static readonly LOG_FLUSH_MS = 300;
+  private static readonly LOG_FLUSH_RETRY_MS = 5_000;
+  private static readonly LOG_FLUSH_FAILURE_REPORT_MS = 60_000;
+  private static readonly LOG_BATCH_SIZE = 200;
+  private static readonly MAX_PENDING_LOGS = 1_000;
 
   constructor(
     private readonly db: Db,
@@ -190,39 +199,106 @@ export class EngineRunner {
 
   private enqueueLog(e: Parameters<typeof repo.createLog>[1]): void {
     this.logQueue.push(e);
+    this.trimPendingLogs();
+    if (!this.acceptingWork || this.logFlushRetryScheduled) return;
     // Flush sooner if the buffer grows large (a very chatty run), so memory
     // and UI latency stay bounded.
-    if (this.logQueue.length >= 200) {
+    if (this.logQueue.length >= EngineRunner.LOG_BATCH_SIZE) {
       this.flushLogs();
       return;
     }
-    if (!this.logFlushTimer) {
-      this.logFlushTimer = setTimeout(() => this.flushLogs(), EngineRunner.LOG_FLUSH_MS);
-    }
+    this.scheduleLogFlush(EngineRunner.LOG_FLUSH_MS, false);
   }
 
-  private flushLogs(): void {
+  private trimPendingLogs(): void {
+    const excess = this.logQueue.length - EngineRunner.MAX_PENDING_LOGS;
+    if (excess > 0) this.logQueue.splice(0, excess);
+  }
+
+  private scheduleLogFlush(delayMs: number, retry: boolean): void {
+    if (!this.acceptingWork || this.logFlushTimer) return;
+    this.logFlushRetryScheduled = retry;
+    this.logFlushTimer = setTimeout(() => {
+      this.logFlushTimer = null;
+      this.logFlushRetryScheduled = false;
+      this.flushLogs();
+    }, delayMs);
+    this.logFlushTimer.unref();
+  }
+
+  private clearLogFlushTimer(): void {
     if (this.logFlushTimer) {
       clearTimeout(this.logFlushTimer);
       this.logFlushTimer = null;
     }
+    this.logFlushRetryScheduled = false;
+  }
+
+  private reportLogFlushFailure(message: string, error: unknown): void {
+    const now = this.options.now?.() ?? Date.now();
+    if (
+      this.lastLogFlushFailureReportAt !== undefined &&
+      now - this.lastLogFlushFailureReportAt <
+        EngineRunner.LOG_FLUSH_FAILURE_REPORT_MS
+    ) {
+      return;
+    }
+    this.lastLogFlushFailureReportAt = now;
+    const fallback = () => {
+      const detail = error instanceof Error ? error.message : String(error);
+      try {
+        process.stderr.write(`[hoopedorc] ${message}: ${detail}\n`);
+      } catch {
+        // The run must remain owned even if its last-resort reporter is broken.
+      }
+    };
+    if (!this.options.logFlushFailureReporter) {
+      fallback();
+      return;
+    }
+    try {
+      this.options.logFlushFailureReporter(message, error);
+    } catch {
+      fallback();
+    }
+  }
+
+  private flushLogs(retryOnFailure = true): void {
+    this.clearLogFlushTimer();
     if (this.logQueue.length === 0) return;
     const batch = this.logQueue;
     this.logQueue = [];
+    let saved: ReturnType<typeof repo.createLogs>;
     try {
-      const saved = repo.createLogs(this.db, batch);
-      for (const log of saved) {
-        this.hub.broadcast({ type: "log", payload: log });
+      saved = repo.createLogs(this.db, batch);
+    } catch (error) {
+      this.logQueue = [...batch, ...this.logQueue];
+      this.trimPendingLogs();
+      this.reportLogFlushFailure(
+        `Failed to persist run logs; retaining latest ${this.logQueue.length}/${EngineRunner.MAX_PENDING_LOGS} for retry`,
+        error,
+      );
+      if (retryOnFailure) {
+        this.scheduleLogFlush(EngineRunner.LOG_FLUSH_RETRY_MS, true);
       }
-    } catch {
-      /* a dropped log batch must never break the run */
+      return;
+    }
+    for (const log of saved) {
+      try {
+        this.hub.broadcast({ type: "log", payload: log });
+      } catch (error) {
+        this.reportLogFlushFailure(
+          "Failed to broadcast a persisted run log; clients can recover it from SQLite",
+          error,
+        );
+      }
     }
   }
 
   /** B41 shutdown boundary: force the final buffered batch to SQLite before
    * the database is checkpointed and closed. */
   flushPendingLogs(): void {
-    this.flushLogs();
+    this.flushLogs(false);
   }
 
   /** Wire an extra notifier (Telegram) for approvals + status pushes. */
