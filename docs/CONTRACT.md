@@ -251,6 +251,14 @@ Telegram control (F49) uses the same `startProject`, `pauseProject`, retry,
 stop-all, and settings actions as HTTP. Project arguments resolve only on a
 unique case-insensitive name/id prefix. Messages and callbacks require a private
 chat whose chat id and callback/message user id both equal the configured id.
+Inbound updates are claimed in SQLite by Telegram `update_id` before a handler
+runs. Mutating updates also receive a server-derived `telegram:<update_id>`
+action key; their durable domain intent/result is replayed rather than applied
+again after a process failure. The poll offset advances only across contiguous
+processed rows, and boot drains unfinished rows after engine recovery before
+requesting newer updates. Completed inbox/outbox rows below that offset are
+retained for 30 days. Telegram message delivery can repeat around a crash; the
+exactly-once guarantee covers Hoopedorc's task/project/settings/approval effect.
 Bot API calls have per-request deadlines, bounded retry with capped
 `retry_after`, and 4000-character chunking. `HealthResponse.dependencies.telegram`
 contains only delivery state/timestamps and a token-redacted last error. A

@@ -105,6 +105,15 @@ compares the SQLite generation for out-of-process writes and rechecks
 cooldown, quota, capacity, and approval state. Missing a memory notification
 can therefore delay discovery only until the deadline—it cannot lose work.
 
+Telegram polling is likewise SQLite-owned. `telegram_updates` durably claims
+each inbound `update_id`; `telegram_actions` gives mutating commands a stable
+server-derived idempotency key and stores the committed domain result; and
+`telegram_poll_state` advances only over contiguous processed rows. On boot,
+engine/runtime recovery runs first, then abandoned Telegram claims replay in
+order before long polling resumes. This makes the domain action exactly-once
+while keeping Bot API replies outside that guarantee because Telegram exposes
+no outbound idempotency key.
+
 Hard Stop is an ownership barrier: the orchestrator marks itself paused,
 aborts every task controller (including human-approval waits), settles the
 pipelines it owned at that boundary, and only then persists remaining

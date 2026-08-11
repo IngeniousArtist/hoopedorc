@@ -1201,6 +1201,82 @@ past a gap; two poll loops cannot own one update; approval and confirmation
 single-use behavior remains; migration/retention are idempotent; full gates
 green.
 
+**Implementation decision (2026-08-11):** add three SQLite-owned surfaces.
+`telegram_updates` is the inbox keyed by Telegram `update_id`, preserving the
+normalized command/callback identity, full JSON payload, and
+`claimed`/`processing`/`processed` timestamps. `telegram_actions` is the
+pending-action outbox keyed one-to-one to a mutating update, with a stable
+`telegram:<update_id>` idempotency key, classified action kind/payload,
+`pending` → `effect_committed` → `completed` state, and a durable result.
+`telegram_poll_state` stores the next offset. The first observed update anchors
+an empty database; thereafter the offset advances only while the exact next
+row is processed, never across an absent or unfinished id. Startup resets
+abandoned `processing` claims, drains every unfinished row in update order,
+then polls from the persisted offset. A conditional claimed → processing
+update makes two loops single-winner.
+
+The bot will classify every authorized mutation before invoking a handler:
+approval callbacks, project Start/Pause callbacks, Stop-all confirmation,
+`/start`, `/pause`, `/retry`, `/autonomous`, and `/digest`. Read-only commands
+and unauthorized/no-op updates still use the durable inbox but need no domain
+action. Handlers receive only the server-derived idempotency key. Database
+policy/task/project intent and the action's `effect_committed` marker commit
+together. Start commits desired `running` state before engine reconciliation;
+Pause and Stop-all commit desired `paused` state before cancellation; Retry
+reuses O34's conditional reset/dispatch request. On replay, the stored effect
+decides whether the engine merely needs reconciliation, so a completed run is
+not started again. O14 makes approval replay single-use. No client-supplied
+idempotency key, filesystem path, or host command crosses this boundary;
+command arguments and project references remain untrusted lookup inputs.
+
+Inbox/action completion and contiguous-offset advancement share one final
+transaction after the handler returns. A crash before that transaction
+re-enters the outbox with the same idempotency key; a crash after it is skipped.
+Completed rows strictly below the high-water offset are retained for 30 days,
+then pruned with actions first while `telegram_poll_state` remains permanent.
+Telegram replies use bounded retry and may repeat around a crash because Bot
+API message sends expose no idempotency key; the exactly-once guarantee is for
+Hoopedorc domain effects. Telegram starts after engine/project recovery so
+pending action reconciliation sees the single restored runtime owner. Tests
+will inject crashes at claim, processing, effect, completion, and offset
+boundaries; cover gaps, two-loop ownership, all mutating classifications,
+restart reconciliation, legacy/fresh migration, and retention. No live
+Telegram token is required because the real SQLite state machine and raw Bot
+API transport boundary are exercised with deterministic HTTP fakes.
+
+**Implementation result (2026-08-11, pre-merge):** fresh and existing
+databases now install the idempotent `telegram_updates`, `telegram_actions`,
+and `telegram_poll_state` schema. The bot claims and conditionally owns every
+update before invoking a handler, completes the inbox/action/contiguous offset
+in one transaction, retries the oldest failure without claiming newer work,
+and drains abandoned rows before its first post-recovery poll. Completed rows
+strictly below the permanent high-water mark are pruned after 30 days.
+
+The classifier gives approval, Stop-all confirmation, project Start/Pause,
+`/start`, `/pause`, `/retry`, `/autonomous`, and `/digest` one server-derived
+action key. Project desired state, Retry generation/dispatch intent, settings,
+Stop audits, and each action result commit transactionally; O14 remains the
+approval-side single-winner boundary. Engine reconciliation runs only while
+the stored desired state still applies, so a Start replay cannot revive an
+already-completed run or override a later state. Synchronously refused Start
+restores the prior project status and persists the refusal atomically.
+Telegram configuration now begins only after rollback, project, and queued
+task recovery have re-established runtime ownership.
+
+Sixteen focused O15 regressions cover failure before claim, abandoned claims,
+effect-before-completion replay, transactional rollback immediately before
+offset advance, out-of-order gaps, two-owner contention, migration/reopen,
+retention, startup drain ordering, every mutating classification, completed
+Start replay, refused Start, Pause, Retry, Stop-all confirmation, and both
+settings writes. The existing O14 race/recovery suite remains the approval
+single-use proof. Full local gates pass typecheck, build, lint at the unchanged
+338-finding baseline, engine 231/231, adapters 12/12, server 295/295, web
+28/28, E2E 16/16 at 360/390/768/1280/1440 px, and `git diff --check`. CI,
+merge commit, and independent merged-main verification remain outstanding and
+must be appended without rewriting this pre-merge evidence. No live Telegram
+token is required; file-backed SQLite and deterministic raw Bot API fakes
+exercise the changed persistence and transport boundaries.
+
 **Fix risk:** medium; this is a durable inbox/outbox, not an offset-only patch.
 
 ### O16. Human-approval waits are not abort-aware — MEDIUM (robustness)
