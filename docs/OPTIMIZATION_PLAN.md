@@ -782,60 +782,161 @@ green.
 
 **Fix risk:** medium because event ordering is the invariant.
 
-**Paused implementation checkpoint (2026-08-11; incomplete — do not merge):**
-the combined O6 + O12 + O26 `useWS` ownership work is preserved on branch
-`o6-o12-ws-ownership` at WIP commit
-`8df75c65b25894856bb112b5347f11ab4deca8a8`, based on clean `main`
-`5f47469421adc029cb847fc703163d58518a3c08`. The WIP branch was pushed only
-for durable continuation; it has no implementation PR and must not be merged
-until the remaining work below is completed and independently reviewed.
+**Implementation decision (2026-08-11, O6/O12/O26 WebSocket group):** the
+shared contract adds a `cost.snapshot` event with `{ projectId, totalUsd }`.
+The server derives `totalUsd` from the same `model_invocations` aggregate as
+the REST analytics route and places this event in the synchronous subscribe
+snapshot immediately after `project.updated`, before task/run replay. A
+snapshot is therefore the first authoritative project-cost value a
+connection receives; the Board applies later `cost.updated` events as deltas
+and ignores an older in-flight REST seed once either WebSocket event has been
+observed. `task.updated` uses update-or-prepend so task creation outside the
+current tab is visible without a reload.
 
-The checkpoint already contains the shared `cost.snapshot` contract and
-ordered server replay, unknown-task insertion, bounded `WsHub` delivery with
-the 1 MiB/`4008` slow-client policy, fail-closed snapshot/send handling,
-project-scoped mock logs, a per-project reference-counted browser connection
-manager, contract/architecture documentation, and focused hub/mock/Board/hook
-coverage. Independent Sol/xhigh review found and drove fixes for provider and
-serialization failures, asynchronous send errors, mock cross-project leaks,
-subscriber isolation, stale sockets, A-B-A project switching, and real-hub
-`4008` -> replacement snapshot -> delta coverage. Before the interrupted
-final refactor, focused suites passed hub/mock 11/11, Board 5/5, hook 8/8,
-client transport 1/1, web 48/48, engine 231/231, adapters 15/15, and E2E
-18/18. The three sandbox-blocked listener cases independently passed 3/3
-outside the sandbox. These are historical checkpoint results, not evidence
-that the current WIP commit is ready.
+The hub uses a documented 1 MiB per-client `bufferedAmount` ceiling. A client
+at or above the ceiling is closed with application code `4008` and reason
+`slow client; resync required` before the current event is skipped. Each
+socket send is independently observed; a thrown send closes that socket with
+`1011` (or terminates if close itself fails) while healthy clients continue to
+receive the broadcast. The browser reconnects through the existing bounded
+backoff and receives the same authoritative snapshot again.
 
-Two Board correctness gaps were still open in the final Sol/xhigh audit:
+`useWS` becomes a reference-counted manager keyed by `projectId`: all
+same-project subscribers share one socket, simultaneous different projects
+have isolated sockets and dispatch registries, and zero-subscriber managers
+defer teardown for one tick to survive React effect churn. This is a client
+ownership fix only; there is no REST, database, scheduler, or multi-project
+server subscription change. Non-goals are log replay/catch-up beyond the
+existing task/run snapshot, changing global notification/project event
+semantics, and inventing a second reconnect path.
 
-1. A subscribe snapshot for task T can precede a newer local
-   drag/model/retry/stop mutation while the initial REST list is pending; the
-   older split WS authority can then overwrite the newer local state when REST
-   resolves.
-2. Keying Board by project unmounts the old instance without changing its
-   `projectIdRef`, so a late success/refusal can still emit a stale toast into
-   the newly selected project.
+**Acceptance additions:** contract and mock/server snapshot tests cover the
+new event and ordering; Board tests cover unknown insertion, snapshot-before-
+delta application, and REST race protection; hub tests cover the measured
+backpressure close code, per-client send failure isolation, and snapshot
+replay; hook tests cover same-project sharing/reference counts, different-
+project isolation, reconnect, and stale cleanup. Focused tests, all repository
+gates, and real-browser checks at 360, 390, 768, 1280, and 1440px remain
+required before this group is considered ready. A live `npm run mock` browser
+smoke is required; no EC2/model check is needed for this browser/server
+contract boundary.
 
-Work stopped mid-fix. `Board.tsx` now has the intended monotonic per-task
-authority structure and an active-instance/request-generation guard, but five
-action paths still reference the removed `markTaskMutation` helper. The WIP
-commit intentionally fails `npm run typecheck` with `TS2304` at the checkpoint
-`Board.tsx` lines 423, 441, 454, 522, and 557. Resume with:
+**Sol follow-up implementation (2026-08-11, pre-merge):** the review found
+six hardening gaps and this branch now closes each one. Snapshot construction
+is transactional: a provider or replay serialization failure clears the
+subscription and closes with `1011` (`WebSocket snapshot failed; resync
+required`) before deltas can arrive. `ws.send` completion callbacks now close
+only the still-live originating client on async errors, with removal/generation
+guards and terminate fallback when `close()` throws. Board task seeding merges
+per-project WS task authority and current optimistic state over an older REST
+list, with project identity guards; the Board is also keyed by selected
+project and preserves only mutation versions recorded after the REST request
+began, so an A-B-A switch cannot reuse stale rows. Mock logs now come from one
+maintenance timer through `hub.broadcast`, scoped per project and cleared by
+shutdown. `useWS` isolates subscriber exceptions, reports only the project
+identifier, ignores malformed frames, rejects late frames from replaced
+sockets, and preserves same-tick StrictMode churn. The server-side joined
+regression uses the real `WsHub` for the buffered-amount threshold, `4008`
+close, snapshot-provider ordering, replacement subscription, and later delta;
+the web transport harness remains a package-local client reconnect/dispatch
+check. Final verification evidence is recorded below.
 
-```bash
-git switch o6-o12-ws-ownership
-git pull --ff-only
-```
+**Implementation result (2026-08-11, pre-merge):** `cost.snapshot` is now part
+of the canonical WebSocket types and contract. The server emits the database
+aggregate before task/run replay; the Board's update-or-insert task reducer
+and monotonic WebSocket cost authority preserve state across unknown-task,
+snapshot/delta, and REST-race cases. `WsHub` bounds each client at 1 MiB,
+closes slow clients with `4008` and isolates per-client send failures with
+`1011`; `useWS` owns one reference-counted socket per project with bounded
+reconnect and stale-manager cleanup. O26's `useWS` ownership bullet is
+implemented here; the other O26 bullets remain pending.
 
-Then convert those handlers to record each concrete optimistic task,
-successful response, and failure rollback through `recordTaskAuthority`; use
-the instance/request guard on every late retry/stop/drag/model success,
-refusal, and toast. Add regressions for snapshot -> local mutation -> delayed
-REST, failed mutation -> rollback -> delayed REST, WS-after-local ordering,
-and keyed project changes with pending success/refusal and no stale toast.
-Run every repository gate plus the live mock at 360, 390, 768, 1280, and
-1440px, then obtain a fresh independent Sol/xhigh review before opening the
-implementation PR. Preserve the existing real-hub, serialization, mock
-scoping, connection ownership, and listener evidence while finishing.
+Focused regressions passed: server hub 3/3, Board 2/2, and hook 4/4. Full
+verification passed for typecheck, build, lint (338 pre-existing findings),
+engine 231/231, adapters 15/15, web 40/40, E2E 18/18, and `git diff --check`.
+The explicit Node 22 server run passed 310/313; the three failures are the
+pre-existing listen tests blocked by the sandbox's `listen EPERM` on
+`127.0.0.1`. The default server script additionally selects Node 26 against
+the repository's Node 22 `better-sqlite3` binary, so its native DB tests fail
+before exercising this change. A live `npm run mock` smoke passed at 360,
+390, 768, 1280, and 1440px with zero document overflow at each width; Board
+and Costs navigation worked at 390px, the browser reported no errors, and the
+mock log showed one `/ws` connection for the project. No deployment or model
+smoke is required for this contract-only change.
+
+**Sol first follow-up verification result (2026-08-11, superseded below):**
+the focused regressions passed: WsHub plus mock stream 9/9, Board 4/4,
+`useWS` 8/8, and
+the reconnect transport integration 1/1. The full web suite passed 16 files /
+47 tests; engine passed 231/231; adapters passed 15/15; E2E passed 18/18;
+typecheck, build, lint, and `git diff --check` passed. Lint reported 330
+legacy findings, matching the updated non-increasing baseline. The server
+suite reached 316/319: the three failures are the existing real-listener
+tests blocked by the sandbox's `listen EPERM`; all non-listener server tests,
+including the new hub, mock, and snapshot regressions, passed. A live
+`npm run mock` smoke at 360, 390, 768, 1280, and 1440px found no document
+overflow; Board and Costs navigation worked at 390px, the browser reported no
+errors, and the mock log showed one project WebSocket connection. The only
+outstanding verification risk is the sandbox listener restriction; no
+production WebSocket or project-ownership issue remains identified.
+
+**Sol second-audit correction result (2026-08-11, pre-merge):** the confirmed
+A-B-A same-task-ID REST regression failed before the correction (the fresh A
+row was absent and the stale A row remained) and now passes. It is fixed by
+selected-project Board remounting plus post-request mutation-version merging.
+Snapshot serialization failure is covered with an adversarial `BigInt` payload
+and closes `1011` before any send or later delta. The real-hub joined regression
+(`ws-hub.test.ts`) executes threshold detection, `4008`, ordered provider
+snapshot, replacement socket subscription, and a later `cost.updated`; the
+web `useWS.integration.test.tsx` remains a separate client-only transport
+harness, while the hook unit suite covers bounded reconnect.
+
+Focused regressions passed: WsHub plus mock stream 11/11, Board 5/5,
+`useWS` unit tests 8/8, and the client transport integration 1/1. The full web
+suite passed 16 files / 48 tests; engine passed 231/231; adapters passed 15/15;
+E2E passed 18/18; typecheck, build, lint, and `git diff --check` passed. Lint
+reported 330 legacy findings, matching the non-increasing baseline. The full
+server suite reached 318/321: the same three loopback listener cases are
+blocked only by sandbox `listen EPERM`; all other server tests, including the
+new serialization and joined real-hub regressions, passed. Independent
+unsandboxed evidence separately passed the real entrypoint listener 1/1 and
+the two static listener tests 2/2, so there is no remaining listener product
+risk. A fresh live `npm run mock` smoke passed at 360, 390, 768, 1280, and
+1440px with no document overflow; Board and Costs navigation worked at 390px,
+the browser reported no errors, and the project stream remained isolated.
+The sandbox listener restriction is the only environmental caveat; no
+production WebSocket, Board ownership, or mock-stream issue remains
+identified.
+
+**Paused/incomplete checkpoint (2026-08-11 — do not merge):** work stopped on
+branch `o6-o12-ws-ownership`, based on
+`5f47469421adc029cb847fc703163d58518a3c08`, after the final independent
+Sol/xhigh audit found two remaining Board correctness gaps. First, when a
+subscribe snapshot records task T and the user makes a later local
+drag/model/retry/stop mutation while the initial REST list is pending, the
+current split WS/local authority can still let the older snapshot overwrite
+the newer local state. Second, keying Board by project unmounts the old
+instance without changing its `projectIdRef`, so a late success/refusal can
+still emit a stale toast into the newly selected project. The earlier
+pre-merge readiness statements above are therefore superseded; O6/O12 and
+O26's `useWS` ownership bullet remain incomplete.
+
+The final correction was interrupted mid-refactor. `Board.tsx` now defines the
+monotonic per-task authority record and active-instance/request-generation
+guard, but the action handlers still contain five old `markTaskMutation`
+references. The checkpoint therefore intentionally does not typecheck:
+`npm run typecheck` fails at `Board.tsx` lines 423, 441, 454, 522, and 557 with
+`TS2304`. Resume by converting those handlers to record each concrete
+optimistic task, successful response, and failure rollback through
+`recordTaskAuthority`, then finish guarding all late success/refusal/toast
+paths. Required regressions are snapshot -> local mutation -> delayed REST,
+failed mutation -> rollback -> delayed REST, WS-after-local ordering, and
+keyed project switching with pending success and refusal proving no stale
+toast. Rerun the focused Board suite, all repository gates, and the five-width
+live mock smoke; then obtain a fresh independent Sol/xhigh review before
+opening an implementation PR. The existing real-hub/backpressure,
+serialization, mock scoping, keyed connection-manager, and listener evidence
+should be preserved and rechecked.
 
 **Checkpoint record status:** merged as documentation-only
 [#242](https://github.com/IngeniousArtist/hoopedorc/pull/242)
@@ -844,8 +945,272 @@ passed in 2m29s. Local verification on the checkpoint-record tree passed
 typecheck, build, lint at the 338-finding baseline, engine 231/231, adapters
 15/15, permissioned server 309/309, web 35/35, E2E 18/18, and
 `git diff --check`. After merge, clean local `main` and `origin/main` were
-confirmed equal at the full merge SHA above. This records and preserves the
-pause only; it does not complete O6, O12, or O26's `useWS` ownership bullet.
+confirmed equal at `74a87c6b4a9aca10fc467885b03eb2a228b2681a`. This records
+and preserves the pause only; it does not complete O6, O12, or O26's `useWS`
+ownership bullet.
+
+**Resumed implementation result (2026-08-17, pre-merge):** the interrupted
+Board refactor is complete on `o6-o12-ws-ownership-finish`, rebased onto clean
+`main` `74a87c6b4a9aca10fc467885b03eb2a228b2681a`. WebSocket events, optimistic
+drag/model states, successful retry/stop/update responses, failed-mutation
+rollbacks, and add-task completions now enter one monotonic per-task authority
+stream. Initial REST lists merge only authority accepted after that request
+began. Every awaited Board action checks both its originating project and the
+still-mounted keyed Board generation before changing state or publishing
+feedback, so a completed/refused action from an unmounted project cannot leak
+into the new project. Add completion is update-or-insert because the server's
+earlier `task.updated` may already have inserted the same task. The Board's
+React key is owner-prefixed so it remains distinct from the sibling project
+header while still remounting per project.
+
+The resumed regressions cover snapshot -> local mutation -> delayed REST,
+failed mutation -> recorded rollback -> delayed REST, WebSocket-after-local
+ordering, keyed project switches with pending success and refusal, and the
+WebSocket-before-add duplicate race. Focused Board coverage passes 11/11;
+the preserved hub/mock, hook, and client-transport suites pass 11/11, 8/8,
+and 1/1 respectively. Full local gates pass typecheck, build, lint across 159
+files at the exact 330-finding baseline, engine 231/231, adapters 15/15,
+permissioned server 321/321, web 55/55, E2E 18/18, and `git diff --check`.
+The live `npm run mock` smoke passed at 360, 390, 768, 1280, and 1440px with
+no document overflow. Board/Costs navigation worked at 390px, one project
+WebSocket remained established across the App/Board consumers, project-scoped
+mock log events advanced in the open task drawer, and the final browser reload
+reported no page or console errors. The smoke initially exposed a duplicate
+sibling React key from the raw project-keyed Board; owner-prefixing the key
+removed that warning and is covered by the App regression above.
+
+O6 and O12 plus O26's `useWS` ownership bullet are implementation-complete on
+this pre-merge tree; O26's toast-timer, reduced-motion LogPanel, and dead New
+Project bullets remain pending under their documented owners. Hosted CI,
+implementation PR/merge evidence, and the required fresh independent Sol/xhigh
+review remain outstanding. The review command was not run because the local
+safety boundary requires explicit operator approval before transmitting this
+private branch diff to an external model service. Do not open the implementation
+PR until that review is completed. No EC2/model/deployment smoke is required
+for this browser/server contract boundary.
+
+**Fresh Sol/xhigh review correction (2026-08-17, pre-merge):** the approved
+read-only review of `31956bce4183ee3f0a834746510b04ff73c54d1b` found four
+remaining issues: an unbounded-size static snapshot could repeatedly hit the
+transport cap before completing; an empty selected-project ID no longer owned
+the documented global event stream; a delayed PATCH response or failure could
+overwrite newer per-task authority; and passive-effect cleanup left a narrow
+post-unmount window for old-project feedback. The corrected hub validates the
+whole snapshot before activation, sends one frame per completion, queues later
+events behind that baseline under the same 1 MiB bound, and proves a 3,000-task
+snapshot completes without `4008`. `useWS("")` now owns a global-only socket
+without subscribing. Board mutations apply a response or rollback only while
+their captured per-task authority version is current, and keyed lifecycle
+invalidation runs in layout cleanup before the replacement Board can publish
+effects. Focused correction coverage passes hub/mock 12/12, Board 12/12,
+`useWS` 9/9, client transport 1/1, and the complete web suite 57/57. The full
+gate and renewed browser evidence is recorded after the final rerun below.
+
+The exact corrected tree passes typecheck, build, lint across 159 files at the
+exact 330-finding baseline, engine 231/231, adapters 15/15, permissioned server
+322/322, web 57/57, E2E 18/18, and `git diff --check`. A renewed live mock
+smoke passed at 360, 390, 768, 1280, and 1440px without document overflow.
+Board/Costs navigation remained operable at 390px, the Board and App consumers
+shared exactly one established project WebSocket, mock drawer logs advanced,
+the browser console/page-error lists were clean, and graceful mock shutdown
+completed with exit 0. A final independent review of these corrections,
+hosted CI, PR/merge evidence, and merged-main verification remain outstanding.
+
+**Final Sol/xhigh follow-up correction (2026-08-17, pre-merge):** the fresh
+read-only review of pushed head `1477b55` found two more reconnect/backpressure
+gaps. A notification broadcast while a project socket was closed was not part
+of the project-only baseline, so the global approval badge could remain stale
+after reconnect; and the 1 MiB check counted only bytes already buffered, so
+one oversized live frame could exceed the advertised ceiling by itself.
+
+The canonical event contract now includes an authoritative
+`notifications.snapshot`. Every socket sends a catch-up request after open,
+including an empty-project global-only connection. The server replays the
+selected project first, the remaining project list, the bounded durable global
+notification inbox (including every pending approval), and then selected-
+project cost/task/run state. The snapshot replaces notification state without
+replaying browser alerts; later live notifications queue behind it. Empty
+subscriptions receive this global prefix but remain excluded from all project-
+scoped live events. Live sends now add the complete outgoing frame byte length
+to `bufferedAmount` before enforcing the 1 MiB/`4008` boundary. Snapshot source
+records retain one-frame-at-a-time flow control so one durable large record
+cannot make every reconnect fail on the same baseline.
+
+Focused correction coverage passes hub/mock 14/14, the real server catch-up
+and O36 query cases 3/3, and hook/client-transport/Board/Notifications 26/26.
+The exact corrected tree passes typecheck, build, lint across 159 files at the
+exact 330-finding baseline, engine 231/231, adapters 15/15, permissioned server
+325/325, web 58/58, E2E 18/18, and `git diff --check`. A renewed live mock smoke
+passed at 360, 390, 768, 1280, and 1440px without document overflow. At 390px
+the approval badge remained `1` after a forced `4008`-shaped close and bounded
+reconnect, exactly one project socket was open after the initial global-to-
+selected handoff, the Notifications approval controls remained usable, browser
+console/page errors were empty, and graceful mock shutdown completed with exit
+0. A final clean independent re-review of this last correction, hosted CI,
+PR/merge evidence, and merged-main verification remain outstanding.
+
+**Final clean-review correction (2026-08-17, pre-merge):** the independent
+read-only review of pushed head `de0276a` found three additional ordering edge
+cases. A Board mounted after another same-project consumer had already kept
+the shared socket open could receive a cost delta before its REST seed without
+ever seeing the original snapshot. A live event queued while one explicitly
+permitted oversized snapshot record was in flight counted that exempt record's
+bytes again and forced a repeat `4008` reconnect. A notification snapshot
+captured before a successful approval response could arrive afterward and
+temporarily restore the pending controls.
+
+The per-project browser manager now retains the authoritative cost total,
+advances it with ordered deltas, and synchronously replays it as a
+`cost.snapshot` to late same-project subscribers. `WsHub` tracks the exact
+durable snapshot bytes in flight and subtracts only those bytes when enforcing
+the queued-live-event ceiling. The Notifications view records successful
+durable responses and preserves them over matching older REST, snapshot, or
+pending live rows until an authoritative responded notification advances the
+same entry. Adversarial focused regressions pass hub/mock 15/15 and
+Board/hook/client-transport/Notifications 28/28; typecheck and
+`git diff --check` also pass. The exact corrected tree passes build, lint
+across 159 files at the exact 330-finding baseline, engine 231/231, adapters
+15/15, permissioned server 326/326, web 60/60, and E2E 18/18 in addition to
+typecheck and `git diff --check`.
+
+The renewed real-browser smoke found no document overflow at 360, 390, 768,
+1280, or 1440px. A tracked live project socket received a `$5.00` snapshot and
+`$0.25` delta, Board unmounted while App retained that socket, another `$0.25`
+delta arrived, and the remounted Board still displayed `$5.50` after its older
+zero-cost REST seed reached network idle. Exactly one project socket remained
+open. In a deterministic approval smoke, a successful durable-shaped response
+remained rendered after an older pending `notifications.snapshot`: zero
+Approve controls returned, one project socket remained open, and the 390px
+page stayed contained. Browser page errors were empty; console output contained
+only Vite development/reconnect notices caused by deliberate mock resets. Each
+mock reset and final shutdown completed gracefully with exit 0. Fresh
+independent re-review, hosted CI, PR/merge evidence, and merged-main
+verification remain outstanding.
+
+**Fresh-review cost-authority correction (2026-08-17, pre-merge):** the clean
+review of pushed head `5aaf6a2` found one remaining P2 ordering gap. The shared
+connection retained its last cost total after transport loss, so a Board
+mounted during reconnect backoff could accept that stale total as a synthetic
+snapshot and suppress a newer REST seed. A connection now invalidates its
+cached cost total when its active socket closes; late subscribers use REST
+until the replacement socket supplies a fresh authoritative snapshot. A hook
+regression covers snapshot, disconnect, late mount with no synthetic replay,
+then replacement snapshot delivery. Focused hook/client-transport/Board
+verification passes 24/24. The exact corrected tree passes typecheck, build,
+lint across 159 files at the exact 330-finding baseline, engine 231/231,
+adapters 15/15, permissioned server 326/326, web 61/61, E2E 18/18, and
+`git diff --check`.
+
+The targeted live-browser regression seeded `$5.00`, unmounted Board while
+another consumer retained the shared socket, closed that transport, and
+remounted Board during reconnect backoff. The Board accepted the newer `$0.00`
+REST seed instead of replaying the stale cache; the replacement connection
+then restored exactly one open project socket. At 390px the page had no
+document overflow, browser page errors were empty, console output contained
+only normal Vite development messages, and the mock shut down gracefully with
+exit 0 and zero cleanup errors. Another independent clean review, hosted CI,
+PR/merge evidence, and merged-main verification remain outstanding.
+
+**Fresh-review global-authority correction (2026-08-17, pre-merge):** the
+independent review of pushed head `ea285a7` found two remaining P2 catch-up
+races. Replaying only surviving `project.updated` rows could not remove a
+project whose `project.deleted` event was missed while offline, and initial
+project/notification REST reads could resolve after a newer reconnect snapshot
+and overwrite it. The canonical contract now carries one authoritative
+`projects.snapshot` containing the complete ordered project list before the
+notification and selected-project baselines. App replaces its full list and
+normalizes selection from that snapshot. App's project and badge state plus
+the Notifications page generation-guard older REST reads after any snapshot,
+live event, or locally persisted response. Regressions cover a missed deletion
+and delayed project/notification REST responses resolving after the newer
+snapshots. The exact corrected tree passes typecheck, build, lint across 160
+files at the exact 330-finding baseline, engine 231/231, adapters 15/15,
+permissioned server 326/326, web 63/63, E2E 18/18, and `git diff --check`.
+
+The targeted 390px live mock delayed initial project/notification REST
+responses by four seconds while the authoritative WebSocket baselines arrived
+first. A synthetic stale REST-only approval did not increase the snapshot's
+badge count. Deleting the ephemeral in-memory project removed it from the
+selector and normalized the UI to `No projects`; one app `/ws` remained open
+after the project-to-global handoff (alongside Vite's separate HMR socket).
+The page stayed at 390px scroll width with no document overflow or page errors;
+console output contained only Vite development/reconnect notices caused by the
+deliberate browser session resets. Mock shutdown completed with exit 0 and zero
+cleanup errors. A final clean independent re-review, hosted CI, PR/merge, and
+merged-main verification remain outstanding.
+
+**Fresh-review final web-authority correction (2026-08-17, pre-merge):** the
+independent review of pushed head `45e3b5e` found three remaining P2 ordering
+gaps. A create-project response could select its newly committed project and
+then lose that selection when an older in-flight project snapshot arrived;
+Audit had no reconnect marker when no task/run event followed the global
+baseline; and Mission Control's initial notification read could overwrite its
+newer snapshot-derived approval count.
+
+App now retains a locally committed creation across any snapshot captured
+before the commit, then releases that preservation when the ordered snapshot
+or `project.updated` stream observes its ID. It separately remembers the
+normal server ordering where `project.updated` precedes the HTTP response, so
+a genuinely newer replacement snapshot can still remove a project rather than
+preserving it forever. Audit treats `projects.snapshot` as a reconnect marker,
+starts a fresh REST read, and rejects any older overlapping result. Mission
+Control applies the same generation guard around its snapshot/live-derived
+approval count. Focused regressions cover both create/broadcast orderings,
+REST-only Audit recovery with a delayed older response, and delayed Mission
+Control notification REST state; all five pass. Full gates, renewed browser
+evidence, another independent clean review, hosted CI, PR/merge evidence, and
+merged-main verification remain outstanding.
+
+The exact corrected tree passes typecheck, build, lint across 162 files at the
+exact 330-finding baseline, engine 231/231, adapters 15/15, permissioned server
+326/326, web 67/67, E2E 18/18, and `git diff --check`. The targeted 390px live
+mock delayed notification REST responses while the reconnect baseline arrived
+first; both the global badge and Mission Control remained at one pending
+approval after those stale responses resolved. A real create response selected
+`Reconnect creation probe`; releasing the older held project snapshot before
+its queued `project.updated` kept that project present and selected. Closing
+the app socket and releasing the replacement `projects.snapshot` increased the
+open Audit view's REST reads from two (React development replay) to three while
+preserving selection. Exactly one app socket remained open, document and
+viewport widths both stayed 390px, browser console/page-error lists were
+clean, and mock shutdown completed with exit 0 and zero cleanup errors. Another
+independent clean review, hosted CI, PR/merge evidence, and merged-main
+verification remain outstanding.
+
+**Reconnect consumer/deletion correction (2026-08-17, pre-merge):** an
+independent review of pushed head `1a466d3` found two final P2 races. PlanView
+consumed only `project.updated`, so a status transition missed while offline
+could leave its planning lock stale after the replacement `projects.snapshot`.
+Also, a project created while disconnected and deleted by another client before
+reconnect would never appear in the new snapshot or a live event, allowing the
+local pending-creation safeguard to preserve a deleted row indefinitely.
+
+PlanView now applies its selected row from every authoritative project
+snapshot. When a snapshot omits a locally confirmed creation, App retains the
+row while it confirms that exact project through REST: success identifies an
+older replay, while `404` retires the deleted row and normalizes selection to
+the snapshot's first survivor. Generation/identity checks prevent a late
+confirmation from undoing a newer live update or deletion. Focused regressions
+cover both Plan unlocking after reconnect and the create-then-delete offline
+race; the App/Plan focused set passes 10/10. Full gates, renewed browser
+evidence, another independent clean review, hosted CI, PR/merge evidence, and
+merged-main verification remain outstanding.
+
+The exact corrected tree passes typecheck, build, lint across 162 files at the
+exact 330-finding baseline, engine 231/231, adapters 15/15, permissioned server
+326/326, web 69/69, E2E 18/18 across 360/390/768/1280/1440px, and
+`git diff --check`. In the targeted 390px live mock, Plan first rendered the
+running lock. The browser wrapper then closed the app socket and redirected
+five bounded replacement attempts to a closed local port. While every tracked
+socket was closed, a direct server request changed the project to paused; Plan
+correctly remained locked, proving no live update reached it. After replacement
+sockets were allowed again, the next server `/ws` request occurred after the
+pause and its snapshot changed both App and Plan to paused, exposed the planning
+input, and left exactly one app socket active. Viewport and document widths were
+both 390px, page errors were empty, the console contained only Vite/React
+development notices, and mock shutdown completed with exit 0 and zero cleanup
+errors. A fresh independent clean review, hosted CI, PR/merge evidence, and
+merged-main verification remain outstanding.
 
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
@@ -1176,6 +1541,11 @@ when one `send` throws; reconnect restores authoritative task and cost state;
 the ceiling has a measured/documented memory rationale; full gates green.
 
 **Fix risk:** low (only affects clients already failing).
+
+**Implementation result (2026-08-11, pre-merge):** delivered with O6. The
+1 MiB cap, `4008` slow-client close, per-socket `1011` send-failure isolation,
+and bounded `useWS` reconnect are covered by the hub and hook regressions
+recorded above; the authoritative O6 snapshot is the reconnect/resync path.
 
 ### O13. Missing SQLite indexes on hot, ever-growing tables + orphaned rows — MEDIUM (efficiency)
 

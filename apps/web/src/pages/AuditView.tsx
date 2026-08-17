@@ -4,7 +4,7 @@ import type {
   RunSummaryDetail,
   ServerEvent,
 } from "@orc/types";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useWS } from "../hooks/useWS";
 
@@ -112,14 +112,19 @@ function RunReportCard({ entry }: { entry: AuditEntry }) {
 export function AuditView({ projectId }: { projectId: string }) {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const requestGenerationRef = useRef(0);
 
   const fetchAudit = useCallback(async () => {
+    const requestGeneration = ++requestGenerationRef.current;
     try {
       const res = await api<AuditLogResponse>("auditLog", {
         params: { id: projectId },
       });
+      if (requestGenerationRef.current !== requestGeneration) return;
       setEntries(res.entries);
+      setError(null);
     } catch (e) {
+      if (requestGenerationRef.current !== requestGeneration) return;
       setError(String(e));
     }
   }, [projectId]);
@@ -131,6 +136,10 @@ export function AuditView({ projectId }: { projectId: string }) {
   const onWS = useCallback(
     (event: ServerEvent) => {
       if (
+        // Audit rows are REST state rather than part of the catch-up payload.
+        // The global snapshot is the reconnect marker even when this project
+        // has no task/run deltas to otherwise trigger a refresh.
+        event.type === "projects.snapshot" ||
         event.type === "task.updated" ||
         event.type === "merge.decision" ||
         event.type === "notification" ||

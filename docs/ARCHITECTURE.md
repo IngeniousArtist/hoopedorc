@@ -44,6 +44,61 @@ together at the edge (Round 2 integration). `web` talks only to the HTTP/WS API.
                                                     └──────────────────┘
 ```
 
+Realtime ownership is project-scoped at both ends of the WebSocket boundary.
+`WsHub` keeps one subscribed project per socket and captures a catch-up
+sequence beginning with an authoritative global `projects.snapshot` and
+bounded `notifications.snapshot` inbox, followed by the selected project's
+authoritative `cost.snapshot` and task/run state. Replacing the project list
+removes projects whose deletion event was missed while offline; replacing the
+notification inbox restores missed approvals without replaying browser alerts.
+Web consumers generation-guard older in-flight REST reads from overwriting
+either snapshot. A locally committed project creation is preserved over a
+snapshot captured before that commit until its ID appears in the ordered
+snapshot/live stream. If a snapshot omits such a pending creation, App confirms
+it through the project REST endpoint: an existing row proves the replay was
+older, while a `404` retires a project deleted before reconnect instead of
+preserving it forever. Per-project confirmation generations prevent an older
+read from overriding the result required by a later snapshot. PlanView also
+applies the selected row from every global project snapshot so its planning
+lock cannot retain an offline status.
+REST-only Audit state treats the global project snapshot as its reconnect
+marker, while derived approval counts use the notification snapshot; both
+reject older overlapping reads. The hub validates the whole
+baseline before activation and flow-controls it one frame per send completion;
+matching live events queue behind the replay and drain afterward in order. A
+client whose
+pending `bufferedAmount` plus the complete outgoing or queued live frame reaches
+the documented 1 MiB ceiling is closed with application code `4008`, forcing a
+fresh snapshot instead of silently dropping an event. Durable snapshot records
+remain source events and permit exactly one in-flight frame, so even a large
+static baseline does not fill the transport queue or reconnect forever.
+Individual send errors close only the broken socket, including async write-
+completion failures. A snapshot-provider or serialization error closes before
+the subscription is activated, and a late completion from a removed client
+cannot affect a replacement socket.
+
+The web `useWS` hook owns a reference-counted manager keyed by project ID.
+Same-project consumers share one socket, while simultaneous projects use
+isolated sockets and dispatch registries. Managers defer zero-subscriber
+teardown for one tick to tolerate React effect churn and reconnect with
+bounded backoff after transport loss. Subscriber exceptions are reported with
+the project identifier only and do not stop later subscribers from receiving
+the event. Each manager retains the latest authoritative cost total and
+advances it with ordered deltas, so a same-project view mounted after the
+socket replay receives a synthetic `cost.snapshot` baseline before later live
+events. Transport loss invalidates that cached baseline: a view mounted during
+reconnect backoff uses its REST seed until the replacement socket supplies a
+fresh snapshot. An empty project ID requests the same durable global catch-up
+but remains unsubscribed from project-scoped live events, so onboarding and
+post-deletion views restore and continue receiving global project/notification
+state. Successful approval responses remain locally authoritative over any
+older REST or reconnect snapshot captured before the durable response; the
+later queued live notification then confirms the same terminal state.
+
+Mock mode emits synthetic logs from one server-owned maintenance timer through
+`WsHub.broadcast`, so project isolation and backpressure are identical to live
+events; shutdown clears that timer with the other maintenance work.
+
 Gate scripts, dependency installs, and structured project setup run through
 `@orc/engine`'s Docker sandbox (`sandbox.ts`) when a daemon is reachable — a
 disposable `docker run --rm` per command, mounting only the task's worktree

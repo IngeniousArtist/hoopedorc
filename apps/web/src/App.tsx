@@ -1,4 +1,5 @@
 import type {
+  GetProjectResponse,
   ListNotificationsResponse,
   ListProjectsResponse,
   Notification,
@@ -100,6 +101,11 @@ export function hashFor(page: Page, projectId: string): string {
   return `#/${page}`;
 }
 
+/** Keep the keyed Board instance distinct from sibling project-owned views. */
+export function boardInstanceKey(projectId: string): string {
+  return `board:${projectId}`;
+}
+
 /** F21: parsed once at module load (i.e. once per real page load/reload) —
  *  never re-read afterward, since it only seeds the initial state below.
  *  Runtime hash changes (back/forward, a pasted link while the SPA is
@@ -123,6 +129,18 @@ export function App() {
   // project-scoped on the wire (see ws-hub.ts's isGlobalEvent), so this
   // tracks every notification regardless of which project tab is open.
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  // REST reads begun before an authoritative snapshot/live delta must not
+  // overwrite that newer state when their older response eventually arrives.
+  const projectsAuthorityRef = useRef(0);
+  const notificationsAuthorityRef = useRef(0);
+  // A reconnect snapshot can be captured before createProject commits, then
+  // arrive after its HTTP response. Keep that locally confirmed creation until
+  // the ordered snapshot/live stream observes it. The server normally emits
+  // project.updated before returning the HTTP response, so remember already
+  // observed IDs too rather than manufacturing a pending entry afterward.
+  const pendingCreatedProjectsRef = useRef(new Map<string, Project>());
+  const pendingCreationConfirmationsRef = useRef(new Map<string, number>());
+  const observedProjectIdsRef = useRef(new Set<string>());
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () => initialHashState?.projectId ?? localStorage.getItem(STORAGE_KEY) ?? "",
   );
@@ -250,8 +268,10 @@ export function App() {
   }, []);
 
   const refreshProjects = useCallback(async () => {
+    const authorityAtRequest = projectsAuthorityRef.current;
     try {
       const res = await api<ListProjectsResponse>("listProjects");
+      if (projectsAuthorityRef.current !== authorityAtRequest) return;
       setProjects(res.projects);
       setSelectedProjectId((cur) =>
         cur && res.projects.some((p) => p.id === cur)
@@ -270,8 +290,10 @@ export function App() {
   }, [refreshProjects]);
 
   const fetchNotifications = useCallback(async () => {
+    const authorityAtRequest = notificationsAuthorityRef.current;
     try {
       const res = await api<ListNotificationsResponse>("listNotifications");
+      if (notificationsAuthorityRef.current !== authorityAtRequest) return;
       setNotifications(res.notifications);
     } catch {
       /* non-critical — badge just stays at its last known count */
@@ -281,6 +303,71 @@ export function App() {
   useEffect(() => {
     fetchNotifications();
   }, [fetchNotifications]);
+
+  const confirmPendingCreatedProject = useCallback(
+    async (
+      pending: Project,
+      fallbackProjectId: string,
+      confirmationGeneration: number,
+    ) => {
+      const isCurrentConfirmation = () =>
+        pendingCreatedProjectsRef.current.get(pending.id) === pending &&
+        pendingCreationConfirmationsRef.current.get(pending.id) ===
+          confirmationGeneration;
+      const retirePendingProject = () => {
+        pendingCreatedProjectsRef.current.delete(pending.id);
+        pendingCreationConfirmationsRef.current.delete(pending.id);
+        projectsAuthorityRef.current++;
+        setProjects((prev) =>
+          prev.filter((project) => project.id !== pending.id),
+        );
+        setSelectedProjectId((current) =>
+          current === pending.id ? fallbackProjectId : current,
+        );
+      };
+
+      try {
+        const res = await api<GetProjectResponse>("getProject", {
+          params: { id: pending.id },
+        });
+        if (!isCurrentConfirmation()) return;
+        if (!res.project) {
+          retirePendingProject();
+          return;
+        }
+
+        pendingCreatedProjectsRef.current.delete(pending.id);
+        pendingCreationConfirmationsRef.current.delete(pending.id);
+        projectsAuthorityRef.current++;
+        const confirmedProject = res.project;
+        setProjects((prev) =>
+          prev.some((project) => project.id === pending.id)
+            ? prev.map((project) =>
+                project.id === pending.id ? confirmedProject : project,
+              )
+            : [confirmedProject, ...prev],
+        );
+      } catch (error) {
+        // An omitted pending creation is ambiguous: the snapshot may have
+        // been captured before createProject committed, or the project may
+        // really have been deleted while this client was offline. Only a 404
+        // resolves that ambiguity; transient confirmation failures retain the
+        // local response and are retried by a later reconnect snapshot.
+        const status =
+          error && typeof error === "object" && "status" in error
+            ? (error as { status?: unknown }).status
+            : undefined;
+        if (
+          status !== 404 ||
+          !isCurrentConfirmation()
+        ) {
+          return;
+        }
+        retirePendingProject();
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (onboardingChecked || !projectsLoaded) return;
@@ -304,20 +391,71 @@ export function App() {
 
   const onWS = useCallback(
     (e: ServerEvent) => {
-      if (e.type === "project.updated") {
+      if (e.type === "projects.snapshot") {
+        projectsAuthorityRef.current++;
+        for (const project of e.payload.projects) {
+          observedProjectIdsRef.current.add(project.id);
+          pendingCreatedProjectsRef.current.delete(project.id);
+          pendingCreationConfirmationsRef.current.delete(project.id);
+        }
+        const snapshotIds = new Set(
+          e.payload.projects.map((project) => project.id),
+        );
+        const missingPendingProjects = [
+          ...pendingCreatedProjectsRef.current.values(),
+        ].filter((project) => !snapshotIds.has(project.id));
+        const nextProjects = [
+          ...missingPendingProjects,
+          ...e.payload.projects,
+        ];
+        setProjects(nextProjects);
+        setSelectedProjectId((cur) =>
+          cur && nextProjects.some((project) => project.id === cur)
+            ? cur
+            : (nextProjects[0]?.id ?? ""),
+        );
+        for (const pending of missingPendingProjects) {
+          const confirmationGeneration =
+            (pendingCreationConfirmationsRef.current.get(pending.id) ?? 0) + 1;
+          pendingCreationConfirmationsRef.current.set(
+            pending.id,
+            confirmationGeneration,
+          );
+          void confirmPendingCreatedProject(
+            pending,
+            e.payload.projects[0]?.id ?? "",
+            confirmationGeneration,
+          );
+        }
+      } else if (e.type === "project.updated") {
+        projectsAuthorityRef.current++;
+        observedProjectIdsRef.current.add(e.payload.id);
+        pendingCreatedProjectsRef.current.delete(e.payload.id);
+        pendingCreationConfirmationsRef.current.delete(e.payload.id);
         setProjects((prev) =>
           prev.some((p) => p.id === e.payload.id)
             ? prev.map((p) => (p.id === e.payload.id ? e.payload : p))
             : [e.payload, ...prev],
         );
       } else if (e.type === "project.deleted") {
+        projectsAuthorityRef.current++;
+        observedProjectIdsRef.current.delete(e.payload.id);
+        pendingCreatedProjectsRef.current.delete(e.payload.id);
+        pendingCreationConfirmationsRef.current.delete(e.payload.id);
         setProjects((prev) => prev.filter((p) => p.id !== e.payload.id));
         setSelectedProjectId((cur) => (cur === e.payload.id ? "" : cur));
+      } else if (e.type === "notifications.snapshot") {
+        // Reconnect catch-up is authoritative but must not replay browser
+        // alerts for every historical notification. Later live events are
+        // queued behind this snapshot by WsHub and update it in order.
+        notificationsAuthorityRef.current++;
+        setNotifications(e.payload.notifications);
       } else if (e.type === "notification") {
         // Global (B15) — reaches every client regardless of which project
         // tab is open, matching "action needed" mattering everywhere. Also
         // covers respond()'s own broadcast, so the U1 badge clears the
         // moment an approval is answered from any tab.
+        notificationsAuthorityRef.current++;
         setNotifications((prev) => {
           const idx = prev.findIndex((n) => n.id === e.payload.id);
           if (idx >= 0) return prev.map((n, i) => (i === idx ? e.payload : n));
@@ -332,7 +470,7 @@ export function App() {
         });
       }
     },
-    [notify],
+    [confirmPendingCreatedProject, notify],
   );
   useWS(selectedProjectId, onWS);
 
@@ -342,6 +480,11 @@ export function App() {
 
   // A freshly created project becomes the active one, then go straight to Plan.
   const handleProjectCreated = useCallback((p: Project) => {
+    projectsAuthorityRef.current++;
+    pendingCreationConfirmationsRef.current.delete(p.id);
+    if (!observedProjectIdsRef.current.delete(p.id)) {
+      pendingCreatedProjectsRef.current.set(p.id, p);
+    }
     setProjects((prev) => [p, ...prev.filter((x) => x.id !== p.id)]);
     setSelectedProjectId(p.id);
     setPage("plan");
@@ -349,6 +492,11 @@ export function App() {
 
   const handleProjectDeleted = useCallback(
     (id: string) => {
+      projectsAuthorityRef.current++;
+      observedProjectIdsRef.current.delete(id);
+      pendingCreatedProjectsRef.current.delete(id);
+      pendingCreationConfirmationsRef.current.delete(id);
+      setProjects((prev) => prev.filter((project) => project.id !== id));
       setSelectedProjectId((cur) => (cur === id ? "" : cur));
     },
     [],
@@ -520,6 +668,7 @@ export function App() {
             )}
             {page === "board" && (
               <Board
+                key={boardInstanceKey(selectedProjectId)}
                 projectId={selectedProjectId}
                 repoUrl={selectedProject?.repoUrl}
                 onViewNotifications={() => setPage("notifications")}

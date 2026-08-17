@@ -2,7 +2,7 @@ import type {
   Notification as NotifType,
   ServerEvent,
 } from "@orc/types";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useWS } from "../hooks/useWS";
 
@@ -155,17 +155,45 @@ export function Notifications({
     NotifType[]
   >([]);
   const [error, setError] = useState<string | null>(null);
+  // A successful response is already durable on the server. A reconnect
+  // snapshot or initial REST read may have been captured before that write and
+  // can arrive afterward, so matching older pending rows must not re-enable
+  // approval controls while the ordered live confirmation catches up.
+  const persistedResponsesRef = useRef(new Map<string, NotifType>());
+  // A reconnect snapshot or live confirmation supersedes REST reads that
+  // started before it. Those older responses must not restore stale rows.
+  const notificationsAuthorityRef = useRef(0);
+
+  const preservePersistedResponses = useCallback(
+    (incoming: NotifType[]) =>
+      incoming.map((notification) => {
+        const persisted = persistedResponsesRef.current.get(notification.id);
+        if (!persisted) return notification;
+        // A responded snapshot is newer authoritative state and may advance a
+        // locally queued response from recorded to applied/expired. Only an
+        // older still-pending row is suppressed.
+        if (notification.respondedWith) {
+          persistedResponsesRef.current.set(notification.id, notification);
+          return notification;
+        }
+        return persisted;
+      }),
+    [],
+  );
 
   const fetchNotifications = useCallback(async () => {
+    const authorityAtRequest = notificationsAuthorityRef.current;
     try {
       const data = await api<{ notifications: NotifType[] }>(
         "listNotifications",
       );
-      setNotifications(data.notifications);
+      if (notificationsAuthorityRef.current !== authorityAtRequest) return;
+      setNotifications(preservePersistedResponses(data.notifications));
     } catch (e) {
+      if (notificationsAuthorityRef.current !== authorityAtRequest) return;
       setError(String(e));
     }
-  }, []);
+  }, [preservePersistedResponses]);
 
   useEffect(() => {
     fetchNotifications();
@@ -173,8 +201,21 @@ export function Notifications({
 
   const handleWSEvent = useCallback(
     (event: ServerEvent) => {
-      if (event.type === "notification") {
-        const notif = event.payload;
+      if (event.type === "notifications.snapshot") {
+        notificationsAuthorityRef.current++;
+        setNotifications(
+          preservePersistedResponses(event.payload.notifications),
+        );
+      } else if (event.type === "notification") {
+        notificationsAuthorityRef.current++;
+        const persisted = persistedResponsesRef.current.get(event.payload.id);
+        const notif =
+          persisted?.respondedWith && !event.payload.respondedWith
+            ? persisted
+            : event.payload;
+        if (notif.respondedWith) {
+          persistedResponsesRef.current.set(notif.id, notif);
+        }
         setNotifications((prev) => {
           const idx = prev.findIndex(
             (n) => n.id === notif.id,
@@ -188,7 +229,7 @@ export function Notifications({
         });
       }
     },
-    [],
+    [preservePersistedResponses],
   );
 
   useWS(projectId, handleWSEvent);
@@ -205,13 +246,23 @@ export function Notifications({
         params: { id: notifId },
         body: { choice },
       });
-      setNotifications((prev) =>
-        prev.map((n) =>
-          n.id === notifId
-            ? response?.notification ?? { ...n, respondedWith: choice }
-            : n,
-        ),
-      );
+      notificationsAuthorityRef.current++;
+      setNotifications((prev) => {
+        let found = false;
+        const next = prev.map((notification) => {
+          if (notification.id !== notifId) return notification;
+          found = true;
+          const persisted =
+            response?.notification ?? { ...notification, respondedWith: choice };
+          persistedResponsesRef.current.set(notifId, persisted);
+          return persisted;
+        });
+        if (!found && response?.notification) {
+          persistedResponsesRef.current.set(notifId, response.notification);
+          next.unshift(response.notification);
+        }
+        return next;
+      });
     } catch (e) {
       setError(String(e));
     }

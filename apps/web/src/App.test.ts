@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hashFor, parseHash } from "./App";
+import { boardInstanceKey, hashFor, parseHash } from "./App";
 
 describe("application deep links", () => {
   it("round-trips project and global pages", () => {
@@ -18,5 +18,10 @@ describe("application deep links", () => {
     expect(parseHash("#/p/proj-1")).toBeNull();
     expect(parseHash("#/welcome")).toBeNull();
     expect(parseHash("#/totally-unknown")).toBeNull();
+  });
+
+  it("names the keyed Board independently from sibling project views", () => {
+    expect(boardInstanceKey("proj-1")).toBe("board:proj-1");
+    expect(boardInstanceKey("proj-1")).not.toBe("proj-1");
   });
 });

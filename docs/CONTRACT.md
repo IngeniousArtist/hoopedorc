@@ -533,14 +533,84 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 
 ## WebSocket (`@orc/types/ws.ts`, `WS_PATH = /ws`)
 Server → client `ServerEvent`: `log`, `task.updated`, `run.updated`,
-`project.updated`, `merge.decision`, `notification`, `cost.updated`.
+`project.updated`, `project.deleted`, `projects.snapshot`, `merge.decision`,
+`rollback.updated`, `notification`, `notifications.snapshot`, `cost.updated`,
+`cost.snapshot`.
 Client → server `ClientEvent`: `subscribe`, `unsubscribe`, `ping`.
 
 Broadcast scoping: `log`/`task.updated`/`run.updated`/`merge.decision`/
-`cost.updated` only reach clients currently `subscribe`d to that event's
-`projectId` (`LogEvent`/`Run`/`MergeDecision` all carry one). `project.updated`,
-`project.deleted`, and `notification` are global — every connected client gets
-them regardless of subscription.
+`rollback.updated`/`cost.updated`/`cost.snapshot` only reach clients currently
+`subscribe`d to that event's `projectId` (`LogEvent`/`Run`/`MergeDecision` all
+carry one).
+`project.updated`, `project.deleted`, `notification`, and
+`projects.snapshot`/`notifications.snapshot` are global — every connected
+client gets them regardless of subscription. `projects.snapshot` carries
+`{ projects: Project[] }`; it authoritatively replaces the client's complete
+project list, so a deletion missed while offline cannot survive reconnect.
+`notifications.snapshot` carries
+`{ notifications: Notification[] }`; it is authoritative catch-up state and
+must not be treated as a new browser-alert delivery.
+
+`cost.updated` carries one newly persisted cost record and is a delta.
+`cost.snapshot` carries the authoritative project total `{ projectId,
+totalUsd }`. The complete catch-up state is captured and serialization-checked
+synchronously on subscribe, then flow-controlled one frame at a time in the
+order authoritative project-list snapshot (selected project first), bounded
+global notification inbox (including every still-pending approval), cost,
+tasks, and runs. This
+durable global prefix restores project and approval state missed while the
+socket was offline. Matching broadcasts accepted while that replay is in
+flight queue behind it and drain in order, so no later delta can interleave
+with or be lost behind the baseline.
+The web Board replaces its total on a snapshot and only adds subsequent cost
+deltas. The shared project connection retains that running total and replays
+it as a synthetic snapshot to a view mounted after the socket's original
+catch-up, so a late Board subscriber cannot start from a delta alone. Closing
+the transport invalidates that cached total; a view mounted during reconnect
+backoff accepts its REST seed until the new connection supplies another
+authoritative snapshot. A WebSocket client whose live `bufferedAmount` plus
+the full outgoing or queued live-frame byte length reaches 1 MiB is closed with
+application code
+`4008` (`slow client; resync required`) before the current event is accepted;
+the client must reconnect and consume a new snapshot. Snapshot frames wait for
+each prior send completion instead of filling that transport buffer. One
+durable snapshot record may be larger than the live queue ceiling, but only
+that single frame can be in flight. Its exact bytes are excluded from the live
+queue calculation, so a small event accepted behind it does not make every
+reconnect fail on the same durable record. Per-socket send failures close only
+that socket with `1011` (or terminate if closing fails), so healthy
+subscribers still receive the event.
+A snapshot-provider or snapshot-serialization failure also closes the socket
+with `1011` (`WebSocket snapshot failed; resync required`) before its
+subscription becomes active; it must not receive deltas without a baseline.
+Async write-completion
+errors use the per-socket `1011` send-failure path, and a late completion from
+a removed socket cannot close a replacement client.
+
+The web always sends `subscribe` after an open. An empty `projectId` requests
+only the durable global prefix and leaves the socket unsubscribed from project-
+scoped live events, preserving and restoring the authoritative project list
+and notification state during onboarding and after deletion. Once a project
+is selected, same-project consumers share one
+subscribed socket. A successful notification response is already durable; web
+consumers preserve that terminal row over an older REST or reconnect snapshot
+captured before the response, until the in-order live notification confirms
+it. Project and notification consumers also generation-guard in-flight REST
+reads so a response captured before a newer snapshot/live event cannot replace
+the newer state. Likewise, a create-project response remains locally
+authoritative over a project snapshot captured before that create committed,
+until the ordered snapshot or `project.updated` stream observes its ID. When a
+snapshot omits a still-pending local creation, the client confirms that exact ID
+through `getProject`: success proves an older replay and `404` proves a later
+deletion, so neither race can permanently win. Confirmation reads are
+generation-qualified per pending project so only the read started by the newest
+snapshot may settle it. Project-status consumers, including PlanView's planning
+lock, apply the selected project from
+`projects.snapshot` as well as live `project.updated` deltas.
+Consumers whose durable REST state is not embedded in the baseline use the
+applicable global snapshot as a reconnect marker and generation-guard the
+resulting refresh; this keeps Audit rows and Mission Control's derived approval
+count from accepting an older in-flight read.
 
 ## Conventions
 - IDs are strings; timestamps are ISO 8601 strings.
@@ -548,4 +618,5 @@ them regardless of subscription.
   `scope_paths`, `reasons`, `options`, `gate`).
 - Money is USD floats; tokens are integers.
 - The mock server (`npm run mock`) implements all GET endpoints + a synthetic
-  `log` stream so the UI is buildable before the real backend exists.
+  project-scoped `log` stream broadcast through the same hub/backpressure path
+  as production; its server-owned timer is cleared during shutdown.

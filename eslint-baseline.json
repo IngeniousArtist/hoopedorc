@@ -17,9 +17,7 @@
   "packages/server": {
     "@typescript-eslint/no-base-to-string": 12,
     "@typescript-eslint/no-unnecessary-type-assertion": 32,
-    "@typescript-eslint/no-unsafe-argument": 2,
-    "@typescript-eslint/no-unsafe-assignment": 2,
-    "@typescript-eslint/no-unsafe-member-access": 5,
+    "@typescript-eslint/no-unsafe-argument": 1,
     "@typescript-eslint/no-unused-vars": 8,
     "@typescript-eslint/prefer-promise-reject-errors": 1,
     "@typescript-eslint/require-await": 58,
