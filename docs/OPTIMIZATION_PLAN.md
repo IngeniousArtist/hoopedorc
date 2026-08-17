@@ -2479,6 +2479,32 @@ the relevant sub-change rather than landing speculative memoization.
 
 **Fix risk:** low.
 
+**Implementation decision (2026-08-17):** a 12-task Board fixture replayed 200
+log events, 20 same-status `task.updated` events, and 2 status changes. The
+pre-fix baseline was 200 Board commits and 2,400 TaskCard renders for the log
+burst (56 ms jsdom commit time) plus 20 estimate refetches for updates that
+did not change `status`, `assignedModel`, `difficulty`, or `maxAttempts`.
+
+Activity timestamps now coalesce on `requestAnimationFrame`: a same-frame log
+burst publishes once and keeps the latest per-task timestamp. Estimates refetch
+only when a task is new or one of those four fields changes. The same fixture
+then records 1 Board commit and 12 card renders for the log burst (0.69 ms)
+and 0 same-status estimate fetches; status changes still refetch.
+
+The 1 s Board-wide `setNowTick` clock and `React.memo` on TaskCard are
+deferred: the clock is 1 commit/s versus the measured log burst, and memo
+cannot help while `onClick`/`onStop` are inline closures. No new hook or
+dependency.
+
+The exact tree passes typecheck, build, lint across 171 files at the exact
+330-finding baseline, engine 234/234, adapters 18/18, permissioned server
+327/327, web 98/98, E2E 19/19, and `git diff --check`. Hosted CI,
+implementation PR/merge evidence, and merged-main verification remain
+outstanding.
+
+**Status:** evidence and the two measured fixes recorded on branch
+`o22-measure-board-renders`.
+
 ### O23. CostView/AuditView unconditionally refetch on high-frequency events — MEDIUM (efficiency)
 
 **Problem:** `CostView` refetches two endpoints on every `cost.snapshot`,

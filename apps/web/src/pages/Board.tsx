@@ -333,9 +333,29 @@ export function Board({
     };
   }, [selectedTaskId, selectedTaskPrNumber]);
 
-  const markActivity = useCallback((taskId: string | undefined) => {
-    if (taskId) setActivity((a) => ({ ...a, [taskId]: Date.now() }));
+  const pendingActivityRef = useRef<Record<string, number>>({});
+  const activityFrameRef = useRef<number | null>(null);
+  const flushActivity = useCallback(() => {
+    activityFrameRef.current = null;
+    const pending = pendingActivityRef.current;
+    pendingActivityRef.current = {};
+    const taskIds = Object.keys(pending);
+    if (taskIds.length === 0) return;
+    setActivity((current) => ({ ...current, ...pending }));
   }, []);
+  const markActivity = useCallback((taskId: string | undefined) => {
+    if (!taskId) return;
+    pendingActivityRef.current[taskId] = Date.now();
+    if (activityFrameRef.current != null) return;
+    activityFrameRef.current = requestAnimationFrame(flushActivity);
+  }, [flushActivity]);
+  useEffect(() => {
+    return () => {
+      if (activityFrameRef.current == null) return;
+      cancelAnimationFrame(activityFrameRef.current);
+      activityFrameRef.current = null;
+    };
+  }, [projectId]);
 
   const handleWSEvent = useCallback(
     (event: ServerEvent) => {
@@ -344,10 +364,9 @@ export function Board({
           const updated = event.payload;
           if (updated.projectId !== projectIdRef.current) break;
           recordTaskAuthority(updated, updated.projectId);
-          const wasActive = (() => {
-            const prevStatus = tasksRef.current.find((t) => t.id === updated.id)?.status;
-            return prevStatus === "in_progress" || prevStatus === "in_review";
-          })();
+          const previous = tasksRef.current.find((task) => task.id === updated.id);
+          const wasActive =
+            previous?.status === "in_progress" || previous?.status === "in_review";
           const isActive =
             updated.status === "in_progress" || updated.status === "in_review";
           if (isActive && !wasActive) {
@@ -366,12 +385,16 @@ export function Board({
               ? prev.map((t) => (t.id === updated.id ? updated : t))
               : [updated, ...prev];
           });
-          // Seed/refresh the heartbeat (covers a freshly-dispatched task).
           markActivity(updated.id);
-          // F7: a status change can move a task off the non-terminal set the
-          // estimate is computed over (or change what's left to run) — cheap
-          // enough to just refetch rather than try to patch it in place.
-          fetchEstimates();
+          if (
+            !previous ||
+            previous.status !== updated.status ||
+            previous.assignedModel !== updated.assignedModel ||
+            previous.difficulty !== updated.difficulty ||
+            previous.maxAttempts !== updated.maxAttempts
+          ) {
+            fetchEstimates();
+          }
           break;
         }
         case "run.updated": {

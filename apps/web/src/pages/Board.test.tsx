@@ -673,7 +673,10 @@ describe("Board estimate request ownership", () => {
     await waitFor(() => expect(estimateCalls).toBe(1));
 
     act(() => {
-      wsState.handler?.({ type: "task.updated", payload: ready });
+      wsState.handler?.({
+        type: "task.updated",
+        payload: { ...ready, assignedModel: "deepseek-flash" },
+      });
     });
     await waitFor(() => expect(estimateCalls).toBe(2));
     expect(await screen.findByTestId("task-estimate")).toHaveTextContent("9");
