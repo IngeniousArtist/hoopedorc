@@ -56,6 +56,7 @@ export function TaskDrawer({
   repoUrl,
   logs,
   logsLoading,
+  logsOmittedOlder,
   diff,
   rollbackJob,
   actionBusy,
@@ -70,6 +71,7 @@ export function TaskDrawer({
   repoUrl?: string;
   logs: LogEvent[];
   logsLoading: boolean;
+  logsOmittedOlder?: boolean;
   diff: string | null;
   rollbackJob?: RollbackJob;
   actionBusy: boolean;
@@ -298,7 +300,13 @@ export function TaskDrawer({
           </div>
         )}
 
-        {tab === "logs" && <LogPanel logs={logs} loading={logsLoading} />}
+        {tab === "logs" && (
+          <LogPanel
+            logs={logs}
+            loading={logsLoading}
+            omittedOlder={logsOmittedOlder}
+          />
+        )}
 
         {tab === "review" && (
           <div className="space-y-4 p-4 text-xs">

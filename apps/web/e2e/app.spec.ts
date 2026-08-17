@@ -418,4 +418,23 @@ test.describe.serial("critical operator workflows", () => {
     await expect(page.getByRole("heading", { name: "Setup" })).toBeVisible();
     await expectNoDocumentOverflow(page);
   });
+
+  test("task log drawer stays contained at phone and desktop widths", async ({
+    page,
+  }) => {
+    for (const width of [390, 1280] as const) {
+      await page.setViewportSize({
+        width,
+        height: width === 390 ? 844 : 800,
+      });
+      await page.goto(`/#/p/${projectId}/board`);
+      await page.locator("article").filter({ hasText: "Kanban board UI" }).click();
+      await expect(page.getByRole("button", { name: "Close task drawer" })).toBeVisible();
+      await page.getByRole("button", { name: "Logs" }).click();
+      await expect(page.getByText("auto-follow")).toBeVisible();
+      await expect(page.getByTestId("task-log-scroller")).toBeVisible();
+      await expectNoDocumentOverflow(page);
+      await page.getByRole("button", { name: "Close task drawer" }).click();
+    }
+  });
 });

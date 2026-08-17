@@ -23,6 +23,7 @@ import {
   useState,
 } from "react";
 import { api, isAbortError } from "../api/client";
+import { appendTaskLog, retainNewestTaskLogs } from "../lib/taskLogs";
 import { useWS } from "../hooks/useWS";
 import { useToast } from "../hooks/useToast";
 import { TaskDrawer } from "../components/TaskDrawer";
@@ -81,6 +82,8 @@ export function Board({
   const [error, setError] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEvent[]>([]);
+  const [logsOmittedOlder, setLogsOmittedOlder] = useState(false);
+  const logsOmittedOlderRef = useRef(false);
   const [logsLoading, setLogsLoading] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [rollbackJobs, setRollbackJobs] = useState<Record<string, RollbackJob>>({});
@@ -281,12 +284,16 @@ export function Board({
 
   useEffect(() => {
     if (!selectedTaskId) {
+      logsOmittedOlderRef.current = false;
+      setLogsOmittedOlder(false);
       setLogs([]);
       return;
     }
     let cancelled = false;
     async function loadLogs() {
       setLogsLoading(true);
+      logsOmittedOlderRef.current = false;
+      setLogsOmittedOlder(false);
       setLogs([]);
       try {
         // Every onLog emission is keyed by task_id regardless of run, so one
@@ -297,7 +304,10 @@ export function Board({
           params: { id: selectedTaskId! },
         });
         if (cancelled) return;
-        setLogs(res.logs);
+        const bounded = retainNewestTaskLogs(res.logs);
+        logsOmittedOlderRef.current = bounded.omittedOlder;
+        setLogsOmittedOlder(bounded.omittedOlder);
+        setLogs(bounded.logs);
       } catch {
         /* ignore fetch errors for logs */
       } finally {
@@ -397,7 +407,16 @@ export function Board({
           // Any log line for any task = that model is alive right now.
           markActivity(logEvent.taskId);
           if (logEvent.taskId === selectedTaskIdRef.current) {
-            setLogs((prev) => [...prev, logEvent]);
+            setLogs((prev) => {
+              const bounded = appendTaskLog(
+                prev,
+                logEvent,
+                logsOmittedOlderRef.current,
+              );
+              logsOmittedOlderRef.current = bounded.omittedOlder;
+              setLogsOmittedOlder(bounded.omittedOlder);
+              return bounded.logs;
+            });
           }
           break;
         }
@@ -857,6 +876,7 @@ export function Board({
           repoUrl={repoUrl}
           logs={logs}
           logsLoading={logsLoading}
+          logsOmittedOlder={logsOmittedOlder}
           diff={diff}
           rollbackJob={
             rollbackJobs[selectedTask.id]?.sourcePrNumber === selectedTask.prNumber

@@ -13,13 +13,14 @@ already-green checks. Complete one item or explicitly paired group at a time.
 
 ## Current baseline
 
-- `main` and `origin/main` match `cfe71b2` after merging PR #246.
+- `main` and `origin/main` match `caaf0ea` after merging PR #247.
 - PR #244 completed O6, O12, and O26's project-owned WebSocket sub-item.
 - PR #245 closed the three leftover reconnect-authority checkpoints.
 - PR #246 completed O24 request ownership.
+- PR #247 completed O23 trailing refreshes.
 - O5 already completed the shared dialog-semantics sub-item of O26.
-- The remaining implementation items are O8, O10, O22, O25, and
-  three small O26 sub-items.
+- The remaining implementation items are O8, O10, O22, and the O26 toast-timer
+  and dead New Project bullets.
 - O27 has no remaining implementation, but its authorized deployment evidence
   is still outstanding.
 - Do not reopen completed items unless a regression is first reproduced.
@@ -98,32 +99,18 @@ now abort on project change/unmount and ignore superseded or aborted
 responses. AuditView's generation guard is unchanged. Deterministic A→B,
 A→B→A, overlapping-refresh, and abort-error tests cover the owners.
 
-O23 is next after #246.
-
 ### 2. O23 — coalesce CostView and AuditView refreshes — complete
 
 Both views use `createTrailingRefresh`: one in-flight fetch plus at most one
 trailing fetch, `TRAILING_REFRESH_INTERVAL_MS = 0`. Reconnect markers still
-refresh REST-only state. The next implementation item is O25 + O26 log motion.
+refresh REST-only state.
 
-### 3. O25 + O26 reduced-motion log behavior — bounded task logs
+### 3. O25 + O26 reduced-motion log behavior — complete
 
-These items share the same `Board`/`LogPanel` ownership and may be one PR.
-
-- Retain exactly the newest 1,000 task log rows after initial load and live
-  appends.
-- Show an accurate notice when older rows were omitted.
-- Preserve ordering, filtering, autoscroll, and task isolation.
-- Scroll the log container explicitly.
-- Honor `prefers-reduced-motion` by avoiding smooth scrolling.
-
-**Acceptance**
-
-- Initial responses and streamed bursts keep the newest 1,000 with no boundary
-  duplicate.
-- Switching tasks never mixes rows or omission state.
-- Reduced-motion and normal autoscroll each have interaction coverage.
-- Browser verification covers the drawer at phone and desktop widths.
+Board retains the newest 1,000 task log rows after load and live appends, with
+an omission notice and per-task isolation. LogPanel scrolls its container and
+uses `auto` behavior under `prefers-reduced-motion`. The next implementation
+item is the remaining O26 toast-timer and dead New Project bullets.
 
 ### 4. O26 — remaining independent web follow-ups
 

@@ -26,19 +26,29 @@ const SOURCES = ["all", "agent", "engine", "git", "gate", "validator"];
 export function LogPanel({
   logs,
   loading,
+  omittedOlder = false,
 }: {
   logs: LogEvent[];
   loading: boolean;
+  omittedOlder?: boolean;
 }) {
   const [source, setSource] = useState("all");
   const [autoFollow, setAutoFollow] = useState(true);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
 
   const filtered =
     source === "all" ? logs : logs.filter((l) => l.source === source);
 
   useEffect(() => {
-    if (autoFollow) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!autoFollow) return;
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    scroller.scrollTo({
+      top: scroller.scrollHeight,
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+    });
   }, [filtered.length, autoFollow]);
 
   return (
@@ -65,8 +75,17 @@ export function LogPanel({
         </label>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed">
+      <div
+        ref={scrollerRef}
+        data-testid="task-log-scroller"
+        className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed"
+      >
         {loading && <p className="text-neutral-400">Loading logs…</p>}
+        {!loading && omittedOlder && (
+          <p className="mb-2 text-neutral-400">
+            Showing latest 1,000 lines. Older lines were omitted.
+          </p>
+        )}
         {!loading && filtered.length === 0 && (
           <p className="text-neutral-400">No logs yet.</p>
         )}
@@ -87,7 +106,6 @@ export function LogPanel({
             </span>
           </div>
         ))}
-        <div ref={bottomRef} />
       </div>
     </div>
   );
