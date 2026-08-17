@@ -68,10 +68,16 @@ isolated sockets and dispatch registries. Managers defer zero-subscriber
 teardown for one tick to tolerate React effect churn and reconnect with
 bounded backoff after transport loss. Subscriber exceptions are reported with
 the project identifier only and do not stop later subscribers from receiving
-the event. An empty project ID requests the same durable global catch-up but
-remains unsubscribed from project-scoped live events, so onboarding and post-
-deletion views restore and continue receiving global project/notification
-state.
+the event. Each manager retains the latest authoritative cost total and
+advances it with ordered deltas, so a same-project view mounted after the
+socket replay receives a synthetic `cost.snapshot` baseline before later live
+events. An empty project ID requests the same durable global catch-up but
+remains unsubscribed from project-scoped live events, so onboarding and
+post-deletion views restore and continue receiving global
+project/notification state. Successful approval responses remain locally
+authoritative over any older REST or reconnect snapshot captured before the
+durable response; the later queued live notification then confirms the same
+terminal state.
 
 Mock mode emits synthetic logs from one server-owned maintenance timer through
 `WsHub.broadcast`, so project isolation and backpressure are identical to live

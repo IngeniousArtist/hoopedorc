@@ -24,6 +24,8 @@ class FakeSocket extends EventEmitter {
   asyncSendError: Error | undefined;
   throwOnClose = false;
   maxBufferedAmount = 0;
+  deferSendCallbacks = false;
+  readonly pendingSendCallbacks: Array<() => void> = [];
 
   send(payload: string, callback?: (error?: Error) => void): void {
     if (this.throwOnSend) throw new Error("socket write failed");
@@ -35,11 +37,19 @@ class FakeSocket extends EventEmitter {
     );
     if (callback) {
       const error = this.asyncSendError;
-      queueMicrotask(() => {
+      const deliver = () => {
         this.bufferedAmount = 0;
         callback(error);
-      });
+      };
+      if (this.deferSendCallbacks) this.pendingSendCallbacks.push(deliver);
+      else queueMicrotask(deliver);
     }
+  }
+
+  deliverNext(): void {
+    const deliver = this.pendingSendCallbacks.shift();
+    if (!deliver) throw new Error("no pending send callback");
+    deliver();
   }
 
   close(code?: number, reason?: string): void {
@@ -312,6 +322,31 @@ test("O6/O12: a large snapshot drains under the cap instead of reconnecting fore
   assert.equal(socket.sent.length, eventCount);
   assert.equal(socket.closeCalls.length, 0);
   assert.ok(socket.maxBufferedAmount < WS_MAX_BUFFERED_AMOUNT);
+});
+
+test("O6/O12: a live event behind one oversized snapshot frame does not cause a reconnect loop", async () => {
+  const hub = new WsHub();
+  const oversized = taskEvent("project-1", "oversized-snapshot-task");
+  if (oversized.type !== "task.updated") throw new Error("expected task event");
+  oversized.payload.description = "x".repeat(WS_MAX_BUFFERED_AMOUNT);
+  hub.setSnapshotProvider(() => [oversized]);
+  const socket = new FakeSocket();
+  socket.deferSendCallbacks = true;
+
+  subscribe(hub, socket, "project-1");
+  assert.ok(socket.bufferedAmount > WS_MAX_BUFFERED_AMOUNT);
+  const live = notificationEvent("queued-behind-oversized-snapshot");
+  hub.broadcast(live);
+
+  assert.deepEqual(socket.closeCalls, []);
+  assert.deepEqual(socket.sent.map(parseEvent), [oversized]);
+
+  socket.deliverNext();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(socket.sent.map(parseEvent), [oversized, live]);
+  assert.deepEqual(socket.closeCalls, []);
+  socket.deliverNext();
+  await new Promise<void>((resolve) => setImmediate(resolve));
 });
 
 test("O6/O12: a real hub slow-client close reconnects to an ordered snapshot and later delta", async () => {

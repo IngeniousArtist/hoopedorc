@@ -26,6 +26,10 @@ type Client = {
     generation: number;
     snapshot: ServerEvent[];
     snapshotIndex: number;
+    /** Bytes belonging to the one exempt durable snapshot frame currently
+     * handed to ws. They are excluded from the live queue ceiling; ws reports
+     * them together with ordinary buffered bytes in bufferedAmount. */
+    snapshotBytesInFlight: number;
     queued: string[];
     queuedBytes: number;
   };
@@ -198,10 +202,15 @@ export class WsHub {
       return;
     }
 
+    if (snapshotFrame) {
+      replay.snapshotBytesInFlight = Buffer.byteLength(payload);
+    }
+
     this.send(
       client,
       payload,
       () => {
+        if (snapshotFrame) replay.snapshotBytesInFlight = 0;
         // Avoid recursive growth with synchronous test transports while real ws
         // callbacks naturally wait until the previous frame has been written.
         queueMicrotask(() => this.continueReplay(client, generation));
@@ -219,8 +228,15 @@ export class WsHub {
     const replay = client.replay;
     if (!replay) return;
     const payloadBytes = Buffer.byteLength(payload);
+    // bufferedAmount includes the durable snapshot frame currently in flight.
+    // That one source record is intentionally exempt from the live 1 MiB cap;
+    // count only any remaining transport bytes plus queued live deltas here.
+    const liveBufferedBytes = Math.max(
+      0,
+      client.ws.bufferedAmount - replay.snapshotBytesInFlight,
+    );
     if (
-      client.ws.bufferedAmount + replay.queuedBytes + payloadBytes >=
+      liveBufferedBytes + replay.queuedBytes + payloadBytes >=
       WS_MAX_BUFFERED_AMOUNT
     ) {
       this.closeClient(
@@ -275,6 +291,7 @@ export class WsHub {
           generation,
           snapshot,
           snapshotIndex: 0,
+          snapshotBytesInFlight: 0,
           queued: [],
           queuedBytes: 0,
         };

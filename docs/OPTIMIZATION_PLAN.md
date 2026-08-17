@@ -1049,6 +1049,44 @@ console/page errors were empty, and graceful mock shutdown completed with exit
 0. A final clean independent re-review of this last correction, hosted CI,
 PR/merge evidence, and merged-main verification remain outstanding.
 
+**Final clean-review correction (2026-08-17, pre-merge):** the independent
+read-only review of pushed head `de0276a` found three additional ordering edge
+cases. A Board mounted after another same-project consumer had already kept
+the shared socket open could receive a cost delta before its REST seed without
+ever seeing the original snapshot. A live event queued while one explicitly
+permitted oversized snapshot record was in flight counted that exempt record's
+bytes again and forced a repeat `4008` reconnect. A notification snapshot
+captured before a successful approval response could arrive afterward and
+temporarily restore the pending controls.
+
+The per-project browser manager now retains the authoritative cost total,
+advances it with ordered deltas, and synchronously replays it as a
+`cost.snapshot` to late same-project subscribers. `WsHub` tracks the exact
+durable snapshot bytes in flight and subtracts only those bytes when enforcing
+the queued-live-event ceiling. The Notifications view records successful
+durable responses and preserves them over matching older REST, snapshot, or
+pending live rows until an authoritative responded notification advances the
+same entry. Adversarial focused regressions pass hub/mock 15/15 and
+Board/hook/client-transport/Notifications 28/28; typecheck and
+`git diff --check` also pass. The exact corrected tree passes build, lint
+across 159 files at the exact 330-finding baseline, engine 231/231, adapters
+15/15, permissioned server 326/326, web 60/60, and E2E 18/18 in addition to
+typecheck and `git diff --check`.
+
+The renewed real-browser smoke found no document overflow at 360, 390, 768,
+1280, or 1440px. A tracked live project socket received a `$5.00` snapshot and
+`$0.25` delta, Board unmounted while App retained that socket, another `$0.25`
+delta arrived, and the remounted Board still displayed `$5.50` after its older
+zero-cost REST seed reached network idle. Exactly one project socket remained
+open. In a deterministic approval smoke, a successful durable-shaped response
+remained rendered after an older pending `notifications.snapshot`: zero
+Approve controls returned, one project socket remained open, and the 390px
+page stayed contained. Browser page errors were empty; console output contained
+only Vite development/reconnect notices caused by deliberate mock resets. Each
+mock reset and final shutdown completed gracefully with exit 0. Fresh
+independent re-review, hosted CI, PR/merge evidence, and merged-main
+verification remain outstanding.
+
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
 **Problem:** the already-merged idempotency shortcut depends on a single

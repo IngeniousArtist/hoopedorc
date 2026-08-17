@@ -130,6 +130,46 @@ describe("project-owned shared WebSocket connections", () => {
     expect(socket.close).toHaveBeenCalledOnce();
   });
 
+  it("replays the running cost total to a subscriber mounted after the socket snapshot", () => {
+    const first = vi.fn();
+    const firstHook = renderHook(() => useWS("project-a", first));
+    const socket = FakeWebSocket.instances[0]!;
+    act(() => {
+      socket.open();
+      socket.message({
+        type: "cost.snapshot",
+        payload: { projectId: "project-a", totalUsd: 5 },
+      });
+      socket.message({
+        type: "cost.updated",
+        payload: {
+          id: "cost-before-late-mount",
+          projectId: "project-a",
+          model: "deepseek-flash",
+          costUsd: 0.25,
+          tokensIn: 1,
+          tokensOut: 1,
+          tokensCached: 0,
+          ts: "2026-08-17T00:00:00.000Z",
+        },
+      });
+    });
+
+    const late = vi.fn();
+    const lateHook = renderHook(() => useWS("project-a", late));
+
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(late).toHaveBeenCalledOnce();
+    expect(late).toHaveBeenCalledWith({
+      type: "cost.snapshot",
+      payload: { projectId: "project-a", totalUsd: 5.25 },
+    });
+
+    firstHook.unmount();
+    lateHook.unmount();
+    act(() => vi.runAllTimers());
+  });
+
   it("isolates simultaneous different-project subscribers", () => {
     const first = vi.fn();
     const second = vi.fn();

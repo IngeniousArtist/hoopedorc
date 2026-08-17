@@ -63,6 +63,47 @@ describe("approval decisions", () => {
     expect(await screen.findByText("Responded: approve")).toBeVisible();
   });
 
+  it("does not let an older reconnect snapshot undo a persisted response", async () => {
+    let resolveResponse!: (value: {
+      notification: typeof notificationFixture;
+      delivery: "applied";
+    }) => void;
+    const response = new Promise<{
+      notification: typeof notificationFixture;
+      delivery: "applied";
+    }>((resolve) => {
+      resolveResponse = resolve;
+    });
+    apiMock.mockImplementation(async (key) => {
+      if (key === "listNotifications") {
+        return { notifications: [notificationFixture] };
+      }
+      if (key === "respondNotification") return response;
+      throw new Error(`Unexpected API call: ${key}`);
+    });
+    const user = userEvent.setup();
+    render(<Notifications projectId={projectFixture.id} />);
+    await user.click(await screen.findByRole("button", { name: "Approve" }));
+
+    const persisted = {
+      ...notificationFixture,
+      respondedWith: "approve",
+      approvalDelivery: "applied" as const,
+    };
+    resolveResponse({ notification: persisted, delivery: "applied" });
+    expect(await screen.findByText("Responded: approve")).toBeVisible();
+
+    act(() => {
+      wsState.handler?.({
+        type: "notifications.snapshot",
+        payload: { notifications: [notificationFixture] },
+      });
+    });
+
+    expect(screen.getByText("Responded: approve")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+  });
+
   it("keeps the decision available and surfaces a failed response", async () => {
     apiMock.mockImplementation(async (key) => {
       if (key === "listNotifications") return { notifications: [notificationFixture] };
@@ -104,5 +145,24 @@ describe("approval decisions", () => {
       ),
     ).toBeVisible();
     expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+
+    act(() => {
+      wsState.handler?.({
+        type: "notifications.snapshot",
+        payload: {
+          notifications: [
+            {
+              ...notificationFixture,
+              respondedWith: "approve",
+              approvalDelivery: "applied",
+            },
+          ],
+        },
+      });
+    });
+    expect(screen.getByText("Responded: approve")).toBeVisible();
+    expect(
+      screen.queryByText("Recorded: approve — waiting for the task to recover"),
+    ).not.toBeInTheDocument();
   });
 });

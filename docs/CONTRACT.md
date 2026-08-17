@@ -558,16 +558,20 @@ socket was offline. Matching broadcasts accepted while that replay is in
 flight queue behind it and drain in order, so no later delta can interleave
 with or be lost behind the baseline.
 The web Board replaces its total on a snapshot and only adds subsequent cost
-deltas. A WebSocket client whose `bufferedAmount` plus the full outgoing or
-queued live-frame byte length reaches 1 MiB is closed with application code
+deltas. The shared project connection retains that running total and replays
+it as a synthetic snapshot to a view mounted after the socket's original
+catch-up, so a late Board subscriber cannot start from a delta alone. A
+WebSocket client whose live `bufferedAmount` plus the full outgoing or queued
+live-frame byte length reaches 1 MiB is closed with application code
 `4008` (`slow client; resync required`) before the current event is accepted;
 the client must reconnect and consume a new snapshot. Snapshot frames wait for
 each prior send completion instead of filling that transport buffer. One
 durable snapshot record may be larger than the live queue ceiling, but only
-that single frame can be in flight; rejecting it would make every reconnect
-fail on the same durable record. Per-socket send failures close only that
-socket with `1011` (or terminate if closing fails), so healthy subscribers
-still receive the event.
+that single frame can be in flight. Its exact bytes are excluded from the live
+queue calculation, so a small event accepted behind it does not make every
+reconnect fail on the same durable record. Per-socket send failures close only
+that socket with `1011` (or terminate if closing fails), so healthy
+subscribers still receive the event.
 A snapshot-provider or snapshot-serialization failure also closes the socket
 with `1011` (`WebSocket snapshot failed; resync required`) before its
 subscription becomes active; it must not receive deltas without a baseline.
@@ -580,7 +584,10 @@ only the durable global prefix and leaves the socket unsubscribed from project-
 scoped live events, preserving and restoring `project.updated`,
 `project.deleted`, and `notification` state during onboarding and after
 deletion. Once a project is selected, same-project consumers share one
-subscribed socket.
+subscribed socket. A successful notification response is already durable; web
+consumers preserve that terminal row over an older REST or reconnect snapshot
+captured before the response, until the in-order live notification confirms
+it.
 
 ## Conventions
 - IDs are strings; timestamps are ISO 8601 strings.

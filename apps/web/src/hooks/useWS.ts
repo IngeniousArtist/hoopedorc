@@ -11,6 +11,9 @@ type Subscriber = { onEvent: (event: ServerEvent) => void };
 type ProjectConnection = {
   projectId: string;
   subscribers: Map<symbol, Subscriber>;
+  /** Latest authoritative project total, advanced by ordered deltas. A view
+   * mounting after the shared socket opened receives this as its baseline. */
+  costTotalUsd: number | null;
   ws: WebSocket | null;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   disconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -22,15 +25,56 @@ type ProjectConnection = {
 /** One reference-counted connection manager per project. */
 const connections = new Map<string, ProjectConnection>();
 
+function reportSubscriberError(projectId: string, error: unknown): void {
+  console.error(`useWS subscriber failed for project ${projectId}`, error);
+}
+
+function recordAuthoritativeState(
+  connection: ProjectConnection,
+  event: ServerEvent,
+): void {
+  if (
+    event.type === "cost.snapshot" &&
+    event.payload.projectId === connection.projectId
+  ) {
+    connection.costTotalUsd = event.payload.totalUsd;
+  } else if (
+    event.type === "cost.updated" &&
+    event.payload.projectId === connection.projectId &&
+    connection.costTotalUsd !== null
+  ) {
+    connection.costTotalUsd += event.payload.costUsd;
+  }
+}
+
 function dispatch(connection: ProjectConnection, event: ServerEvent): void {
+  recordAuthoritativeState(connection, event);
   for (const subscriber of connection.subscribers.values()) {
     try {
       subscriber.onEvent(event);
     } catch (error) {
       // One broken view must not prevent other same-project views from
       // receiving the authoritative event stream.
-      console.error(`useWS subscriber failed for project ${connection.projectId}`, error);
+      reportSubscriberError(connection.projectId, error);
     }
+  }
+}
+
+function replayCostBaseline(
+  connection: ProjectConnection,
+  subscriber: Subscriber,
+): void {
+  if (connection.costTotalUsd === null || !connection.projectId) return;
+  try {
+    subscriber.onEvent({
+      type: "cost.snapshot",
+      payload: {
+        projectId: connection.projectId,
+        totalUsd: connection.costTotalUsd,
+      },
+    });
+  } catch (error) {
+    reportSubscriberError(connection.projectId, error);
   }
 }
 
@@ -195,6 +239,7 @@ function getConnection(projectId: string): ProjectConnection {
   const connection: ProjectConnection = {
     projectId,
     subscribers: new Map(),
+    costTotalUsd: null,
     ws: null,
     reconnectTimer: null,
     disconnectTimer: null,
@@ -222,9 +267,13 @@ export function useWS(
   useEffect(() => {
     const connection = getConnection(projectId);
     const id = Symbol("useWS-subscriber");
-    connection.subscribers.set(id, {
+    const subscriber: Subscriber = {
       onEvent: (event) => onEventRef.current(event),
-    });
+    };
+    connection.subscribers.set(id, subscriber);
+    // A same-project manager may already be open because App or another view
+    // owns it. Seed this late subscriber before any later live delta can run.
+    replayCostBaseline(connection, subscriber);
     ensureConnected(connection);
 
     return () => {
