@@ -13,14 +13,16 @@ already-green checks. Complete one item or explicitly paired group at a time.
 
 ## Current baseline
 
-- `main` and `origin/main` match `2bd0349` after merging PR #248.
+- `main` and `origin/main` match `e3fc8c7` after merging PR #249.
 - PR #244 completed O6, O12, and O26's project-owned WebSocket sub-item.
 - PR #245 closed the three leftover reconnect-authority checkpoints.
 - PR #246 completed O24 request ownership.
 - PR #247 completed O23 trailing refreshes.
 - PR #248 completed O25 and O26's reduced-motion log bullet.
+- PR #249 completed O26's toast-timer and New Project bullets.
 - O5 already completed the shared dialog-semantics sub-item of O26.
-- The remaining implementation items are O8, O10, and O22.
+- O8 is closed with evidence and no production refactor.
+- The remaining implementation items are O10 and O22.
 - O27 has no remaining implementation, but its authorized deployment evidence
   is still outstanding.
 - Do not reopen completed items unless a regression is first reproduced.
@@ -36,7 +38,7 @@ Use this sequence for every item.
    its owning source files, focused tests, and directly affected contract or
    architecture documentation. Do not audit unrelated packages.
 3. **Prove the problem first.** Add one failing regression or a reproducible
-   benchmark. Evidence-gated items O8, O10, and O22 must not receive a
+   benchmark.     Evidence-gated items O10 and O22 must not receive a
    production refactor unless the baseline demonstrates the stated problem.
 4. **Iterate narrowly.** Run the changed test file or owning package while
    coding. Do not run every repository gate after each edit.
@@ -115,30 +117,14 @@ uses `auto` behavior under `prefers-reduced-motion`.
 
 Toast timers are tracked and cleared on provider unmount. PlanView's New
 Project control is a keyboard-accessible `#/new-project` link. Dialog,
-LogPanel, and `useWS` bullets were already complete. The next implementation
-item is O8.
+LogPanel, and `useWS` bullets were already complete.
 
-### 5. O8 — cancelled/stuck invocation cost evidence
+### 5. O8 — cancelled/stuck invocation cost evidence — complete
 
-This is evidence-gated. Start with production-shaped adapter/orchestrator tests
-that emit usage, hang, trigger stuck cancellation, and inspect the terminal
-invocation ledger.
-
-**Decision**
-
-- If accumulated usage already survives, close O8 with evidence or remove only
-  the fabricated-zero fallback demonstrated by the test.
-- If parsable partial usage is lost, preserve it through a typed additive
-  result/error and keep exactly one terminal ledger row.
-- If the real CLI provides no usage, represent it as unavailable/unknown; do
-  not present invented zero as measured usage.
-
-**Acceptance**
-
-- Every cancelled invocation has exactly one terminal ledger row.
-- Observed partial usage survives; genuinely unavailable usage is honest.
-- Normal and resolved-abort behavior is unchanged.
-- No cross-layer type/schema change is made without a reproduced need.
+Production adapters resolve aborted runs with accumulated usage. Stuck
+detection spreads that result onto one terminal author row, and the ledger
+CAS bills it once. The throw-`AbortError` zeros are unreachable after emitted
+usage. No production refactor. Next implementation item is O10.
 
 ### 6. O10 — measure synchronous worktree preparation
 
