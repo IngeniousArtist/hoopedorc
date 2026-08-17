@@ -2498,12 +2498,16 @@ dependency.
 
 The exact tree passes typecheck, build, lint across 171 files at the exact
 330-finding baseline, engine 234/234, adapters 18/18, permissioned server
-327/327, web 98/98, E2E 19/19, and `git diff --check`. Hosted CI,
-implementation PR/merge evidence, and merged-main verification remain
-outstanding.
+327/327, web 98/98, E2E 19/19, and `git diff --check`.
 
-**Status:** evidence and the two measured fixes recorded on branch
-`o22-measure-board-renders`.
+**Status:** completed in
+[#254](https://github.com/IngeniousArtist/hoopedorc/pull/254)
+(`07cfcf61caa7c102609c1062c38da65edbca13c0`) on 2026-08-17. Linux
+`build-and-test` passed on the reviewed head in 2m7s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32030829136/job/95390223071)
+and on merged `main` in 2m43s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32031045458/job/95390900834).
+After merge, clean local `main` and `origin/main` matched `07cfcf6`.
 
 ### O23. CostView/AuditView unconditionally refetch on high-frequency events — MEDIUM (efficiency)
 
