@@ -427,7 +427,7 @@ describe("Board authoritative WebSocket state", () => {
     expect(screen.queryByText("Older REST task")).not.toBeInTheDocument();
   });
 
-  it("keeps a WebSocket task newer than local optimism when the initial REST list resolves", async () => {
+  it("keeps a WebSocket task newer than local optimism, REST, and a delayed mutation response", async () => {
     let resolveTasks!: (value: { tasks: Task[] }) => void;
     let resolveUpdate!: (value: { task: Task }) => void;
     const tasksResponse = new Promise<{ tasks: Task[] }>((resolve) => {
@@ -472,10 +472,58 @@ describe("Board authoritative WebSocket state", () => {
       expect(screen.queryByText("Older REST task")).not.toBeInTheDocument();
     });
 
-    resolveUpdate({ task: websocketTask });
+    resolveUpdate({
+      task: {
+        ...snapshot,
+        title: "Stale HTTP response",
+        assignedModel: "deepseek-flash",
+      },
+    });
     await act(async () => {
       await updateResponse;
     });
+    expect(screen.getByTestId("drawer-model")).toHaveTextContent("claude");
+    expect(screen.getAllByText("Newer WebSocket task").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Stale HTTP response")).not.toBeInTheDocument();
+  });
+
+  it("does not let an older mutation failure roll back a newer WebSocket task", async () => {
+    let rejectUpdate!: (error: Error) => void;
+    const updateResponse = new Promise<{ task: Task }>((_resolve, reject) => {
+      rejectUpdate = reject;
+    });
+    const original = task("shared", "Original task");
+    apiMock.mockImplementation(async (key) => {
+      if (key === "listTasks") return { tasks: [original] };
+      if (key === "getSettings") return { settings: settingsFixture() };
+      if (key === "costAnalytics") return { totalUsd: 1, budgetUsd: undefined };
+      if (key === "estimatePlan") return { tasks: [] };
+      if (key === "updateTask") return updateResponse;
+      throw new Error(`Unexpected API call: ${String(key)}`);
+    });
+
+    renderBoard();
+    fireEvent.click(await screen.findByRole("button", { name: "Original task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change model" }));
+    const websocketTask = {
+      ...original,
+      title: "WebSocket won",
+      assignedModel: "claude" as const,
+    };
+    act(() => {
+      wsState.handler?.({ type: "task.updated", payload: websocketTask });
+    });
+
+    rejectUpdate(new Error("older model change refused"));
+    await act(async () => {
+      await updateResponse.catch(() => undefined);
+    });
+
+    expect(screen.getByTestId("drawer-model")).toHaveTextContent("claude");
+    expect(screen.getAllByText("WebSocket won").length).toBeGreaterThan(0);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "older model change refused",
+    );
   });
 
   it("does not show a stale success toast after a keyed project switch", async () => {

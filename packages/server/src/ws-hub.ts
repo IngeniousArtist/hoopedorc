@@ -5,8 +5,8 @@ import type WebSocket from "ws";
  * A stalled browser must be dropped before the ws implementation keeps
  * retaining an unbounded queue of broadcast payloads. One MiB is large
  * enough for several normal task/log bursts while bounding one client's
- * pending memory to a small, predictable amount; a reconnect gets the
- * authoritative project snapshot again.
+ * pending transport/delta queue to a small, predictable amount; a reconnect
+ * gets the authoritative project snapshot again.
  */
 export const WS_MAX_BUFFERED_AMOUNT = 1 * 1024 * 1024;
 export const WS_SLOW_CLIENT_CLOSE_CODE = 4008;
@@ -21,6 +21,14 @@ type Client = {
   ws: WebSocket;
   projectId?: string;
   closing?: boolean;
+  generation: number;
+  replay?: {
+    generation: number;
+    snapshot: ServerEvent[];
+    snapshotIndex: number;
+    queued: string[];
+    queuedBytes: number;
+  };
 };
 
 /**
@@ -72,6 +80,9 @@ export class WsHub {
   private closeClient(client: Client, code: number, reason: string): void {
     if (client.closing) return;
     client.closing = true;
+    client.generation++;
+    client.projectId = undefined;
+    client.replay = undefined;
     this.clients.delete(client);
     try {
       client.ws.close(code, reason);
@@ -90,7 +101,11 @@ export class WsHub {
    * the rest of the broadcast. Returning false means the event was not sent;
    * the socket has already been closed, so it cannot remain silently stale.
    */
-  private send(client: Client, payload: string): boolean {
+  private send(
+    client: Client,
+    payload: string,
+    onDelivered?: () => void,
+  ): boolean {
     if (client.closing || client.ws.readyState !== 1 /* WebSocket.OPEN */) {
       return false;
     }
@@ -106,12 +121,16 @@ export class WsHub {
       client.ws.send(payload, (error?: Error) => {
         // Do not let a completion callback from a removed Client close a new
         // Client that happens to wrap the same underlying socket object.
-        if (!error || client.closing || !this.clients.has(client)) return;
-        this.closeClient(
-          client,
-          WS_SEND_FAILURE_CLOSE_CODE,
-          WS_SEND_FAILURE_CLOSE_REASON,
-        );
+        if (client.closing || !this.clients.has(client)) return;
+        if (error) {
+          this.closeClient(
+            client,
+            WS_SEND_FAILURE_CLOSE_CODE,
+            WS_SEND_FAILURE_CLOSE_REASON,
+          );
+          return;
+        }
+        onDelivered?.();
       });
       return true;
     } catch {
@@ -124,8 +143,78 @@ export class WsHub {
     }
   }
 
+  /**
+   * A catch-up snapshot is flow-controlled one frame at a time. Broadcasting
+   * remains synchronous for producers, so events accepted while the replay is
+   * in flight are retained behind the snapshot and drained in order. Only
+   * those live deltas count against the 1 MiB transport-queue ceiling; the
+   * database snapshot itself stays as source events and is serialized one
+   * frame at a time rather than copied into the ws queue all at once.
+   */
+  private continueReplay(client: Client, generation: number): void {
+    const replay = client.replay;
+    if (
+      !replay ||
+      replay.generation !== generation ||
+      client.generation !== generation ||
+      client.closing ||
+      !this.clients.has(client)
+    ) {
+      return;
+    }
+
+    let payload: string | undefined;
+    if (replay.snapshotIndex < replay.snapshot.length) {
+      try {
+        payload = JSON.stringify(replay.snapshot[replay.snapshotIndex++]);
+      } catch {
+        this.closeClient(
+          client,
+          WS_SNAPSHOT_FAILURE_CLOSE_CODE,
+          WS_SNAPSHOT_FAILURE_CLOSE_REASON,
+        );
+        return;
+      }
+    } else {
+      payload = replay.queued.shift();
+      if (payload !== undefined) {
+        replay.queuedBytes -= Buffer.byteLength(payload);
+      }
+    }
+
+    if (payload === undefined) {
+      client.replay = undefined;
+      return;
+    }
+
+    this.send(client, payload, () => {
+      // Avoid recursive growth with synchronous test transports while real ws
+      // callbacks naturally wait until the previous frame has been written.
+      queueMicrotask(() => this.continueReplay(client, generation));
+    });
+  }
+
+  private queueDuringReplay(client: Client, payload: string): void {
+    const replay = client.replay;
+    if (!replay) return;
+    const payloadBytes = Buffer.byteLength(payload);
+    if (
+      client.ws.bufferedAmount + replay.queuedBytes + payloadBytes >=
+      WS_MAX_BUFFERED_AMOUNT
+    ) {
+      this.closeClient(
+        client,
+        WS_SLOW_CLIENT_CLOSE_CODE,
+        WS_SLOW_CLIENT_CLOSE_REASON,
+      );
+      return;
+    }
+    replay.queued.push(payload);
+    replay.queuedBytes += payloadBytes;
+  }
+
   add(ws: WebSocket): () => void {
-    const client: Client = { ws };
+    const client: Client = { ws, generation: 0 };
     this.clients.add(client);
 
     ws.on("message", (raw) => {
@@ -141,14 +230,14 @@ export class WsHub {
 
       if (msg.type === "subscribe" && typeof msg.projectId === "string" && msg.projectId) {
         const projectId = msg.projectId;
-        let snapshot: ServerEvent[] | undefined;
+        let snapshot: ServerEvent[];
         try {
           // Build the complete replay before changing the active subscription.
-          // A provider failure must never leave a socket receiving deltas
-          // without an authoritative baseline.
-          snapshot = this.snapshotFor?.(projectId);
+          // Provider and serialization failures must never leak a partial
+          // baseline or leave the socket receiving later deltas.
+          snapshot = this.snapshotFor?.(projectId) ?? [];
+          for (const event of snapshot) JSON.stringify(event);
         } catch {
-          client.projectId = undefined;
           this.closeClient(
             client,
             WS_SNAPSHOT_FAILURE_CLOSE_CODE,
@@ -157,37 +246,36 @@ export class WsHub {
           return;
         }
 
+        const generation = ++client.generation;
         client.projectId = projectId;
-        try {
-          // Send the catch-up snapshot for JUST this project on subscribe,
-          // rather than replaying every project's full task+run history to
-          // every client on connect (which scaled with total project count).
-          if (snapshot && ws.readyState === 1) {
-            for (const event of snapshot) {
-              if (!this.send(client, JSON.stringify(event))) {
-                client.projectId = undefined;
-                break;
-              }
-            }
-          }
-        } catch {
-          client.projectId = undefined;
-          this.closeClient(
-            client,
-            WS_SNAPSHOT_FAILURE_CLOSE_CODE,
-            WS_SNAPSHOT_FAILURE_CLOSE_REASON,
-          );
-        }
+        client.replay = {
+          generation,
+          snapshot,
+          snapshotIndex: 0,
+          queued: [],
+          queuedBytes: 0,
+        };
+        this.continueReplay(client, generation);
       } else if (msg.type === "unsubscribe") {
+        client.generation++;
         client.projectId = undefined;
+        client.replay = undefined;
       }
     });
 
     ws.on("close", () => {
+      client.closing = true;
+      client.generation++;
+      client.replay = undefined;
       this.clients.delete(client);
     });
 
-    return () => this.clients.delete(client);
+    return () => {
+      client.closing = true;
+      client.generation++;
+      client.replay = undefined;
+      this.clients.delete(client);
+    };
   }
 
   broadcast(event: ServerEvent): void {
@@ -202,7 +290,11 @@ export class WsHub {
       // which meant N running projects meant N× the WS traffic per tab and a
       // (harmless today, but latent) cross-project log/task-id collision risk.
       if (!global && client.projectId !== scopeId) continue;
-      this.send(client, payload);
+      if (client.replay) {
+        this.queueDuringReplay(client, payload);
+      } else {
+        this.send(client, payload);
+      }
     }
   }
 

@@ -15,7 +15,13 @@ import {
   type TaskRollbackResponse,
   type TaskStatus,
 } from "@orc/types";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { api } from "../api/client";
 import { useWS } from "../hooks/useWS";
 import { useToast } from "../hooks/useToast";
@@ -122,7 +128,7 @@ export function Board({
   // instance generation is invalidated by cleanup so every action can guard
   // both project identity and the lifetime of the instance that started it.
   const lifecycleRef = useRef({ active: true, generation: 0 });
-  useEffect(() => {
+  useLayoutEffect(() => {
     const generation = lifecycleRef.current.generation + 1;
     lifecycleRef.current = { active: true, generation };
     return () => {
@@ -171,6 +177,14 @@ export function Board({
       authority.version++;
       authority.tasks.set(task.id, { task, version: authority.version });
       return authority.version;
+    },
+    [],
+  );
+  const getTaskAuthorityVersion = useCallback(
+    (taskId: string, expectedProjectId: string) => {
+      const authority = taskAuthorityRef.current;
+      if (authority.projectId !== expectedProjectId) return;
+      return authority.tasks.get(taskId)?.version ?? 0;
     },
     [],
   );
@@ -428,14 +442,23 @@ export function Board({
       projectId,
       generation: lifecycleRef.current.generation,
     };
+    const authorityVersionAtRequest = getTaskAuthorityVersion(
+      taskId,
+      request.projectId,
+    );
+    if (authorityVersionAtRequest == null) return;
     setActionBusy(true);
     try {
       const res = await api<RetryTaskResponse>("retryTask", {
         params: { id: taskId },
       });
       if (!isActiveRequest(request)) return;
-      const responseVersion = recordTaskAuthority(res.task, request.projectId);
-      if (responseVersion != null) {
+      if (
+        getTaskAuthorityVersion(taskId, request.projectId) ===
+        authorityVersionAtRequest
+      ) {
+        const responseVersion = recordTaskAuthority(res.task, request.projectId);
+        if (responseVersion == null) return;
         setTasks((prev) =>
           prev.map((t) => (t.id === taskId ? res.task : t)),
         );
@@ -453,14 +476,23 @@ export function Board({
       projectId,
       generation: lifecycleRef.current.generation,
     };
+    const authorityVersionAtRequest = getTaskAuthorityVersion(
+      taskId,
+      request.projectId,
+    );
+    if (authorityVersionAtRequest == null) return;
     setStoppingIds((prev) => new Set(prev).add(taskId));
     try {
       const res = await api<StopTaskResponse>("stopTask", {
         params: { id: taskId },
       });
       if (!isActiveRequest(request)) return;
-      const responseVersion = recordTaskAuthority(res.task, request.projectId);
-      if (responseVersion != null) {
+      if (
+        getTaskAuthorityVersion(taskId, request.projectId) ===
+        authorityVersionAtRequest
+      ) {
+        const responseVersion = recordTaskAuthority(res.task, request.projectId);
+        if (responseVersion == null) return;
         setTasks((prev) =>
           prev.map((t) => (t.id === taskId ? res.task : t)),
         );
@@ -485,13 +517,16 @@ export function Board({
       generation: lifecycleRef.current.generation,
     };
     if (!isActiveRequest(request) || t.projectId !== request.projectId) return;
-    recordTaskAuthority(t, request.projectId);
-    setTasks((prev) => {
-      const existing = prev.some((task) => task.id === t.id);
-      return existing
-        ? prev.map((task) => (task.id === t.id ? t : task))
-        : [...prev, t];
-    });
+    const existingAuthority = taskAuthorityRef.current.tasks.get(t.id);
+    if (!existingAuthority) {
+      recordTaskAuthority(t, request.projectId);
+      setTasks((prev) => {
+        const existing = prev.some((task) => task.id === t.id);
+        return existing
+          ? prev.map((task) => (task.id === t.id ? t : task))
+          : [...prev, t];
+      });
+    }
     setShowAddTask(false);
     toast(`Added "${t.title}".`, "success");
   };
@@ -565,7 +600,11 @@ export function Board({
       generation: lifecycleRef.current.generation,
     };
     const optimisticTask = { ...task, status };
-    if (recordTaskAuthority(optimisticTask, request.projectId) == null) return;
+    const optimisticVersion = recordTaskAuthority(
+      optimisticTask,
+      request.projectId,
+    );
+    if (optimisticVersion == null) return;
 
     setTasks((prev) =>
       prev.map((t) => (t.id === taskId ? optimisticTask : t)),
@@ -577,6 +616,11 @@ export function Board({
         body: { status },
       });
       if (!isActiveRequest(request)) return;
+      if (
+        getTaskAuthorityVersion(taskId, request.projectId) !== optimisticVersion
+      ) {
+        return;
+      }
       const responseVersion = recordTaskAuthority(res.task, request.projectId);
       if (responseVersion != null) {
         setTasks((prev) =>
@@ -585,11 +629,15 @@ export function Board({
       }
     } catch (e) {
       if (!isActiveRequest(request)) return;
-      const rollbackVersion = recordTaskAuthority(task, request.projectId);
-      if (rollbackVersion != null) {
-        setTasks((prev) =>
-          prev.map((current) => (current.id === taskId ? task : current)),
-        );
+      if (
+        getTaskAuthorityVersion(taskId, request.projectId) === optimisticVersion
+      ) {
+        const rollbackVersion = recordTaskAuthority(task, request.projectId);
+        if (rollbackVersion != null) {
+          setTasks((prev) =>
+            prev.map((current) => (current.id === taskId ? task : current)),
+          );
+        }
       }
       // B21: B5's server rules reject most invalid moves with a genuinely
       // useful message ("can only requeue to backlog/ready", "stop it first")
@@ -610,7 +658,11 @@ export function Board({
       generation: lifecycleRef.current.generation,
     };
     const optimisticTask = { ...task, assignedModel: model };
-    if (recordTaskAuthority(optimisticTask, request.projectId) == null) return;
+    const optimisticVersion = recordTaskAuthority(
+      optimisticTask,
+      request.projectId,
+    );
+    if (optimisticVersion == null) return;
 
     setTasks((prev) =>
       prev.map((t) => (t.id === taskId ? optimisticTask : t)),
@@ -622,6 +674,11 @@ export function Board({
         body: { assignedModel: model },
       });
       if (!isActiveRequest(request)) return;
+      if (
+        getTaskAuthorityVersion(taskId, request.projectId) !== optimisticVersion
+      ) {
+        return;
+      }
       const responseVersion = recordTaskAuthority(res.task, request.projectId);
       if (responseVersion != null) {
         setTasks((prev) =>
@@ -630,11 +687,15 @@ export function Board({
       }
     } catch (e) {
       if (!isActiveRequest(request)) return;
-      const rollbackVersion = recordTaskAuthority(task, request.projectId);
-      if (rollbackVersion != null) {
-        setTasks((prev) =>
-          prev.map((current) => (current.id === taskId ? task : current)),
-        );
+      if (
+        getTaskAuthorityVersion(taskId, request.projectId) === optimisticVersion
+      ) {
+        const rollbackVersion = recordTaskAuthority(task, request.projectId);
+        if (rollbackVersion != null) {
+          setTasks((prev) =>
+            prev.map((current) => (current.id === taskId ? task : current)),
+          );
+        }
       }
       toast(String(e), "error");
     }

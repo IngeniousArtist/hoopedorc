@@ -98,7 +98,14 @@ function connect(connection: ProjectConnection): void {
     }
     connection.attempts = 0;
     try {
-      socket.send(JSON.stringify({ type: "subscribe", projectId: connection.projectId }));
+      // An empty project owns the global-only stream used during onboarding
+      // and after deletion. It deliberately stays unsubscribed while still
+      // receiving project/notification broadcasts.
+      if (connection.projectId) {
+        socket.send(
+          JSON.stringify({ type: "subscribe", projectId: connection.projectId }),
+        );
+      }
     } catch {
       // A browser can reject a send during a transport race. Closing lets the
       // normal bounded reconnect path establish a clean subscription.
@@ -215,10 +222,6 @@ export function useWS(
   onEventRef.current = onEvent;
 
   useEffect(() => {
-    // App can briefly have no selected project during onboarding/deletion;
-    // there is no project stream to own in that state.
-    if (!projectId) return;
-
     const connection = getConnection(projectId);
     const id = Symbol("useWS-subscriber");
     connection.subscribers.set(id, {

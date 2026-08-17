@@ -23,13 +23,22 @@ class FakeSocket extends EventEmitter {
   throwOnSend = false;
   asyncSendError: Error | undefined;
   throwOnClose = false;
+  maxBufferedAmount = 0;
 
   send(payload: string, callback?: (error?: Error) => void): void {
     if (this.throwOnSend) throw new Error("socket write failed");
     this.sent.push(payload);
+    this.bufferedAmount += Buffer.byteLength(payload);
+    this.maxBufferedAmount = Math.max(
+      this.maxBufferedAmount,
+      this.bufferedAmount,
+    );
     if (callback) {
       const error = this.asyncSendError;
-      queueMicrotask(() => callback(error));
+      queueMicrotask(() => {
+        this.bufferedAmount = 0;
+        callback(error);
+      });
     }
   }
 
@@ -142,6 +151,7 @@ test("O6: a snapshot provider failure closes before the socket can receive delta
 test("O6: snapshot serialization failure closes before any event can leak", () => {
   const hub = new WsHub();
   hub.setSnapshotProvider(() => [
+    taskEvent("project-1", "would-have-leaked"),
     {
       type: "task.updated",
       payload: { projectId: "project-1", id: "bad", invalid: 1n },
@@ -206,7 +216,7 @@ test("O12: an old send callback cannot close a newly-added Client", async () => 
   assert.deepEqual(socket.closeCalls, []);
 });
 
-test("O6: subscribe snapshot uses the authoritative event ordering", () => {
+test("O6: subscribe snapshot uses the authoritative event ordering", async () => {
   const hub = new WsHub();
   hub.setSnapshotProvider((projectId) => [
     { type: "project.updated", payload: { id: projectId } } as ServerEvent,
@@ -218,6 +228,7 @@ test("O6: subscribe snapshot uses the authoritative event ordering", () => {
   ]);
   const socket = new FakeSocket();
   subscribe(hub, socket, "project-1");
+  await new Promise<void>((resolve) => setImmediate(resolve));
 
   assert.deepEqual(
     socket.sent.map((payload) => parseEvent(payload).type),
@@ -225,7 +236,25 @@ test("O6: subscribe snapshot uses the authoritative event ordering", () => {
   );
 });
 
-test("O6/O12: a real hub slow-client close reconnects to an ordered snapshot and later delta", () => {
+test("O6/O12: a large snapshot drains under the cap instead of reconnecting forever", async () => {
+  const hub = new WsHub();
+  const eventCount = 3_000;
+  hub.setSnapshotProvider((projectId) =>
+    Array.from({ length: eventCount }, (_, index) =>
+      taskEvent(projectId, `snapshot-task-${index}`),
+    ),
+  );
+  const socket = new FakeSocket();
+
+  subscribe(hub, socket, "project-1");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(socket.sent.length, eventCount);
+  assert.equal(socket.closeCalls.length, 0);
+  assert.ok(socket.maxBufferedAmount < WS_MAX_BUFFERED_AMOUNT);
+});
+
+test("O6/O12: a real hub slow-client close reconnects to an ordered snapshot and later delta", async () => {
   const hub = new WsHub();
   hub.setSnapshotProvider((projectId) => [
     { type: "project.updated", payload: { id: projectId } } as ServerEvent,
@@ -251,6 +280,7 @@ test("O6/O12: a real hub slow-client close reconnects to an ordered snapshot and
 
   const first = new FakeSocket();
   subscribe(hub, first, "project-1");
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(
     first.sent.map((payload) => parseEvent(payload).type),
     ["project.updated", "cost.snapshot", "task.updated"],
@@ -270,7 +300,10 @@ test("O6/O12: a real hub slow-client close reconnects to an ordered snapshot and
   // receive a fresh authoritative baseline before the next delta.
   const replacement = new FakeSocket();
   subscribe(hub, replacement, "project-1");
+  // A delta broadcast while replay is still in flight must queue behind every
+  // snapshot frame rather than interleaving with or being lost by the replay.
   hub.broadcast(delta);
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(
     replacement.sent.map((payload) => parseEvent(payload).type),
     ["project.updated", "cost.snapshot", "task.updated", "cost.updated"],

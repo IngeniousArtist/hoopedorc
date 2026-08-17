@@ -45,17 +45,18 @@ together at the edge (Round 2 integration). `web` talks only to the HTTP/WS API.
 ```
 
 Realtime ownership is project-scoped at both ends of the WebSocket boundary.
-`WsHub` keeps one subscribed project per socket and emits a synchronous
-catch-up sequence beginning with `project.updated`, then the authoritative
-`cost.snapshot`, then task/run state; later deltas are broadcast only to
-matching project subscribers (global project and notification events retain
-their global semantics). A client whose pending `bufferedAmount` reaches the
-documented 1 MiB ceiling is closed with application code `4008`, forcing a
-fresh snapshot instead of silently dropping an event; individual send errors
-close only the broken socket, including async write-completion failures. A
-snapshot-provider or serialization error closes before the subscription is
-activated, and a late completion from a removed client cannot affect a
-replacement socket.
+`WsHub` keeps one subscribed project per socket and captures a catch-up
+sequence beginning with `project.updated`, then the authoritative
+`cost.snapshot`, then task/run state. It validates the whole baseline before
+activation and flow-controls it one frame per send completion; matching live
+events queue behind the replay and drain afterward in order. A client whose
+pending `bufferedAmount` plus queued live deltas reaches the documented 1 MiB
+ceiling is closed with application code `4008`, forcing a fresh snapshot
+instead of silently dropping an event; a large static snapshot itself does not
+fill the transport queue and reconnect forever. Individual send errors close
+only the broken socket, including async write-completion failures. A snapshot-
+provider or serialization error closes before the subscription is activated,
+and a late completion from a removed client cannot affect a replacement socket.
 
 The web `useWS` hook owns a reference-counted manager keyed by project ID.
 Same-project consumers share one socket, while simultaneous projects use
@@ -63,7 +64,9 @@ isolated sockets and dispatch registries. Managers defer zero-subscriber
 teardown for one tick to tolerate React effect churn and reconnect with
 bounded backoff after transport loss. Subscriber exceptions are reported with
 the project identifier only and do not stop later subscribers from receiving
-the event.
+the event. An empty project ID owns a global-only unsubscribed connection, so
+onboarding and post-deletion views still receive global project and
+notification events.
 
 Mock mode emits synthetic logs from one server-owned maintenance timer through
 `WsHub.broadcast`, so project isolation and backpressure are identical to live

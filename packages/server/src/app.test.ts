@@ -239,8 +239,9 @@ test("O36: a project catch-up snapshot reads all runs with one indexed statement
     readyState = 1;
     readonly sent: string[] = [];
 
-    send(payload: string): void {
+    send(payload: string, callback?: (error?: Error) => void): void {
       this.sent.push(payload);
+      callback?.();
     }
   }
 
@@ -304,6 +305,7 @@ test("O36: a project catch-up snapshot reads all runs with one indexed statement
       "message",
       Buffer.from(JSON.stringify({ type: "subscribe", projectId: "project-1" })),
     );
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     assert.equal(
       snapshotRunReads,
@@ -356,8 +358,9 @@ test("O6: reconnect snapshot reports the authoritative project cost before repla
     readyState = 1;
     readonly sent: string[] = [];
 
-    send(payload: string): void {
+    send(payload: string, callback?: (error?: Error) => void): void {
       this.sent.push(payload);
+      callback?.();
     }
   }
 
@@ -368,6 +371,7 @@ test("O6: reconnect snapshot reports the authoritative project cost before repla
       "message",
       Buffer.from(JSON.stringify({ type: "subscribe", projectId: "project-1" })),
     );
+    await new Promise<void>((resolve) => setImmediate(resolve));
     const events = socket.sent.map((payload) => JSON.parse(payload) as {
       type: string;
       payload: { projectId?: string; totalUsd?: number };

@@ -989,6 +989,33 @@ private branch diff to an external model service. Do not open the implementation
 PR until that review is completed. No EC2/model/deployment smoke is required
 for this browser/server contract boundary.
 
+**Fresh Sol/xhigh review correction (2026-08-17, pre-merge):** the approved
+read-only review of `31956bce4183ee3f0a834746510b04ff73c54d1b` found four
+remaining issues: an unbounded-size static snapshot could repeatedly hit the
+transport cap before completing; an empty selected-project ID no longer owned
+the documented global event stream; a delayed PATCH response or failure could
+overwrite newer per-task authority; and passive-effect cleanup left a narrow
+post-unmount window for old-project feedback. The corrected hub validates the
+whole snapshot before activation, sends one frame per completion, queues later
+events behind that baseline under the same 1 MiB bound, and proves a 3,000-task
+snapshot completes without `4008`. `useWS("")` now owns a global-only socket
+without subscribing. Board mutations apply a response or rollback only while
+their captured per-task authority version is current, and keyed lifecycle
+invalidation runs in layout cleanup before the replacement Board can publish
+effects. Focused correction coverage passes hub/mock 12/12, Board 12/12,
+`useWS` 9/9, client transport 1/1, and the complete web suite 57/57. The full
+gate and renewed browser evidence is recorded after the final rerun below.
+
+The exact corrected tree passes typecheck, build, lint across 159 files at the
+exact 330-finding baseline, engine 231/231, adapters 15/15, permissioned server
+322/322, web 57/57, E2E 18/18, and `git diff --check`. A renewed live mock
+smoke passed at 360, 390, 768, 1280, and 1440px without document overflow.
+Board/Costs navigation remained operable at 390px, the Board and App consumers
+shared exactly one established project WebSocket, mock drawer logs advanced,
+the browser console/page-error lists were clean, and graceful mock shutdown
+completed with exit 0. A final independent review of these corrections,
+hosted CI, PR/merge evidence, and merged-main verification remain outstanding.
+
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
 **Problem:** the already-merged idempotency shortcut depends on a single
