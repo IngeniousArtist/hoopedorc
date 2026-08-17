@@ -533,8 +533,9 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 
 ## WebSocket (`@orc/types/ws.ts`, `WS_PATH = /ws`)
 Server → client `ServerEvent`: `log`, `task.updated`, `run.updated`,
-`project.updated`, `merge.decision`, `rollback.updated`, `notification`,
-`notifications.snapshot`, `cost.updated`, `cost.snapshot`.
+`project.updated`, `project.deleted`, `projects.snapshot`, `merge.decision`,
+`rollback.updated`, `notification`, `notifications.snapshot`, `cost.updated`,
+`cost.snapshot`.
 Client → server `ClientEvent`: `subscribe`, `unsubscribe`, `ping`.
 
 Broadcast scoping: `log`/`task.updated`/`run.updated`/`merge.decision`/
@@ -542,8 +543,11 @@ Broadcast scoping: `log`/`task.updated`/`run.updated`/`merge.decision`/
 `subscribe`d to that event's `projectId` (`LogEvent`/`Run`/`MergeDecision` all
 carry one).
 `project.updated`, `project.deleted`, `notification`, and
-`notifications.snapshot` are global — every connected client gets them
-regardless of subscription. `notifications.snapshot` carries
+`projects.snapshot`/`notifications.snapshot` are global — every connected
+client gets them regardless of subscription. `projects.snapshot` carries
+`{ projects: Project[] }`; it authoritatively replaces the client's complete
+project list, so a deletion missed while offline cannot survive reconnect.
+`notifications.snapshot` carries
 `{ notifications: Notification[] }`; it is authoritative catch-up state and
 must not be treated as a new browser-alert delivery.
 
@@ -551,8 +555,9 @@ must not be treated as a new browser-alert delivery.
 `cost.snapshot` carries the authoritative project total `{ projectId,
 totalUsd }`. The complete catch-up state is captured and serialization-checked
 synchronously on subscribe, then flow-controlled one frame at a time in the
-order selected project, remaining projects, the bounded global notification
-inbox (including every still-pending approval), cost, tasks, and runs. This
+order authoritative project-list snapshot (selected project first), bounded
+global notification inbox (including every still-pending approval), cost,
+tasks, and runs. This
 durable global prefix restores project and approval state missed while the
 socket was offline. Matching broadcasts accepted while that replay is in
 flight queue behind it and drain in order, so no later delta can interleave
@@ -584,13 +589,15 @@ a removed socket cannot close a replacement client.
 
 The web always sends `subscribe` after an open. An empty `projectId` requests
 only the durable global prefix and leaves the socket unsubscribed from project-
-scoped live events, preserving and restoring `project.updated`,
-`project.deleted`, and `notification` state during onboarding and after
-deletion. Once a project is selected, same-project consumers share one
+scoped live events, preserving and restoring the authoritative project list
+and notification state during onboarding and after deletion. Once a project
+is selected, same-project consumers share one
 subscribed socket. A successful notification response is already durable; web
 consumers preserve that terminal row over an older REST or reconnect snapshot
 captured before the response, until the in-order live notification confirms
-it.
+it. Project and notification consumers also generation-guard in-flight REST
+reads so a response captured before a newer snapshot/live event cannot replace
+the newer state.
 
 ## Conventions
 - IDs are strings; timestamps are ISO 8601 strings.

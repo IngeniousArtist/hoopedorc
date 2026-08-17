@@ -266,7 +266,10 @@ test("O12: an old send callback cannot close a newly-added Client", async () => 
 test("O6: subscribe snapshot uses the authoritative event ordering", async () => {
   const hub = new WsHub();
   hub.setSnapshotProvider((projectId) => [
-    { type: "project.updated", payload: { id: projectId } } as ServerEvent,
+    {
+      type: "projects.snapshot",
+      payload: { projects: [{ id: projectId }] },
+    } as ServerEvent,
     {
       type: "cost.snapshot",
       payload: { projectId, totalUsd: 4.25 },
@@ -279,7 +282,7 @@ test("O6: subscribe snapshot uses the authoritative event ordering", async () =>
 
   assert.deepEqual(
     socket.sent.map((payload) => parseEvent(payload).type),
-    ["project.updated", "cost.snapshot", "task.updated"],
+    ["projects.snapshot", "cost.snapshot", "task.updated"],
   );
 });
 
@@ -352,7 +355,10 @@ test("O6/O12: a live event behind one oversized snapshot frame does not cause a 
 test("O6/O12: a real hub slow-client close reconnects to an ordered snapshot and later delta", async () => {
   const hub = new WsHub();
   hub.setSnapshotProvider((projectId) => [
-    { type: "project.updated", payload: { id: projectId } } as ServerEvent,
+    {
+      type: "projects.snapshot",
+      payload: { projects: [{ id: projectId }] },
+    } as ServerEvent,
     {
       type: "cost.snapshot",
       payload: { projectId, totalUsd: 4.5 },
@@ -378,7 +384,7 @@ test("O6/O12: a real hub slow-client close reconnects to an ordered snapshot and
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(
     first.sent.map((payload) => parseEvent(payload).type),
-    ["project.updated", "cost.snapshot", "task.updated"],
+    ["projects.snapshot", "cost.snapshot", "task.updated"],
   );
 
   first.bufferedAmount = WS_MAX_BUFFERED_AMOUNT;
@@ -401,6 +407,6 @@ test("O6/O12: a real hub slow-client close reconnects to an ordered snapshot and
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(
     replacement.sent.map((payload) => parseEvent(payload).type),
-    ["project.updated", "cost.snapshot", "task.updated", "cost.updated"],
+    ["projects.snapshot", "cost.snapshot", "task.updated", "cost.updated"],
   );
 });

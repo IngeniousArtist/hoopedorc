@@ -2581,14 +2581,16 @@ async function assembleServer(
     const orderedProjects = selectedProject
       ? [selectedProject, ...projects.filter((project) => project.id !== projectId)]
       : projects;
-    const events: ServerEvent[] = orderedProjects.map((project) => ({
-      type: "project.updated",
-      payload: project,
-    }));
-    events.push({
-      type: "notifications.snapshot",
-      payload: { notifications: repo.getNotifications(db) },
-    });
+    const events: ServerEvent[] = [
+      {
+        type: "projects.snapshot",
+        payload: { projects: orderedProjects },
+      },
+      {
+        type: "notifications.snapshot",
+        payload: { notifications: repo.getNotifications(db) },
+      },
+    ];
 
     if (!selectedProject) return events;
 

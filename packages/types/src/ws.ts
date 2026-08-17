@@ -23,6 +23,13 @@ export type NotificationSnapshot = {
   notifications: Notification[];
 };
 
+/** Authoritative global project state used to reseed clients after reconnect.
+ * Replacing the client list from this snapshot also removes projects whose
+ * deletion event was missed while the socket was offline. */
+export type ProjectSnapshot = {
+  projects: Project[];
+};
+
 /** Server -> client events, pushed over the WS connection at WS_PATH. */
 export type ServerEvent =
   | { type: "log"; payload: LogEvent }
@@ -30,6 +37,7 @@ export type ServerEvent =
   | { type: "run.updated"; payload: Run }
   | { type: "project.updated"; payload: Project }
   | { type: "project.deleted"; payload: { id: string } }
+  | { type: "projects.snapshot"; payload: ProjectSnapshot }
   | { type: "merge.decision"; payload: MergeDecision }
   | { type: "rollback.updated"; payload: RollbackJob }
   | { type: "notification"; payload: Notification }

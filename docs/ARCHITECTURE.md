@@ -46,10 +46,13 @@ together at the edge (Round 2 integration). `web` talks only to the HTTP/WS API.
 
 Realtime ownership is project-scoped at both ends of the WebSocket boundary.
 `WsHub` keeps one subscribed project per socket and captures a catch-up
-sequence beginning with the durable global project list and bounded
-`notifications.snapshot` inbox, followed by the selected project's authoritative
-`cost.snapshot` and task/run state. This restores approvals that were broadcast
-while the socket was offline without replaying browser alerts. The hub validates the whole baseline before
+sequence beginning with an authoritative global `projects.snapshot` and
+bounded `notifications.snapshot` inbox, followed by the selected project's
+authoritative `cost.snapshot` and task/run state. Replacing the project list
+removes projects whose deletion event was missed while offline; replacing the
+notification inbox restores missed approvals without replaying browser alerts.
+Web consumers generation-guard older in-flight REST reads from overwriting
+either snapshot. The hub validates the whole baseline before
 activation and flow-controls it one frame per send completion; matching live
 events queue behind the replay and drain afterward in order. A client whose
 pending `bufferedAmount` plus the complete outgoing or queued live frame reaches

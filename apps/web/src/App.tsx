@@ -128,6 +128,10 @@ export function App() {
   // project-scoped on the wire (see ws-hub.ts's isGlobalEvent), so this
   // tracks every notification regardless of which project tab is open.
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  // REST reads begun before an authoritative snapshot/live delta must not
+  // overwrite that newer state when their older response eventually arrives.
+  const projectsAuthorityRef = useRef(0);
+  const notificationsAuthorityRef = useRef(0);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () => initialHashState?.projectId ?? localStorage.getItem(STORAGE_KEY) ?? "",
   );
@@ -255,8 +259,10 @@ export function App() {
   }, []);
 
   const refreshProjects = useCallback(async () => {
+    const authorityAtRequest = projectsAuthorityRef.current;
     try {
       const res = await api<ListProjectsResponse>("listProjects");
+      if (projectsAuthorityRef.current !== authorityAtRequest) return;
       setProjects(res.projects);
       setSelectedProjectId((cur) =>
         cur && res.projects.some((p) => p.id === cur)
@@ -275,8 +281,10 @@ export function App() {
   }, [refreshProjects]);
 
   const fetchNotifications = useCallback(async () => {
+    const authorityAtRequest = notificationsAuthorityRef.current;
     try {
       const res = await api<ListNotificationsResponse>("listNotifications");
+      if (notificationsAuthorityRef.current !== authorityAtRequest) return;
       setNotifications(res.notifications);
     } catch {
       /* non-critical — badge just stays at its last known count */
@@ -309,25 +317,37 @@ export function App() {
 
   const onWS = useCallback(
     (e: ServerEvent) => {
-      if (e.type === "project.updated") {
+      if (e.type === "projects.snapshot") {
+        projectsAuthorityRef.current++;
+        setProjects(e.payload.projects);
+        setSelectedProjectId((cur) =>
+          cur && e.payload.projects.some((project) => project.id === cur)
+            ? cur
+            : (e.payload.projects[0]?.id ?? ""),
+        );
+      } else if (e.type === "project.updated") {
+        projectsAuthorityRef.current++;
         setProjects((prev) =>
           prev.some((p) => p.id === e.payload.id)
             ? prev.map((p) => (p.id === e.payload.id ? e.payload : p))
             : [e.payload, ...prev],
         );
       } else if (e.type === "project.deleted") {
+        projectsAuthorityRef.current++;
         setProjects((prev) => prev.filter((p) => p.id !== e.payload.id));
         setSelectedProjectId((cur) => (cur === e.payload.id ? "" : cur));
       } else if (e.type === "notifications.snapshot") {
         // Reconnect catch-up is authoritative but must not replay browser
         // alerts for every historical notification. Later live events are
         // queued behind this snapshot by WsHub and update it in order.
+        notificationsAuthorityRef.current++;
         setNotifications(e.payload.notifications);
       } else if (e.type === "notification") {
         // Global (B15) — reaches every client regardless of which project
         // tab is open, matching "action needed" mattering everywhere. Also
         // covers respond()'s own broadcast, so the U1 badge clears the
         // moment an approval is answered from any tab.
+        notificationsAuthorityRef.current++;
         setNotifications((prev) => {
           const idx = prev.findIndex((n) => n.id === e.payload.id);
           if (idx >= 0) return prev.map((n, i) => (i === idx ? e.payload : n));
@@ -352,6 +372,7 @@ export function App() {
 
   // A freshly created project becomes the active one, then go straight to Plan.
   const handleProjectCreated = useCallback((p: Project) => {
+    projectsAuthorityRef.current++;
     setProjects((prev) => [p, ...prev.filter((x) => x.id !== p.id)]);
     setSelectedProjectId(p.id);
     setPage("plan");
@@ -359,6 +380,8 @@ export function App() {
 
   const handleProjectDeleted = useCallback(
     (id: string) => {
+      projectsAuthorityRef.current++;
+      setProjects((prev) => prev.filter((project) => project.id !== id));
       setSelectedProjectId((cur) => (cur === id ? "" : cur));
     },
     [],

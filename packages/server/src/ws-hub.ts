@@ -53,6 +53,7 @@ function eventProjectId(event: ServerEvent): string | undefined {
     case "project.deleted":
       return event.payload.id;
     case "notification":
+    case "projects.snapshot":
     case "notifications.snapshot":
       return undefined;
   }
@@ -65,6 +66,7 @@ function isGlobalEvent(event: ServerEvent): boolean {
   return (
     event.type === "project.updated" ||
     event.type === "project.deleted" ||
+    event.type === "projects.snapshot" ||
     event.type === "notification" ||
     event.type === "notifications.snapshot"
   );

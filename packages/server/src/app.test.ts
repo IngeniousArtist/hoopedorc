@@ -315,11 +315,16 @@ test("O36: a project catch-up snapshot reads all runs with one indexed statement
     );
     const events = socket.sent.map((payload) => JSON.parse(payload) as {
       type: string;
-      payload: { id?: string; projectId?: string; totalUsd?: number };
+      payload: {
+        id?: string;
+        projectId?: string;
+        totalUsd?: number;
+        projects?: Array<{ id: string }>;
+      };
     });
     assert.equal(events.length, 3 + taskCount * (1 + runsPerTask));
-    assert.equal(events[0]?.type, "project.updated");
-    assert.equal(events[0]?.payload.id, "project-1");
+    assert.equal(events[0]?.type, "projects.snapshot");
+    assert.equal(events[0]?.payload.projects?.[0]?.id, "project-1");
     assert.equal(events[1]?.type, "notifications.snapshot");
     assert.equal(events[2]?.type, "cost.snapshot");
     assert.equal(events[2]?.payload.projectId, "project-1");
@@ -378,7 +383,7 @@ test("O6: reconnect snapshot reports the authoritative project cost before repla
       type: string;
       payload: { projectId?: string; totalUsd?: number };
     });
-    assert.equal(events[0]?.type, "project.updated");
+    assert.equal(events[0]?.type, "projects.snapshot");
     assert.equal(events[1]?.type, "notifications.snapshot");
     assert.equal(events[2]?.type, "cost.snapshot");
     assert.equal(events[2]?.payload.projectId, "project-1");
@@ -428,7 +433,7 @@ test("O6: reconnect catch-up restores durable global notifications without a pro
 
     assert.deepEqual(
       events.map((event) => event.type),
-      ["project.updated", "notifications.snapshot"],
+      ["projects.snapshot", "notifications.snapshot"],
     );
     const snapshot = events[1];
     assert.equal(snapshot?.type, "notifications.snapshot");

@@ -1111,6 +1111,34 @@ only normal Vite development messages, and the mock shut down gracefully with
 exit 0 and zero cleanup errors. Another independent clean review, hosted CI,
 PR/merge evidence, and merged-main verification remain outstanding.
 
+**Fresh-review global-authority correction (2026-08-17, pre-merge):** the
+independent review of pushed head `ea285a7` found two remaining P2 catch-up
+races. Replaying only surviving `project.updated` rows could not remove a
+project whose `project.deleted` event was missed while offline, and initial
+project/notification REST reads could resolve after a newer reconnect snapshot
+and overwrite it. The canonical contract now carries one authoritative
+`projects.snapshot` containing the complete ordered project list before the
+notification and selected-project baselines. App replaces its full list and
+normalizes selection from that snapshot. App's project and badge state plus
+the Notifications page generation-guard older REST reads after any snapshot,
+live event, or locally persisted response. Regressions cover a missed deletion
+and delayed project/notification REST responses resolving after the newer
+snapshots. The exact corrected tree passes typecheck, build, lint across 160
+files at the exact 330-finding baseline, engine 231/231, adapters 15/15,
+permissioned server 326/326, web 63/63, E2E 18/18, and `git diff --check`.
+
+The targeted 390px live mock delayed initial project/notification REST
+responses by four seconds while the authoritative WebSocket baselines arrived
+first. A synthetic stale REST-only approval did not increase the snapshot's
+badge count. Deleting the ephemeral in-memory project removed it from the
+selector and normalized the UI to `No projects`; one app `/ws` remained open
+after the project-to-global handoff (alongside Vite's separate HMR socket).
+The page stayed at 390px scroll width with no document overflow or page errors;
+console output contained only Vite development/reconnect notices caused by the
+deliberate browser session resets. Mock shutdown completed with exit 0 and zero
+cleanup errors. A final clean independent re-review, hosted CI, PR/merge, and
+merged-main verification remain outstanding.
+
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
 **Problem:** the already-merged idempotency shortcut depends on a single

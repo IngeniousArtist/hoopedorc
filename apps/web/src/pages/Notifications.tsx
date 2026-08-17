@@ -160,6 +160,9 @@ export function Notifications({
   // can arrive afterward, so matching older pending rows must not re-enable
   // approval controls while the ordered live confirmation catches up.
   const persistedResponsesRef = useRef(new Map<string, NotifType>());
+  // A reconnect snapshot or live confirmation supersedes REST reads that
+  // started before it. Those older responses must not restore stale rows.
+  const notificationsAuthorityRef = useRef(0);
 
   const preservePersistedResponses = useCallback(
     (incoming: NotifType[]) =>
@@ -179,12 +182,15 @@ export function Notifications({
   );
 
   const fetchNotifications = useCallback(async () => {
+    const authorityAtRequest = notificationsAuthorityRef.current;
     try {
       const data = await api<{ notifications: NotifType[] }>(
         "listNotifications",
       );
+      if (notificationsAuthorityRef.current !== authorityAtRequest) return;
       setNotifications(preservePersistedResponses(data.notifications));
     } catch (e) {
+      if (notificationsAuthorityRef.current !== authorityAtRequest) return;
       setError(String(e));
     }
   }, [preservePersistedResponses]);
@@ -196,10 +202,12 @@ export function Notifications({
   const handleWSEvent = useCallback(
     (event: ServerEvent) => {
       if (event.type === "notifications.snapshot") {
+        notificationsAuthorityRef.current++;
         setNotifications(
           preservePersistedResponses(event.payload.notifications),
         );
       } else if (event.type === "notification") {
+        notificationsAuthorityRef.current++;
         const persisted = persistedResponsesRef.current.get(event.payload.id);
         const notif =
           persisted?.respondedWith && !event.payload.respondedWith
@@ -238,6 +246,7 @@ export function Notifications({
         params: { id: notifId },
         body: { choice },
       });
+      notificationsAuthorityRef.current++;
       setNotifications((prev) => {
         let found = false;
         const next = prev.map((notification) => {
