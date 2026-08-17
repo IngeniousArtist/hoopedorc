@@ -68,7 +68,10 @@ status.
 REST-only Audit state treats the global project snapshot as its reconnect
 marker, CostView treats `cost.snapshot` as the marker for analytics/estimates,
 and derived approval counts use the notification snapshot; Audit and Mission
-Control reject older overlapping reads. The hub validates the whole
+Control reject older overlapping reads. PlanView's initial five-request load,
+CostView analytics/estimates, and Board estimate fetches also retire aborted or
+superseded responses so a project switch or newer same-view refresh cannot
+publish an older result. The hub validates the whole
 baseline before activation and flow-controls it one frame per send completion;
 matching live events queue behind the replay and drain afterward in order. A
 client whose

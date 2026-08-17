@@ -21,7 +21,7 @@ import type {
   VerifiedFigmaReference,
 } from "@orc/types";
 import { useEffect, useRef, useState } from "react";
-import { ApiRequestError, api, apiUpload } from "../api/client";
+import { ApiRequestError, api, apiUpload, isAbortError } from "../api/client";
 import { ModelSelect } from "../components/ModelSelect";
 import { useToast } from "../hooks/useToast";
 import { useWS } from "../hooks/useWS";
@@ -183,10 +183,13 @@ export function PlanView({
 
   // Auto-save draft edits debounced (1 s after last change)
   const saveDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadGenerationRef = useRef(0);
 
   // ── Load session on mount / project change ──
   useEffect(() => {
     if (!projectId) return;
+    const controller = new AbortController();
+    const loadGeneration = ++loadGenerationRef.current;
     setLoading(true);
     setCommitted(null);
     setError(null);
@@ -194,18 +197,16 @@ export function PlanView({
     setPlannerReady(false);
     setRevisionId(null);
     const authorityAtRequest = projectAuthorityRef.current;
+    const request = { params: { id: projectId }, signal: controller.signal };
     Promise.all([
-      api<GetProjectResponse>("getProject", { params: { id: projectId } }),
-      api<PlanningSessionResponse>("planSession", { params: { id: projectId } }),
-      api<GetSettingsResponse>("getSettings"),
-      api<ListPlanAttachmentsResponse>("listPlanAttachments", {
-        params: { id: projectId },
-      }),
-      api<ListPlanSessionArchivesResponse>("planSessionArchives", {
-        params: { id: projectId },
-      }),
+      api<GetProjectResponse>("getProject", request),
+      api<PlanningSessionResponse>("planSession", request),
+      api<GetSettingsResponse>("getSettings", { signal: controller.signal }),
+      api<ListPlanAttachmentsResponse>("listPlanAttachments", request),
+      api<ListPlanSessionArchivesResponse>("planSessionArchives", request),
     ])
       .then(([projRes, sessionRes, settingsRes, attachmentsRes, archivesRes]) => {
+        if (loadGenerationRef.current !== loadGeneration) return;
         if (projectAuthorityRef.current === authorityAtRequest) {
           setProject(projRes.project ?? null);
         }
@@ -238,8 +239,16 @@ export function PlanView({
         }
         setAttachments(attachmentsRes.attachments);
       })
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (loadGenerationRef.current !== loadGeneration || isAbortError(e)) {
+          return;
+        }
+        setError(String(e));
+      })
+      .finally(() => {
+        if (loadGenerationRef.current === loadGeneration) setLoading(false);
+      });
+    return () => controller.abort();
   }, [projectId]);
 
   // F27: upload from the hidden file input; errors surface as a toast

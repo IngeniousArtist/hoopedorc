@@ -22,7 +22,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { api } from "../api/client";
+import { api, isAbortError } from "../api/client";
 import { useWS } from "../hooks/useWS";
 import { useToast } from "../hooks/useToast";
 import { TaskDrawer } from "../components/TaskDrawer";
@@ -192,15 +192,32 @@ export function Board({
     tasks.find((t) => t.id === selectedTaskId) ?? null;
   const selectedTaskPrNumber = selectedTask?.prNumber;
 
+  const estimateGenerationRef = useRef(0);
+  const estimateAbortRef = useRef<AbortController | null>(null);
   const fetchEstimates = useCallback(async () => {
+    estimateAbortRef.current?.abort();
+    const controller = new AbortController();
+    estimateAbortRef.current = controller;
+    const requestGeneration = ++estimateGenerationRef.current;
     try {
       const res = await api<EstimateResponse>("estimatePlan", {
         params: { id: projectId },
+        signal: controller.signal,
       });
+      if (estimateGenerationRef.current !== requestGeneration) return;
       setEstimates(Object.fromEntries(res.tasks.map((t) => [t.taskId, t])));
-    } catch {
+    } catch (error) {
+      if (isAbortError(error) || estimateGenerationRef.current !== requestGeneration) {
+        return;
+      }
       /* non-critical — the chip just doesn't show */
     }
+  }, [projectId]);
+
+  useEffect(() => {
+    return () => {
+      estimateAbortRef.current?.abort();
+    };
   }, [projectId]);
 
   useEffect(() => {

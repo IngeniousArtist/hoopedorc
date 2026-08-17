@@ -68,6 +68,13 @@ export interface ApiCallOptions {
   signal?: AbortSignal;
 }
 
+export function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
 export class ApiRequestError extends Error {
   override name = "ApiRequestError";
 

@@ -3,8 +3,8 @@ import type {
   EstimateResponse,
   ServerEvent,
 } from "@orc/types";
-import { useCallback, useEffect, useState } from "react";
-import { api } from "../api/client";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, isAbortError } from "../api/client";
 import { useWS } from "../hooks/useWS";
 import { formatUsd } from "../lib/format";
 
@@ -16,22 +16,42 @@ export function CostView({ projectId }: { projectId: string }) {
   const [a, setA] = useState<CostAnalyticsResponse | null>(null);
   const [est, setEst] = useState<EstimateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const requestGenerationRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchAll = useCallback(async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const requestGeneration = ++requestGenerationRef.current;
     try {
       const [analytics, estimate] = await Promise.all([
-        api<CostAnalyticsResponse>("costAnalytics", { params: { id: projectId } }),
-        api<EstimateResponse>("estimatePlan", { params: { id: projectId } }),
+        api<CostAnalyticsResponse>("costAnalytics", {
+          params: { id: projectId },
+          signal: controller.signal,
+        }),
+        api<EstimateResponse>("estimatePlan", {
+          params: { id: projectId },
+          signal: controller.signal,
+        }),
       ]);
+      if (requestGenerationRef.current !== requestGeneration) return;
       setA(analytics);
       setEst(estimate);
+      setError(null);
     } catch (e) {
+      if (requestGenerationRef.current !== requestGeneration || isAbortError(e)) {
+        return;
+      }
       setError(String(e));
     }
   }, [projectId]);
 
   useEffect(() => {
     fetchAll();
+    return () => {
+      abortRef.current?.abort();
+    };
   }, [fetchAll]);
 
   const onWS = useCallback(

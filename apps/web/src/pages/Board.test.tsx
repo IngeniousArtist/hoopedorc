@@ -72,7 +72,15 @@ vi.mock("../components/TaskDrawer", () => ({
   ),
 }));
 vi.mock("../components/TaskCard", () => ({
-  TaskCard: ({ task, onClick }: { task: Task; onClick?: () => void }) => (
+  TaskCard: ({
+    task,
+    estimate,
+    onClick,
+  }: {
+    task: Task;
+    estimate?: { expectedUsd: number };
+    onClick?: () => void;
+  }) => (
     <button
       type="button"
       data-testid="task-card"
@@ -81,6 +89,9 @@ vi.mock("../components/TaskCard", () => ({
       onClick={onClick}
     >
       {task.title}
+      {estimate ? (
+        <span data-testid="task-estimate">{estimate.expectedUsd}</span>
+      ) : null}
     </button>
   ),
 }));
@@ -592,5 +603,85 @@ describe("Board authoritative WebSocket state", () => {
     expect(
       screen.queryByText("Error: retry refused for old project"),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("Board estimate request ownership", () => {
+  beforeEach(() => {
+    apiMock.mockReset();
+    wsState.handler = undefined;
+    wsState.handlers.clear();
+  });
+
+  it("does not let an older estimate response overwrite a newer one", async () => {
+    const ready = task("initial", "Initial task");
+    let resolveFirst!: (value: { tasks: Array<{ taskId: string; expectedUsd: number; highUsd: number; title: string; model: string; validatorModel: string; hasHistory: boolean }> }) => void;
+    const firstEstimate = new Promise<{
+      tasks: Array<{
+        taskId: string;
+        expectedUsd: number;
+        highUsd: number;
+        title: string;
+        model: string;
+        validatorModel: string;
+        hasHistory: boolean;
+      }>;
+    }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let estimateCalls = 0;
+    apiMock.mockImplementation(async (key) => {
+      if (key === "listTasks") return { tasks: [ready] };
+      if (key === "getSettings") return { settings: settingsFixture() };
+      if (key === "costAnalytics") return { totalUsd: 1, budgetUsd: undefined };
+      if (key === "estimatePlan") {
+        estimateCalls += 1;
+        return estimateCalls === 1
+          ? firstEstimate
+          : {
+              tasks: [
+                {
+                  taskId: ready.id,
+                  title: ready.title,
+                  model: "codex",
+                  validatorModel: "codex",
+                  expectedUsd: 9,
+                  highUsd: 12,
+                  hasHistory: true,
+                },
+              ],
+            };
+      }
+      throw new Error(`Unexpected API call: ${String(key)}`);
+    });
+
+    renderBoard();
+    await screen.findByRole("button", { name: "Initial task" });
+    await waitFor(() => expect(estimateCalls).toBe(1));
+
+    act(() => {
+      wsState.handler?.({ type: "task.updated", payload: ready });
+    });
+    await waitFor(() => expect(estimateCalls).toBe(2));
+    expect(await screen.findByTestId("task-estimate")).toHaveTextContent("9");
+
+    await act(async () => {
+      resolveFirst({
+        tasks: [
+          {
+            taskId: ready.id,
+            title: ready.title,
+            model: "codex",
+            validatorModel: "codex",
+            expectedUsd: 1,
+            highUsd: 2,
+            hasHistory: true,
+          },
+        ],
+      });
+      await firstEstimate;
+    });
+
+    expect(screen.getByTestId("task-estimate")).toHaveTextContent("9");
   });
 });
