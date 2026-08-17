@@ -122,6 +122,11 @@ function connect(connection: ProjectConnection): void {
     // the callback late; never let it tear down the replacement connection.
     if (connection.ws !== socket) return;
     connection.ws = null;
+    // The cached total is authoritative only while it is advanced by this
+    // ordered transport. During reconnect downtime the database may advance,
+    // so a late Board must use its REST seed until the replacement socket
+    // supplies a fresh cost.snapshot.
+    connection.costTotalUsd = null;
     if (!connection.torn && connection.subscribers.size > 0) {
       scheduleReconnect(connection);
     }

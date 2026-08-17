@@ -560,9 +560,12 @@ with or be lost behind the baseline.
 The web Board replaces its total on a snapshot and only adds subsequent cost
 deltas. The shared project connection retains that running total and replays
 it as a synthetic snapshot to a view mounted after the socket's original
-catch-up, so a late Board subscriber cannot start from a delta alone. A
-WebSocket client whose live `bufferedAmount` plus the full outgoing or queued
-live-frame byte length reaches 1 MiB is closed with application code
+catch-up, so a late Board subscriber cannot start from a delta alone. Closing
+the transport invalidates that cached total; a view mounted during reconnect
+backoff accepts its REST seed until the new connection supplies another
+authoritative snapshot. A WebSocket client whose live `bufferedAmount` plus
+the full outgoing or queued live-frame byte length reaches 1 MiB is closed with
+application code
 `4008` (`slow client; resync required`) before the current event is accepted;
 the client must reconnect and consume a new snapshot. Snapshot frames wait for
 each prior send completion instead of filling that transport buffer. One

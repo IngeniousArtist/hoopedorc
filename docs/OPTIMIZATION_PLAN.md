@@ -1087,6 +1087,30 @@ mock reset and final shutdown completed gracefully with exit 0. Fresh
 independent re-review, hosted CI, PR/merge evidence, and merged-main
 verification remain outstanding.
 
+**Fresh-review cost-authority correction (2026-08-17, pre-merge):** the clean
+review of pushed head `5aaf6a2` found one remaining P2 ordering gap. The shared
+connection retained its last cost total after transport loss, so a Board
+mounted during reconnect backoff could accept that stale total as a synthetic
+snapshot and suppress a newer REST seed. A connection now invalidates its
+cached cost total when its active socket closes; late subscribers use REST
+until the replacement socket supplies a fresh authoritative snapshot. A hook
+regression covers snapshot, disconnect, late mount with no synthetic replay,
+then replacement snapshot delivery. Focused hook/client-transport/Board
+verification passes 24/24. The exact corrected tree passes typecheck, build,
+lint across 159 files at the exact 330-finding baseline, engine 231/231,
+adapters 15/15, permissioned server 326/326, web 61/61, E2E 18/18, and
+`git diff --check`.
+
+The targeted live-browser regression seeded `$5.00`, unmounted Board while
+another consumer retained the shared socket, closed that transport, and
+remounted Board during reconnect backoff. The Board accepted the newer `$0.00`
+REST seed instead of replaying the stale cache; the replacement connection
+then restored exactly one open project socket. At 390px the page had no
+document overflow, browser page errors were empty, console output contained
+only normal Vite development messages, and the mock shut down gracefully with
+exit 0 and zero cleanup errors. Another independent clean review, hosted CI,
+PR/merge evidence, and merged-main verification remain outstanding.
+
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
 **Problem:** the already-merged idempotency shortcut depends on a single

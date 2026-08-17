@@ -170,6 +170,42 @@ describe("project-owned shared WebSocket connections", () => {
     act(() => vi.runAllTimers());
   });
 
+  it("does not replay a stale cost total to a subscriber mounted during reconnect backoff", () => {
+    const firstHook = renderHook(() => useWS("project-a", vi.fn()));
+    const socket = FakeWebSocket.instances[0]!;
+    act(() => {
+      socket.open();
+      socket.message({
+        type: "cost.snapshot",
+        payload: { projectId: "project-a", totalUsd: 5 },
+      });
+      socket.drop();
+    });
+
+    const late = vi.fn();
+    const lateHook = renderHook(() => useWS("project-a", late));
+
+    expect(late).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1000));
+    const replacement = FakeWebSocket.instances[1]!;
+    act(() => {
+      replacement.open();
+      replacement.message({
+        type: "cost.snapshot",
+        payload: { projectId: "project-a", totalUsd: 6 },
+      });
+    });
+    expect(late).toHaveBeenCalledOnce();
+    expect(late).toHaveBeenCalledWith({
+      type: "cost.snapshot",
+      payload: { projectId: "project-a", totalUsd: 6 },
+    });
+
+    firstHook.unmount();
+    lateHook.unmount();
+    act(() => vi.runAllTimers());
+  });
+
   it("isolates simultaneous different-project subscribers", () => {
     const first = vi.fn();
     const second = vi.fn();

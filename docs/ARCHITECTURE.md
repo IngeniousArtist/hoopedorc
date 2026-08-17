@@ -71,13 +71,14 @@ the project identifier only and do not stop later subscribers from receiving
 the event. Each manager retains the latest authoritative cost total and
 advances it with ordered deltas, so a same-project view mounted after the
 socket replay receives a synthetic `cost.snapshot` baseline before later live
-events. An empty project ID requests the same durable global catch-up but
-remains unsubscribed from project-scoped live events, so onboarding and
-post-deletion views restore and continue receiving global
-project/notification state. Successful approval responses remain locally
-authoritative over any older REST or reconnect snapshot captured before the
-durable response; the later queued live notification then confirms the same
-terminal state.
+events. Transport loss invalidates that cached baseline: a view mounted during
+reconnect backoff uses its REST seed until the replacement socket supplies a
+fresh snapshot. An empty project ID requests the same durable global catch-up
+but remains unsubscribed from project-scoped live events, so onboarding and
+post-deletion views restore and continue receiving global project/notification
+state. Successful approval responses remain locally authoritative over any
+older REST or reconnect snapshot captured before the durable response; the
+later queued live notification then confirms the same terminal state.
 
 Mock mode emits synthetic logs from one server-owned maintenance timer through
 `WsHub.broadcast`, so project isolation and backpressure are identical to live
