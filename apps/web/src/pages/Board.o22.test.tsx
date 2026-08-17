@@ -35,7 +35,7 @@ vi.mock("../components/TaskCard", async (importOriginal) => {
     ...actual,
     TaskCard: (props: Parameters<typeof actual.TaskCard>[0]) => {
       counters.cardRenders += 1;
-      return actual.TaskCard(props);
+      return <actual.TaskCard {...props} />;
     },
   };
 });
@@ -220,6 +220,14 @@ describe("O22 Board live-run rendering", () => {
       host: "jsdom",
     };
     process.stdout.write(`O22 Board live-run measurement ${JSON.stringify(report)}\n`);
+
+    const commitsBeforeClock = counters.boardCommits;
+    vi.useFakeTimers();
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    vi.useRealTimers();
+    expect(counters.boardCommits).toBe(commitsBeforeClock);
 
     expect(screen.getByText("Author login form")).toBeVisible();
     expect(queuedBeforeFlush).toBe(0);

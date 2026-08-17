@@ -28,8 +28,8 @@ already-green checks. Complete one item or explicitly paired group at a time.
 - O5 already completed the shared dialog-semantics sub-item of O26.
 - O8 is closed with evidence and no production refactor.
 - O10 is deferred with recorded measurements and no production refactor.
-- O22's measured Board live-run burst is fixed; clock isolation and card memo
-  are deferred.
+- O22's measured Board live-run burst is fixed, including the clock isolation
+  and TaskCard memo follow-up.
 - There are no remaining implementation items.
 - O27 has no remaining implementation, but its authorized deployment evidence
   is still outstanding.

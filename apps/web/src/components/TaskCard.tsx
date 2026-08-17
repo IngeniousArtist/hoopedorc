@@ -1,4 +1,6 @@
+import { memo } from "react";
 import type { ModelConfig, Task, TaskEstimate } from "@orc/types";
+import { useNowTick } from "../hooks/useNowTick";
 import { errorMessage, useConfirmation } from "./ConfirmationDialog";
 
 // Mirrors STUCK_DETECTION.idleMs in @orc/engine: if the model emits no output
@@ -20,6 +22,7 @@ export function agoLabel(ms: number): string {
 /** Live "is the model still working" heartbeat for an in-progress task.
  *  Exported for reuse by MissionControl (F4)'s active-agent rows. */
 export function Heartbeat({ lastActivityAt }: { lastActivityAt?: number }) {
+  useNowTick(lastActivityAt != null);
   if (lastActivityAt == null) {
     return (
       <span className="flex items-center gap-1 text-[10px] text-neutral-400">
@@ -48,29 +51,53 @@ export function Heartbeat({ lastActivityAt }: { lastActivityAt?: number }) {
   );
 }
 
-export function TaskCard({
-  task,
-  allTasks,
-  models,
-  lastActivityAt,
-  estimate,
-  onClick,
-  onStop,
-  isSelected,
-}: {
+export function taskCardPropsAreEqual(
+  prev: TaskCardProps,
+  next: TaskCardProps,
+): boolean {
+  if (
+    prev.task !== next.task ||
+    prev.lastActivityAt !== next.lastActivityAt ||
+    prev.estimate !== next.estimate ||
+    prev.onSelect !== next.onSelect ||
+    prev.onStop !== next.onStop ||
+    prev.isSelected !== next.isSelected ||
+    prev.models !== next.models
+  ) {
+    return false;
+  }
+  return next.task.dependsOn.every((id) => {
+    const previous = prev.allTasks.find((task) => task.id === id);
+    const current = next.allTasks.find((task) => task.id === id);
+    return previous === current;
+  });
+}
+
+export type TaskCardProps = {
   task: Task;
   allTasks: Task[];
   models: ModelConfig[];
   lastActivityAt?: number;
   /** F7 — pre-run cost estimate, shown as a "~$0.03" chip on Ready cards only. */
   estimate?: TaskEstimate;
-  onClick?: () => void;
+  onSelect?: (taskId: string) => void;
   /** F3 — "Stop this task" on a running card. Omitted while a stop is
    *  already in flight for this task, so the button just disappears rather
    *  than allowing a double-click. */
-  onStop?: () => void | Promise<void>;
+  onStop?: (taskId: string) => void | Promise<void>;
   isSelected?: boolean;
-}) {
+};
+
+export const TaskCard = memo(function TaskCard({
+  task,
+  allTasks,
+  models,
+  lastActivityAt,
+  estimate,
+  onSelect,
+  onStop,
+  isSelected,
+}: TaskCardProps) {
   const { requestConfirmation, confirmationDialog } = useConfirmation();
   const depTasks = task.dependsOn
     .map((id) => allTasks.find((t) => t.id === id))
@@ -85,7 +112,7 @@ export function TaskCard({
     <article
       draggable
       onDragStart={handleDragStart}
-      onClick={onClick}
+      onClick={() => onSelect?.(task.id)}
       className={
         "cursor-pointer rounded-md border p-3 transition-colors " +
         (isSelected
@@ -110,7 +137,7 @@ export function TaskCard({
                   confirmLabel: "Stop task",
                   pendingLabel: "Stopping…",
                   tone: "danger",
-                  action: onStop,
+                  action: () => onStop(task.id),
                   errorMessage: (error) =>
                     `Could not stop the task: ${errorMessage(error)}`,
                 });
@@ -202,4 +229,4 @@ export function TaskCard({
       )}
     </article>
   );
-}
+}, taskCardPropsAreEqual);
