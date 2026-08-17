@@ -52,9 +52,14 @@ authoritative `cost.snapshot` and task/run state. Replacing the project list
 removes projects whose deletion event was missed while offline; replacing the
 notification inbox restores missed approvals without replaying browser alerts.
 Web consumers generation-guard older in-flight REST reads from overwriting
-either snapshot. The hub validates the whole baseline before
-activation and flow-controls it one frame per send completion; matching live
-events queue behind the replay and drain afterward in order. A client whose
+either snapshot. A locally committed project creation is preserved over a
+snapshot captured before that commit until its ID appears in the ordered
+snapshot/live stream. REST-only Audit state treats the global project snapshot
+as its reconnect marker, while derived approval counts use the notification
+snapshot; both reject older overlapping reads. The hub validates the whole
+baseline before activation and flow-controls it one frame per send completion;
+matching live events queue behind the replay and drain afterward in order. A
+client whose
 pending `bufferedAmount` plus the complete outgoing or queued live frame reaches
 the documented 1 MiB ceiling is closed with application code `4008`, forcing a
 fresh snapshot instead of silently dropping an event. Durable snapshot records

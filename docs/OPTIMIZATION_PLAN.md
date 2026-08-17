@@ -1139,6 +1139,44 @@ deliberate browser session resets. Mock shutdown completed with exit 0 and zero
 cleanup errors. A final clean independent re-review, hosted CI, PR/merge, and
 merged-main verification remain outstanding.
 
+**Fresh-review final web-authority correction (2026-08-17, pre-merge):** the
+independent review of pushed head `45e3b5e` found three remaining P2 ordering
+gaps. A create-project response could select its newly committed project and
+then lose that selection when an older in-flight project snapshot arrived;
+Audit had no reconnect marker when no task/run event followed the global
+baseline; and Mission Control's initial notification read could overwrite its
+newer snapshot-derived approval count.
+
+App now retains a locally committed creation across any snapshot captured
+before the commit, then releases that preservation when the ordered snapshot
+or `project.updated` stream observes its ID. It separately remembers the
+normal server ordering where `project.updated` precedes the HTTP response, so
+a genuinely newer replacement snapshot can still remove a project rather than
+preserving it forever. Audit treats `projects.snapshot` as a reconnect marker,
+starts a fresh REST read, and rejects any older overlapping result. Mission
+Control applies the same generation guard around its snapshot/live-derived
+approval count. Focused regressions cover both create/broadcast orderings,
+REST-only Audit recovery with a delayed older response, and delayed Mission
+Control notification REST state; all five pass. Full gates, renewed browser
+evidence, another independent clean review, hosted CI, PR/merge evidence, and
+merged-main verification remain outstanding.
+
+The exact corrected tree passes typecheck, build, lint across 162 files at the
+exact 330-finding baseline, engine 231/231, adapters 15/15, permissioned server
+326/326, web 67/67, E2E 18/18, and `git diff --check`. The targeted 390px live
+mock delayed notification REST responses while the reconnect baseline arrived
+first; both the global badge and Mission Control remained at one pending
+approval after those stale responses resolved. A real create response selected
+`Reconnect creation probe`; releasing the older held project snapshot before
+its queued `project.updated` kept that project present and selected. Closing
+the app socket and releasing the replacement `projects.snapshot` increased the
+open Audit view's REST reads from two (React development replay) to three while
+preserving selection. Exactly one app socket remained open, document and
+viewport widths both stayed 390px, browser console/page-error lists were
+clean, and mock shutdown completed with exit 0 and zero cleanup errors. Another
+independent clean review, hosted CI, PR/merge evidence, and merged-main
+verification remain outstanding.
+
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
 **Problem:** the already-merged idempotency shortcut depends on a single

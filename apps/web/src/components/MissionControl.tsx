@@ -4,7 +4,7 @@ import type {
   ServerEvent,
   Task,
 } from "@orc/types";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useWS } from "../hooks/useWS";
 import { Heartbeat, agoLabel } from "./TaskCard";
@@ -43,13 +43,16 @@ export function MissionControl({
   onViewNotifications: () => void;
 }) {
   const [pendingApprovals, setPendingApprovals] = useState(0);
+  const approvalsAuthorityRef = useRef(0);
 
   const fetchApprovals = useCallback(async () => {
+    const authorityAtRequest = approvalsAuthorityRef.current;
     try {
       // listNotifications has no server-side project filter wired up on the
       // client side anywhere yet (Notifications.tsx doesn't use one either)
       // — filter client-side by the Notification's own projectId field.
       const res = await api<ListNotificationsResponse>("listNotifications");
+      if (approvalsAuthorityRef.current !== authorityAtRequest) return;
       setPendingApprovals(
         res.notifications.filter(
           (n) =>
@@ -68,6 +71,7 @@ export function MissionControl({
   const onWS = useCallback(
     (e: ServerEvent) => {
       if (e.type === "notifications.snapshot") {
+        approvalsAuthorityRef.current++;
         setPendingApprovals(
           e.payload.notifications.filter(
             (notification) =>
@@ -77,6 +81,7 @@ export function MissionControl({
           ).length,
         );
       } else if (e.type === "notification") {
+        approvalsAuthorityRef.current++;
         fetchApprovals();
       }
     },

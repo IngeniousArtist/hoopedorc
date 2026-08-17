@@ -597,7 +597,13 @@ consumers preserve that terminal row over an older REST or reconnect snapshot
 captured before the response, until the in-order live notification confirms
 it. Project and notification consumers also generation-guard in-flight REST
 reads so a response captured before a newer snapshot/live event cannot replace
-the newer state.
+the newer state. Likewise, a create-project response remains locally
+authoritative over a project snapshot captured before that create committed,
+until the ordered snapshot or `project.updated` stream observes its ID.
+Consumers whose durable REST state is not embedded in the baseline use the
+applicable global snapshot as a reconnect marker and generation-guard the
+resulting refresh; this keeps Audit rows and Mission Control's derived approval
+count from accepting an older in-flight read.
 
 ## Conventions
 - IDs are strings; timestamps are ISO 8601 strings.

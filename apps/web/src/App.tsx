@@ -132,6 +132,13 @@ export function App() {
   // overwrite that newer state when their older response eventually arrives.
   const projectsAuthorityRef = useRef(0);
   const notificationsAuthorityRef = useRef(0);
+  // A reconnect snapshot can be captured before createProject commits, then
+  // arrive after its HTTP response. Keep that locally confirmed creation until
+  // the ordered snapshot/live stream observes it. The server normally emits
+  // project.updated before returning the HTTP response, so remember already
+  // observed IDs too rather than manufacturing a pending entry afterward.
+  const pendingCreatedProjectsRef = useRef(new Map<string, Project>());
+  const observedProjectIdsRef = useRef(new Set<string>());
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () => initialHashState?.projectId ?? localStorage.getItem(STORAGE_KEY) ?? "",
   );
@@ -319,14 +326,29 @@ export function App() {
     (e: ServerEvent) => {
       if (e.type === "projects.snapshot") {
         projectsAuthorityRef.current++;
-        setProjects(e.payload.projects);
+        for (const project of e.payload.projects) {
+          observedProjectIdsRef.current.add(project.id);
+          pendingCreatedProjectsRef.current.delete(project.id);
+        }
+        const snapshotIds = new Set(
+          e.payload.projects.map((project) => project.id),
+        );
+        const nextProjects = [
+          ...[...pendingCreatedProjectsRef.current.values()].filter(
+            (project) => !snapshotIds.has(project.id),
+          ),
+          ...e.payload.projects,
+        ];
+        setProjects(nextProjects);
         setSelectedProjectId((cur) =>
-          cur && e.payload.projects.some((project) => project.id === cur)
+          cur && nextProjects.some((project) => project.id === cur)
             ? cur
-            : (e.payload.projects[0]?.id ?? ""),
+            : (nextProjects[0]?.id ?? ""),
         );
       } else if (e.type === "project.updated") {
         projectsAuthorityRef.current++;
+        observedProjectIdsRef.current.add(e.payload.id);
+        pendingCreatedProjectsRef.current.delete(e.payload.id);
         setProjects((prev) =>
           prev.some((p) => p.id === e.payload.id)
             ? prev.map((p) => (p.id === e.payload.id ? e.payload : p))
@@ -334,6 +356,8 @@ export function App() {
         );
       } else if (e.type === "project.deleted") {
         projectsAuthorityRef.current++;
+        observedProjectIdsRef.current.delete(e.payload.id);
+        pendingCreatedProjectsRef.current.delete(e.payload.id);
         setProjects((prev) => prev.filter((p) => p.id !== e.payload.id));
         setSelectedProjectId((cur) => (cur === e.payload.id ? "" : cur));
       } else if (e.type === "notifications.snapshot") {
@@ -373,6 +397,9 @@ export function App() {
   // A freshly created project becomes the active one, then go straight to Plan.
   const handleProjectCreated = useCallback((p: Project) => {
     projectsAuthorityRef.current++;
+    if (!observedProjectIdsRef.current.delete(p.id)) {
+      pendingCreatedProjectsRef.current.set(p.id, p);
+    }
     setProjects((prev) => [p, ...prev.filter((x) => x.id !== p.id)]);
     setSelectedProjectId(p.id);
     setPage("plan");
@@ -381,6 +408,8 @@ export function App() {
   const handleProjectDeleted = useCallback(
     (id: string) => {
       projectsAuthorityRef.current++;
+      observedProjectIdsRef.current.delete(id);
+      pendingCreatedProjectsRef.current.delete(id);
       setProjects((prev) => prev.filter((project) => project.id !== id));
       setSelectedProjectId((cur) => (cur === id ? "" : cur));
     },
