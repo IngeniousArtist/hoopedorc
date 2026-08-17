@@ -1395,11 +1395,16 @@ usage on that branch. No adapter/orchestrator contract or schema change.
 
 The exact tree passes typecheck, build, lint across 169 files at the exact
 330-finding baseline, engine 233/233, adapters 18/18, permissioned server
-327/327, web 97/97, E2E 19/19, and `git diff --check`. Hosted CI,
-implementation PR/merge evidence, and merged-main verification remain
-outstanding.
+327/327, web 97/97, E2E 19/19, and `git diff --check`.
 
-**Status:** evidence recorded on branch `o8-stuck-invocation-cost`.
+**Status:** completed in
+[#250](https://github.com/IngeniousArtist/hoopedorc/pull/250)
+(`2100c511a451dea7ae70a8d01c6988f77e56a761`) on 2026-08-17. Linux
+`build-and-test` passed on the reviewed head in 2m38s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32027451518/job/95379743270)
+and on merged `main` in 2m27s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32027720258/job/95380542238).
+After merge, clean local `main` and `origin/main` matched `2100c51`.
 
 ---
 

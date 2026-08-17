@@ -13,13 +13,14 @@ already-green checks. Complete one item or explicitly paired group at a time.
 
 ## Current baseline
 
-- `main` and `origin/main` match `e3fc8c7` after merging PR #249.
+- `main` and `origin/main` match `2100c51` after merging PR #250.
 - PR #244 completed O6, O12, and O26's project-owned WebSocket sub-item.
 - PR #245 closed the three leftover reconnect-authority checkpoints.
 - PR #246 completed O24 request ownership.
 - PR #247 completed O23 trailing refreshes.
 - PR #248 completed O25 and O26's reduced-motion log bullet.
 - PR #249 completed O26's toast-timer and New Project bullets.
+- PR #250 closed O8 with evidence and no production refactor.
 - O5 already completed the shared dialog-semantics sub-item of O26.
 - O8 is closed with evidence and no production refactor.
 - The remaining implementation items are O10 and O22.
