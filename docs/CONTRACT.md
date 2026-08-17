@@ -618,7 +618,10 @@ overwrite a newer reconnect snapshot.
 Consumers whose durable REST state is not embedded in the baseline use the
 applicable global snapshot as a reconnect marker and generation-guard the
 resulting refresh; this keeps Audit rows and Mission Control's derived approval
-count from accepting an older in-flight read.
+count from accepting an older in-flight read. CostView and AuditView further
+coalesce those REST refreshes: events during an in-flight fetch schedule
+exactly one trailing fetch after it settles, with freshness lag bounded by that
+in-flight request rather than a debounce timer.
 
 ## Conventions
 - IDs are strings; timestamps are ISO 8601 strings.
