@@ -191,7 +191,7 @@ function worktreeTask(path: string, id = "t1"): Task {
   };
 }
 
-test("B38: packageManager wins, each supported manager uses a frozen install, and ambiguous locks fail", () => {
+test("B38: packageManager wins, each supported manager uses a frozen install, and ambiguous locks fail", async () => {
   const cases: Array<[NodePackageManager, string | undefined, string, string[]]> = [
     ["npm", undefined, "package-lock.json", ["ci"]],
     ["pnpm", "pnpm@9.15.0", "pnpm-lock.yaml", ["install", "--frozen-lockfile"]],
@@ -202,7 +202,7 @@ test("B38: packageManager wins, each supported manager uses a frozen install, an
     const dir = tmpDir(`select-${manager}`);
     writeNodeProject(dir, manager, "lock", declared);
     if (manager === "pnpm") writeFileSync(join(dir, "package-lock.json"), "ignored by packageManager");
-    const plan = inspectNodeDependencies(dir);
+    const plan = await inspectNodeDependencies(dir);
     assert.equal(plan?.manager, manager);
     assert.equal(plan?.lockfile, lockfile);
     assert.deepEqual(frozenInstallArgs(manager, manager === "yarn" ? "4.6.0" : "1.0.0"), args);
@@ -212,19 +212,19 @@ test("B38: packageManager wins, each supported manager uses a frozen install, an
   const ambiguous = tmpDir("ambiguous-locks");
   writeNodeProject(ambiguous, "npm");
   writeFileSync(join(ambiguous, "yarn.lock"), "lock");
-  assert.throws(
+  await assert.rejects(
     () => inspectNodeDependencies(ambiguous),
     /Ambiguous Node lockfiles.*packageManager/i,
   );
 });
 
-test("bootstrap: a dependency-free seed manifest needs no lockfile, but real dependencies still do", () => {
+test("bootstrap: a dependency-free seed manifest needs no lockfile, but real dependencies still do", async () => {
   const seed = tmpDir("seed-without-lock");
   writeFileSync(
     join(seed, "package.json"),
     JSON.stringify({ name: "new-project", private: true, version: "0.0.0" }),
   );
-  assert.equal(inspectNodeDependencies(seed), null);
+  assert.equal(await inspectNodeDependencies(seed), null);
 
   const selectedManager = tmpDir("seed-with-manager-without-lock");
   writeFileSync(
@@ -236,7 +236,7 @@ test("bootstrap: a dependency-free seed manifest needs no lockfile, but real dep
       packageManager: "npm@12.0.0",
     }),
   );
-  assert.throws(
+  await assert.rejects(
     () => inspectNodeDependencies(selectedManager),
     /packageManager selects npm, but its lockfile is missing/i,
   );
@@ -250,7 +250,7 @@ test("bootstrap: a dependency-free seed manifest needs no lockfile, but real dep
       dependencies: { react: "^18.3.1" },
     }),
   );
-  assert.throws(() => inspectNodeDependencies(app), /No supported lockfile found/i);
+  await assert.rejects(() => inspectNodeDependencies(app), /No supported lockfile found/i);
 
   const workspace = tmpDir("workspace-dependencies-without-lock");
   writeFileSync(
@@ -262,7 +262,7 @@ test("bootstrap: a dependency-free seed manifest needs no lockfile, but real dep
     join(workspace, "apps", "web", "package.json"),
     JSON.stringify({ name: "web", devDependencies: { vite: "^7.0.0" } }),
   );
-  assert.throws(
+  await assert.rejects(
     () => inspectNodeDependencies(workspace),
     /No supported lockfile found/i,
   );
@@ -429,33 +429,33 @@ test("B38: a missing selected binary is actionable in setup and Setup health", a
   assert.match(health.detail, /selects pnpm.*host PATH.*Install pnpm/i);
 });
 
-test("B38: monorepo manifests and runtime OS/architecture are part of the cache key", () => {
+test("B38: monorepo manifests and runtime OS/architecture are part of the cache key", async () => {
   const root = tmpDir("monorepo-key");
   writeNodeProject(root, "npm");
   mkdirSync(join(root, "packages", "app"), { recursive: true });
   const nested = join(root, "packages", "app", "package.json");
   writeFileSync(nested, JSON.stringify({ name: "app", version: "1.0.0" }));
-  const plan = inspectNodeDependencies(root);
+  const plan = await inspectNodeDependencies(root);
   assert.ok(plan);
   assert.ok(plan.inputs.some((path) => path.endsWith(join("packages", "app", "package.json"))));
   const linuxX64 = { nodeVersion: "v22.14.0", platform: "linux", arch: "x64" };
-  const first = nodeDependencyFingerprint(root, plan, "10.9.0", linuxX64);
+  const first = await nodeDependencyFingerprint(root, plan, "10.9.0", linuxX64);
   writeFileSync(nested, JSON.stringify({ name: "app", version: "2.0.0" }));
-  const manifestChanged = nodeDependencyFingerprint(
+  const manifestChanged = await nodeDependencyFingerprint(
     root,
-    inspectNodeDependencies(root)!,
+    (await inspectNodeDependencies(root))!,
     "10.9.0",
     linuxX64,
   );
-  const darwin = nodeDependencyFingerprint(
+  const darwin = await nodeDependencyFingerprint(
     root,
-    inspectNodeDependencies(root)!,
+    (await inspectNodeDependencies(root))!,
     "10.9.0",
     { ...linuxX64, platform: "darwin" },
   );
-  const arm64 = nodeDependencyFingerprint(
+  const arm64 = await nodeDependencyFingerprint(
     root,
-    inspectNodeDependencies(root)!,
+    (await inspectNodeDependencies(root))!,
     "10.9.0",
     { ...linuxX64, arch: "arm64" },
   );

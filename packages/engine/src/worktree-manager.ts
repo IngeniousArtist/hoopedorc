@@ -8,12 +8,12 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { minimatch } from "minimatch";
 import { abortableDelay, execManagedProcess, sanitizedEnv } from "@orc/adapters";
@@ -188,25 +188,80 @@ function slash(path: string): string {
   return path.split(sep).join("/");
 }
 
+const FS_CONCURRENCY = 16;
+
+function compareRel(root: string, left: string, right: string): number {
+  return slash(relative(root, left)).localeCompare(slash(relative(root, right)));
+}
+
+async function mapLimited<T, R>(
+  items: readonly T[],
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await fn(items[index]!);
+    }
+  }
+  const workers = Math.min(FS_CONCURRENCY, items.length);
+  if (workers === 0) return results;
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  return results;
+}
+
+async function walkDirents(
+  root: string,
+  visit: (dir: string, entry: import("node:fs").Dirent) => "enter" | "skip",
+): Promise<void> {
+  const pending = [root];
+  let active = 0;
+  await new Promise<void>((resolvePromise, reject) => {
+    const launch = (): void => {
+      while (active < FS_CONCURRENCY && pending.length > 0) {
+        const dir = pending.pop()!;
+        active += 1;
+        void readdir(dir, { withFileTypes: true }).then(
+          (entries) => {
+            for (const entry of entries) {
+              if (visit(dir, entry) === "enter" && entry.isDirectory()) {
+                pending.push(join(dir, entry.name));
+              }
+            }
+            active -= 1;
+            if (pending.length === 0 && active === 0) resolvePromise();
+            else launch();
+          },
+          reject,
+        );
+      }
+    };
+    if (pending.length === 0) resolvePromise();
+    else launch();
+  });
+}
+
 /** Generated install outputs worth caching. Workspace-local node_modules
  * directories matter for npm/pnpm monorepos, so discover them without
  * descending into dependency trees; the fixed entries cover Yarn PnP. */
-function dependencyArtifacts(root: string): string[] {
-  const artifacts: string[] = DEPENDENCY_ARTIFACTS.filter((path) =>
-    existsSync(join(root, path)),
-  );
-  const visit = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name === ".git" || entry.name === ".yarn") continue;
-      const path = join(dir, entry.name);
-      if (entry.name === "node_modules") {
-        artifacts.push(slash(relative(root, path)));
-      } else {
-        visit(path);
-      }
+async function dependencyArtifacts(root: string): Promise<string[]> {
+  const artifacts: string[] = [];
+  for (const path of DEPENDENCY_ARTIFACTS) {
+    if (existsSync(join(root, path))) artifacts.push(path);
+  }
+  await walkDirents(root, (dir, entry) => {
+    if (!entry.isDirectory() || entry.name === ".git" || entry.name === ".yarn") {
+      return "skip";
     }
-  };
-  visit(root);
+    if (entry.name === "node_modules") {
+      artifacts.push(slash(relative(root, join(dir, entry.name))));
+      return "skip";
+    }
+    return "enter";
+  });
   return [...new Set(artifacts)].sort((a, b) => a.localeCompare(b));
 }
 
@@ -216,23 +271,19 @@ function validArtifactPath(root: string, artifact: unknown): artifact is string 
   return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
-function walkFiles(root: string, wanted: (name: string) => boolean): string[] {
+async function walkFiles(root: string, wanted: (name: string) => boolean): Promise<string[]> {
   const found: string[] = [];
-  const visit = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === ".git" || entry.name === "node_modules") continue;
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) visit(path);
-      else if (entry.isFile() && wanted(entry.name)) found.push(path);
-    }
-  };
-  visit(root);
-  return found.sort((a, b) => slash(relative(root, a)).localeCompare(slash(relative(root, b))));
+  await walkDirents(root, (dir, entry) => {
+    if (entry.name === ".git" || entry.name === "node_modules") return "skip";
+    if (entry.isFile() && wanted(entry.name)) found.push(join(dir, entry.name));
+    return entry.isDirectory() ? "enter" : "skip";
+  });
+  return found.sort((a, b) => compareRel(root, a, b));
 }
 
-function readPackageJson(root: string): Record<string, unknown> {
+async function readPackageJson(root: string): Promise<Record<string, unknown>> {
   try {
-    return JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as Record<string, unknown>;
+    return JSON.parse(await readFile(join(root, "package.json"), "utf8")) as Record<string, unknown>;
   } catch (err) {
     throw new ProjectSetupError(
       `package.json is not valid JSON: ${(err as Error).message}`,
@@ -249,11 +300,12 @@ const NODE_DEPENDENCY_FIELDS = [
   "bundledDependencies",
 ] as const;
 
-function hasDeclaredNodeDependencies(root: string): boolean {
-  for (const path of walkFiles(root, (name) => name === "package.json")) {
+async function hasDeclaredNodeDependencies(root: string): Promise<boolean> {
+  const manifests = await walkFiles(root, (name) => name === "package.json");
+  for (const path of manifests) {
     let pkg: Record<string, unknown>;
     try {
-      pkg = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+      pkg = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
     } catch (err) {
       throw new ProjectSetupError(
         `${slash(relative(root, path))} is not valid JSON: ${(err as Error).message}`,
@@ -277,9 +329,11 @@ function hasDeclaredNodeDependencies(root: string): boolean {
 
 /** Resolve one reproducible Node install strategy from packageManager first,
  * then from exactly one supported root lockfile. */
-export function inspectNodeDependencies(root: string): NodeDependencyPlan | null {
+export async function inspectNodeDependencies(
+  root: string,
+): Promise<NodeDependencyPlan | null> {
   if (!existsSync(join(root, "package.json"))) return null;
-  const pkg = readPackageJson(root);
+  const pkg = await readPackageJson(root);
   const declared = pkg.packageManager;
   let manager: NodePackageManager | undefined;
   let declaredVersion: string | undefined;
@@ -310,7 +364,7 @@ export function inspectNodeDependencies(root: string): NodeDependencyPlan | null
       // task before it can create one. As soon as any workspace manifest
       // declares a dependency, the reproducible-lock requirement below
       // applies normally.
-      if (!hasDeclaredNodeDependencies(root)) return null;
+      if (!(await hasDeclaredNodeDependencies(root))) return null;
       throw new ProjectSetupError(
         "No supported lockfile found; commit package-lock.json, pnpm-lock.yaml, yarn.lock, bun.lock, or bun.lockb for reproducible setup",
       );
@@ -339,9 +393,9 @@ export function inspectNodeDependencies(root: string): NodeDependencyPlan | null
 
   const lockfile = matchingLocks[0];
   if (!lockfile) throw new ProjectSetupError(`Could not select a ${selectedManager} lockfile`);
-  const inputs = walkFiles(root, (name) => name === "package.json");
+  const inputs = await walkFiles(root, (name) => name === "package.json");
   inputs.push(join(root, lockfile));
-  inputs.sort((a, b) => slash(relative(root, a)).localeCompare(slash(relative(root, b))));
+  inputs.sort((a, b) => compareRel(root, a, b));
   return { manager: selectedManager, declaredVersion, lockfile, inputs };
 }
 
@@ -355,12 +409,12 @@ export function frozenInstallArgs(manager: NodePackageManager, version: string):
     : ["install", "--frozen-lockfile"];
 }
 
-export function nodeDependencyFingerprint(
+export async function nodeDependencyFingerprint(
   root: string,
   plan: NodeDependencyPlan,
   managerVersion: string,
   runtime: NodeRuntimeIdentity,
-): string {
+): Promise<string> {
   const hash = createHash("sha256");
   hash.update(JSON.stringify({
     manager: plan.manager,
@@ -368,11 +422,12 @@ export function nodeDependencyFingerprint(
     managerVersion,
     ...runtime,
   }));
-  for (const path of plan.inputs) {
+  const contents = await mapLimited(plan.inputs, (path) => readFile(path));
+  for (const [index, path] of plan.inputs.entries()) {
     hash.update("\0");
     hash.update(slash(relative(root, path)));
     hash.update("\0");
-    hash.update(readFileSync(path));
+    hash.update(contents[index]!);
   }
   return hash.digest("hex");
 }
@@ -414,18 +469,22 @@ function executableOnHost(command: string, cwd: string): boolean {
   });
 }
 
-function containsAppleProject(root: string, setupCommand?: string): boolean {
+async function containsAppleProject(
+  root: string,
+  setupCommand?: string,
+): Promise<boolean> {
   const command = setupCommand ? basename(setupCommand).toLowerCase() : "";
   if (command === "xcodebuild" || command === "pod") return true;
-  const visit = (dir: string): boolean => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === ".git" || entry.name === "node_modules") continue;
-      if (entry.name.endsWith(".xcodeproj") || entry.name.endsWith(".xcworkspace")) return true;
-      if (entry.isDirectory() && visit(join(dir, entry.name))) return true;
+  let found = false;
+  await walkDirents(root, (_dir, entry) => {
+    if (found || entry.name === ".git" || entry.name === "node_modules") return "skip";
+    if (entry.name.endsWith(".xcodeproj") || entry.name.endsWith(".xcworkspace")) {
+      found = true;
+      return "skip";
     }
-    return false;
-  };
-  return visit(root);
+    return entry.isDirectory() ? "enter" : "skip";
+  });
+  return found;
 }
 
 // Things the orchestrator (or an agent) generates that must never get staged by
@@ -903,7 +962,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
         useSandbox,
       });
       signal?.throwIfAborted();
-      const artifacts = dependencyArtifacts(installRoot);
+      const artifacts = await dependencyArtifacts(installRoot);
       for (const artifact of artifacts) {
         const source = join(installRoot, artifact);
         const destination = join(publishRoot, artifact);
@@ -993,7 +1052,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
       useSandbox,
       signal,
     );
-    const fingerprint = nodeDependencyFingerprint(worktreePath, plan, version, runtime);
+    const fingerprint = await nodeDependencyFingerprint(worktreePath, plan, version, runtime);
     const cacheRoot = (this.setupDeps.cacheRoot ?? dependencyCacheRoot)(project);
     const finalPath = join(cacheRoot, fingerprint);
 
@@ -1029,7 +1088,10 @@ export class WorktreeManagerImpl implements WorktreeManager {
     return `${plan.manager}@${version} (${plan.lockfile}; ${runtime.nodeVersion} ${runtime.platform}/${runtime.arch})`;
   }
 
-  private customSetupFingerprint(project: Project, worktreePath: string): string {
+  private async customSetupFingerprint(
+    project: Project,
+    worktreePath: string,
+  ): Promise<string> {
     const setup = project.config?.setupCommand;
     if (!setup) return "";
     const hash = createHash("sha256");
@@ -1041,15 +1103,16 @@ export class WorktreeManagerImpl implements WorktreeManager {
       sandbox: this.settings?.sandboxGates ?? "auto",
       image: project.config?.gateImage ?? DEFAULT_GATE_IMAGE,
     }));
-    const inputs = walkFiles(
+    const inputs = await walkFiles(
       worktreePath,
       (name) => SETUP_MANIFESTS.has(name) || name.endsWith(".csproj") || name.endsWith(".fsproj"),
     );
-    for (const path of inputs) {
+    const contents = await mapLimited(inputs, (path) => readFile(path));
+    for (const [index, path] of inputs.entries()) {
       hash.update("\0");
       hash.update(slash(relative(worktreePath, path)));
       hash.update("\0");
-      hash.update(readFileSync(path));
+      hash.update(contents[index]!);
     }
     return hash.digest("hex");
   }
@@ -1061,12 +1124,12 @@ export class WorktreeManagerImpl implements WorktreeManager {
   ): Promise<string | null> {
     const setup = project.config?.setupCommand;
     if (!setup) return null;
-    const fingerprint = this.customSetupFingerprint(project, worktreePath);
+    const fingerprint = await this.customSetupFingerprint(project, worktreePath);
     const marker = join(worktreePath, ".hoopedorc-setup-hash");
     if (existsSync(marker) && readFileSync(marker, "utf8").trim() === fingerprint) {
       return `${setup.command} (cached for this worktree)`;
     }
-    const appleToolchain = containsAppleProject(worktreePath, setup.command);
+    const appleToolchain = await containsAppleProject(worktreePath, setup.command);
     const useSandbox = await this.resolveSetupMode(
       project,
       appleToolchain,
@@ -1102,10 +1165,10 @@ export class WorktreeManagerImpl implements WorktreeManager {
     signal?: AbortSignal,
   ): Promise<void> {
     signal?.throwIfAborted();
-    if (containsAppleProject(worktreePath, project.config?.setupCommand?.command)) {
+    if (await containsAppleProject(worktreePath, project.config?.setupCommand?.command)) {
       await this.resolveSetupMode(project, true, signal);
     }
-    const plan = inspectNodeDependencies(worktreePath);
+    const plan = await inspectNodeDependencies(worktreePath);
     if (plan) await this.ensureNodeDeps(project, worktreePath, plan, signal);
     await this.ensureCustomSetup(project, worktreePath, signal);
   }
@@ -1123,12 +1186,12 @@ export class WorktreeManagerImpl implements WorktreeManager {
       }
       const details: string[] = [];
       const setup = project.config?.setupCommand;
-      const apple = containsAppleProject(project.localPath, setup?.command);
+      const apple = await containsAppleProject(project.localPath, setup?.command);
       if (apple) {
         await this.resolveSetupMode(project, true, signal);
         details.push("Apple/Xcode project — macOS host toolchain");
       }
-      const plan = inspectNodeDependencies(project.localPath);
+      const plan = await inspectNodeDependencies(project.localPath);
       if (plan) {
         const useSandbox = await this.resolveSetupMode(project, false, signal);
         const runtime = await this.nodeRuntime(

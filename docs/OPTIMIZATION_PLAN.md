@@ -1536,9 +1536,16 @@ does not meet the item's "hundreds of ms to seconds" bar for a typical
 remains outstanding if that host class is later available; do not convert
 the walkers from this developer-host baseline.
 
-The exact tree passes typecheck, build, lint across 170 files at the exact
-330-finding baseline, engine 234/234, adapters 18/18, permissioned server
-327/327, web 97/97, E2E 19/19, and `git diff --check`.
+**Follow-up (2026-08-17):** converted anyway after an explicit request.
+`walkFiles`, `dependencyArtifacts`, `containsAppleProject`,
+`inspectNodeDependencies`, `nodeDependencyFingerprint`, and custom-setup
+fingerprinting now use `fs/promises` with concurrency 16. Paths are still
+sorted before hashing, so fingerprints stay byte-identical. The same fixture
+now measures 27.07 ms inspect, 4.45 ms hash, and 124.19 ms for four
+overlapping inspect+hash calls on `darwin/arm64`. The follow-up tree
+passes typecheck, build, lint across 172 files at the exact 330-finding
+baseline, engine 234/234, adapters 18/18, permissioned server 327/327,
+web 100/100, E2E 19/19, and `git diff --check`.
 
 **Status:** completed in
 [#252](https://github.com/IngeniousArtist/hoopedorc/pull/252)
