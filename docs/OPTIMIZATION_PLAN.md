@@ -1382,6 +1382,25 @@ refactor.
 
 **Fix risk:** medium; evidence gates the interface change.
 
+**Implementation decision (2026-08-17):** close O8 with evidence and no
+production refactor. Production-shaped tests for each streaming adapter emit
+usage, hang, and abort the managed process: Claude keeps `$1.25` / 105 / 50 /
+10, OpenCode keeps `$0.42` / 82 / 20 / 4, and Codex keeps subscription `$0`
+with 150 / 30 / 50 tokens. The orchestrator's resolved-abort stuck path
+spreads that adapter result onto one terminal `failed`/`stuck` author row.
+The ledger CAS accepts that partial usage once and ignores a later duplicate.
+The catch-path zeros still exist when `adapter.run()` throws `AbortError`,
+but production adapters resolve after abort and therefore do not lose parsed
+usage on that branch. No adapter/orchestrator contract or schema change.
+
+The exact tree passes typecheck, build, lint across 169 files at the exact
+330-finding baseline, engine 233/233, adapters 18/18, permissioned server
+327/327, web 97/97, E2E 19/19, and `git diff --check`. Hosted CI,
+implementation PR/merge evidence, and merged-main verification remain
+outstanding.
+
+**Status:** evidence recorded on branch `o8-stuck-invocation-cost`.
+
 ---
 
 ## Workstream 2 — Resource bounds and durability

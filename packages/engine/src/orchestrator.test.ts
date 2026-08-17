@@ -14,6 +14,7 @@ import {
   isAuthOrSecretFile,
   scopesOverlap,
 } from "./orchestrator.js";
+import { STUCK_DETECTION } from "./constants.js";
 import {
   docsRunId,
   effectiveAttemptLimit,
@@ -5170,4 +5171,104 @@ test("B42: no-Figma tasks add no continuity prompt, and blocked tasks stay block
   assert.equal(persisted.attempts, 0);
   assert.equal(persisted.statusReason, "Fix Figma MCP, then Retry.");
   assert.equal(restartPreflights, 0);
+});
+
+test("O8: stuck detection keeps adapter usage on the single terminal author row", async () => {
+  const runs: Run[] = [];
+  const stuckAdapter: AgentAdapter = {
+    runner: "opencode",
+    run({ onLog, signal }) {
+      onLog("partial usage\n");
+      for (let i = 0; i <= STUCK_DETECTION.maxRepeats; i++) {
+        onLog("spin\n");
+      }
+      assert.equal(signal?.aborted, true);
+      return Promise.resolve({
+        ok: false,
+        exitReason: "killed",
+        costUsd: 1.25,
+        tokensIn: 100,
+        tokensOut: 50,
+        tokensCached: 10,
+        summary: "partial work",
+      });
+    },
+  };
+  const deps = fakeDeps(
+    {
+      adapterFor: (model) =>
+        model === "deepseek-flash" ? stuckAdapter : approveAdapter,
+      events: {
+        onLog() {},
+        onTaskUpdated() {},
+        onRunUpdated(run) {
+          runs.push(run);
+        },
+        onMergeDecision() {},
+        requestApproval() {
+          return Promise.resolve("reject");
+        },
+      },
+    },
+    [],
+  );
+
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  const stuckRuns = runs.filter((run) => run.id === "run-t1-1");
+  assert.equal(stuckRuns.length, 2, "one running row and one terminal row");
+  assert.equal(stuckRuns[0]!.status, "running");
+  assert.equal(stuckRuns[1]!.status, "failed");
+  assert.equal(stuckRuns[1]!.exitReason, "stuck");
+  assert.equal(stuckRuns[1]!.costUsd, 1.25);
+  assert.equal(stuckRuns[1]!.tokensIn, 100);
+  assert.equal(stuckRuns[1]!.tokensOut, 50);
+  assert.equal(stuckRuns[1]!.tokensCached, 10);
+  assert.equal(
+    runs.filter((run) => run.id === "run-t1-1" && run.status !== "running").length,
+    1,
+  );
+});
+
+test("O8: thrown AbortError stuck path has no adapter usage to preserve", async () => {
+  const runs: Run[] = [];
+  const throwingAdapter: AgentAdapter = {
+    runner: "opencode",
+    run({ onLog }) {
+      onLog("about to hang\n");
+      const err = new Error("The operation was aborted");
+      err.name = "AbortError";
+      return Promise.reject(err);
+    },
+  };
+  const deps = fakeDeps(
+    {
+      adapterFor: (model) =>
+        model === "deepseek-flash" ? throwingAdapter : approveAdapter,
+      events: {
+        onLog() {},
+        onTaskUpdated() {},
+        onRunUpdated(run) {
+          runs.push(run);
+        },
+        onMergeDecision() {},
+        requestApproval() {
+          return Promise.resolve("reject");
+        },
+      },
+    },
+    [],
+  );
+
+  const t1 = task("t1");
+  await new Orchestrator(deps).start(PROJECT, [t1]);
+
+  const stuckRuns = runs.filter((run) => run.id === "run-t1-1");
+  assert.equal(stuckRuns.length, 2);
+  assert.equal(stuckRuns[1]!.status, "failed");
+  assert.equal(stuckRuns[1]!.exitReason, "stuck");
+  assert.equal(stuckRuns[1]!.costUsd, 0);
+  assert.equal(stuckRuns[1]!.tokensIn, 0);
+  assert.equal(stuckRuns[1]!.tokensOut, 0);
 });

@@ -289,3 +289,40 @@ test("B40: legacy run, cost, and model-check history backfills without duplicati
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("O8: a stuck author event with partial usage becomes one terminal ledger row", () => {
+  const db = initDb(":memory:");
+  const settings = defaultSettings();
+  repo.upsertSettings(db, settings);
+  seedProject(db);
+
+  const start = invocation("run-t1-1", "author");
+  persistInvocationEvent(db, start);
+  const terminal = persistInvocationEvent(db, {
+    ...start,
+    endedAt: "2026-07-15T00:30:00.000Z",
+    outcome: "failed",
+    exitReason: "stuck",
+    costUsd: 1.25,
+    tokensIn: 100,
+    tokensOut: 50,
+    tokensCached: 10,
+  });
+  assert.equal(terminal.transitioned, true);
+  assert.equal(terminal.invocation.costUsd, 1.25);
+  assert.equal(terminal.invocation.tokensIn, 100);
+  assert.equal(terminal.invocation.exitReason, "stuck");
+
+  const duplicate = persistInvocationEvent(db, {
+    ...start,
+    endedAt: "2026-07-15T00:31:00.000Z",
+    outcome: "failed",
+    exitReason: "error",
+    costUsd: 99,
+    tokensIn: 999,
+  });
+  assert.equal(duplicate.transitioned, false);
+  assert.equal(duplicate.invocation.costUsd, 1.25);
+  assert.equal(repo.getInvocations(db).length, 1);
+  assert.equal(repo.getCostSummary(db, "p1").totalUsd, 1.25);
+});
