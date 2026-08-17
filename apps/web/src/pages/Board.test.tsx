@@ -88,18 +88,18 @@ vi.mock("../components/TaskCard", () => ({
   TaskCard: ({
     task,
     estimate,
-    onClick,
+    onSelect,
   }: {
     task: Task;
     estimate?: { expectedUsd: number };
-    onClick?: () => void;
+    onSelect?: (taskId: string) => void;
   }) => (
     <button
       type="button"
       data-testid="task-card"
       data-model={task.assignedModel}
       data-status={task.status}
-      onClick={onClick}
+      onClick={() => onSelect?.(task.id)}
     >
       {task.title}
       {estimate ? (

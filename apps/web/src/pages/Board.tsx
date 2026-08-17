@@ -53,6 +53,7 @@ const COLUMN_LABELS: Record<TaskStatus, string> = {
 const COLUMNS: { status: TaskStatus; label: string }[] = TASK_STATUSES.map(
   (status) => ({ status, label: COLUMN_LABELS[status] }),
 );
+const EMPTY_MODELS: NonNullable<SettingsType["models"]> = [];
 
 type TaskAuthority = {
   projectId: string;
@@ -93,9 +94,6 @@ export function Board({
   // Per-task "last time we heard anything" (client receive time, so it's
   // immune to server clock skew). Drives the live heartbeat on running cards.
   const [activity, setActivity] = useState<Record<string, number>>({});
-  // Re-render once a second so the heartbeat's "Ns ago" + color stay current
-  // even when no new events arrive. Only ticks while a task is in_progress.
-  const [, setNowTick] = useState(0);
   // F3: tasks with a stop request in flight — hides the Stop button on that
   // card so a slow click can't fire the request twice.
   const [stoppingIds, setStoppingIds] = useState<Set<string>>(new Set());
@@ -450,17 +448,6 @@ export function Board({
 
   useWS(projectId, handleWSEvent);
 
-  // 1s heartbeat ticker — only runs while something is in_progress, so an idle
-  // board doesn't re-render needlessly.
-  const hasRunning = tasks.some(
-    (t) => t.status === "in_progress" || t.status === "in_review",
-  );
-  useEffect(() => {
-    if (!hasRunning) return;
-    const id = setInterval(() => setNowTick((n) => n + 1), 1000);
-    return () => clearInterval(id);
-  }, [hasRunning]);
-
   const handleRollback = (taskId: string, prNumber: number) => {
     requestConfirmation({
       title: `Create a rollback PR for #${prNumber}?`,
@@ -569,6 +556,14 @@ export function Board({
       }
     }
   };
+  const handleStopRef = useRef(handleStop);
+  handleStopRef.current = handleStop;
+  const selectTask = useCallback((taskId: string) => {
+    setSelectedTaskId((current) => (current === taskId ? null : taskId));
+  }, []);
+  const stopTask = useCallback((taskId: string) => {
+    void handleStopRef.current(taskId);
+  }, []);
 
   const handleTaskAdded = (t: Task) => {
     const request: BoardRequest = {
@@ -868,21 +863,11 @@ export function Board({
                     key={t.id}
                     task={t}
                     allTasks={tasks}
-                    models={settings?.models ?? []}
+                    models={settings?.models ?? EMPTY_MODELS}
                     lastActivityAt={activity[t.id]}
                     estimate={estimates[t.id]}
-                    onClick={() =>
-                      setSelectedTaskId(
-                        selectedTaskId === t.id
-                          ? null
-                          : t.id,
-                      )
-                    }
-                    onStop={
-                      stoppingIds.has(t.id)
-                        ? undefined
-                        : () => handleStop(t.id)
-                    }
+                    onSelect={selectTask}
+                    onStop={stoppingIds.has(t.id) ? undefined : stopTask}
                     isSelected={selectedTaskId === t.id}
                   />
                 ))}

@@ -6,6 +6,7 @@ import type {
 } from "@orc/types";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import { useNowTick } from "../hooks/useNowTick";
 import { useWS } from "../hooks/useWS";
 import { Heartbeat, agoLabel } from "./TaskCard";
 
@@ -92,6 +93,7 @@ export function MissionControl({
   const active = tasks.filter(
     (t) => t.status === "in_progress" || t.status === "in_review",
   );
+  useNowTick(active.length > 0);
   const budgetPct =
     budgetUsd && budgetUsd > 0 ? Math.min(100, (costUsd / budgetUsd) * 100) : null;
 

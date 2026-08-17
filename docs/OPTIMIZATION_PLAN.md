@@ -2496,6 +2496,17 @@ deferred: the clock is 1 commit/s versus the measured log burst, and memo
 cannot help while `onClick`/`onStop` are inline closures. No new hook or
 dependency.
 
+**Follow-up (2026-08-17):** the deferred clock and memo work landed after an
+explicit request. `useNowTick` lives in Heartbeat and MissionControl only;
+Board no longer has `setNowTick`. Cards take stable `onSelect`/`onStop(taskId)`
+callbacks and `React.memo` with `taskCardPropsAreEqual`, which ignores
+unrelated `allTasks` identity and still rerenders when a dependency task
+changes. The O22 fixture still records 1 Board commit for the log burst, and
+advancing 5 s of timers adds no Board commits. The follow-up tree passes
+typecheck, build, lint across 172 files at the exact 330-finding baseline,
+engine 234/234, adapters 18/18, permissioned server 327/327, web 100/100,
+E2E 19/19, and `git diff --check`.
+
 The exact tree passes typecheck, build, lint across 171 files at the exact
 330-finding baseline, engine 234/234, adapters 18/18, permissioned server
 327/327, web 98/98, E2E 19/19, and `git diff --check`.
