@@ -1519,6 +1519,31 @@ defer O10 with the numbers and make no production change.
 
 **Fix risk:** low-moderate (fingerprint stability is the invariant to test).
 
+**Implementation decision (2026-08-17):** defer O10 with no production
+refactor. A checked-in 10,202-file / 201-package fixture
+(`packages/engine/src/worktree-manager.o10.test.ts`) measures the exported
+inspect/fingerprint hot path that `ensureDeps` runs before its first await.
+On `darwin/arm64`, the median of three warmed samples is 34.08 ms for one
+`inspectNodeDependencies` walk, 2.62 ms to hash the 201 manifests plus
+lockfile, and 147.03 ms to stack four inspect+hash calls — the same-tick
+stall concurrent dispatch would impose. Fingerprints stay byte-identical
+across those repeats. The walk already skips `.git`/`node_modules` and hashes
+only package manifests and the selected lockfile, not arbitrary source.
+
+147 ms on a fast SSD laptop for an intentionally large 201-package monorepo
+does not meet the item's "hundreds of ms to seconds" bar for a typical
+1–2 GB Hoopedorc project. A live measurement on the authorized small host
+remains outstanding if that host class is later available; do not convert
+the walkers from this developer-host baseline.
+
+The exact tree passes typecheck, build, lint across 170 files at the exact
+330-finding baseline, engine 234/234, adapters 18/18, permissioned server
+327/327, web 97/97, E2E 19/19, and `git diff --check`. Hosted CI,
+implementation PR/merge evidence, and merged-main verification remain
+outstanding.
+
+**Status:** evidence recorded on branch `o10-measure-worktree-prep`.
+
 ### O11. Planner chat/deconstruct have no output-size cap — MEDIUM (robustness)
 
 **Problem:** `runPlannerChat` (`packages/server/src/planner.ts:1679-1688`) and
