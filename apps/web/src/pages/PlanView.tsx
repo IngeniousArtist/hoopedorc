@@ -483,9 +483,12 @@ export function PlanView({
     return (
       <div className="text-sm text-neutral-400">
         No project selected. Create one from{" "}
-        <button className="underline" onClick={() => {}}>
+        <a
+          href="#/new-project"
+          className="underline focus-visible:ring-2 focus-visible:ring-blue-500"
+        >
           New Project
-        </button>
+        </a>
         .
       </div>
     );

@@ -13,14 +13,14 @@ already-green checks. Complete one item or explicitly paired group at a time.
 
 ## Current baseline
 
-- `main` and `origin/main` match `caaf0ea` after merging PR #247.
+- `main` and `origin/main` match `2bd0349` after merging PR #248.
 - PR #244 completed O6, O12, and O26's project-owned WebSocket sub-item.
 - PR #245 closed the three leftover reconnect-authority checkpoints.
 - PR #246 completed O24 request ownership.
 - PR #247 completed O23 trailing refreshes.
+- PR #248 completed O25 and O26's reduced-motion log bullet.
 - O5 already completed the shared dialog-semantics sub-item of O26.
-- The remaining implementation items are O8, O10, O22, and the O26 toast-timer
-  and dead New Project bullets.
+- The remaining implementation items are O8, O10, and O22.
 - O27 has no remaining implementation, but its authorized deployment evidence
   is still outstanding.
 - Do not reopen completed items unless a regression is first reproduced.
@@ -109,26 +109,14 @@ refresh REST-only state.
 
 Board retains the newest 1,000 task log rows after load and live appends, with
 an omission notice and per-task isolation. LogPanel scrolls its container and
-uses `auto` behavior under `prefers-reduced-motion`. The next implementation
-item is the remaining O26 toast-timer and dead New Project bullets.
+uses `auto` behavior under `prefers-reduced-motion`.
 
-### 4. O26 — remaining independent web follow-ups
+### 4. O26 — remaining independent web follow-ups — complete
 
-Keep these small; they may share one PR if the diff remains easy to review.
-
-**Toast timer ownership**
-
-- Track every dismissal timer and clear it on provider unmount.
-- Test unmount with pending timers and normal dismissal.
-
-**Dead New Project control**
-
-- Wire PlanView's `New Project` control to the existing New Project route, or
-  remove it if the same action is already clearly available beside the view.
-- The control must have one real, keyboard-accessible outcome.
-
-Do not redo dialog semantics or WebSocket ownership; those O26 sub-items are
-complete.
+Toast timers are tracked and cleared on provider unmount. PlanView's New
+Project control is a keyboard-accessible `#/new-project` link. Dialog,
+LogPanel, and `useWS` bullets were already complete. The next implementation
+item is O8.
 
 ### 5. O8 — cancelled/stuck invocation cost evidence
 
