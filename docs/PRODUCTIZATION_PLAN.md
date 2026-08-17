@@ -4931,6 +4931,18 @@ for a fully live run — this item's live half is still owed: the owner
 should run it for real (`! bash deploy/ec2-bootstrap.sh`) during the
 actual EC2 deploy and confirm.
 
+**F42 follow-up — CLI install + deploy-day runbook.** A pre-deploy review
+found the original script told the operator to authenticate `gh` /
+`claude` / `opencode` but never installed them, so `claude setup-token`
+on a fresh box was command-not-found. The bootstrap now installs `gh`
+from GitHub's package repo and `claude`/`opencode` via `npm install -g`
+(so the binaries land on systemd's default `PATH`; vendor curl
+installers do not). Codex stays optional. `docs/EC2_DEPLOY_RUNBOOK.md`
+is the ordered AWS → phone path, including installing git before the
+clone on AL2023. The unit, deploy README, and USER_GUIDE document the
+PATH pitfall next to the same-user-auth note. Live re-bootstrap of an
+already-running host is not required for this follow-up.
+
 ### What Part 8 deliberately does NOT include (for calibration)
 
 - **Agents in the sandbox (F13 phases 2–3)** — still the headline

@@ -2,7 +2,8 @@
 # One-command box setup for Hoopedorc on a fresh EC2 instance (or any
 # comparable Amazon Linux 2023 / Ubuntu LTS box). Automates the
 # non-interactive parts of docs/USER_GUIDE.md's "Deploying to EC2 —
-# checklist" (steps 1-2 and 6): OS packages, swap on small instances, the
+# checklist" (steps 1-2 and 6): OS packages (including the gh/claude/
+# opencode CLIs Hoopedorc shells out to), swap on small instances, the
 # repo clone, npm install/setup/build, and the systemd unit. Deliberately
 # stops before the genuinely interactive parts (CLI logins, .env editing,
 # tailscale serve — checklist steps 3-5) and prints exactly what to do next
@@ -101,9 +102,9 @@ esac
 echo "Detected distro: $DISTRO_ID"
 echo
 
-# 1b. Node 22, git, Docker (optional). Each check-before-install so
-# re-running this script on a box that already has some of these is a no-op
-# for that piece.
+# 1b. Node 22, git, the gh/claude/opencode CLIs, Docker (optional). Each
+# check-before-install so re-running this script on a box that already has
+# some of these is a no-op for that piece.
 node_is_22() {
   command -v node >/dev/null 2>&1 && [ "$(node -v | cut -d. -f1)" = "v22" ]
 }
@@ -134,6 +135,60 @@ else
     sudo dnf install -y git
   else
     sudo apt-get update && sudo apt-get install -y git
+  fi
+fi
+echo
+
+# The CLIs Hoopedorc drives. gh comes from GitHub's own package repo (it's
+# in neither AL2023's nor Ubuntu's default repos). claude and opencode are
+# installed via `npm install -g` DELIBERATELY, not their curl installers:
+# NodeSource's npm prefix is /usr, so the binaries land in /usr/bin, which
+# is on systemd's default PATH — the curl installers drop them in
+# ~/.local/bin / ~/.opencode/bin instead, which works over SSH but is
+# invisible to the hoopedorc.service unit, so every run would fail to spawn
+# them. (codex is not installed here — only needed if a model uses runner
+# "codex"; see the printout at the end.)
+if command -v gh >/dev/null 2>&1; then
+  echo "gh already installed — skipping."
+else
+  echo "Installing the gh CLI (from GitHub's official package repo)..."
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "[dry-run] would add https://cli.github.com/packages as a package repo and install gh"
+  elif [ "$DISTRO_ID" = "amzn" ]; then
+    sudo dnf install -y 'dnf-command(config-manager)'
+    sudo dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+    sudo dnf install -y gh
+  else
+    sudo mkdir -p -m 755 /etc/apt/keyrings
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+    sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+    sudo apt-get update
+    sudo apt-get install -y gh
+  fi
+fi
+echo
+
+if command -v claude >/dev/null 2>&1; then
+  echo "claude already installed — skipping."
+else
+  echo "Installing the claude CLI (npm -g, so it lands on systemd's PATH)..."
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "[dry-run] would: sudo npm install -g @anthropic-ai/claude-code"
+  else
+    sudo npm install -g @anthropic-ai/claude-code
+  fi
+fi
+echo
+
+if command -v opencode >/dev/null 2>&1; then
+  echo "opencode already installed — skipping."
+else
+  echo "Installing the opencode CLI (npm -g, so it lands on systemd's PATH)..."
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "[dry-run] would: sudo npm install -g opencode-ai"
+  else
+    sudo npm install -g opencode-ai
   fi
 fi
 echo
@@ -250,6 +305,7 @@ echo "       - GH_TOKEN in $INSTALL_DIR/.env (no interactive gh login needed)"
 echo "       - claude setup-token"
 echo "       - opencode auth login (or copy auth.json from a machine with a browser)"
 echo "       - codex login — only if a model uses runner \"codex\""
+echo "         (install it first: sudo npm install -g @openai/codex)"
 echo "  4. Edit $INSTALL_DIR/.env — at minimum PORT, API_TOKEN, DB_BACKUP_DIR."
 echo "  5. tailscale serve --bg <PORT>"
 echo "  Then start it: sudo systemctl start hoopedorc"
