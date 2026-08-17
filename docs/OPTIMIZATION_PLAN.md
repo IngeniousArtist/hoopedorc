@@ -1538,11 +1538,16 @@ the walkers from this developer-host baseline.
 
 The exact tree passes typecheck, build, lint across 170 files at the exact
 330-finding baseline, engine 234/234, adapters 18/18, permissioned server
-327/327, web 97/97, E2E 19/19, and `git diff --check`. Hosted CI,
-implementation PR/merge evidence, and merged-main verification remain
-outstanding.
+327/327, web 97/97, E2E 19/19, and `git diff --check`.
 
-**Status:** evidence recorded on branch `o10-measure-worktree-prep`.
+**Status:** completed in
+[#252](https://github.com/IngeniousArtist/hoopedorc/pull/252)
+(`e6259d1dfe024b91da9e229a2b39d854a5ac4c73`) on 2026-08-17. Linux
+`build-and-test` passed on the reviewed head in 2m20s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32029108009/job/95384827858)
+and on merged `main` in 2m36s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32029337145/job/95385564619).
+After merge, clean local `main` and `origin/main` matched `e6259d1`.
 
 ### O11. Planner chat/deconstruct have no output-size cap — MEDIUM (robustness)
 
