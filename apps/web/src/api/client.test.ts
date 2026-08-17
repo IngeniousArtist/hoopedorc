@@ -4,6 +4,7 @@ import {
   api,
   apiMethod,
   apiUrl,
+  isAbortError,
   setUnauthorizedHandler,
 } from "./client";
 
@@ -100,5 +101,15 @@ describe("API route contract", () => {
       code: "FIGMA_VERIFICATION_FAILED",
       details,
     });
+  });
+
+  it("recognizes abort errors without treating other failures as aborted", () => {
+    expect(isAbortError(new DOMException("The operation was aborted.", "AbortError"))).toBe(
+      true,
+    );
+    expect(isAbortError(Object.assign(new Error("Aborted"), { name: "AbortError" }))).toBe(
+      true,
+    );
+    expect(isAbortError(new Error("network down"))).toBe(false);
   });
 });

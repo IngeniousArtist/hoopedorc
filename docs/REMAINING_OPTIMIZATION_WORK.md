@@ -13,13 +13,11 @@ already-green checks. Complete one item or explicitly paired group at a time.
 
 ## Current baseline
 
-- `main` and `origin/main` matched `621a1bc` when this handoff was written.
-- PR #244 completed O6, O12, and O26's project-owned WebSocket sub-item. Its
-  Linux `build-and-test` job passed.
-- The PR #244 audit-trail task is complete on
-  `o6-o12-reconnect-checkpoint-audit` (local gate: web 72/72, E2E 18/18).
+- `main` and `origin/main` match `94f5f80` after merging PR #245.
+- PR #244 completed O6, O12, and O26's project-owned WebSocket sub-item.
+- PR #245 closed the three leftover reconnect-authority checkpoints.
 - O5 already completed the shared dialog-semantics sub-item of O26.
-- The remaining implementation items are O8, O10, O22, O23, O24, O25, and
+- The remaining implementation items are O8, O10, O22, O23, O25, and
   three small O26 sub-items.
 - O27 has no remaining implementation, but its authorized deployment evidence
   is still outstanding.
@@ -88,31 +86,18 @@ are corrected in the same reconnect-authority PR:
 - Pending-creation `404` retirement selects from projects still present at
   retirement time.
 
-Do not reopen this audit. The next implementation item is O24.
+Do not reopen this audit. O24 is next after #245.
 
 ## Implementation order
 
-### 1. O24 — request ownership and stale-response protection
+### 1. O24 — request ownership and stale-response protection — complete
 
-**Why first:** O23's request coalescer must not publish a response owned by an
-older project or unmounted view.
+PlanView's five-request load, CostView `fetchAll`, and Board `fetchEstimates`
+now abort on project change/unmount and ignore superseded or aborted
+responses. AuditView's generation guard is unchanged. Deterministic A→B,
+A→B→A, overlapping-refresh, and abort-error tests cover the owners.
 
-**Current gaps**
-
-- `PlanView` loads project, planning session, settings, attachments, and
-  archives in one unguarded `Promise.all`.
-- `CostView.fetchAll` can publish analytics/estimates after a project switch or
-  unmount.
-- `Board.fetchEstimates` has no request ownership guard.
-- `AuditView` already has a monotonic response-generation guard; preserve it.
-
-**Acceptance**
-
-- Rapid A -> B -> A switches cannot let an older A or B response win.
-- Unmount/project changes cancel or logically retire all owned requests.
-- Abort errors do not become user-facing failures.
-- Deterministic tests control out-of-order promise resolution.
-- No unrelated fetch abstraction or dependency is introduced.
+The next implementation item is O23.
 
 ### 2. O23 — coalesce CostView and AuditView refreshes
 

@@ -1255,8 +1255,14 @@ and reconnect authority agree without mutating the shared mock project.
 The checkpoint-correction tree passes typecheck, build, lint across 163 files
 at the exact 330-finding baseline, engine 231/231, adapters 15/15,
 permissioned server 326/326, web 72/72, E2E 18/18 across
-360/390/768/1280/1440px, and `git diff --check`. Hosted CI, implementation
-PR/merge evidence, and merged-main verification remain outstanding.
+360/390/768/1280/1440px, and `git diff --check`.
+
+**Status:** the three reconnect-authority checkpoints merged in
+[#245](https://github.com/IngeniousArtist/hoopedorc/pull/245)
+(`94f5f800aed1990db82df3503275f8070deaa310`) on 2026-08-17. Linux
+`build-and-test` passed on the reviewed head in 2m26s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32022380371/job/95364571148).
+After merge, clean local `main` and `origin/main` matched `94f5f80`.
 
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
@@ -2468,6 +2474,20 @@ and the estimate/analytics fetchers, aborting on project change/unmount.
 request wins; no setState-after-unmount warnings; full gates green.
 
 **Fix risk:** low.
+
+**Implementation decision (2026-08-17):** keep AuditView's monotonic generation
+guard unchanged. PlanView's five-request load, CostView `fetchAll`, and Board
+`fetchEstimates` each own a request generation plus an `AbortController`.
+Project change or unmount aborts the in-flight work. A newer same-view fetch
+retires the older generation so A→B→A and overlapping snapshot/estimate
+refreshes cannot publish. Abort errors are recognized by `isAbortError` and
+never become user-facing failures. No shared fetch hook or new dependency.
+
+The exact tree passes typecheck, build, lint across 163 files at the exact
+330-finding baseline, engine 231/231, adapters 15/15, permissioned server
+326/326, web 80/80, E2E 18/18 across 360/390/768/1280/1440px, and
+`git diff --check`. Hosted CI, implementation PR/merge evidence, and
+merged-main verification remain outstanding.
 
 ### O25. Task log list grows unbounded in the DOM — MEDIUM (efficiency/robustness)
 

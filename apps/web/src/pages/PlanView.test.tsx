@@ -418,3 +418,184 @@ describe("PlanView Figma verification", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("PlanView request ownership", () => {
+  beforeEach(() => {
+    apiMock.mockReset();
+    wsState.handler = undefined;
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+      configurable: true,
+      value: vi.fn(),
+    });
+  });
+
+  it("does not let an older project session overwrite a newer one", async () => {
+    const projectA = { ...project, id: "plan-a", name: "Plan A" };
+    const projectB = { ...project, id: "plan-b", name: "Plan B" };
+    let resolveA!: (value: unknown) => void;
+    const sessionA = new Promise((resolve) => {
+      resolveA = resolve;
+    });
+    apiMock.mockImplementation(async (key, options) => {
+      const id = options?.params?.id;
+      if (key === "getProject") {
+        return { project: id === projectB.id ? projectB : projectA };
+      }
+      if (key === "planSession") {
+        if (id === projectA.id) return sessionA;
+        return {
+          revisionId,
+          messages: [],
+          prd: "# Plan B",
+          draftTasks: [{ ...draft, title: "B session task" }],
+          planCostUsd: 0,
+        };
+      }
+      return baseApi(key);
+    });
+
+    const { rerender } = render(
+      <ToastProvider>
+        <PlanView projectId={projectA.id} onDone={vi.fn()} />
+      </ToastProvider>,
+    );
+    await waitFor(() => expect(apiMock).toHaveBeenCalled());
+
+    rerender(
+      <ToastProvider>
+        <PlanView projectId={projectB.id} onDone={vi.fn()} />
+      </ToastProvider>,
+    );
+    expect(await screen.findByDisplayValue("B session task")).toBeVisible();
+
+    await act(async () => {
+      resolveA({
+        revisionId,
+        messages: [],
+        prd: "# Plan A",
+        draftTasks: [{ ...draft, title: "A session task" }],
+        planCostUsd: 0,
+      });
+      await sessionA;
+    });
+
+    expect(screen.getByDisplayValue("B session task")).toBeVisible();
+    expect(screen.queryByDisplayValue("A session task")).not.toBeInTheDocument();
+    expect(screen.getByText(/Plan — Plan B/)).toBeVisible();
+  });
+
+  it("keeps the latest A session after an A → B → A switch", async () => {
+    const projectA = { ...project, id: "plan-a-again", name: "Plan A" };
+    const projectB = { ...project, id: "plan-b-again", name: "Plan B" };
+    let resolveFirstA!: (value: unknown) => void;
+    let resolveB!: (value: unknown) => void;
+    const firstA = new Promise((resolve) => {
+      resolveFirstA = resolve;
+    });
+    const sessionB = new Promise((resolve) => {
+      resolveB = resolve;
+    });
+    let aReads = 0;
+    apiMock.mockImplementation(async (key, options) => {
+      const id = options?.params?.id;
+      if (key === "getProject") {
+        return { project: id === projectB.id ? projectB : projectA };
+      }
+      if (key === "planSession") {
+        if (id === projectB.id) return sessionB;
+        aReads += 1;
+        if (aReads === 1) return firstA;
+        return {
+          revisionId,
+          messages: [],
+          prd: "# Latest A",
+          draftTasks: [{ ...draft, title: "Latest A task" }],
+          planCostUsd: 0,
+        };
+      }
+      return baseApi(key);
+    });
+
+    const view = (id: string) => (
+      <ToastProvider>
+        <PlanView projectId={id} onDone={vi.fn()} />
+      </ToastProvider>
+    );
+    const { rerender } = render(view(projectA.id));
+    await waitFor(() => expect(aReads).toBe(1));
+    rerender(view(projectB.id));
+    rerender(view(projectA.id));
+    expect(await screen.findByDisplayValue("Latest A task")).toBeVisible();
+
+    await act(async () => {
+      resolveFirstA({
+        revisionId,
+        messages: [],
+        prd: "# Stale A",
+        draftTasks: [{ ...draft, title: "Stale A task" }],
+        planCostUsd: 0,
+      });
+      resolveB({
+        revisionId,
+        messages: [],
+        prd: "# Plan B",
+        draftTasks: [{ ...draft, title: "B session task" }],
+        planCostUsd: 0,
+      });
+      await Promise.all([firstA, sessionB]);
+    });
+
+    expect(screen.getByDisplayValue("Latest A task")).toBeVisible();
+    expect(screen.queryByDisplayValue("Stale A task")).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("B session task")).not.toBeInTheDocument();
+  });
+
+  it("does not show an abort error after a project change", async () => {
+    const projectA = { ...project, id: "plan-abort-a", name: "Abort A" };
+    const projectB = { ...project, id: "plan-abort-b", name: "Abort B" };
+    apiMock.mockImplementation(async (key, options) => {
+      const id = options?.params?.id;
+      if (key === "getProject") {
+        return { project: id === projectB.id ? projectB : projectA };
+      }
+      if (key === "planSession") {
+        if (id === projectA.id) {
+          return new Promise((_resolve, reject) => {
+            const signal = options?.signal;
+            if (signal?.aborted) {
+              reject(new DOMException("The operation was aborted.", "AbortError"));
+              return;
+            }
+            signal?.addEventListener("abort", () => {
+              reject(new DOMException("The operation was aborted.", "AbortError"));
+            });
+          });
+        }
+        return {
+          revisionId,
+          messages: [],
+          prd: "# Abort B",
+          draftTasks: [{ ...draft, title: "Abort B task" }],
+          planCostUsd: 0,
+        };
+      }
+      return baseApi(key);
+    });
+
+    const { rerender } = render(
+      <ToastProvider>
+        <PlanView projectId={projectA.id} onDone={vi.fn()} />
+      </ToastProvider>,
+    );
+    await waitFor(() => expect(apiMock).toHaveBeenCalled());
+    rerender(
+      <ToastProvider>
+        <PlanView projectId={projectB.id} onDone={vi.fn()} />
+      </ToastProvider>,
+    );
+
+    expect(await screen.findByDisplayValue("Abort B task")).toBeVisible();
+    expect(screen.queryByText(/aborted/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Error:/)).not.toBeInTheDocument();
+  });
+});
