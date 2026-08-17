@@ -1209,8 +1209,54 @@ pause and its snapshot changed both App and Plan to paused, exposed the planning
 input, and left exactly one app socket active. Viewport and document widths were
 both 390px, page errors were empty, the console contained only Vite/React
 development notices, and mock shutdown completed with exit 0 and zero cleanup
-errors. A fresh independent clean review, hosted CI, PR/merge evidence, and
-merged-main verification remain outstanding.
+errors.
+
+**Status:** O6, O12, and O26's `useWS` ownership bullet merged in
+[#244](https://github.com/IngeniousArtist/hoopedorc/pull/244)
+(`621a1bcad573e1e7ec04eda7d99bc6da5a178d87`) on 2026-08-17. Linux
+`build-and-test` passed on the reviewed head in 2m34s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32018202996/job/95352095962)
+and again on the merge commit to `main` in 2m25s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32018448553).
+The PR's final local gate was typecheck, build, lint at the 330-finding
+baseline, engine 231/231, adapters 15/15, server 326/326, web 69/69, E2E 18/18
+across the required widths, `git diff --check`, and the 390px live reconnect
+browser check recorded in the pre-merge trail above. After merge, clean local
+`main` and `origin/main` matched `621a1bc`. This closes the implementation PR
+for the trio; O26's toast-timer, reduced-motion LogPanel, and dead New Project
+bullets remain pending under their documented owners.
+
+**Post-merge checkpoint correction (2026-08-17):** the interrupted independent
+review left three reconnect-authority questions. Each was reproduced with a
+failing regression before any production change:
+
+- CostView refreshed only on `cost.updated` / `task.updated`. After an initial
+  `$1.00` REST seed, an authoritative `cost.snapshot` of `$5.00` issued no
+  further fetch and the headline stayed `$1.00`. CostView now treats
+  `cost.snapshot` as the reconnect marker and refetches analytics/estimates.
+- PlanView applied `projects.snapshot`, but its in-flight initial `getProject`
+  still called `setProject`. A delayed running REST response overwrote a newer
+  paused snapshot and restored the planning lock. The load now records the
+  project-authority generation and ignores that REST project row after a newer
+  snapshot or `project.updated`. Session/attachment/archive application is
+  unchanged; broader A-B-A ownership remains O24.
+- App captured `projects[0]` from the snapshot that started pending-creation
+  confirmation. After that fallback was deleted, a `404` retirement selected
+  the now-absent ID (ProjectHeader disappeared while the selector still had a
+  survivor). Retirement now selects from the projects still present at
+  retirement time.
+
+These three belong to the #244 reconnect-authority boundary and do not start
+O23/O24 coalescing or abort work. The Figma plan e2e had been unlocking
+planning by fulfilling `getProject` as `paused` while the live snapshot stayed
+`running`; it now rewrites that snapshot/status for the browser only so REST
+and reconnect authority agree without mutating the shared mock project.
+
+The checkpoint-correction tree passes typecheck, build, lint across 163 files
+at the exact 330-finding baseline, engine 231/231, adapters 15/15,
+permissioned server 326/326, web 72/72, E2E 18/18 across
+360/390/768/1280/1440px, and `git diff --check`. Hosted CI, implementation
+PR/merge evidence, and merged-main verification remain outstanding.
 
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
@@ -1546,6 +1592,11 @@ the ceiling has a measured/documented memory rationale; full gates green.
 1 MiB cap, `4008` slow-client close, per-socket `1011` send-failure isolation,
 and bounded `useWS` reconnect are covered by the hub and hook regressions
 recorded above; the authoritative O6 snapshot is the reconnect/resync path.
+
+**Status:** completed with O6 in
+[#244](https://github.com/IngeniousArtist/hoopedorc/pull/244)
+(`621a1bc`). Merge, Linux CI, local gate, and reconnect browser evidence are
+recorded under O6.
 
 ### O13. Missing SQLite indexes on hot, ever-growing tables + orphaned rows — MEDIUM (efficiency)
 
@@ -2370,8 +2421,8 @@ the relevant sub-change rather than landing speculative memoization.
 
 ### O23. CostView/AuditView unconditionally refetch on high-frequency events — MEDIUM (efficiency)
 
-**Problem:** `CostView` refetches two endpoints on every `cost.updated` *or*
-`task.updated` (`apps/web/src/pages/CostView.tsx:37-45`); `AuditView` refetches
+**Problem:** `CostView` refetches two endpoints on every `cost.snapshot`,
+`cost.updated`, or `task.updated` (`apps/web/src/pages/CostView.tsx:37-45`); `AuditView` refetches
 on four event types (`apps/web/src/pages/AuditView.tsx:131-146`). No debounce,
 no in-flight dedup — an open Costs/Audit tab streams full-table requests
 during a run.
@@ -2402,7 +2453,10 @@ freshness lag is ≤ the documented interval; full gates green.
 older resolution overwrite the newer project's plan/tasks/attachments. Also
 `Board.fetchEstimates` (`Board.tsx:107-116`) and `CostView.fetchAll`
 (`CostView.tsx:20-31`). (`Board.load` and `TaskDrawer` already use a
-`cancelled` flag — the pattern to copy.)
+`cancelled` flag — the pattern to copy.) The reconnect-only race where an
+older `getProject` overwrote a newer `projects.snapshot` status is already
+closed under O6; O24 still owns session/attachment/archive rows, estimate
+refetches, and A-B-A request ownership.
 
 **Fix:** add `AbortController`/`cancelled` guards to `PlanView`'s load effect
 and the estimate/analytics fetchers, aborting on project change/unmount.
@@ -2479,6 +2533,12 @@ remain paired with their separately ordered owning items as specified above.
 [#240](https://github.com/IngeniousArtist/hoopedorc/pull/240)
 (`5ddec2a`); merge and post-merge evidence are recorded under O5. This does not
 mark the remaining O26 bullets complete.
+
+**`useWS` ownership status:** completed with O6/O12 in
+[#244](https://github.com/IngeniousArtist/hoopedorc/pull/244)
+(`621a1bc`); merge, Linux CI, and reconnect evidence are recorded under O6.
+The toast-timer, reduced-motion LogPanel, and dead New Project bullets remain
+pending.
 
 ---
 

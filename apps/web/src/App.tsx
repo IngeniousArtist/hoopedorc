@@ -305,11 +305,7 @@ export function App() {
   }, [fetchNotifications]);
 
   const confirmPendingCreatedProject = useCallback(
-    async (
-      pending: Project,
-      fallbackProjectId: string,
-      confirmationGeneration: number,
-    ) => {
+    async (pending: Project, confirmationGeneration: number) => {
       const isCurrentConfirmation = () =>
         pendingCreatedProjectsRef.current.get(pending.id) === pending &&
         pendingCreationConfirmationsRef.current.get(pending.id) ===
@@ -318,11 +314,13 @@ export function App() {
         pendingCreatedProjectsRef.current.delete(pending.id);
         pendingCreationConfirmationsRef.current.delete(pending.id);
         projectsAuthorityRef.current++;
-        setProjects((prev) =>
-          prev.filter((project) => project.id !== pending.id),
-        );
+        let remaining: Project[] = [];
+        setProjects((prev) => {
+          remaining = prev.filter((project) => project.id !== pending.id);
+          return remaining;
+        });
         setSelectedProjectId((current) =>
-          current === pending.id ? fallbackProjectId : current,
+          current === pending.id ? (remaining[0]?.id ?? "") : current,
         );
       };
 
@@ -421,11 +419,7 @@ export function App() {
             pending.id,
             confirmationGeneration,
           );
-          void confirmPendingCreatedProject(
-            pending,
-            e.payload.projects[0]?.id ?? "",
-            confirmationGeneration,
-          );
+          void confirmPendingCreatedProject(pending, confirmationGeneration);
         }
       } else if (e.type === "project.updated") {
         projectsAuthorityRef.current++;

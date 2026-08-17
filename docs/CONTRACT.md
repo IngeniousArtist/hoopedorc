@@ -563,7 +563,10 @@ socket was offline. Matching broadcasts accepted while that replay is in
 flight queue behind it and drain in order, so no later delta can interleave
 with or be lost behind the baseline.
 The web Board replaces its total on a snapshot and only adds subsequent cost
-deltas. The shared project connection retains that running total and replays
+deltas. CostView treats `cost.snapshot` as the reconnect marker for its
+REST-only analytics and estimates, so spend recorded while disconnected is
+refetched even when no later `cost.updated` or `task.updated` arrives. The
+shared project connection retains that running total and replays
 it as a synthetic snapshot to a view mounted after the socket's original
 catch-up, so a late Board subscriber cannot start from a delta alone. Closing
 the transport invalidates that cached total; a view mounted during reconnect
@@ -602,11 +605,16 @@ authoritative over a project snapshot captured before that create committed,
 until the ordered snapshot or `project.updated` stream observes its ID. When a
 snapshot omits a still-pending local creation, the client confirms that exact ID
 through `getProject`: success proves an older replay and `404` proves a later
-deletion, so neither race can permanently win. Confirmation reads are
+deletion, so neither race can permanently win. A `404` retirement selects from
+the projects still present at retirement time rather than a fallback ID
+captured from an earlier snapshot, so a concurrent deletion cannot make an
+absent project selected. Confirmation reads are
 generation-qualified per pending project so only the read started by the newest
 snapshot may settle it. Project-status consumers, including PlanView's planning
 lock, apply the selected project from
-`projects.snapshot` as well as live `project.updated` deltas.
+`projects.snapshot` as well as live `project.updated` deltas. PlanView also
+generation-guards its initial `getProject` so that older REST status cannot
+overwrite a newer reconnect snapshot.
 Consumers whose durable REST state is not embedded in the baseline use the
 applicable global snapshot as a reconnect marker and generation-guard the
 resulting refresh; this keeps Audit rows and Mission Control's derived approval

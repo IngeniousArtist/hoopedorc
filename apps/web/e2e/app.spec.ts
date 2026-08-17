@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { expectNoDocumentOverflow } from "./helpers";
+import { expectNoDocumentOverflow, presentProjectAsPaused } from "./helpers";
 
 test.describe.serial("critical operator workflows", () => {
   const projectId = "proj-hoopedorc";
@@ -55,21 +55,8 @@ test.describe.serial("critical operator workflows", () => {
   test("Figma capability failure keeps the draft and retries to a verified frame", async ({
     page,
   }) => {
-    await page.route(`**/api/projects/${projectId}`, async (route) => {
-      if (route.request().method() !== "GET") {
-        await route.continue();
-        return;
-      }
-      const response = await route.fetch();
-      const body = (await response.json()) as {
-        project: Record<string, unknown>;
-      };
-      await route.fulfill({
-        response,
-        json: { project: { ...body.project, status: "paused" } },
-      });
-    });
-    await page.route(`**/api/projects/${projectId}/plan/session`, (route) =>
+    await presentProjectAsPaused(page, projectId);
+    await page.route(`**/api/projects/${projectId}/plan/session`, (route) => {
       route.fulfill({
         json: {
           revisionId: "11111111-1111-4111-8111-111111111111",
@@ -96,8 +83,8 @@ test.describe.serial("critical operator workflows", () => {
           ],
           planCostUsd: 0,
         },
-      }),
-    );
+      });
+    });
 
     let attempts = 0;
     await page.route(

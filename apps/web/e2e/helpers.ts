@@ -32,6 +32,72 @@ export async function overflowDetails(page: Page) {
   });
 }
 
+/** Present a running mock project as paused without mutating server state.
+ *  PlanView now prefers `projects.snapshot` over a later `getProject`, so a
+ *  REST-only status override is not enough to unlock planning. */
+export async function presentProjectAsPaused(page: Page, id: string) {
+  await page.route(`**/api/projects/${id}`, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const body = (await response.json()) as { project: Record<string, unknown> };
+    await route.fulfill({
+      response,
+      json: { project: { ...body.project, status: "paused" } },
+    });
+  });
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (ws) => {
+    const server = ws.connectToServer();
+    server.onMessage((message) => {
+      if (typeof message !== "string") {
+        ws.send(message);
+        return;
+      }
+      try {
+        const event = JSON.parse(message) as {
+          type?: string;
+          payload?: {
+            id?: string;
+            status?: string;
+            projects?: Array<{ id: string; status?: string }>;
+          };
+        };
+        if (
+          event.type === "projects.snapshot" &&
+          Array.isArray(event.payload?.projects)
+        ) {
+          ws.send(
+            JSON.stringify({
+              ...event,
+              payload: {
+                ...event.payload,
+                projects: event.payload.projects.map((project) =>
+                  project.id === id ? { ...project, status: "paused" } : project,
+                ),
+              },
+            }),
+          );
+          return;
+        }
+        if (event.type === "project.updated" && event.payload?.id === id) {
+          ws.send(
+            JSON.stringify({
+              ...event,
+              payload: { ...event.payload, status: "paused" },
+            }),
+          );
+          return;
+        }
+      } catch {
+        /* forward unparsed frames */
+      }
+      ws.send(message);
+    });
+  });
+}
+
 export async function expectNoDocumentOverflow(page: Page) {
   const details = await overflowDetails(page);
   expect(details.documentWidth, JSON.stringify(details, null, 2)).toBeLessThanOrEqual(

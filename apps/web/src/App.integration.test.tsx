@@ -309,4 +309,79 @@ describe("application reconnect authority", () => {
       survivor.id,
     );
   });
+
+  it("does not select a fallback deleted during pending-creation confirmation", async () => {
+    const user = userEvent.setup();
+    const fallback = {
+      ...projectFixture,
+      id: "project-captured-fallback",
+      name: "Captured fallback",
+    };
+    const survivor = {
+      ...projectFixture,
+      id: "project-remaining-after-fallback-delete",
+      name: "Remaining after fallback delete",
+    };
+    const pending = {
+      ...projectFixture,
+      id: "project-pending-while-fallback-deleted",
+      name: "Pending while fallback deleted",
+    };
+    let rejectConfirmation!: (reason: { status: number }) => void;
+    const confirmation = new Promise<{ project: Project }>(
+      (_resolve, reject) => {
+        rejectConfirmation = reject;
+      },
+    );
+    apiMock.mockImplementation(async (key) => {
+      if (key === "listProjects") return { projects: [fallback, survivor] };
+      if (key === "listNotifications") return { notifications: [] };
+      if (key === "getProject") return confirmation;
+      throw new Error(`Unexpected API call: ${key}`);
+    });
+    render(<App />);
+    await screen.findByRole("option", { name: /Captured fallback/ });
+
+    await user.click(screen.getByRole("button", { name: "+ New" }));
+    act(() => {
+      wsState.onProjectCreated?.(pending);
+      wsState.handler?.({
+        type: "projects.snapshot",
+        payload: { projects: [fallback, survivor] },
+      });
+      wsState.handler?.({
+        type: "project.deleted",
+        payload: { id: fallback.id },
+      });
+    });
+
+    expect(screen.getByRole("combobox", { name: "Project" })).toHaveValue(
+      pending.id,
+    );
+    expect(
+      screen.queryByRole("option", { name: /Captured fallback/ }),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      rejectConfirmation({ status: 404 });
+      await confirmation.catch(() => undefined);
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("option", { name: /Pending while fallback deleted/ }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("combobox", { name: "Project" })).toHaveValue(
+      survivor.id,
+    );
+    expect(screen.getByText("Remaining after fallback delete")).toBeVisible();
+    expect(screen.queryByText("Captured fallback")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: /Captured fallback/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /Remaining after fallback delete/ }),
+    ).toBeVisible();
+  });
 });
