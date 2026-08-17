@@ -2,6 +2,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -29,14 +30,25 @@ const DISMISS_MS = 5000;
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const nextId = useRef(0);
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
+
+  useEffect(() => {
+    const pending = timers.current;
+    return () => {
+      for (const timer of pending) clearTimeout(timer);
+      pending.clear();
+    };
+  }, []);
 
   const toast = useCallback(
     (message: string, kind: Toast["kind"] = "info") => {
       const id = nextId.current++;
       setToasts((prev) => [...prev, { id, message, kind }]);
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        timers.current.delete(timer);
         setToasts((prev) => prev.filter((t) => t.id !== id));
       }, DISMISS_MS);
+      timers.current.add(timer);
     },
     [],
   );

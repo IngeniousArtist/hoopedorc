@@ -599,3 +599,28 @@ describe("PlanView request ownership", () => {
     expect(screen.queryByText(/Error:/)).not.toBeInTheDocument();
   });
 });
+
+describe("PlanView empty project control", () => {
+  beforeEach(() => {
+    apiMock.mockReset();
+    wsState.handler = undefined;
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+      configurable: true,
+      value: vi.fn(),
+    });
+  });
+
+  it("wires New Project to the existing New Project route", async () => {
+    apiMock.mockImplementation(async (key) => {
+      if (key === "getProject") return { project: null };
+      if (key === "planSession") {
+        return { revisionId, messages: [], planCostUsd: 0 };
+      }
+      return baseApi(key);
+    });
+    renderPlan();
+
+    const control = await screen.findByRole("link", { name: "New Project" });
+    expect(control).toHaveAttribute("href", "#/new-project");
+  });
+});

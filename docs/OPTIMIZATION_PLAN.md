@@ -2551,8 +2551,14 @@ when `prefers-reduced-motion: reduce` is set.
 The exact tree passes typecheck, build, lint across 168 files at the exact
 330-finding baseline, engine 231/231, adapters 15/15, permissioned server
 326/326, web 94/94, E2E 19/19 including phone and desktop log-drawer checks,
-and `git diff --check`. Hosted CI, implementation PR/merge evidence, and
-merged-main verification remain outstanding.
+and `git diff --check`.
+
+**Status:** completed with O26's LogPanel reduced-motion bullet in
+[#248](https://github.com/IngeniousArtist/hoopedorc/pull/248)
+(`2bd03492a24e3ea2d6376a0436fefe2487ca645f`) on 2026-08-17. Linux
+`build-and-test` passed on the reviewed head in 2m40s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32025220270/job/95373116417).
+After merge, clean local `main` and `origin/main` matched `2bd0349`.
 
 ### O26. Web minor robustness/a11y follow-ups — LOW-MEDIUM
 
@@ -2599,11 +2605,20 @@ mark the remaining O26 bullets complete.
 **`useWS` ownership status:** completed with O6/O12 in
 [#244](https://github.com/IngeniousArtist/hoopedorc/pull/244)
 (`621a1bc`); merge, Linux CI, and reconnect evidence are recorded under O6.
-The toast-timer and dead New Project bullets remain pending.
+**LogPanel reduced-motion status:** completed with O25 in
+[#248](https://github.com/IngeniousArtist/hoopedorc/pull/248)
+(`2bd0349`).
 
-**LogPanel reduced-motion status:** completed with O25 in the same PR. The
-panel scrolls its log container and uses `auto` behavior when
-`prefers-reduced-motion: reduce` is set.
+**Toast-timer and New Project status:** `ToastProvider` tracks every dismissal
+timer and clears the set on unmount. PlanView's empty-state New Project control
+is a real `#/new-project` link. Dialog, LogPanel, and `useWS` bullets were
+already complete.
+
+The exact tree passes typecheck, build, lint across 169 files at the exact
+330-finding baseline, engine 231/231, adapters 15/15, permissioned server
+326/326, web 97/97, E2E 19/19, and `git diff --check`. Hosted CI,
+implementation PR/merge evidence, and merged-main verification remain
+outstanding.
 
 ---
 
