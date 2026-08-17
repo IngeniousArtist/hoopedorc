@@ -13,7 +13,7 @@ already-green checks. Complete one item or explicitly paired group at a time.
 
 ## Current baseline
 
-- `main` and `origin/main` match `2100c51` after merging PR #250.
+- `main` and `origin/main` match `a6a7d9b` after merging PR #251.
 - PR #244 completed O6, O12, and O26's project-owned WebSocket sub-item.
 - PR #245 closed the three leftover reconnect-authority checkpoints.
 - PR #246 completed O24 request ownership.
@@ -21,9 +21,11 @@ already-green checks. Complete one item or explicitly paired group at a time.
 - PR #248 completed O25 and O26's reduced-motion log bullet.
 - PR #249 completed O26's toast-timer and New Project bullets.
 - PR #250 closed O8 with evidence and no production refactor.
+- PR #251 recorded O8 merge and main CI evidence.
 - O5 already completed the shared dialog-semantics sub-item of O26.
 - O8 is closed with evidence and no production refactor.
-- The remaining implementation items are O10 and O22.
+- O10 is deferred with recorded measurements and no production refactor.
+- The remaining implementation item is O22.
 - O27 has no remaining implementation, but its authorized deployment evidence
   is still outstanding.
 - Do not reopen completed items unless a regression is first reproduced.
@@ -39,7 +41,7 @@ Use this sequence for every item.
    its owning source files, focused tests, and directly affected contract or
    architecture documentation. Do not audit unrelated packages.
 3. **Prove the problem first.** Add one failing regression or a reproducible
-   benchmark.     Evidence-gated items O10 and O22 must not receive a
+   benchmark.     Evidence-gated item O22 must not receive a
    production refactor unless the baseline demonstrates the stated problem.
 4. **Iterate narrowly.** Run the changed test file or owning package while
    coding. Do not run every repository gate after each edit.
@@ -127,25 +129,12 @@ detection spreads that result onto one terminal author row, and the ledger
 CAS bills it once. The throw-`AbortError` zeros are unreachable after emitted
 usage. No production refactor. Next implementation item is O10.
 
-### 6. O10 — measure synchronous worktree preparation
+### 6. O10 — measure synchronous worktree preparation — complete
 
-Create a reproducible large-repository fixture and measure event-loop delay and
-worktree-preparation wall time under concurrent dispatch.
-
-**Decision**
-
-- If impact is material on the target 1-2 GB host, convert only the measured
-  synchronous walkers/hashing to bounded async I/O while preserving exact
-  fingerprints and deterministic ordering.
-- If impact is immaterial, record the numbers and defer without production
-  code.
-
-**Acceptance**
-
-- Baseline and after/defer measurements use the same fixture and concurrency.
-- npm, yarn, pnpm, and custom-setup fingerprints remain byte-identical if code
-  changes.
-- No speculative cache or broad worktree-manager rewrite is introduced.
+A 10,202-file / 201-package fixture measures 34 ms per inspect and 147 ms for
+four stacked inspect+hash calls on `darwin/arm64`. That is below the
+hundreds-of-ms bar on this host class, and the walk already hashes only
+manifests/lockfiles. Deferred; no production refactor. Next item is O22.
 
 ### 7. O22 — measure Board live-run rendering
 
