@@ -1547,14 +1547,16 @@ passes typecheck, build, lint across 172 files at the exact 330-finding
 baseline, engine 234/234, adapters 18/18, permissioned server 327/327,
 web 100/100, E2E 19/19, and `git diff --check`.
 
-**Status:** completed in
+**Status:** measured and deferred in
 [#252](https://github.com/IngeniousArtist/hoopedorc/pull/252)
-(`e6259d1dfe024b91da9e229a2b39d854a5ac4c73`) on 2026-08-17. Linux
-`build-and-test` passed on the reviewed head in 2m20s
-(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32029108009/job/95384827858)
-and on merged `main` in 2m36s
-(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32029337145/job/95385564619).
-After merge, clean local `main` and `origin/main` matched `e6259d1`.
+(`e6259d1dfe024b91da9e229a2b39d854a5ac4c73`) on 2026-08-17. Converted in
+[#257](https://github.com/IngeniousArtist/hoopedorc/pull/257)
+(`6f2ad93f406531a1e7acebef4dce514c78dd2917`) on 2026-08-17. Linux
+`build-and-test` passed on the conversion head in 2m40s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32035806240/job/95405844516)
+and on merged `main` in 2m32s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32036023524/job/95406521601).
+After merge, clean local `main` and `origin/main` matched `6f2ad93`.
 
 ### O11. Planner chat/deconstruct have no output-size cap — MEDIUM (robustness)
 
@@ -3807,8 +3809,8 @@ below because they share one invariant and would be unsafe to split.
    deferred rather than adding signaling, caching, or memoization machinery.
    O35 merged in
    [#202](https://github.com/IngeniousArtist/hoopedorc/pull/202)/[#203](https://github.com/IngeniousArtist/hoopedorc/pull/203);
-   all four O36 candidates merged with evidence in #204–#211. O10 and O22
-   benchmarks remain.
+    all four O36 candidates merged with evidence in #204–#211. O10 and O22
+    measured, then converted after explicit follow-up requests.
 7. **Structural cleanup:** O34 helper extraction after O29/O21, followed by
    its separate durable-accounting design/PR if still justified — merged in
    [#198](https://github.com/IngeniousArtist/hoopedorc/pull/198)–[#201](https://github.com/IngeniousArtist/hoopedorc/pull/201).
