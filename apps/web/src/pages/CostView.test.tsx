@@ -9,7 +9,10 @@ const wsState = vi.hoisted(() => ({
   handler: undefined as ((event: ServerEvent) => void) | undefined,
 }));
 
-vi.mock("../api/client", () => ({ api: vi.fn() }));
+vi.mock("../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/client")>();
+  return { ...actual, api: vi.fn() };
+});
 vi.mock("../hooks/useWS", () => ({
   useWS: (_projectId: string, handler: (event: ServerEvent) => void) => {
     wsState.handler = handler;
@@ -131,15 +134,52 @@ describe("CostView request ownership", () => {
         payload: { projectId: projectFixture.id, totalUsd: 5 },
       });
     });
-    expect(await screen.findByText("$5.00")).toBeVisible();
+    expect(analyticsCalls).toBe(1);
 
     await act(async () => {
       resolveInitial(analytics(1));
       await initial;
     });
 
-    expect(screen.getByText("$5.00")).toBeVisible();
+    expect(await screen.findByText("$5.00")).toBeVisible();
     expect(screen.queryByText("$1.00")).not.toBeInTheDocument();
+    expect(analyticsCalls).toBe(2);
+  });
+
+  it("coalesces a live burst into one in-flight fetch and one trailing fetch", async () => {
+    let resolveFirst!: (value: CostAnalyticsResponse) => void;
+    const first = new Promise<CostAnalyticsResponse>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let analyticsCalls = 0;
+    apiMock.mockImplementation(async (key) => {
+      if (key === "estimatePlan") return emptyEstimate;
+      if (key === "costAnalytics") {
+        analyticsCalls += 1;
+        return analyticsCalls === 1 ? first : analytics(analyticsCalls);
+      }
+      throw new Error(`Unexpected API call: ${key}`);
+    });
+
+    render(<CostView projectId={projectFixture.id} />);
+    await waitFor(() => expect(analyticsCalls).toBe(1));
+    act(() => {
+      for (let i = 0; i < 8; i += 1) {
+        wsState.handler?.({
+          type: i % 2 === 0 ? "cost.updated" : "task.updated",
+          payload: { projectId: projectFixture.id, costUsd: 0.01 } as never,
+        });
+      }
+    });
+    expect(analyticsCalls).toBe(1);
+
+    await act(async () => {
+      resolveFirst(analytics(1));
+      await first;
+    });
+
+    expect(await screen.findByText("$2.00")).toBeVisible();
+    expect(analyticsCalls).toBe(2);
   });
 
   it("does not show an abort error after unmount or project change", async () => {

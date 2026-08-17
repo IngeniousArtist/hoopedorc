@@ -7,6 +7,7 @@ import type {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useWS } from "../hooks/useWS";
+import { createTrailingRefresh } from "../lib/trailingRefresh";
 
 const KIND_ICON: Record<string, string> = {
   merge_decision: "⚖️",
@@ -112,46 +113,49 @@ function RunReportCard({ entry }: { entry: AuditEntry }) {
 export function AuditView({ projectId }: { projectId: string }) {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const requestGenerationRef = useRef(0);
-
-  const fetchAudit = useCallback(async () => {
-    const requestGeneration = ++requestGenerationRef.current;
-    try {
-      const res = await api<AuditLogResponse>("auditLog", {
-        params: { id: projectId },
-      });
-      if (requestGenerationRef.current !== requestGeneration) return;
-      setEntries(res.entries);
-      setError(null);
-    } catch (e) {
-      if (requestGenerationRef.current !== requestGeneration) return;
-      setError(String(e));
-    }
-  }, [projectId]);
+  const refreshRef = useRef<ReturnType<typeof createTrailingRefresh> | null>(
+    null,
+  );
 
   useEffect(() => {
-    fetchAudit();
-  }, [fetchAudit]);
+    const refresh = createTrailingRefresh({
+      run: (signal) =>
+        api<AuditLogResponse>("auditLog", {
+          params: { id: projectId },
+          signal,
+        }),
+      onResult: (res) => {
+        setEntries(res.entries);
+        setError(null);
+      },
+      onError: (e) => {
+        setError(String(e));
+      },
+    });
+    refreshRef.current = refresh;
+    refresh.request();
+    return () => {
+      refresh.dispose();
+      refreshRef.current = null;
+    };
+  }, [projectId]);
 
-  const onWS = useCallback(
-    (event: ServerEvent) => {
-      if (
-        // Audit rows are REST state rather than part of the catch-up payload.
-        // The global snapshot is the reconnect marker even when this project
-        // has no task/run deltas to otherwise trigger a refresh.
-        event.type === "projects.snapshot" ||
-        event.type === "task.updated" ||
-        event.type === "merge.decision" ||
-        event.type === "notification" ||
-        // A run's finalStatus lands on the project right before its summary
-        // is persisted (F8) — this is what tells an open Audit tab to refresh.
-        event.type === "project.updated"
-      ) {
-        fetchAudit();
-      }
-    },
-    [fetchAudit],
-  );
+  const onWS = useCallback((event: ServerEvent) => {
+    if (
+      // Audit rows are REST state rather than part of the catch-up payload.
+      // The global snapshot is the reconnect marker even when this project
+      // has no task/run deltas to otherwise trigger a refresh.
+      event.type === "projects.snapshot" ||
+      event.type === "task.updated" ||
+      event.type === "merge.decision" ||
+      event.type === "notification" ||
+      // A run's finalStatus lands on the project right before its summary
+      // is persisted (F8) — this is what tells an open Audit tab to refresh.
+      event.type === "project.updated"
+    ) {
+      refreshRef.current?.request();
+    }
+  }, []);
   useWS(projectId, onWS);
 
   if (error) return <div className="text-sm text-red-400">Error: {error}</div>;

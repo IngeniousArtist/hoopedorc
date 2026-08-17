@@ -71,7 +71,10 @@ and derived approval counts use the notification snapshot; Audit and Mission
 Control reject older overlapping reads. PlanView's initial five-request load,
 CostView analytics/estimates, and Board estimate fetches also retire aborted or
 superseded responses so a project switch or newer same-view refresh cannot
-publish an older result. The hub validates the whole
+publish an older result. CostView and AuditView coalesce live invalidations
+into one in-flight REST refresh and at most one trailing refresh, with no extra
+timer, so a reconnect marker still refetches after downtime without streaming
+one request per event. The hub validates the whole
 baseline before activation and flow-controls it one frame per send completion;
 matching live events queue behind the replay and drain afterward in order. A
 client whose

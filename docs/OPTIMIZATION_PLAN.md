@@ -2450,6 +2450,22 @@ freshness lag is ≤ the documented interval; full gates green.
 
 **Fix risk:** low.
 
+**Implementation decision (2026-08-17):** both views share
+`createTrailingRefresh` with `requestedGeneration`, `completedGeneration`, and
+`inFlight`. Events increment the requested generation. An idle view starts
+immediately; events during a fetch schedule exactly one trailing fetch after
+settlement. There is no debounce timer:
+`TRAILING_REFRESH_INTERVAL_MS = 0`, so freshness lag is at most the current
+in-flight request. Dispose aborts the owner and suppresses abort errors.
+Reconnect markers still call `request()` so REST-only state refreshes after
+downtime.
+
+The exact tree passes typecheck, build, lint across 165 files at the exact
+330-finding baseline, engine 231/231, adapters 15/15, permissioned server
+326/326, web 86/86, E2E 18/18 across 360/390/768/1280/1440px, and
+`git diff --check`. Hosted CI, implementation PR/merge evidence, and
+merged-main verification remain outstanding.
+
 ### O24. No request cancellation — stale responses can overwrite newer state — MEDIUM (robustness)
 
 **Problem:** the `api()` client supports `signal`
@@ -2486,8 +2502,14 @@ never become user-facing failures. No shared fetch hook or new dependency.
 The exact tree passes typecheck, build, lint across 163 files at the exact
 330-finding baseline, engine 231/231, adapters 15/15, permissioned server
 326/326, web 80/80, E2E 18/18 across 360/390/768/1280/1440px, and
-`git diff --check`. Hosted CI, implementation PR/merge evidence, and
-merged-main verification remain outstanding.
+`git diff --check`.
+
+**Status:** completed in
+[#246](https://github.com/IngeniousArtist/hoopedorc/pull/246)
+(`cfe71b28c05714887f659f49edf40177bc9de5f1`) on 2026-08-17. Linux
+`build-and-test` passed on the reviewed head in 2m33s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32023650839/job/95368368108).
+After merge, clean local `main` and `origin/main` matched `cfe71b2`.
 
 ### O25. Task log list grows unbounded in the DOM — MEDIUM (efficiency/robustness)
 

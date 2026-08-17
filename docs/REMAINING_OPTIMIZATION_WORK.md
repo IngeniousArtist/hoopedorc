@@ -13,11 +13,12 @@ already-green checks. Complete one item or explicitly paired group at a time.
 
 ## Current baseline
 
-- `main` and `origin/main` match `94f5f80` after merging PR #245.
+- `main` and `origin/main` match `cfe71b2` after merging PR #246.
 - PR #244 completed O6, O12, and O26's project-owned WebSocket sub-item.
 - PR #245 closed the three leftover reconnect-authority checkpoints.
+- PR #246 completed O24 request ownership.
 - O5 already completed the shared dialog-semantics sub-item of O26.
-- The remaining implementation items are O8, O10, O22, O23, O25, and
+- The remaining implementation items are O8, O10, O22, O25, and
   three small O26 sub-items.
 - O27 has no remaining implementation, but its authorized deployment evidence
   is still outstanding.
@@ -97,23 +98,13 @@ now abort on project change/unmount and ignore superseded or aborted
 responses. AuditView's generation guard is unchanged. Deterministic A→B,
 A→B→A, overlapping-refresh, and abort-error tests cover the owners.
 
-The next implementation item is O23.
+O23 is next after #246.
 
-### 2. O23 — coalesce CostView and AuditView refreshes
+### 2. O23 — coalesce CostView and AuditView refreshes — complete
 
-**Depends on:** O24.
-
-Implement a small trailing coalescer per view with an in-flight flag and
-monotonic requested/completed generations. A burst may cause one active fetch
-and one trailing fetch; it must never lose the final invalidation.
-
-**Acceptance**
-
-- Deterministic tests cover events before a fetch, during it, and at settlement.
-- Bursts produce a bounded request count and the final state is fetched.
-- Stale/unmounted/project-switched responses cannot publish.
-- Reconnect markers refresh REST-only state even when no live delta follows.
-- The freshness interval is documented and tested.
+Both views use `createTrailingRefresh`: one in-flight fetch plus at most one
+trailing fetch, `TRAILING_REFRESH_INTERVAL_MS = 0`. Reconnect markers still
+refresh REST-only state. The next implementation item is O25 + O26 log motion.
 
 ### 3. O25 + O26 reduced-motion log behavior — bounded task logs
 
