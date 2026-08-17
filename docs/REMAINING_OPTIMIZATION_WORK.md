@@ -13,7 +13,7 @@ already-green checks. Complete one item or explicitly paired group at a time.
 
 ## Current baseline
 
-- `main` and `origin/main` match `e6259d1` after merging PR #252.
+- `main` and `origin/main` match `dafe215` after merging PR #253.
 - PR #244 completed O6, O12, and O26's project-owned WebSocket sub-item.
 - PR #245 closed the three leftover reconnect-authority checkpoints.
 - PR #246 completed O24 request ownership.
@@ -23,10 +23,13 @@ already-green checks. Complete one item or explicitly paired group at a time.
 - PR #250 closed O8 with evidence and no production refactor.
 - PR #251 recorded O8 merge and main CI evidence.
 - PR #252 deferred O10 with measured worktree-prep numbers.
+- PR #253 recorded O10 merge and main CI evidence.
 - O5 already completed the shared dialog-semantics sub-item of O26.
 - O8 is closed with evidence and no production refactor.
 - O10 is deferred with recorded measurements and no production refactor.
-- The remaining implementation item is O22.
+- O22's measured Board live-run burst is fixed; clock isolation and card memo
+  are deferred.
+- There are no remaining implementation items.
 - O27 has no remaining implementation, but its authorized deployment evidence
   is still outstanding.
 - Do not reopen completed items unless a regression is first reproduced.
@@ -42,7 +45,7 @@ Use this sequence for every item.
    its owning source files, focused tests, and directly affected contract or
    architecture documentation. Do not audit unrelated packages.
 3. **Prove the problem first.** Add one failing regression or a reproducible
-   benchmark.     Evidence-gated item O22 must not receive a
+   benchmark.     Evidence-gated items must not receive a
    production refactor unless the baseline demonstrates the stated problem.
 4. **Iterate narrowly.** Run the changed test file or owning package while
    coding. Do not run every repository gate after each edit.
@@ -137,22 +140,13 @@ four stacked inspect+hash calls on `darwin/arm64`. That is below the
 hundreds-of-ms bar on this host class, and the walk already hashes only
 manifests/lockfiles. Deferred; no production refactor. Next item is O22.
 
-### 7. O22 — measure Board live-run rendering
+### 7. O22 — measure Board live-run rendering — complete
 
-Instrument a representative Board fixture for render counts, estimate request
-counts, and browser main-thread timing during a fixed log/task-event burst.
-
-Change only bottlenecks demonstrated by the measurement. Candidate fixes are
-coalesced activity publication, estimate invalidation only for fields that
-affect estimates, clock isolation, and memoization where prop identity is
-proven costly.
-
-**Acceptance**
-
-- Before/after numbers use the same fixture and event burst.
-- Final activity and estimate state is never lost.
-- Interaction behavior and heartbeat freshness remain unchanged.
-- Immaterial candidates are documented and deferred instead of implemented.
+A 12-task fixture showed 200 Board commits / 2,400 card renders / 20 wasted
+estimate fetches on a 200-log + 20 same-status burst. Activity now flushes once
+per animation frame; estimates refetch only on status/model/difficulty/
+maxAttempts. After: 1 commit, 12 card renders, 0 same-status estimate fetches.
+Clock isolation and TaskCard memo are deferred.
 
 ### 8. O27 — outstanding live deployment evidence
 
