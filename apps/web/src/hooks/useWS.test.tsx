@@ -79,14 +79,17 @@ describe("project-owned shared WebSocket connections", () => {
     vi.useRealTimers();
   });
 
-  it("keeps a global-only socket when no project is selected", () => {
+  it("requests durable global catch-up when no project is selected", () => {
     const handler = vi.fn();
     const hook = renderHook(() => useWS("", handler));
     expect(FakeWebSocket.instances).toHaveLength(1);
     const socket = FakeWebSocket.instances[0]!;
 
     act(() => socket.open());
-    expect(socket.send).not.toHaveBeenCalled();
+    expect(socket.send).toHaveBeenCalledOnce();
+    expect(socket.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: "subscribe", projectId: "" }),
+    );
     const event = {
       type: "project.updated",
       payload: { id: "created-elsewhere" },

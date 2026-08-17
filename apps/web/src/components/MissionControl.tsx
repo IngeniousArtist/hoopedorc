@@ -67,9 +67,20 @@ export function MissionControl({
 
   const onWS = useCallback(
     (e: ServerEvent) => {
-      if (e.type === "notification") fetchApprovals();
+      if (e.type === "notifications.snapshot") {
+        setPendingApprovals(
+          e.payload.notifications.filter(
+            (notification) =>
+              notification.projectId === projectId &&
+              notification.requiresApproval &&
+              !notification.respondedWith,
+          ).length,
+        );
+      } else if (e.type === "notification") {
+        fetchApprovals();
+      }
     },
-    [fetchApprovals],
+    [fetchApprovals, projectId],
   );
   useWS(projectId, onWS);
 

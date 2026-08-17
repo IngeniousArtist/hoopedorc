@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import type { ServerEvent } from "@orc/types";
 import { defaultSettings, ENV } from "./config.js";
 import { initDb } from "./db/index.js";
 import * as repo from "./db/repo.js";
@@ -316,13 +317,14 @@ test("O36: a project catch-up snapshot reads all runs with one indexed statement
       type: string;
       payload: { id?: string; projectId?: string; totalUsd?: number };
     });
-    assert.equal(events.length, 2 + taskCount * (1 + runsPerTask));
+    assert.equal(events.length, 3 + taskCount * (1 + runsPerTask));
     assert.equal(events[0]?.type, "project.updated");
     assert.equal(events[0]?.payload.id, "project-1");
-    assert.equal(events[1]?.type, "cost.snapshot");
-    assert.equal(events[1]?.payload.projectId, "project-1");
-    assert.equal(events[1]?.payload.totalUsd, 0);
-    let cursor = 2;
+    assert.equal(events[1]?.type, "notifications.snapshot");
+    assert.equal(events[2]?.type, "cost.snapshot");
+    assert.equal(events[2]?.payload.projectId, "project-1");
+    assert.equal(events[2]?.payload.totalUsd, 0);
+    let cursor = 3;
     for (let taskIndex = 0; taskIndex < taskCount; taskIndex++) {
       assert.equal(events[cursor]?.type, "task.updated");
       assert.equal(events[cursor]?.payload.id, `o36-task-${taskIndex}`);
@@ -377,9 +379,65 @@ test("O6: reconnect snapshot reports the authoritative project cost before repla
       payload: { projectId?: string; totalUsd?: number };
     });
     assert.equal(events[0]?.type, "project.updated");
-    assert.equal(events[1]?.type, "cost.snapshot");
-    assert.equal(events[1]?.payload.projectId, "project-1");
-    assert.equal(events[1]?.payload.totalUsd, 2.75);
+    assert.equal(events[1]?.type, "notifications.snapshot");
+    assert.equal(events[2]?.type, "cost.snapshot");
+    assert.equal(events[2]?.payload.projectId, "project-1");
+    assert.equal(events[2]?.payload.totalUsd, 2.75);
+  } finally {
+    await app.close();
+    deps.db.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("O6: reconnect catch-up restores durable global notifications without a project", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-o6-ws-global-snapshot-"));
+  const deps = dependencies(root);
+  const notification = repo.createNotification(deps.db, {
+    id: "approval-missed-while-offline",
+    projectId: "project-1",
+    severity: "action_required",
+    title: "Approval waiting",
+    message: "This must return after reconnect.",
+    requiresApproval: true,
+    options: ["approve", "reject"],
+  });
+  const app = await buildApp(deps);
+
+  class FakeSocket extends EventEmitter {
+    readyState = 1;
+    readonly sent: string[] = [];
+
+    send(payload: string, callback?: (error?: Error) => void): void {
+      this.sent.push(payload);
+      callback?.();
+    }
+  }
+
+  try {
+    const socket = new FakeSocket();
+    deps.hub.add(socket as unknown as WebSocket);
+    socket.emit(
+      "message",
+      Buffer.from(JSON.stringify({ type: "subscribe", projectId: "" })),
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const events = socket.sent.map(
+      (payload) => JSON.parse(payload) as ServerEvent,
+    );
+
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ["project.updated", "notifications.snapshot"],
+    );
+    const snapshot = events[1];
+    assert.equal(snapshot?.type, "notifications.snapshot");
+    if (snapshot?.type === "notifications.snapshot") {
+      assert.deepEqual(
+        snapshot.payload.notifications.map((item) => item.id),
+        [notification.id],
+      );
+    }
   } finally {
     await app.close();
     deps.db.close();

@@ -534,31 +534,40 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 ## WebSocket (`@orc/types/ws.ts`, `WS_PATH = /ws`)
 Server → client `ServerEvent`: `log`, `task.updated`, `run.updated`,
 `project.updated`, `merge.decision`, `rollback.updated`, `notification`,
-`cost.updated`, `cost.snapshot`.
+`notifications.snapshot`, `cost.updated`, `cost.snapshot`.
 Client → server `ClientEvent`: `subscribe`, `unsubscribe`, `ping`.
 
 Broadcast scoping: `log`/`task.updated`/`run.updated`/`merge.decision`/
 `rollback.updated`/`cost.updated`/`cost.snapshot` only reach clients currently
 `subscribe`d to that event's `projectId` (`LogEvent`/`Run`/`MergeDecision` all
 carry one).
-`project.updated`, `project.deleted`, and `notification` are global — every
-connected client gets them regardless of subscription.
+`project.updated`, `project.deleted`, `notification`, and
+`notifications.snapshot` are global — every connected client gets them
+regardless of subscription. `notifications.snapshot` carries
+`{ notifications: Notification[] }`; it is authoritative catch-up state and
+must not be treated as a new browser-alert delivery.
 
 `cost.updated` carries one newly persisted cost record and is a delta.
 `cost.snapshot` carries the authoritative project total `{ projectId,
 totalUsd }`. The complete catch-up state is captured and serialization-checked
 synchronously on subscribe, then flow-controlled one frame at a time in the
-order project, cost, tasks, and runs. Matching broadcasts accepted while that
-replay is in flight queue behind it and drain in order, so no later delta can
-interleave with or be lost behind the baseline.
+order selected project, remaining projects, the bounded global notification
+inbox (including every still-pending approval), cost, tasks, and runs. This
+durable global prefix restores project and approval state missed while the
+socket was offline. Matching broadcasts accepted while that replay is in
+flight queue behind it and drain in order, so no later delta can interleave
+with or be lost behind the baseline.
 The web Board replaces its total on a snapshot and only adds subsequent cost
-deltas. A WebSocket client whose `bufferedAmount` is at least 1 MiB is closed
-with application code `4008` (`slow client; resync required`) before the
-current event is skipped; the client must reconnect and consume a new
-snapshot. Snapshot frames wait for each prior send completion instead of
-filling that transport buffer, and live events queued behind a replay share
-the same 1 MiB bound. Per-socket send failures close only that socket with `1011` (or
-terminate if closing fails), so healthy subscribers still receive the event.
+deltas. A WebSocket client whose `bufferedAmount` plus the full outgoing or
+queued live-frame byte length reaches 1 MiB is closed with application code
+`4008` (`slow client; resync required`) before the current event is accepted;
+the client must reconnect and consume a new snapshot. Snapshot frames wait for
+each prior send completion instead of filling that transport buffer. One
+durable snapshot record may be larger than the live queue ceiling, but only
+that single frame can be in flight; rejecting it would make every reconnect
+fail on the same durable record. Per-socket send failures close only that
+socket with `1011` (or terminate if closing fails), so healthy subscribers
+still receive the event.
 A snapshot-provider or snapshot-serialization failure also closes the socket
 with `1011` (`WebSocket snapshot failed; resync required`) before its
 subscription becomes active; it must not receive deltas without a baseline.
@@ -566,10 +575,12 @@ Async write-completion
 errors use the per-socket `1011` send-failure path, and a late completion from
 a removed socket cannot close a replacement client.
 
-The web keeps one global-only, unsubscribed socket while no project is
-selected, preserving `project.updated`, `project.deleted`, and `notification`
-delivery during onboarding and after deletion. Once a project is selected,
-same-project consumers share one subscribed socket.
+The web always sends `subscribe` after an open. An empty `projectId` requests
+only the durable global prefix and leaves the socket unsubscribed from project-
+scoped live events, preserving and restoring `project.updated`,
+`project.deleted`, and `notification` state during onboarding and after
+deletion. Once a project is selected, same-project consumers share one
+subscribed socket.
 
 ## Conventions
 - IDs are strings; timestamps are ISO 8601 strings.

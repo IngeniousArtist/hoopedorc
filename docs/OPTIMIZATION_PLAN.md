@@ -1016,6 +1016,39 @@ the browser console/page-error lists were clean, and graceful mock shutdown
 completed with exit 0. A final independent review of these corrections,
 hosted CI, PR/merge evidence, and merged-main verification remain outstanding.
 
+**Final Sol/xhigh follow-up correction (2026-08-17, pre-merge):** the fresh
+read-only review of pushed head `1477b55` found two more reconnect/backpressure
+gaps. A notification broadcast while a project socket was closed was not part
+of the project-only baseline, so the global approval badge could remain stale
+after reconnect; and the 1 MiB check counted only bytes already buffered, so
+one oversized live frame could exceed the advertised ceiling by itself.
+
+The canonical event contract now includes an authoritative
+`notifications.snapshot`. Every socket sends a catch-up request after open,
+including an empty-project global-only connection. The server replays the
+selected project first, the remaining project list, the bounded durable global
+notification inbox (including every pending approval), and then selected-
+project cost/task/run state. The snapshot replaces notification state without
+replaying browser alerts; later live notifications queue behind it. Empty
+subscriptions receive this global prefix but remain excluded from all project-
+scoped live events. Live sends now add the complete outgoing frame byte length
+to `bufferedAmount` before enforcing the 1 MiB/`4008` boundary. Snapshot source
+records retain one-frame-at-a-time flow control so one durable large record
+cannot make every reconnect fail on the same baseline.
+
+Focused correction coverage passes hub/mock 14/14, the real server catch-up
+and O36 query cases 3/3, and hook/client-transport/Board/Notifications 26/26.
+The exact corrected tree passes typecheck, build, lint across 159 files at the
+exact 330-finding baseline, engine 231/231, adapters 15/15, permissioned server
+325/325, web 58/58, E2E 18/18, and `git diff --check`. A renewed live mock smoke
+passed at 360, 390, 768, 1280, and 1440px without document overflow. At 390px
+the approval badge remained `1` after a forced `4008`-shaped close and bounded
+reconnect, exactly one project socket was open after the initial global-to-
+selected handoff, the Notifications approval controls remained usable, browser
+console/page errors were empty, and graceful mock shutdown completed with exit
+0. A final clean independent re-review of this last correction, hosted CI,
+PR/merge evidence, and merged-main verification remain outstanding.
+
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
 **Problem:** the already-merged idempotency shortcut depends on a single

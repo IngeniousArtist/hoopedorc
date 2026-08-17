@@ -173,7 +173,9 @@ export function Notifications({
 
   const handleWSEvent = useCallback(
     (event: ServerEvent) => {
-      if (event.type === "notification") {
+      if (event.type === "notifications.snapshot") {
+        setNotifications(event.payload.notifications);
+      } else if (event.type === "notification") {
         const notif = event.payload;
         setNotifications((prev) => {
           const idx = prev.findIndex(

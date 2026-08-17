@@ -318,6 +318,11 @@ export function App() {
       } else if (e.type === "project.deleted") {
         setProjects((prev) => prev.filter((p) => p.id !== e.payload.id));
         setSelectedProjectId((cur) => (cur === e.payload.id ? "" : cur));
+      } else if (e.type === "notifications.snapshot") {
+        // Reconnect catch-up is authoritative but must not replay browser
+        // alerts for every historical notification. Later live events are
+        // queued behind this snapshot by WsHub and update it in order.
+        setNotifications(e.payload.notifications);
       } else if (e.type === "notification") {
         // Global (B15) — reaches every client regardless of which project
         // tab is open, matching "action needed" mattering everywhere. Also

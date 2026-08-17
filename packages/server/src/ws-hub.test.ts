@@ -89,6 +89,24 @@ function taskEvent(projectId: string, id: string): ServerEvent {
   };
 }
 
+function notificationEvent(
+  id: string,
+): Extract<ServerEvent, { type: "notification" }> {
+  return {
+    type: "notification",
+    payload: {
+      id,
+      projectId: "project-1",
+      severity: "action_required",
+      title: id,
+      message: "approval required",
+      requiresApproval: true,
+      options: ["approve", "reject"],
+      createdAt: "2026-08-17T00:00:00.000Z",
+    },
+  };
+}
+
 function parseEvent(payload: string): ServerEvent {
   return JSON.parse(payload) as ServerEvent;
 }
@@ -111,6 +129,25 @@ test("O12: a slow client closes before an event is skipped while healthy clients
     },
   ]);
   assert.deepEqual(healthy.sent.map(parseEvent), [event]);
+});
+
+test("O12: one oversized live frame closes before it can exceed the byte ceiling", () => {
+  const hub = new WsHub();
+  const socket = new FakeSocket();
+  subscribe(hub, socket, "project-1");
+  const event = taskEvent("project-1", "oversized-live-task");
+  if (event.type !== "task.updated") throw new Error("expected task event");
+  event.payload.description = "x".repeat(WS_MAX_BUFFERED_AMOUNT);
+
+  hub.broadcast(event);
+
+  assert.deepEqual(socket.sent, []);
+  assert.deepEqual(socket.closeCalls, [
+    {
+      code: WS_SLOW_CLIENT_CLOSE_CODE,
+      reason: WS_SLOW_CLIENT_CLOSE_REASON,
+    },
+  ]);
 });
 
 test("O12: a throwing send closes only that socket and does not abort the broadcast", () => {
@@ -234,6 +271,29 @@ test("O6: subscribe snapshot uses the authoritative event ordering", async () =>
     socket.sent.map((payload) => parseEvent(payload).type),
     ["project.updated", "cost.snapshot", "task.updated"],
   );
+});
+
+test("O6: an empty subscription replays global state but no project deltas", async () => {
+  const hub = new WsHub();
+  const durable: ServerEvent = {
+    type: "notifications.snapshot",
+    payload: {
+      notifications: [notificationEvent("missed-while-offline").payload],
+    },
+  };
+  const live = notificationEvent("arrived-during-replay");
+  hub.setSnapshotProvider((projectId) => {
+    assert.equal(projectId, "");
+    return [durable];
+  });
+  const socket = new FakeSocket();
+
+  subscribe(hub, socket, "");
+  hub.broadcast(taskEvent("project-1", "must-not-reach-global-only"));
+  hub.broadcast(live);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(socket.sent.map(parseEvent), [durable, live]);
 });
 
 test("O6/O12: a large snapshot drains under the cap instead of reconnecting forever", async () => {

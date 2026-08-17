@@ -2570,11 +2570,35 @@ async function assembleServer(
   });
 
   // ── Realtime (WebSocket) ──
-  // Catch-up snapshot is scoped to the project a client subscribes to (see
-  // WsHub.add) instead of replaying every project's full history on connect.
+  // Every fresh socket first catches up durable global state, including pending
+  // approvals that may have been broadcast while it was disconnected. The
+  // expensive task/run portion remains scoped to the selected project.
   hub.setSnapshotProvider((projectId) => {
-    const project = repo.getProject(db, projectId);
-    if (!project) return [];
+    const projects = repo.getProjects(db);
+    const selectedProject = projectId
+      ? projects.find((project) => project.id === projectId)
+      : undefined;
+    const orderedProjects = selectedProject
+      ? [selectedProject, ...projects.filter((project) => project.id !== projectId)]
+      : projects;
+    const events: ServerEvent[] = orderedProjects.map((project) => ({
+      type: "project.updated",
+      payload: project,
+    }));
+    events.push({
+      type: "notifications.snapshot",
+      payload: { notifications: repo.getNotifications(db) },
+    });
+
+    if (!selectedProject) return events;
+
+    events.push({
+      type: "cost.snapshot",
+      payload: {
+        projectId,
+        totalUsd: repo.getCostSummary(db, projectId).totalUsd,
+      },
+    });
     const tasks = repo.getTasks(db, projectId);
     const runsByTask = new Map<string, ReturnType<typeof repo.getRuns>>();
     for (const run of repo.getRunsForProject(db, projectId)) {
@@ -2582,16 +2606,6 @@ async function assembleServer(
       if (runs) runs.push(run);
       else runsByTask.set(run.taskId, [run]);
     }
-    const events: ServerEvent[] = [
-      { type: "project.updated", payload: project },
-      {
-        type: "cost.snapshot",
-        payload: {
-          projectId,
-          totalUsd: repo.getCostSummary(db, projectId).totalUsd,
-        },
-      },
-    ];
     for (const t of tasks) {
       events.push({ type: "task.updated", payload: t });
       for (const r of runsByTask.get(t.id) ?? []) {
@@ -2603,13 +2617,6 @@ async function assembleServer(
 
   app.get(WS_PATH, { websocket: true }, (socket) => {
     hub.add(socket);
-
-    // The list of projects is needed up-front (before any subscribe) so the
-    // project switcher can populate. Tasks/runs are deferred to subscribe.
-    for (const p of repo.getProjects(db)) {
-      socket.send(JSON.stringify({ type: "project.updated", payload: p }));
-    }
-
   });
 
   function resumeAfterListen(): void {

@@ -1,23 +1,54 @@
-import { render, screen } from "@testing-library/react";
+import type { ServerEvent } from "@orc/types";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/client";
 import { notificationFixture, projectFixture } from "../test/fixtures";
 import { Notifications } from "./Notifications";
 
+const wsState = vi.hoisted(() => ({
+  handler: undefined as ((event: ServerEvent) => void) | undefined,
+}));
+
 vi.mock("../api/client", () => ({ api: vi.fn() }));
-vi.mock("../hooks/useWS", () => ({ useWS: vi.fn() }));
+vi.mock("../hooks/useWS", () => ({
+  useWS: (_projectId: string, handler: (event: ServerEvent) => void) => {
+    wsState.handler = handler;
+  },
+}));
 
 const apiMock = vi.mocked(api);
 
 describe("approval decisions", () => {
   beforeEach(() => {
     apiMock.mockReset();
+    wsState.handler = undefined;
     apiMock.mockImplementation(async (key) => {
       if (key === "listNotifications") return { notifications: [notificationFixture] };
       if (key === "respondNotification") return undefined;
       throw new Error(`Unexpected API call: ${key}`);
     });
+  });
+
+  it("replaces stale rows with the durable reconnect snapshot", async () => {
+    render(<Notifications projectId={projectFixture.id} />);
+    await screen.findByRole("button", { name: "Approve" });
+    const restored = {
+      ...notificationFixture,
+      id: "approval-missed-while-offline",
+      title: "Approval restored after reconnect",
+    };
+
+    act(() => {
+      wsState.handler?.({
+        type: "notifications.snapshot",
+        payload: { notifications: [restored] },
+      });
+    });
+
+    expect(
+      await screen.findByText("Approval restored after reconnect"),
+    ).toBeVisible();
   });
 
   it("submits and reflects an approval", async () => {

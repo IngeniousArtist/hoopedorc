@@ -49,6 +49,7 @@ function eventProjectId(event: ServerEvent): string | undefined {
     case "project.deleted":
       return event.payload.id;
     case "notification":
+    case "notifications.snapshot":
       return undefined;
   }
 }
@@ -60,7 +61,8 @@ function isGlobalEvent(event: ServerEvent): boolean {
   return (
     event.type === "project.updated" ||
     event.type === "project.deleted" ||
-    event.type === "notification"
+    event.type === "notification" ||
+    event.type === "notifications.snapshot"
   );
 }
 
@@ -105,11 +107,18 @@ export class WsHub {
     client: Client,
     payload: string,
     onDelivered?: () => void,
+    includePayloadInLimit = true,
   ): boolean {
     if (client.closing || client.ws.readyState !== 1 /* WebSocket.OPEN */) {
       return false;
     }
-    if (client.ws.bufferedAmount >= WS_MAX_BUFFERED_AMOUNT) {
+    const outgoingBytes = includePayloadInLimit
+      ? Buffer.byteLength(payload)
+      : 0;
+    if (
+      client.ws.bufferedAmount + outgoingBytes >=
+      WS_MAX_BUFFERED_AMOUNT
+    ) {
       this.closeClient(
         client,
         WS_SLOW_CLIENT_CLOSE_CODE,
@@ -164,9 +173,11 @@ export class WsHub {
     }
 
     let payload: string | undefined;
+    let snapshotFrame = false;
     if (replay.snapshotIndex < replay.snapshot.length) {
       try {
         payload = JSON.stringify(replay.snapshot[replay.snapshotIndex++]);
+        snapshotFrame = true;
       } catch {
         this.closeClient(
           client,
@@ -187,11 +198,21 @@ export class WsHub {
       return;
     }
 
-    this.send(client, payload, () => {
-      // Avoid recursive growth with synchronous test transports while real ws
-      // callbacks naturally wait until the previous frame has been written.
-      queueMicrotask(() => this.continueReplay(client, generation));
-    });
+    this.send(
+      client,
+      payload,
+      () => {
+        // Avoid recursive growth with synchronous test transports while real ws
+        // callbacks naturally wait until the previous frame has been written.
+        queueMicrotask(() => this.continueReplay(client, generation));
+      },
+      // A durable snapshot may contain one record larger than the live queue
+      // ceiling. It is still bounded to exactly one in-flight frame; rejecting
+      // it would make every reconnect loop on the same durable record. Live
+      // frames, including deltas queued behind this replay, count their full
+      // outgoing size before they are accepted by ws.
+      !snapshotFrame,
+    );
   }
 
   private queueDuringReplay(client: Client, payload: string): void {
@@ -228,7 +249,7 @@ export class WsHub {
         return;
       }
 
-      if (msg.type === "subscribe" && typeof msg.projectId === "string" && msg.projectId) {
+      if (msg.type === "subscribe" && typeof msg.projectId === "string") {
         const projectId = msg.projectId;
         let snapshot: ServerEvent[];
         try {
@@ -247,7 +268,9 @@ export class WsHub {
         }
 
         const generation = ++client.generation;
-        client.projectId = projectId;
+        // An empty project ID requests only the durable global catch-up state.
+        // It remains unsubscribed from every project-scoped live event.
+        client.projectId = projectId || undefined;
         client.replay = {
           generation,
           snapshot,

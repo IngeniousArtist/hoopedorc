@@ -98,14 +98,12 @@ function connect(connection: ProjectConnection): void {
     }
     connection.attempts = 0;
     try {
-      // An empty project owns the global-only stream used during onboarding
-      // and after deletion. It deliberately stays unsubscribed while still
-      // receiving project/notification broadcasts.
-      if (connection.projectId) {
-        socket.send(
-          JSON.stringify({ type: "subscribe", projectId: connection.projectId }),
-        );
-      }
+      // An empty project requests only the durable global catch-up stream used
+      // during onboarding and after deletion. The server keeps it unsubscribed
+      // from project-scoped live events after that replay.
+      socket.send(
+        JSON.stringify({ type: "subscribe", projectId: connection.projectId }),
+      );
     } catch {
       // A browser can reject a send during a transport race. Closing lets the
       // normal bounded reconnect path establish a clean subscription.

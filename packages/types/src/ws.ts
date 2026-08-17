@@ -18,6 +18,11 @@ export type CostSnapshot = {
   totalUsd: number;
 };
 
+/** Durable global notification state used to reseed clients after reconnect. */
+export type NotificationSnapshot = {
+  notifications: Notification[];
+};
+
 /** Server -> client events, pushed over the WS connection at WS_PATH. */
 export type ServerEvent =
   | { type: "log"; payload: LogEvent }
@@ -28,6 +33,7 @@ export type ServerEvent =
   | { type: "merge.decision"; payload: MergeDecision }
   | { type: "rollback.updated"; payload: RollbackJob }
   | { type: "notification"; payload: Notification }
+  | { type: "notifications.snapshot"; payload: NotificationSnapshot }
   | { type: "cost.updated"; payload: CostRecord }
   | { type: "cost.snapshot"; payload: CostSnapshot };
 
