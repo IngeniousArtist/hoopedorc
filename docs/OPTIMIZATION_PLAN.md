@@ -949,6 +949,46 @@ confirmed equal at `74a87c6b4a9aca10fc467885b03eb2a228b2681a`. This records
 and preserves the pause only; it does not complete O6, O12, or O26's `useWS`
 ownership bullet.
 
+**Resumed implementation result (2026-08-17, pre-merge):** the interrupted
+Board refactor is complete on `o6-o12-ws-ownership-finish`, rebased onto clean
+`main` `74a87c6b4a9aca10fc467885b03eb2a228b2681a`. WebSocket events, optimistic
+drag/model states, successful retry/stop/update responses, failed-mutation
+rollbacks, and add-task completions now enter one monotonic per-task authority
+stream. Initial REST lists merge only authority accepted after that request
+began. Every awaited Board action checks both its originating project and the
+still-mounted keyed Board generation before changing state or publishing
+feedback, so a completed/refused action from an unmounted project cannot leak
+into the new project. Add completion is update-or-insert because the server's
+earlier `task.updated` may already have inserted the same task. The Board's
+React key is owner-prefixed so it remains distinct from the sibling project
+header while still remounting per project.
+
+The resumed regressions cover snapshot -> local mutation -> delayed REST,
+failed mutation -> recorded rollback -> delayed REST, WebSocket-after-local
+ordering, keyed project switches with pending success and refusal, and the
+WebSocket-before-add duplicate race. Focused Board coverage passes 11/11;
+the preserved hub/mock, hook, and client-transport suites pass 11/11, 8/8,
+and 1/1 respectively. Full local gates pass typecheck, build, lint across 159
+files at the exact 330-finding baseline, engine 231/231, adapters 15/15,
+permissioned server 321/321, web 55/55, E2E 18/18, and `git diff --check`.
+The live `npm run mock` smoke passed at 360, 390, 768, 1280, and 1440px with
+no document overflow. Board/Costs navigation worked at 390px, one project
+WebSocket remained established across the App/Board consumers, project-scoped
+mock log events advanced in the open task drawer, and the final browser reload
+reported no page or console errors. The smoke initially exposed a duplicate
+sibling React key from the raw project-keyed Board; owner-prefixing the key
+removed that warning and is covered by the App regression above.
+
+O6 and O12 plus O26's `useWS` ownership bullet are implementation-complete on
+this pre-merge tree; O26's toast-timer, reduced-motion LogPanel, and dead New
+Project bullets remain pending under their documented owners. Hosted CI,
+implementation PR/merge evidence, and the required fresh independent Sol/xhigh
+review remain outstanding. The review command was not run because the local
+safety boundary requires explicit operator approval before transmitting this
+private branch diff to an external model service. Do not open the implementation
+PR until that review is completed. No EC2/model/deployment smoke is required
+for this browser/server contract boundary.
+
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
 **Problem:** the already-merged idempotency shortcut depends on a single

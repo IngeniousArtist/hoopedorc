@@ -100,6 +100,11 @@ export function hashFor(page: Page, projectId: string): string {
   return `#/${page}`;
 }
 
+/** Keep the keyed Board instance distinct from sibling project-owned views. */
+export function boardInstanceKey(projectId: string): string {
+  return `board:${projectId}`;
+}
+
 /** F21: parsed once at module load (i.e. once per real page load/reload) —
  *  never re-read afterward, since it only seeds the initial state below.
  *  Runtime hash changes (back/forward, a pasted link while the SPA is
@@ -520,7 +525,7 @@ export function App() {
             )}
             {page === "board" && (
               <Board
-                key={selectedProjectId}
+                key={boardInstanceKey(selectedProjectId)}
                 projectId={selectedProjectId}
                 repoUrl={selectedProject?.repoUrl}
                 onViewNotifications={() => setPage("notifications")}

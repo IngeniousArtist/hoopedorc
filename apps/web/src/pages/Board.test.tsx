@@ -1,5 +1,5 @@
-import type { ServerEvent, Task } from "@orc/types";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import type { ModelId, ServerEvent, Task } from "@orc/types";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/client";
 import { ToastProvider } from "../hooks/useToast";
@@ -34,11 +34,54 @@ vi.mock("../components/BoardSummary", () => ({
   ),
 }));
 vi.mock("../components/MissionControl", () => ({ MissionControl: () => null }));
-vi.mock("../components/AddTaskForm", () => ({ AddTaskForm: () => null }));
-vi.mock("../components/TaskDrawer", () => ({ TaskDrawer: () => null }));
+vi.mock("../components/AddTaskForm", () => ({
+  AddTaskForm: ({
+    tasks,
+    onCreated,
+  }: {
+    tasks: Task[];
+    onCreated: (task: Task) => void;
+  }) => (
+    <button type="button" onClick={() => tasks[0] && onCreated(tasks[0])}>
+      Complete add
+    </button>
+  ),
+}));
+vi.mock("../components/TaskDrawer", () => ({
+  TaskDrawer: ({
+    task,
+    onRetry,
+    onModelChange,
+  }: {
+    task: Task;
+    onRetry: () => void | Promise<void>;
+    onModelChange: (model: ModelId) => void | Promise<void>;
+  }) => (
+    <div data-testid="task-drawer">
+      <span data-testid="drawer-model">{task.assignedModel}</span>
+      <button type="button" onClick={() => void onRetry()}>
+        Retry task
+      </button>
+      <button
+        type="button"
+        onClick={() => void onModelChange("deepseek-flash")}
+      >
+        Change model
+      </button>
+    </div>
+  ),
+}));
 vi.mock("../components/TaskCard", () => ({
-  TaskCard: ({ task }: { task: Task }) => (
-    <div data-testid="task-card">{task.title}</div>
+  TaskCard: ({ task, onClick }: { task: Task; onClick?: () => void }) => (
+    <button
+      type="button"
+      data-testid="task-card"
+      data-model={task.assignedModel}
+      data-status={task.status}
+      onClick={onClick}
+    >
+      {task.title}
+    </button>
   ),
 }));
 
@@ -52,11 +95,27 @@ function renderBoard(projectId = "project-1") {
   );
 }
 
-function task(id: string, title: string): Task {
+function renderKeyedBoard(projectId: string) {
+  return render(
+    <ToastProvider>
+      <Board key={projectId} projectId={projectId} />
+    </ToastProvider>,
+  );
+}
+
+function keyedBoard(projectId: string) {
+  return (
+    <ToastProvider>
+      <Board key={projectId} projectId={projectId} />
+    </ToastProvider>
+  );
+}
+
+function task(id: string, title: string, projectId = "project-1"): Task {
   return {
     ...taskFixture,
     id,
-    projectId: "project-1",
+    projectId,
     title,
     status: "ready",
   };
@@ -89,6 +148,23 @@ describe("Board authoritative WebSocket state", () => {
 
     expect((await screen.findAllByText("Created elsewhere")).length).toBeGreaterThan(0);
     expect(screen.getAllByTestId("board-task")).toHaveLength(2);
+  });
+
+  it("does not duplicate a task when its WebSocket event precedes add completion", async () => {
+    renderBoard();
+    await screen.findAllByText("Initial task");
+    const created = task("external", "Created elsewhere");
+
+    act(() => {
+      wsState.handler?.({ type: "task.updated", payload: created });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "+ Add task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Complete add" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("board-task")).toHaveLength(2);
+      expect(screen.getAllByText("Created elsewhere")).toHaveLength(2);
+    });
   });
 
   it("merges a WS task received while the REST list is still in flight", async () => {
@@ -266,5 +342,207 @@ describe("Board authoritative WebSocket state", () => {
       expect(screen.getAllByTestId("board-task")[0]).toHaveTextContent("Initial task");
       expect(screen.getByTestId("board-cost")).toHaveTextContent("5.2500");
     });
+  });
+
+  it("keeps a local model mutation newer than a snapshot when the initial REST list resolves", async () => {
+    let resolveTasks!: (value: { tasks: Task[] }) => void;
+    let resolveUpdate!: (value: { task: Task }) => void;
+    const tasksResponse = new Promise<{ tasks: Task[] }>((resolve) => {
+      resolveTasks = resolve;
+    });
+    const updateResponse = new Promise<{ task: Task }>((resolve) => {
+      resolveUpdate = resolve;
+    });
+    const snapshot = task("shared", "Snapshot task");
+    const optimistic = { ...snapshot, assignedModel: "deepseek-flash" };
+    apiMock.mockImplementation(async (key) => {
+      if (key === "listTasks") return tasksResponse;
+      if (key === "getSettings") return { settings: settingsFixture() };
+      if (key === "costAnalytics") return { totalUsd: 1, budgetUsd: undefined };
+      if (key === "estimatePlan") return { tasks: [] };
+      if (key === "updateTask") return updateResponse;
+      throw new Error(`Unexpected API call: ${String(key)}`);
+    });
+
+    renderBoard();
+    act(() => {
+      wsState.handler?.({ type: "task.updated", payload: snapshot });
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Snapshot task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change model" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("drawer-model")).toHaveTextContent(
+        "deepseek-flash",
+      );
+    });
+
+    resolveTasks({ tasks: [{ ...snapshot, title: "Older REST task" }] });
+    await act(async () => {
+      await tasksResponse;
+    });
+    expect(screen.getByTestId("drawer-model")).toHaveTextContent(
+      "deepseek-flash",
+    );
+    expect(screen.queryByText("Older REST task")).not.toBeInTheDocument();
+
+    resolveUpdate({ task: optimistic });
+    await act(async () => {
+      await updateResponse;
+    });
+  });
+
+  it("keeps a recorded failure rollback newer than the initial REST list", async () => {
+    let resolveTasks!: (value: { tasks: Task[] }) => void;
+    const tasksResponse = new Promise<{ tasks: Task[] }>((resolve) => {
+      resolveTasks = resolve;
+    });
+    const snapshot = task("shared", "Snapshot task");
+    apiMock.mockImplementation(async (key) => {
+      if (key === "listTasks") return tasksResponse;
+      if (key === "getSettings") return { settings: settingsFixture() };
+      if (key === "costAnalytics") return { totalUsd: 1, budgetUsd: undefined };
+      if (key === "estimatePlan") return { tasks: [] };
+      if (key === "updateTask") throw new Error("model change refused");
+      throw new Error(`Unexpected API call: ${String(key)}`);
+    });
+
+    renderBoard();
+    act(() => {
+      wsState.handler?.({ type: "task.updated", payload: snapshot });
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Snapshot task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change model" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("drawer-model")).toHaveTextContent("codex");
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "model change refused",
+      );
+    });
+
+    resolveTasks({ tasks: [{ ...snapshot, title: "Older REST task" }] });
+    await act(async () => {
+      await tasksResponse;
+    });
+    expect(screen.getByTestId("drawer-model")).toHaveTextContent("codex");
+    expect(screen.queryByText("Older REST task")).not.toBeInTheDocument();
+  });
+
+  it("keeps a WebSocket task newer than local optimism when the initial REST list resolves", async () => {
+    let resolveTasks!: (value: { tasks: Task[] }) => void;
+    let resolveUpdate!: (value: { task: Task }) => void;
+    const tasksResponse = new Promise<{ tasks: Task[] }>((resolve) => {
+      resolveTasks = resolve;
+    });
+    const updateResponse = new Promise<{ task: Task }>((resolve) => {
+      resolveUpdate = resolve;
+    });
+    const snapshot = task("shared", "Snapshot task");
+    apiMock.mockImplementation(async (key) => {
+      if (key === "listTasks") return tasksResponse;
+      if (key === "getSettings") return { settings: settingsFixture() };
+      if (key === "costAnalytics") return { totalUsd: 1, budgetUsd: undefined };
+      if (key === "estimatePlan") return { tasks: [] };
+      if (key === "updateTask") return updateResponse;
+      throw new Error(`Unexpected API call: ${String(key)}`);
+    });
+
+    renderBoard();
+    act(() => {
+      wsState.handler?.({ type: "task.updated", payload: snapshot });
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Snapshot task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change model" }));
+    const websocketTask = {
+      ...snapshot,
+      title: "Newer WebSocket task",
+      assignedModel: "claude",
+    };
+    act(() => {
+      wsState.handler?.({ type: "task.updated", payload: websocketTask });
+    });
+
+    resolveTasks({ tasks: [{ ...snapshot, title: "Older REST task" }] });
+    await act(async () => {
+      await tasksResponse;
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("drawer-model")).toHaveTextContent("claude");
+      expect(screen.getAllByText("Newer WebSocket task").length).toBeGreaterThan(0);
+      expect(screen.queryByText("Older REST task")).not.toBeInTheDocument();
+    });
+
+    resolveUpdate({ task: websocketTask });
+    await act(async () => {
+      await updateResponse;
+    });
+  });
+
+  it("does not show a stale success toast after a keyed project switch", async () => {
+    let resolveRetry!: (value: { task: Task }) => void;
+    const retryResponse = new Promise<{ task: Task }>((resolve) => {
+      resolveRetry = resolve;
+    });
+    apiMock.mockImplementation(async (key, options) => {
+      const id = (options as { params?: { id?: string } } | undefined)?.params?.id;
+      if (key === "listTasks") {
+        return id === "project-1"
+          ? { tasks: [task("project-1-task", "Project one task")] }
+          : { tasks: [task("project-2-task", "Project two task", "project-2")] };
+      }
+      if (key === "getSettings") return { settings: settingsFixture() };
+      if (key === "costAnalytics") return { totalUsd: 1, budgetUsd: undefined };
+      if (key === "estimatePlan") return { tasks: [] };
+      if (key === "retryTask") return retryResponse;
+      throw new Error(`Unexpected API call: ${String(key)}`);
+    });
+
+    const view = renderKeyedBoard("project-1");
+    fireEvent.click(await screen.findByRole("button", { name: "Project one task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry task" }));
+    view.rerender(keyedBoard("project-2"));
+    await screen.findByRole("button", { name: "Project two task" });
+
+    resolveRetry({
+      task: { ...task("project-1-task", "Project one task"), status: "ready" },
+    });
+    await act(async () => {
+      await retryResponse;
+    });
+    expect(screen.queryByText("Retry queued with priority.")).not.toBeInTheDocument();
+  });
+
+  it("does not show a stale refusal toast after a keyed project switch", async () => {
+    let rejectRetry!: (error: Error) => void;
+    const retryResponse = new Promise<{ task: Task }>((_resolve, reject) => {
+      rejectRetry = reject;
+    });
+    apiMock.mockImplementation(async (key, options) => {
+      const id = (options as { params?: { id?: string } } | undefined)?.params?.id;
+      if (key === "listTasks") {
+        return id === "project-1"
+          ? { tasks: [task("project-1-task", "Project one task")] }
+          : { tasks: [task("project-2-task", "Project two task", "project-2")] };
+      }
+      if (key === "getSettings") return { settings: settingsFixture() };
+      if (key === "costAnalytics") return { totalUsd: 1, budgetUsd: undefined };
+      if (key === "estimatePlan") return { tasks: [] };
+      if (key === "retryTask") return retryResponse;
+      throw new Error(`Unexpected API call: ${String(key)}`);
+    });
+
+    const view = renderKeyedBoard("project-1");
+    fireEvent.click(await screen.findByRole("button", { name: "Project one task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry task" }));
+    view.rerender(keyedBoard("project-2"));
+    await screen.findByRole("button", { name: "Project two task" });
+
+    rejectRetry(new Error("retry refused for old project"));
+    await act(async () => {
+      await retryResponse.catch(() => undefined);
+    });
+    expect(
+      screen.queryByText("Error: retry refused for old project"),
+    ).not.toBeInTheDocument();
   });
 });
