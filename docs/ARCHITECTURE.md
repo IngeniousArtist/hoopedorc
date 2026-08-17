@@ -57,13 +57,18 @@ snapshot captured before that commit until its ID appears in the ordered
 snapshot/live stream. If a snapshot omits such a pending creation, App confirms
 it through the project REST endpoint: an existing row proves the replay was
 older, while a `404` retires a project deleted before reconnect instead of
-preserving it forever. Per-project confirmation generations prevent an older
+preserving it forever. Retirement then selects from the still-present project
+list rather than a fallback captured when the snapshot arrived. Per-project
+confirmation generations prevent an older
 read from overriding the result required by a later snapshot. PlanView also
 applies the selected row from every global project snapshot so its planning
-lock cannot retain an offline status.
+lock cannot retain an offline status, and ignores a later initial `getProject`
+once that snapshot or a live `project.updated` has already supplied newer
+status.
 REST-only Audit state treats the global project snapshot as its reconnect
-marker, while derived approval counts use the notification snapshot; both
-reject older overlapping reads. The hub validates the whole
+marker, CostView treats `cost.snapshot` as the marker for analytics/estimates,
+and derived approval counts use the notification snapshot; Audit and Mission
+Control reject older overlapping reads. The hub validates the whole
 baseline before activation and flow-controls it one frame per send completion;
 matching live events queue behind the replay and drain afterward in order. A
 client whose

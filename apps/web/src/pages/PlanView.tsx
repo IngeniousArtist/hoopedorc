@@ -136,12 +136,17 @@ export function PlanView({
   // Project deltas flip this live during a healthy connection; the global
   // project snapshot restores the same status after reconnect downtime.
   const running = project?.status === "running";
+  const projectAuthorityRef = useRef(0);
   useWS(projectId, (e) => {
     if (e.type === "project.updated" && e.payload.id === projectId) {
+      projectAuthorityRef.current += 1;
       setProject(e.payload);
     } else if (e.type === "projects.snapshot") {
       const current = e.payload.projects.find((item) => item.id === projectId);
-      if (current) setProject(current);
+      if (current) {
+        projectAuthorityRef.current += 1;
+        setProject(current);
+      }
     }
   });
 
@@ -188,6 +193,7 @@ export function PlanView({
     setFigmaIssue(null);
     setPlannerReady(false);
     setRevisionId(null);
+    const authorityAtRequest = projectAuthorityRef.current;
     Promise.all([
       api<GetProjectResponse>("getProject", { params: { id: projectId } }),
       api<PlanningSessionResponse>("planSession", { params: { id: projectId } }),
@@ -200,7 +206,9 @@ export function PlanView({
       }),
     ])
       .then(([projRes, sessionRes, settingsRes, attachmentsRes, archivesRes]) => {
-        setProject(projRes.project ?? null);
+        if (projectAuthorityRef.current === authorityAtRequest) {
+          setProject(projRes.project ?? null);
+        }
         setModels(settingsRes.settings.models);
         setPlannerModelId(settingsRes.settings.routing.planner);
         setDeconstructorModelId(

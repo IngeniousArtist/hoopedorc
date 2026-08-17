@@ -377,4 +377,44 @@ describe("PlanView Figma verification", () => {
       screen.queryByText(/Tasks are running — planning re-opens/),
     ).not.toBeInTheDocument();
   });
+
+  it("does not let an older getProject response overwrite a newer reconnect status", async () => {
+    const runningProject = { ...project, status: "running" as const };
+    let resolveProject!: (value: { project: typeof runningProject }) => void;
+    const projectRead = new Promise<{ project: typeof runningProject }>(
+      (resolve) => {
+        resolveProject = resolve;
+      },
+    );
+    apiMock.mockImplementation(async (key) => {
+      if (key === "getProject") return projectRead;
+      if (key === "planSession") {
+        return {
+          revisionId,
+          messages: [],
+          planCostUsd: 0,
+        };
+      }
+      return baseApi(key);
+    });
+    renderPlan();
+    await waitFor(() => expect(wsState.handler).toBeDefined());
+
+    act(() => {
+      wsState.handler?.({
+        type: "projects.snapshot",
+        payload: { projects: [{ ...runningProject, status: "paused" }] },
+      });
+    });
+
+    await act(async () => {
+      resolveProject({ project: runningProject });
+      await projectRead;
+    });
+
+    expect(await screen.findByLabelText("Planning message")).toBeVisible();
+    expect(
+      screen.queryByText(/Tasks are running — planning re-opens/),
+    ).not.toBeInTheDocument();
+  });
 });

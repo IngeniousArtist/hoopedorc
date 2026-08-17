@@ -36,7 +36,11 @@ export function CostView({ projectId }: { projectId: string }) {
 
   const onWS = useCallback(
     (event: ServerEvent) => {
-      if (event.type === "cost.updated" || event.type === "task.updated") {
+      if (
+        event.type === "cost.snapshot" ||
+        event.type === "cost.updated" ||
+        event.type === "task.updated"
+      ) {
         fetchAll();
       }
     },
