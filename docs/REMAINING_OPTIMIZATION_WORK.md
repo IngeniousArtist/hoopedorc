@@ -35,8 +35,7 @@ already-green checks. Complete one item or explicitly paired group at a time.
 - O22's measured Board live-run burst is fixed, including the clock isolation
   and TaskCard memo follow-up.
 - There are no remaining implementation items.
-- O27 has no remaining implementation, but its authorized deployment evidence
-  is still outstanding.
+- O27 implementation and authorized live deploy evidence are complete.
 - Do not reopen completed items unless a regression is first reproduced.
 
 ## Better implementation and verification workflow
@@ -153,15 +152,14 @@ per animation frame; estimates refetch only on status/model/difficulty/
 maxAttempts. After: 1 commit, 12 card renders, 0 same-status estimate fetches.
 Clock isolation and TaskCard memo landed in #256.
 
-### 8. O27 — outstanding live deployment evidence
+### 8. O27 — outstanding live deployment evidence — complete
 
-This is operator-authorized evidence, not a coding task. Do not deploy without
-explicit authorization.
-
-- Run the canonical `scripts/update.sh` path on the authorized host.
-- Record deployed commit, `GET /api/health`, and dashboard behavior.
-- Confirm updater protections and service ownership remain intact.
-- Add the evidence to O27's status trail.
+Authorized `ubuntu@hooped` update on 2026-08-17 ran
+`scripts/update.sh --non-interactive --require-main --require-systemd-restart`
+from a clean idle `/opt/hoopedorc` checkout (`992ea6d` → `29293c3`). The
+matching `hoopedorc.service` restarted and stayed active; loopback and
+Tailscale health/dashboard returned HTTP 200; updater refuse paths and
+`--ff-only` remain intact.
 
 ## Definition of done for the remaining roadmap
 
@@ -169,8 +167,7 @@ explicit authorization.
 - Evidence-gated items are either fixed from a reproduced baseline or closed
   with recorded measurements and no speculative production code.
 - O26 has no unfinished timer, log-motion, or dead-control bullet.
-- O27's live evidence is recorded, or explicitly remains outstanding with the
-  authorization blocker named.
+- O27's live evidence is recorded.
 - `docs/OPTIMIZATION_PLAN.md` contains the final PR, merge commit, verification,
   and deferred-work trail for every item.
 - No new optimization item is started merely because the previous model had
