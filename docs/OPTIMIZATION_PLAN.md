@@ -62,13 +62,9 @@ measuring the WS candidate against the production snapshot directly) were
 individually satisfied; wave 4's internal O16 → O14 → O15 ordering still
 holds, with O16 already merged.
 
-*Deployment lag.* The production box last deployed `3e4c793` (O2,
-2026-07-29). Everything merged since — O27 through O36 — is undeployed;
-each of those items individually required no live smoke, but O27's
-authorized EC2 update/health smoke is still recorded as outstanding. Before
-or alongside starting O3, run one routine `scripts/update.sh` deploy,
-record `GET /api/health` plus the dashboard check, and clear O27's
-outstanding evidence in its status entry.
+*Deployment lag.* The production box last deployed `29293c3` on 2026-08-17
+through the authorized `scripts/update.sh` path on `ubuntu@hooped`. O27's
+live update/health/dashboard evidence is recorded in its status entry.
 
 *Observations for upcoming items.*
 
@@ -2826,6 +2822,24 @@ health plus the Tailscale health/dashboard routes returned HTTP 200. O17 and
 O19 record the phase-level and same-commit retry evidence from the same live
 acceptance sequence.
 
+A later authorized live update on 2026-08-17 reused the same host. Preflight
+found a clean `main` checkout at `992ea6d`, `hoopedorc.service`
+`WorkingDirectory=/opt/hoopedorc` matching the checkout, passwordless
+`systemctl restart hoopedorc.service`, loopback health `ok=true`, and one
+paused `blackjack` project (no running work). Canonical
+`scripts/update.sh --non-interactive --require-main --require-systemd-restart`
+fast-forwarded `992ea6d..29293c3`, ran `npm ci` and `npm run build`, and
+restarted only that matching unit. After restart at 13:54:53Z the checkout
+was clean on `main` at `29293c357ba3837a82c83d7c980a04f811518b54`, the same
+unit stayed `active/running` as `ubuntu`, the paused `blackjack` project
+row remained, loopback and Tailscale `GET /api/health` returned
+`{"ok":true,"mock":false,"version":"0.6.0","state":"running","degraded":[]}`
+with healthy Docker/Telegram, and `https://hooped.tail3f13a6.ts.net/`
+returned HTTP 200 `Hoopedorc` HTML. The deployed updater still refuses dirty
+trees, non-`main` checkouts, unit mismatch, missing passwordless restart,
+unparseable `.env`, unreachable/unprovable project state, and running
+projects, and still pulls with `--ff-only`.
+
 ### O28. Deterministic fixes for local-only test failures — MEDIUM (testing)
 
 **Problem:** two tests can fail locally while Linux CI stays green:
@@ -3758,8 +3772,8 @@ below because they share one invariant and would be unsafe to split.
    - O27 merged in
      [#186](https://github.com/IngeniousArtist/hoopedorc/pull/186)
      (`5f6e2ee`) with the app-construction seam, validator/route refusal
-     coverage, and green Linux CI. Its authorized EC2 update/health smoke is
-     still outstanding as recorded above.
+      coverage, and green Linux CI. Its authorized EC2 update/health smoke
+      was recorded on 2026-08-11 and again on 2026-08-17 as recorded above.
    - O30 + O33 merged together in
      [#188](https://github.com/IngeniousArtist/hoopedorc/pull/188)
      (`fab7175`) with exact Fastify/manifest/documentation enforcement and
