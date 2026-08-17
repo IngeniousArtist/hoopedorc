@@ -56,8 +56,8 @@ function buildLargeRepo(root: string): { files: number; packages: number } {
   return { files, packages: PACKAGE_COUNT + 1 };
 }
 
-function inspectAndFingerprint(root: string): string {
-  const plan = inspectNodeDependencies(root);
+async function inspectAndFingerprint(root: string): Promise<string> {
+  const plan = await inspectNodeDependencies(root);
   assert.ok(plan);
   return nodeDependencyFingerprint(root, plan, "10.9.0", RUNTIME);
 }
@@ -70,31 +70,31 @@ function median(samples: number[]): number {
 test(
   "O10: large-repo worktree prep measures event-loop stall under concurrent inspect",
   { timeout: 60_000 },
-  (t) => {
+  async (t) => {
     const root = mkdtempSync(join(tmpdir(), "hoopedorc-o10-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const built = buildLargeRepo(root);
 
-    const first = inspectAndFingerprint(root);
-    assert.equal(inspectAndFingerprint(root), first);
+    const first = await inspectAndFingerprint(root);
+    assert.equal(await inspectAndFingerprint(root), first);
 
     const inspectSamples: number[] = [];
     const hashSamples: number[] = [];
     const concurrentSamples: number[] = [];
     for (let sample = 0; sample < 3; sample++) {
       const inspectStart = performance.now();
-      inspectNodeDependencies(root);
+      await inspectNodeDependencies(root);
       inspectSamples.push(performance.now() - inspectStart);
 
-      const plan = inspectNodeDependencies(root);
+      const plan = await inspectNodeDependencies(root);
       assert.ok(plan);
       const hashStart = performance.now();
-      nodeDependencyFingerprint(root, plan, "10.9.0", RUNTIME);
+      await nodeDependencyFingerprint(root, plan, "10.9.0", RUNTIME);
       hashSamples.push(performance.now() - hashStart);
 
       const concurrentStart = performance.now();
-      const fingerprints = Array.from({ length: CONCURRENCY }, () =>
-        inspectAndFingerprint(root),
+      const fingerprints = await Promise.all(
+        Array.from({ length: CONCURRENCY }, () => inspectAndFingerprint(root)),
       );
       concurrentSamples.push(performance.now() - concurrentStart);
       for (const fingerprint of fingerprints) {

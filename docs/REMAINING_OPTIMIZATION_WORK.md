@@ -13,7 +13,7 @@ already-green checks. Complete one item or explicitly paired group at a time.
 
 ## Current baseline
 
-- `main` and `origin/main` match `07cfcf6` after merging PR #254.
+- `main` and `origin/main` match `86e88d9` after merging PR #256.
 - PR #244 completed O6, O12, and O26's project-owned WebSocket sub-item.
 - PR #245 closed the three leftover reconnect-authority checkpoints.
 - PR #246 completed O24 request ownership.
@@ -25,9 +25,12 @@ already-green checks. Complete one item or explicitly paired group at a time.
 - PR #252 deferred O10 with measured worktree-prep numbers.
 - PR #253 recorded O10 merge and main CI evidence.
 - PR #254 completed O22's measured Board live-run fixes.
+- PR #255 recorded O22 merge and main CI evidence.
+- PR #256 completed O22's clock isolation and TaskCard memo.
 - O5 already completed the shared dialog-semantics sub-item of O26.
 - O8 is closed with evidence and no production refactor.
-- O10 is deferred with recorded measurements and no production refactor.
+- O10's measured walkers were converted to bounded async I/O after an explicit
+  request; fingerprints stay byte-identical.
 - O22's measured Board live-run burst is fixed, including the clock isolation
   and TaskCard memo follow-up.
 - There are no remaining implementation items.
@@ -136,10 +139,10 @@ usage. No production refactor. Next implementation item is O10.
 
 ### 6. O10 — measure synchronous worktree preparation — complete
 
-A 10,202-file / 201-package fixture measures 34 ms per inspect and 147 ms for
-four stacked inspect+hash calls on `darwin/arm64`. That is below the
-hundreds-of-ms bar on this host class, and the walk already hashes only
-manifests/lockfiles. Deferred; no production refactor. Next item is O22.
+A 10,202-file / 201-package fixture first measured 34 ms per inspect and 147 ms
+for four stacked inspect+hash calls. After an explicit convert-anyway follow-up,
+the same walkers use bounded `fs/promises` I/O; fingerprints stay
+byte-identical and the fixture now measures 27 ms / 124 ms overlapping.
 
 ### 7. O22 — measure Board live-run rendering — complete
 
@@ -147,7 +150,7 @@ A 12-task fixture showed 200 Board commits / 2,400 card renders / 20 wasted
 estimate fetches on a 200-log + 20 same-status burst. Activity now flushes once
 per animation frame; estimates refetch only on status/model/difficulty/
 maxAttempts. After: 1 commit, 12 card renders, 0 same-status estimate fetches.
-Clock isolation and TaskCard memo are deferred.
+Clock isolation and TaskCard memo landed in #256.
 
 ### 8. O27 — outstanding live deployment evidence
 
