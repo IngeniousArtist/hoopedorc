@@ -1,7 +1,8 @@
-import type { ModelId, ServerEvent, Task } from "@orc/types";
+import type { LogEvent, ModelId, ServerEvent, Task } from "@orc/types";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/client";
+import { TASK_LOG_LIMIT } from "../lib/taskLogs";
 import { ToastProvider } from "../hooks/useToast";
 import { settingsFixture, taskFixture } from "../test/fixtures";
 import { Board } from "./Board";
@@ -50,15 +51,27 @@ vi.mock("../components/AddTaskForm", () => ({
 vi.mock("../components/TaskDrawer", () => ({
   TaskDrawer: ({
     task,
+    logs,
+    logsOmittedOlder,
     onRetry,
     onModelChange,
   }: {
     task: Task;
+    logs?: Array<{ id: string; message: string }>;
+    logsOmittedOlder?: boolean;
     onRetry: () => void | Promise<void>;
     onModelChange: (model: ModelId) => void | Promise<void>;
   }) => (
     <div data-testid="task-drawer">
       <span data-testid="drawer-model">{task.assignedModel}</span>
+      {logsOmittedOlder ? (
+        <span>Showing latest 1,000 lines. Older lines were omitted.</span>
+      ) : null}
+      {(logs ?? []).map((entry) => (
+        <div key={entry.id} data-testid="drawer-log">
+          {entry.message}
+        </div>
+      ))}
       <button type="button" onClick={() => void onRetry()}>
         Retry task
       </button>
@@ -683,5 +696,101 @@ describe("Board estimate request ownership", () => {
     });
 
     expect(screen.getByTestId("task-estimate")).toHaveTextContent("9");
+  });
+});
+
+describe("Board bounded task logs", () => {
+  function logLine(index: number, taskId: string): LogEvent {
+    return {
+      id: `log-${taskId}-${index}`,
+      projectId: "project-1",
+      runId: "run-1",
+      taskId,
+      ts: new Date(1_700_000_000_000 + index * 1000).toISOString(),
+      level: "info",
+      source: "engine",
+      message: `${taskId} line ${index}`,
+    };
+  }
+
+  beforeEach(() => {
+    apiMock.mockReset();
+    wsState.handler = undefined;
+    wsState.handlers.clear();
+  });
+
+  it("keeps the newest 1,000 initial rows and a later streamed burst", async () => {
+    const ready = task("initial", "Initial task");
+    apiMock.mockImplementation(async (key) => {
+      if (key === "listTasks") return { tasks: [ready] };
+      if (key === "getSettings") return { settings: settingsFixture() };
+      if (key === "costAnalytics") return { totalUsd: 1, budgetUsd: undefined };
+      if (key === "estimatePlan") return { tasks: [] };
+      if (key === "taskLogs") {
+        return {
+          logs: Array.from({ length: TASK_LOG_LIMIT + 1 }, (_, i) =>
+            logLine(i, ready.id),
+          ),
+        };
+      }
+      throw new Error(`Unexpected API call: ${String(key)}`);
+    });
+
+    renderBoard();
+    fireEvent.click(await screen.findByRole("button", { name: "Initial task" }));
+    await waitFor(() => expect(screen.getAllByTestId("drawer-log")).toHaveLength(TASK_LOG_LIMIT));
+    expect(screen.getByText("Showing latest 1,000 lines. Older lines were omitted.")).toBeVisible();
+    expect(screen.queryByText("initial line 0")).not.toBeInTheDocument();
+    expect(screen.getByText(`initial line ${TASK_LOG_LIMIT}`)).toBeVisible();
+
+    act(() => {
+      wsState.handler?.({
+        type: "log",
+        payload: logLine(TASK_LOG_LIMIT + 1, ready.id),
+      });
+      wsState.handler?.({
+        type: "log",
+        payload: logLine(TASK_LOG_LIMIT + 1, ready.id),
+      });
+    });
+
+    expect(screen.getAllByTestId("drawer-log")).toHaveLength(TASK_LOG_LIMIT);
+    expect(screen.queryByText("initial line 1")).not.toBeInTheDocument();
+    expect(screen.getByText(`initial line ${TASK_LOG_LIMIT + 1}`)).toBeVisible();
+  });
+
+  it("does not mix rows or omission state when switching tasks", async () => {
+    const first = task("task-a", "Task A");
+    const second = task("task-b", "Task B");
+    apiMock.mockImplementation(async (key, options) => {
+      const id = options?.params?.id;
+      if (key === "listTasks") return { tasks: [first, second] };
+      if (key === "getSettings") return { settings: settingsFixture() };
+      if (key === "costAnalytics") return { totalUsd: 1, budgetUsd: undefined };
+      if (key === "estimatePlan") return { tasks: [] };
+      if (key === "taskLogs") {
+        return {
+          logs:
+            id === first.id
+              ? Array.from({ length: TASK_LOG_LIMIT + 1 }, (_, i) =>
+                  logLine(i, first.id),
+                )
+              : [logLine(1, second.id), logLine(2, second.id)],
+        };
+      }
+      throw new Error(`Unexpected API call: ${String(key)}`);
+    });
+
+    renderBoard();
+    fireEvent.click(await screen.findByRole("button", { name: "Task A" }));
+    await screen.findByText("Showing latest 1,000 lines. Older lines were omitted.");
+    fireEvent.click(screen.getByRole("button", { name: "Task B" }));
+
+    expect(await screen.findByText("task-b line 1")).toBeVisible();
+    expect(screen.getByText("task-b line 2")).toBeVisible();
+    expect(screen.queryByText(/task-a line/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Showing latest 1,000 lines. Older lines were omitted."),
+    ).not.toBeInTheDocument();
   });
 });

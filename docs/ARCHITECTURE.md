@@ -74,7 +74,10 @@ superseded responses so a project switch or newer same-view refresh cannot
 publish an older result. CostView and AuditView coalesce live invalidations
 into one in-flight REST refresh and at most one trailing refresh, with no extra
 timer, so a reconnect marker still refetches after downtime without streaming
-one request per event. The hub validates the whole
+one request per event. The Board keeps only the newest 1,000 task log rows in
+the open drawer, notes when older rows were omitted, and isolates that window
+per selected task. LogPanel autoscroll targets the log scroller and honors
+`prefers-reduced-motion`. The hub validates the whole
 baseline before activation and flow-controls it one frame per send completion;
 matching live events queue behind the replay and drain afterward in order. A
 client whose

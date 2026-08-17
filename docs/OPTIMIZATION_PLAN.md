@@ -2463,8 +2463,14 @@ downtime.
 The exact tree passes typecheck, build, lint across 165 files at the exact
 330-finding baseline, engine 231/231, adapters 15/15, permissioned server
 326/326, web 86/86, E2E 18/18 across 360/390/768/1280/1440px, and
-`git diff --check`. Hosted CI, implementation PR/merge evidence, and
-merged-main verification remain outstanding.
+`git diff --check`.
+
+**Status:** completed in
+[#247](https://github.com/IngeniousArtist/hoopedorc/pull/247)
+(`caaf0ea263be56391db5308d673eb930241359a5`) on 2026-08-17. Linux
+`build-and-test` passed on the reviewed head in 2m37s
+(https://github.com/IngeniousArtist/hoopedorc/actions/runs/32024353008/job/95370484964).
+After merge, clean local `main` and `origin/main` matched `caaf0ea`.
 
 ### O24. No request cancellation — stale responses can overwrite newer state — MEDIUM (robustness)
 
@@ -2534,6 +2540,20 @@ unchanged; full gates green.
 
 **Fix risk:** low.
 
+**Implementation decision (2026-08-17):** `retainNewestTaskLogs` /
+`appendTaskLog` keep the newest 1,000 rows, drop older ones, and ignore a
+streamed duplicate of a retained id so the trim boundary cannot appear twice.
+Board applies that on the initial `taskLogs` response and every live append,
+and resets omission state when the selected task changes. LogPanel shows the
+omission notice, scrolls its own overflow container, and uses `auto` scrolling
+when `prefers-reduced-motion: reduce` is set.
+
+The exact tree passes typecheck, build, lint across 168 files at the exact
+330-finding baseline, engine 231/231, adapters 15/15, permissioned server
+326/326, web 94/94, E2E 19/19 including phone and desktop log-drawer checks,
+and `git diff --check`. Hosted CI, implementation PR/merge evidence, and
+merged-main verification remain outstanding.
+
 ### O26. Web minor robustness/a11y follow-ups — LOW-MEDIUM
 
 These are independently reviewable follow-ups, not a mandatory mixed-purpose
@@ -2579,8 +2599,11 @@ mark the remaining O26 bullets complete.
 **`useWS` ownership status:** completed with O6/O12 in
 [#244](https://github.com/IngeniousArtist/hoopedorc/pull/244)
 (`621a1bc`); merge, Linux CI, and reconnect evidence are recorded under O6.
-The toast-timer, reduced-motion LogPanel, and dead New Project bullets remain
-pending.
+The toast-timer and dead New Project bullets remain pending.
+
+**LogPanel reduced-motion status:** completed with O25 in the same PR. The
+panel scrolls its log container and uses `auto` behavior when
+`prefers-reduced-motion: reduce` is set.
 
 ---
 
