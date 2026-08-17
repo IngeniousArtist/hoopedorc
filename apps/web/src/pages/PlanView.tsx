@@ -133,11 +133,15 @@ export function PlanView({
 
   // Planning writes are locked server-side (409) while the project runs;
   // mirror that here: banner instead of the input row, buttons disabled.
-  // project.updated events flip this live when the run finishes.
+  // Project deltas flip this live during a healthy connection; the global
+  // project snapshot restores the same status after reconnect downtime.
   const running = project?.status === "running";
   useWS(projectId, (e) => {
     if (e.type === "project.updated" && e.payload.id === projectId) {
       setProject(e.payload);
+    } else if (e.type === "projects.snapshot") {
+      const current = e.payload.projects.find((item) => item.id === projectId);
+      if (current) setProject(current);
     }
   });
 

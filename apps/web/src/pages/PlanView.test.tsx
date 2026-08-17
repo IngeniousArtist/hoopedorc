@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRequestError, api } from "../api/client";
@@ -6,11 +6,24 @@ import { ToastProvider } from "../hooks/useToast";
 import { projectFixture, settingsFixture } from "../test/fixtures";
 import { PlanView } from "./PlanView";
 
+const wsState = vi.hoisted(() => ({
+  handler: undefined as
+    | ((event: import("@orc/types").ServerEvent) => void)
+    | undefined,
+}));
+
 vi.mock("../api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../api/client")>();
   return { ...actual, api: vi.fn(), apiUpload: vi.fn() };
 });
-vi.mock("../hooks/useWS", () => ({ useWS: vi.fn() }));
+vi.mock("../hooks/useWS", () => ({
+  useWS: (
+    _projectId: string,
+    handler: (event: import("@orc/types").ServerEvent) => void,
+  ) => {
+    wsState.handler = handler;
+  },
+}));
 
 const apiMock = vi.mocked(api);
 const project = { ...projectFixture, status: "created" as const };
@@ -68,6 +81,7 @@ function baseApi(key: string) {
 describe("PlanView Figma verification", () => {
   beforeEach(() => {
     apiMock.mockReset();
+    wsState.handler = undefined;
     Object.defineProperty(HTMLElement.prototype, "scrollTo", {
       configurable: true,
       value: vi.fn(),
@@ -331,5 +345,36 @@ describe("PlanView Figma verification", () => {
     );
     expect(await screen.findByText("0 tasks created")).toBeVisible();
     expect(submittedRevisions).toEqual([revisionId, revisionId]);
+  });
+
+  it("unlocks planning from the authoritative project reconnect snapshot", async () => {
+    const runningProject = { ...project, status: "running" as const };
+    apiMock.mockImplementation(async (key) => {
+      if (key === "getProject") return { project: runningProject };
+      if (key === "planSession") {
+        return {
+          revisionId,
+          messages: [],
+          planCostUsd: 0,
+        };
+      }
+      return baseApi(key);
+    });
+    renderPlan();
+
+    expect(
+      await screen.findByText(/Tasks are running — planning re-opens/),
+    ).toBeVisible();
+    act(() => {
+      wsState.handler?.({
+        type: "projects.snapshot",
+        payload: { projects: [{ ...runningProject, status: "paused" }] },
+      });
+    });
+
+    expect(await screen.findByLabelText("Planning message")).toBeVisible();
+    expect(
+      screen.queryByText(/Tasks are running — planning re-opens/),
+    ).not.toBeInTheDocument();
   });
 });

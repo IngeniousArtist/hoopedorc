@@ -1,5 +1,5 @@
 import type { Project, ServerEvent } from "@orc/types";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api/client";
@@ -156,6 +156,7 @@ describe("application reconnect authority", () => {
     apiMock.mockImplementation(async (key) => {
       if (key === "listProjects") return { projects: [survivor] };
       if (key === "listNotifications") return { notifications: [] };
+      if (key === "getProject") return { project: created };
       throw new Error(`Unexpected API call: ${key}`);
     });
     render(<App />);
@@ -188,6 +189,78 @@ describe("application reconnect authority", () => {
     });
     expect(screen.getByRole("combobox", { name: "Project" })).toHaveValue(
       created.id,
+    );
+  });
+
+  it("retires an offline creation omitted after a later deletion", async () => {
+    const user = userEvent.setup();
+    const survivor = {
+      ...projectFixture,
+      id: "project-surviving-offline-delete",
+      name: "Survives offline deletion",
+    };
+    const deleted = {
+      ...projectFixture,
+      id: "project-created-then-deleted-offline",
+      name: "Created then deleted offline",
+    };
+    let resolveOlderConfirmation!: (value: { project: Project }) => void;
+    let rejectLatestConfirmation!: (reason: { status: number }) => void;
+    const olderConfirmation = new Promise<{ project: Project }>((resolve) => {
+      resolveOlderConfirmation = resolve;
+    });
+    const latestConfirmation = new Promise<{ project: Project }>(
+      (_resolve, reject) => {
+        rejectLatestConfirmation = reject;
+      },
+    );
+    let projectReads = 0;
+    apiMock.mockImplementation(async (key) => {
+      if (key === "listProjects") return { projects: [survivor] };
+      if (key === "listNotifications") return { notifications: [] };
+      if (key === "getProject") {
+        projectReads += 1;
+        return projectReads === 1 ? olderConfirmation : latestConfirmation;
+      }
+      throw new Error(`Unexpected API call: ${key}`);
+    });
+    render(<App />);
+    await screen.findByRole("option", { name: /Survives offline deletion/ });
+
+    await user.click(screen.getByRole("button", { name: "+ New" }));
+    act(() => {
+      wsState.onProjectCreated?.(deleted);
+      wsState.handler?.({
+        type: "projects.snapshot",
+        payload: { projects: [survivor] },
+      });
+      // A later reconnect baseline supersedes the first confirmation read.
+      wsState.handler?.({
+        type: "projects.snapshot",
+        payload: { projects: [survivor] },
+      });
+    });
+
+    await act(async () => {
+      resolveOlderConfirmation({ project: deleted });
+      await olderConfirmation;
+    });
+    expect(
+      screen.getByRole("option", { name: /Created then deleted offline/ }),
+    ).toBeVisible();
+
+    await act(async () => {
+      rejectLatestConfirmation({ status: 404 });
+      await latestConfirmation.catch(() => undefined);
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("option", { name: /Created then deleted offline/ }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("combobox", { name: "Project" })).toHaveValue(
+      survivor.id,
     );
   });
 

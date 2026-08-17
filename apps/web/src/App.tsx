@@ -1,4 +1,5 @@
 import type {
+  GetProjectResponse,
   ListNotificationsResponse,
   ListProjectsResponse,
   Notification,
@@ -138,6 +139,7 @@ export function App() {
   // project.updated before returning the HTTP response, so remember already
   // observed IDs too rather than manufacturing a pending entry afterward.
   const pendingCreatedProjectsRef = useRef(new Map<string, Project>());
+  const pendingCreationConfirmationsRef = useRef(new Map<string, number>());
   const observedProjectIdsRef = useRef(new Set<string>());
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () => initialHashState?.projectId ?? localStorage.getItem(STORAGE_KEY) ?? "",
@@ -302,6 +304,71 @@ export function App() {
     fetchNotifications();
   }, [fetchNotifications]);
 
+  const confirmPendingCreatedProject = useCallback(
+    async (
+      pending: Project,
+      fallbackProjectId: string,
+      confirmationGeneration: number,
+    ) => {
+      const isCurrentConfirmation = () =>
+        pendingCreatedProjectsRef.current.get(pending.id) === pending &&
+        pendingCreationConfirmationsRef.current.get(pending.id) ===
+          confirmationGeneration;
+      const retirePendingProject = () => {
+        pendingCreatedProjectsRef.current.delete(pending.id);
+        pendingCreationConfirmationsRef.current.delete(pending.id);
+        projectsAuthorityRef.current++;
+        setProjects((prev) =>
+          prev.filter((project) => project.id !== pending.id),
+        );
+        setSelectedProjectId((current) =>
+          current === pending.id ? fallbackProjectId : current,
+        );
+      };
+
+      try {
+        const res = await api<GetProjectResponse>("getProject", {
+          params: { id: pending.id },
+        });
+        if (!isCurrentConfirmation()) return;
+        if (!res.project) {
+          retirePendingProject();
+          return;
+        }
+
+        pendingCreatedProjectsRef.current.delete(pending.id);
+        pendingCreationConfirmationsRef.current.delete(pending.id);
+        projectsAuthorityRef.current++;
+        const confirmedProject = res.project;
+        setProjects((prev) =>
+          prev.some((project) => project.id === pending.id)
+            ? prev.map((project) =>
+                project.id === pending.id ? confirmedProject : project,
+              )
+            : [confirmedProject, ...prev],
+        );
+      } catch (error) {
+        // An omitted pending creation is ambiguous: the snapshot may have
+        // been captured before createProject committed, or the project may
+        // really have been deleted while this client was offline. Only a 404
+        // resolves that ambiguity; transient confirmation failures retain the
+        // local response and are retried by a later reconnect snapshot.
+        const status =
+          error && typeof error === "object" && "status" in error
+            ? (error as { status?: unknown }).status
+            : undefined;
+        if (
+          status !== 404 ||
+          !isCurrentConfirmation()
+        ) {
+          return;
+        }
+        retirePendingProject();
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (onboardingChecked || !projectsLoaded) return;
     setOnboardingChecked(true);
@@ -329,14 +396,16 @@ export function App() {
         for (const project of e.payload.projects) {
           observedProjectIdsRef.current.add(project.id);
           pendingCreatedProjectsRef.current.delete(project.id);
+          pendingCreationConfirmationsRef.current.delete(project.id);
         }
         const snapshotIds = new Set(
           e.payload.projects.map((project) => project.id),
         );
+        const missingPendingProjects = [
+          ...pendingCreatedProjectsRef.current.values(),
+        ].filter((project) => !snapshotIds.has(project.id));
         const nextProjects = [
-          ...[...pendingCreatedProjectsRef.current.values()].filter(
-            (project) => !snapshotIds.has(project.id),
-          ),
+          ...missingPendingProjects,
           ...e.payload.projects,
         ];
         setProjects(nextProjects);
@@ -345,10 +414,24 @@ export function App() {
             ? cur
             : (nextProjects[0]?.id ?? ""),
         );
+        for (const pending of missingPendingProjects) {
+          const confirmationGeneration =
+            (pendingCreationConfirmationsRef.current.get(pending.id) ?? 0) + 1;
+          pendingCreationConfirmationsRef.current.set(
+            pending.id,
+            confirmationGeneration,
+          );
+          void confirmPendingCreatedProject(
+            pending,
+            e.payload.projects[0]?.id ?? "",
+            confirmationGeneration,
+          );
+        }
       } else if (e.type === "project.updated") {
         projectsAuthorityRef.current++;
         observedProjectIdsRef.current.add(e.payload.id);
         pendingCreatedProjectsRef.current.delete(e.payload.id);
+        pendingCreationConfirmationsRef.current.delete(e.payload.id);
         setProjects((prev) =>
           prev.some((p) => p.id === e.payload.id)
             ? prev.map((p) => (p.id === e.payload.id ? e.payload : p))
@@ -358,6 +441,7 @@ export function App() {
         projectsAuthorityRef.current++;
         observedProjectIdsRef.current.delete(e.payload.id);
         pendingCreatedProjectsRef.current.delete(e.payload.id);
+        pendingCreationConfirmationsRef.current.delete(e.payload.id);
         setProjects((prev) => prev.filter((p) => p.id !== e.payload.id));
         setSelectedProjectId((cur) => (cur === e.payload.id ? "" : cur));
       } else if (e.type === "notifications.snapshot") {
@@ -386,7 +470,7 @@ export function App() {
         });
       }
     },
-    [notify],
+    [confirmPendingCreatedProject, notify],
   );
   useWS(selectedProjectId, onWS);
 
@@ -397,6 +481,7 @@ export function App() {
   // A freshly created project becomes the active one, then go straight to Plan.
   const handleProjectCreated = useCallback((p: Project) => {
     projectsAuthorityRef.current++;
+    pendingCreationConfirmationsRef.current.delete(p.id);
     if (!observedProjectIdsRef.current.delete(p.id)) {
       pendingCreatedProjectsRef.current.set(p.id, p);
     }
@@ -410,6 +495,7 @@ export function App() {
       projectsAuthorityRef.current++;
       observedProjectIdsRef.current.delete(id);
       pendingCreatedProjectsRef.current.delete(id);
+      pendingCreationConfirmationsRef.current.delete(id);
       setProjects((prev) => prev.filter((project) => project.id !== id));
       setSelectedProjectId((cur) => (cur === id ? "" : cur));
     },

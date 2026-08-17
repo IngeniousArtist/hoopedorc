@@ -1177,6 +1177,41 @@ clean, and mock shutdown completed with exit 0 and zero cleanup errors. Another
 independent clean review, hosted CI, PR/merge evidence, and merged-main
 verification remain outstanding.
 
+**Reconnect consumer/deletion correction (2026-08-17, pre-merge):** an
+independent review of pushed head `1a466d3` found two final P2 races. PlanView
+consumed only `project.updated`, so a status transition missed while offline
+could leave its planning lock stale after the replacement `projects.snapshot`.
+Also, a project created while disconnected and deleted by another client before
+reconnect would never appear in the new snapshot or a live event, allowing the
+local pending-creation safeguard to preserve a deleted row indefinitely.
+
+PlanView now applies its selected row from every authoritative project
+snapshot. When a snapshot omits a locally confirmed creation, App retains the
+row while it confirms that exact project through REST: success identifies an
+older replay, while `404` retires the deleted row and normalizes selection to
+the snapshot's first survivor. Generation/identity checks prevent a late
+confirmation from undoing a newer live update or deletion. Focused regressions
+cover both Plan unlocking after reconnect and the create-then-delete offline
+race; the App/Plan focused set passes 10/10. Full gates, renewed browser
+evidence, another independent clean review, hosted CI, PR/merge evidence, and
+merged-main verification remain outstanding.
+
+The exact corrected tree passes typecheck, build, lint across 162 files at the
+exact 330-finding baseline, engine 231/231, adapters 15/15, permissioned server
+326/326, web 69/69, E2E 18/18 across 360/390/768/1280/1440px, and
+`git diff --check`. In the targeted 390px live mock, Plan first rendered the
+running lock. The browser wrapper then closed the app socket and redirected
+five bounded replacement attempts to a closed local port. While every tracked
+socket was closed, a direct server request changed the project to paused; Plan
+correctly remained locked, proving no live update reached it. After replacement
+sockets were allowed again, the next server `/ws` request occurred after the
+pause and its snapshot changed both App and Plan to paused, exposed the planning
+input, and left exactly one app socket active. Viewport and document widths were
+both 390px, page errors were empty, the console contained only Vite/React
+development notices, and mock shutdown completed with exit 0 and zero cleanup
+errors. A fresh independent clean review, hosted CI, PR/merge evidence, and
+merged-main verification remain outstanding.
+
 ### O7. `mergePr` can fail a genuinely-merged task after restart — MEDIUM-HIGH (correctness)
 
 **Problem:** the already-merged idempotency shortcut depends on a single

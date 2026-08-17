@@ -599,7 +599,14 @@ it. Project and notification consumers also generation-guard in-flight REST
 reads so a response captured before a newer snapshot/live event cannot replace
 the newer state. Likewise, a create-project response remains locally
 authoritative over a project snapshot captured before that create committed,
-until the ordered snapshot or `project.updated` stream observes its ID.
+until the ordered snapshot or `project.updated` stream observes its ID. When a
+snapshot omits a still-pending local creation, the client confirms that exact ID
+through `getProject`: success proves an older replay and `404` proves a later
+deletion, so neither race can permanently win. Confirmation reads are
+generation-qualified per pending project so only the read started by the newest
+snapshot may settle it. Project-status consumers, including PlanView's planning
+lock, apply the selected project from
+`projects.snapshot` as well as live `project.updated` deltas.
 Consumers whose durable REST state is not embedded in the baseline use the
 applicable global snapshot as a reconnect marker and generation-guard the
 resulting refresh; this keeps Audit rows and Mission Control's derived approval

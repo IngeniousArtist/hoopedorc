@@ -54,9 +54,16 @@ notification inbox restores missed approvals without replaying browser alerts.
 Web consumers generation-guard older in-flight REST reads from overwriting
 either snapshot. A locally committed project creation is preserved over a
 snapshot captured before that commit until its ID appears in the ordered
-snapshot/live stream. REST-only Audit state treats the global project snapshot
-as its reconnect marker, while derived approval counts use the notification
-snapshot; both reject older overlapping reads. The hub validates the whole
+snapshot/live stream. If a snapshot omits such a pending creation, App confirms
+it through the project REST endpoint: an existing row proves the replay was
+older, while a `404` retires a project deleted before reconnect instead of
+preserving it forever. Per-project confirmation generations prevent an older
+read from overriding the result required by a later snapshot. PlanView also
+applies the selected row from every global project snapshot so its planning
+lock cannot retain an offline status.
+REST-only Audit state treats the global project snapshot as its reconnect
+marker, while derived approval counts use the notification snapshot; both
+reject older overlapping reads. The hub validates the whole
 baseline before activation and flow-controls it one frame per send completion;
 matching live events queue behind the replay and drain afterward in order. A
 client whose
