@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/client";
@@ -71,6 +71,7 @@ describe("SetupView self-update", () => {
       unavailableReason: "UI updates require the Linux systemd deployment.",
     });
     render(<SetupView />);
+    await userEvent.click(screen.getByRole("tab", { name: "Updates" }));
 
     expect(await screen.findByText("Update Hoopedorc")).toBeVisible();
     expect(screen.getByText("Unavailable")).toBeVisible();
@@ -83,6 +84,7 @@ describe("SetupView self-update", () => {
     installApiMock();
     const user = userEvent.setup();
     render(<SetupView />);
+    await userEvent.click(screen.getByRole("tab", { name: "Updates" }));
 
     const update = await screen.findByRole("button", { name: "Update & restart" });
     expect(update).toBeEnabled();
@@ -114,6 +116,7 @@ describe("SetupView self-update", () => {
     });
     const user = userEvent.setup();
     render(<SetupView />);
+    await userEvent.click(screen.getByRole("tab", { name: "Updates" }));
 
     await user.click(await screen.findByRole("button", { name: "Update & restart" }));
     await user.click(
@@ -127,4 +130,42 @@ describe("SetupView self-update", () => {
       screen.getByRole("button", { name: "Confirm update & restart" }),
     ).toBeEnabled();
   });
+
+  it("separates overview, model health, and updates without triggering an action", async () => {
+    installApiMock();
+    render(<SetupView />);
+    expect(await screen.findByText("Runtime healthy")).toBeVisible();
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("button", { name: "Test models" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Update & restart" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Models" }));
+    expect(screen.getByText(/No configured models were reported/)).toBeVisible();
+    await userEvent.click(screen.getByRole("tab", { name: "Updates" }));
+    await userEvent.click(screen.getByRole("button", { name: "Update & restart" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Updates" }));
+    expect(screen.getByRole("button", { name: "Confirm update & restart" })).toBeVisible();
+    expect(apiMock.mock.calls.some(([key]) => key === "testModels" || key === "startSelfUpdate")).toBe(false);
+  });
+
+  it("reports loading and failed model health, then recovers without showing failure as empty", async () => {
+    installApiMock();
+    const initialApi = apiMock.getMockImplementation()!;
+    let fail!: (error: Error) => void;
+    let reads = 0;
+    apiMock.mockImplementation(async (key, options) => {
+      if (key === "modelHealth" && reads++ === 0) return new Promise((_, reject) => { fail = reject; });
+      return initialApi(key, options);
+    });
+    render(<SetupView />);
+    await userEvent.click(screen.getByRole("tab", { name: "Models" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Loading model health");
+    await act(async () => { fail(new Error("health store unavailable")); });
+    expect(screen.getByRole("alert")).toHaveTextContent("health store unavailable");
+    expect(screen.queryByText(/No configured models were reported/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await screen.findByText(/No configured models were reported/)).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
 });

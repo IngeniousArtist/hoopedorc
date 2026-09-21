@@ -7346,8 +7346,8 @@ owner later supplies Figma input.
 
 ## Part 14 — Visual development workspace
 
-**Status (2026-09-21):** VW01–VW04 are implemented, reviewed, and merged,
-including the recovery fixes below. VW05 is the next unstarted item. The
+**Status (2026-09-21):** VW01–VW05 are implemented, including the recovery
+fixes and settings/setup reorganization below. VW06 is the next unstarted item. The
 detailed scope, inspected source, research, acceptance criteria, non-goals,
 dependencies, and verification requirements are
 in [VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
@@ -7361,8 +7361,8 @@ existing Figma integration, gates/validation, accounting, and Telegram. Improve
 the user journey and failure handling, then extend capabilities incrementally.
 Small tasks and large briefs share the same execution system.
 
-**Next:** VW05 (organize existing settings and setup), starting from the
-reviewed VW01–VW04 result. Consult the focused plan's dependency table for
+**Next:** VW06 (durable planning operations and planning workbench), starting from the
+reviewed VW01–VW05 result. Consult the focused plan's dependency table for
 subsequent items. Do not start by replacing the scheduler or adding
 all future schemas. Use one scoped branch/PR per coherent change; split larger
 work packages into backward-compatible contract/backend/UI steps as needed.
@@ -7373,7 +7373,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW02 | Preserve planning input and truthful draft-save state | Done (merged 2026-09-21) | [PR #264](https://github.com/IngeniousArtist/hoopedorc/pull/264) → main `8d00383`; PR CI `build-and-test` passed; main CI run [35567524350](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35567524350) passed; see the VW02 acceptance record below |
 | VW03 | Repository-aware planning and truthful task history | Done (merged 2026-09-21) | [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266) → main `9757a91`; PR CI `build-and-test` passed; main CI run [35570272080](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35570272080) passed; see the VW03 acceptance record below |
 | VW04 | Project navigation, compact board/list, task inspector | Done (merged and reviewed 2026-09-21) | Part 1: [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268) → main `88ca12b`, PR CI passed, main CI run [35571774985](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35571774985) passed. Part 2 and VW01–VW04 recovery review: [PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269) → main `9d2e270`; required exact-head CI passed; see the review/merge record below |
-| VW05 | Organize existing settings and setup | Not started | — |
+| VW05 | Organize existing settings and setup | Implemented | Branch `vw05-settings-setup-ux`; see VW05 acceptance record below and its PR for required CI/merge evidence |
 | VW06 | Durable planning operations and planning workbench | Not started | — |
 | VW07 | Propose/apply plan revisions during execution | Not started | — |
 | VW08 | Workspace inventory and read-only code inspection | Not started | — |
@@ -7999,3 +7999,71 @@ planning-route tests (including the new real-Git recovery cases).
 is the separate post-merge gate record. The primary checkout was fast-forwarded
 to the merged result; unrelated operator files were preserved. Next work is
 VW05.
+
+
+### VW05 — organized settings and setup (implementation 2026-09-21)
+
+**Acceptance criteria before implementation:**
+
+- Preserve `#/settings`, `#/setup`, the existing shared settings payload,
+  secret sentinels, normalization, and all server action semantics.
+- Settings presents five focused sections: Run policy, Models & routing,
+  Guidelines, Notifications, and Installation. Section navigation is accessible
+  by keyboard and on phones. One visible save control applies the full draft;
+  switching sections preserves edits, and failed validation/saves retain them.
+  Loading failures have Retry. Saving prevents concurrent edits being lost to
+  an older response, and errors/success remain visible by the save control.
+- Setup separates Overview (runtime and connection checks), Models (health and
+  explicitly invoked live tests), and Updates (existing guarded deployment
+  updater). Empty/failed model-health reads are explicit and retryable; stale
+  results are labeled. Section changes neither test models nor launch updates.
+  Existing update confirmation, unavailable explanations, and polling survive.
+- Existing neutral styling, visible keyboard focus, >=40px phone controls, and
+  containment at 360/390/768/1280/1440px are preserved.
+
+**Implementation:** shared accessible section tabs/panels; reorganize
+`Settings.tsx` and `SetupView.tsx`; focused interaction/browser coverage and
+user-guide updates. No backend, schema, runtime owner, auth, resource-pool,
+MCP/plugin, deployment-policy, or model-routing-policy changes.
+
+**Verification scope (owner request):** Settings/Setup interaction suites,
+relevant existing settings-navigation coverage, web typecheck/build and changed
+file lint, one focused VW05 browser scenario across the five required widths,
+plus `git diff --check`. No full local engine/adapter/server/web/e2e sweep;
+that comprehensive pass is deferred until the implementation plan finishes.
+Required remote CI remains unchanged. No real model test, Telegram message, or
+systemd/EC2 update is required or authorized by UI verification.
+
+**Implemented and locally verified (2026-09-21):** all five Settings sections
+share the same mounted draft and one save action. Section navigation supports
+arrow keys/Home/End. Initial load failures offer Retry; save errors retain all
+edits and secret sentinels. The form is disabled during a pending save to
+prevent an older response from replacing newer input. Setup now groups
+connection checks, model health/live tests, and guarded updates separately;
+failed model-health reads are explicit, retryable, and distinguishable from an
+empty model roster. Existing update confirmation and polling remain mounted
+when switching sections. Current URLs, routes, payloads, normalization,
+persistence, and server action semantics are unchanged.
+
+**Focused evidence (Node 22.23.0):**
+
+- `npm test -w @orc/web -- src/pages/Settings.test.tsx src/pages/SetupView.test.tsx src/App.integration.test.tsx`
+  — 15 tests passed, including cross-section save failure/retry, secret
+  preservation, save locking, keyboard navigation, initial-load retry, model
+  health loading/error/recovery, and retained update confirmation.
+- `npm run test:e2e -- settings-setup.spec.ts` — one Chromium scenario passed
+  across 360/390/768/1280/1440px: every section, keyboard focus, failed then
+  successful save/reload, health error/refresh, disabled update/manual fallback,
+  phone controls, document overflow, and fixed/sticky containment. Repeated
+  only after the visual review improved phone tab-label wrapping.
+- `npm run typecheck -w @orc/web`, `npm run build -w @orc/web`, ESLint on the
+  seven changed/new TypeScript files, and `git diff --check` passed.
+- Chrome visual review on an isolated in-memory instance: desktop Settings,
+  phone Settings at 390px (whole-label wrapping), and phone Setup Models with
+  recorded health separate from the live-test action. No live model test,
+  Telegram message, or updater was invoked. The temporary instance was stopped.
+
+The owner-requested reduced local testing policy is recorded in AGENTS.md and
+the focused plan. Comprehensive local regression remains deferred until the
+implementation plan is finished. The `vw05-settings-setup-ux` PR carries the
+required remote CI and merge evidence; no required check is waived. Next: VW06.

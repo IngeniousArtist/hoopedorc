@@ -51,8 +51,8 @@ merge — rather than either babysitting every diff or trusting a black box.
   `https://api.z.ai/api/coding/paas/v4` endpoint. Model slugs use the
   `zai-coding-plan/` prefix; the general Z.AI endpoint is billed separately
   from a Coding Plan subscription. You don't need all providers: disable
-  whichever you don't have from Settings → Models, and re-point the routing
-  at what's left (Settings → Routing, or the onboarding wizard's routing
+  whichever you don't have from Settings → Models & routing → Models, and re-point the routing
+  at what's left (Settings → Models & routing → Routing, or the onboarding wizard's routing
   step).
   - **B45:** an installation that never edited the default GLM entry (still
     `id: "glm"` with its stock display name) is migrated automatically on the
@@ -62,7 +62,7 @@ merge — rather than either babysitting every diff or trusting a black box.
     exactly as you configured it. If you see the roster still reads the
     general `zai/` slug after updating, you deliberately customized that
     entry and can move it to `zai-coding-plan/glm-5.2` yourself from
-    Settings → Models.
+    Settings → Models & routing → Models.
 - **Codex (optional)** — if you'd rather have a model run through OpenAI's
   own [Codex CLI](https://developers.openai.com/codex) than pay per-token
   through OpenCode, install it and log in with your ChatGPT plan:
@@ -70,7 +70,7 @@ merge — rather than either babysitting every diff or trusting a black box.
   npm i -g @openai/codex
   codex login
   ```
-  then in Settings → Models add (or edit) a model with runner `codex` and
+  then in Settings → Models & routing → Models add (or edit) a model with runner `codex` and
   an optional `codex exec -m` id (blank uses the CLI's default model).
   Codex is subscription-billed the same way Claude is — Hoopedorc can't see
   into that spend, so codex-runner tasks always show **$0.0000** in cost
@@ -93,6 +93,33 @@ Then `npm run dev` (all packages in watch mode) or `npm run start`
 (production-style: build everything, run one server that also serves the
 web UI). See [`deploy/`](../deploy/) for systemd/Docker notes if this is
 going on a always-on box.
+
+## Settings and installation health
+
+**Settings** (`#/settings`) groups installation-wide preferences into five
+sections:
+
+- **Run policy:** merge approval, gate sandboxing, risky-change rules, budgets,
+  and confidence thresholds.
+- **Models & routing:** the model roster, capacity/pricing, and role assignments.
+- **Guidelines:** shared instructions for authors and reviewers.
+- **Notifications:** browser notifications and Telegram configuration/testing.
+- **Installation:** the default projects directory and API access token.
+
+Switching sections keeps your unsaved edits. **Save Settings** saves the whole
+draft across all sections; controls pause while the save completes. If saving
+fails, the error appears beside Save and your edits remain available to correct
+and retry. A failed initial load offers **Retry settings**. Use the arrow keys
+or Home/End when a section tab has keyboard focus. Project-specific options
+remain in **Project settings** on the Board.
+
+**Setup & Health** (`#/setup`) has three sections: **Overview** shows runtime
+and connection checks; **Models** shows recorded model health and an explicit
+**Test models** action; **Updates** shows deployment availability and the
+guarded updater. Read failures show a retry action and identify any last-known
+results still displayed. Merely changing sections does not send model test
+prompts or start an update. Live tests use provider credits or subscription
+capacity. Updates retain their separate inline confirmation.
 
 ## Your first project
 
@@ -145,11 +172,11 @@ going on a always-on box.
    under the project header's **Project settings** disclosure.
 6. **Approvals**, if any come up (a risky change, or the merge policy is set
    to always ask), show up as `action_required` in Notifications, and — if
-   you've set up Telegram (Settings → Telegram, needs a bot token from
+   you've set up Telegram (Settings → Notifications → Telegram, needs a bot token from
    [BotFather](https://t.me/BotFather) and your chat id) — as a message with
    inline Approve/Reject buttons, the PR link, and the validator's top
    reasons, so you can decide from your phone without opening the app.
-   Settings also offers **browser notifications** (Settings → Browser
+   Settings also offers **browser notifications** (Settings → Notifications → Browser
    Notifications) — these only work over HTTPS or `localhost` (a browser
    security requirement) and on some mobile browsers can't fire at all even
    with permission granted; Telegram is the reliable channel for phones and
@@ -187,7 +214,7 @@ going on a always-on box.
   a change gets flagged for your approval instead of auto-merging if it
   touches: DB/schema files, `package.json` (new dependencies), anything
   that looks like auth/secrets/tokens, or files outside the task's declared
-  scope. Toggle these independently in Settings → Merge Policy.
+  scope. Toggle these independently in Settings → Run policy → Risky Change Rules.
 - **Destructive-change rail (non-bypassable).** Mass file deletions,
   deleted migration/schema/`.env`/CI/lockfile files, destructive SQL
   (`DROP TABLE`/`DROP DATABASE`/`TRUNCATE`, a `DELETE` with no `WHERE`, an
@@ -199,7 +226,7 @@ going on a always-on box.
   category it spots in the diff, and every author prompt carries a fixed
   safety instruction not to delete unrelated files or write destructive
   migrations/data-wipes unless the task explicitly requires it. Toggle it
-  off in Settings → Merge Policy → Risky Change Rules → "Destructive
+  off in Settings → Run policy → Risky Change Rules → "Destructive
   changes" if you genuinely want to disable the mechanical check (the
   validator's own judgment and the author's prompt instruction still apply
   either way).
@@ -223,7 +250,7 @@ going on a always-on box.
   autonomous run winds down cleanly rather than erroring out.
 - **Subscription quotas.** Model plans with usage windows (Claude Pro's
   rolling cap being the motivating case) can be declared per model in
-  Settings → Models: a window in hours plus a max invocation count and/or max
+  Settings → Models & routing → Models: a window in hours plus a max invocation count and/or max
   spend. Every model-backed stage counts (planner, deconstructor, author,
   validator, docs, and health), including subscription calls reported as $0.
   Once a model's window is exhausted the scheduler routes around it
@@ -260,21 +287,21 @@ it's worth knowing which to check for what:
 | Event | Web bell (Notifications) | Telegram |
 |---|---|---|
 | Approval needed (risky change, escalation, `always_ask`) | ✅ always | ✅ always, with inline Approve/Reject buttons |
-| Model trouble — rate-limit wait, fallback switch, exhausted chain, or a run-wide cooldown/quota stall (`quota_wait`) | ✅ always, one entry per task+event type per run | ✅ if Settings → Telegram → "Alert me when a model hits trouble" is checked (default on) |
+| Model trouble — rate-limit wait, fallback switch, exhausted chain, or a run-wide cooldown/quota stall (`quota_wait`) | ✅ always, one entry per task+event type per run | ✅ if Settings → Notifications → Telegram → "Alert me when a model hits trouble" is checked (default on) |
 | A run ends without finishing (`paused`/`failed`, not `completed`) | ✅ one entry naming the blocked tasks and why | ✅ as part of the end-of-run digest |
 | Budget threshold crossed (50%/80%) | ✅ | ✅ |
-| Task status changes (in progress → in review → done, etc.) | — (see the Board itself) | Only if `Settings → Telegram → Digest` is `"all"` (default `"terminal"`, which is done/failed only) |
+| Task status changes (in progress → in review → done, etc.) | — (see the Board itself) | Only if `Settings → Notifications → Telegram → Digest` is `"all"` (default `"terminal"`, which is done/failed only) |
 
 If you want to watch a run's step-by-step progress — including "a task is
 now being validated" — from your phone rather than the app, set
-`Settings → Telegram → Digest` to **"all"**; the web UI doesn't need this
+`Settings → Notifications → Telegram → Digest` to **"all"**; the web UI doesn't need this
 setting since you can just watch the Board directly. Browser notifications
 (see above) mirror a subset of the bell's entries while the tab is hidden;
 Telegram is still the reliable channel for phones.
 
 ## Fallbacks, pricing, and cleanup
 
-- **Planner and deconstructor routing (Settings → Routing → Planner /
+- **Planner and deconstructor routing (Settings → Models & routing → Routing → Planner /
   Deconstructor).** Any enabled model can plan — Claude Code, Codex, or an
   OpenCode-runner model (deepseek, glm, grok, etc.) — set Planner to route
   planning chat, and optionally Deconstructor to a different model for the
@@ -288,7 +315,7 @@ Telegram is still the reliable channel for phones.
   since neither has native output-schema enforcement the way Codex does),
   but are API-billed per token for every chat turn, not flat-rate like a
   subscription — worth factoring in if you plan a lot.
-- **Fallback models (Settings → Routing → Fallback 1/2).** When a task's
+- **Fallback models (Settings → Models & routing → Routing → Fallback 1/2).** When a task's
   assigned model keeps failing (author errors, failing gates, rate limits),
   the engine retries with Fallback 1, then Fallback 2 — swap the two
   dropdowns any time to change the order, including while a project is
@@ -296,7 +323,7 @@ Telegram is still the reliable channel for phones.
   reroute every reference in the same save when disabling one. A call already
   in flight is allowed to finish. Leave both empty to use the old behavior
   (escalating through the by-difficulty tiers).
-- **Reasoning effort (Settings → Models → Reasoning effort).** Leave this at
+- **Reasoning effort (Settings → Models & routing → Models → Reasoning effort).** Leave this at
   **CLI default**, or choose a Claude Code/Codex effort. OpenCode exposes
   suggestions but also accepts a provider-specific variant made from letters,
   numbers, `.`, `_`, or `-`. One model setting consistently covers planning,
@@ -304,7 +331,7 @@ Telegram is still the reliable channel for phones.
   Changing a row's runner clears its effort because the supported values differ.
   Task run history, engine logs, and Setup model results show the resolved
   effort so cost/latency/quality comparisons are honest.
-- **Manual model pricing (Settings → Models).** Each model has three
+- **Manual model pricing (Settings → Models & routing → Models).** Each model has three
   optional price fields — input, cached input, and output, in **USD per 1M
   tokens** (the unit provider pricing pages use). When any is set, every
   recorded run/validator cost for that model is recomputed from its real
@@ -351,7 +378,7 @@ also include compact Start/Pause/Status buttons.
 | `/pending` | Re-sends every still-open approval with its buttons — recovers a push you missed or dismissed. |
 | `/stopall` | Stops every running project. Two-step on purpose (the highest-blast-radius command here): replies with a Yes/No confirmation naming how many projects/tasks it'll hit; nothing stops until you tap Yes. |
 | `/retry <taskId-or-prefix>` | Retries a `failed`/`changes_requested`/`blocked` task. A short unique prefix of the id works — no need to type the full id on a phone keyboard; an ambiguous prefix lists every match instead of guessing. |
-| `/digest [off\|terminal\|all]` | View, or set, the status-digest level (mirrors Settings → Telegram → Digest). |
+| `/digest [off\|terminal\|all]` | View, or set, the status-digest level (mirrors Settings → Notifications → Telegram → Digest). |
 | `/health` | One line per model: cooldown state, subscription-quota window usage, and the last "Test models" result. |
 
 `/autonomous` and `/digest` change the same `Settings` fields the web UI's
@@ -443,7 +470,7 @@ absolute path to one readable PEM file for the Hoopedorc service user. The
 sandbox mounts only that file read-only at an internal path; missing, relative,
 or directory paths are ignored rather than exposing host filesystem paths.
 
-Three modes (`Settings.sandboxGates`, a select in Settings → Gate Sandbox):
+Three modes (`Settings.sandboxGates`, a select in Settings → Run policy → Gate Sandbox):
 
 - **`"auto"` (default).** Sandbox when Docker responds to `docker version`,
   host otherwise. Safe to leave alone either way.
@@ -748,7 +775,7 @@ recoverable from GitHub, so the DB backups are the part that matters.
 ## Updating
 
 On the supported EC2/headless Linux deployment, open **Setup & Health →
-Update Hoopedorc**. The card checks availability and explains any blocker.
+Updates → Update Hoopedorc**. The card checks availability and explains any blocker.
 Press **Update & restart**, review the inline confirmation, and confirm once.
 Progress remains durable across the brief Tailscale disconnect while the
 service restarts.
@@ -1130,9 +1157,9 @@ A few things follow from that split:
 | `gh pr create` fails with "No commits between main and \<branch\>" | The author model didn't actually commit anything — usually a task that was too vague, or scoped to files that didn't need changing. (Historically this was also caused by agents writing to the wrong directory because `$PWD` didn't match the worktree `cwd` — fixed; if you see this on a current build, it's almost always the task itself, not the plumbing.) | Check the task's logs in its detail drawer; tighten the description/acceptance criteria and Retry. |
 | A model's task fails almost instantly with something like "database is locked" | OpenCode keeps a shared SQLite session store; two `opencode` runs starting at the exact same instant (two tasks dispatched concurrently) can collide on it. | Hoopedorc already retries this automatically after a short stagger (`OPENCODE_TRANSIENT` in `packages/adapters`) — a single retry almost always clears it. If it keeps happening, lower that model's `maxConcurrent` in Settings. |
 | Every task in a brand-new project auto-merges with basically no verification | The repo has no `test`/`build`/`lint`/`typecheck` scripts yet, so every gate "passes" by doing nothing (vacuous). | This should already escalate to your approval by default — check `Settings.allowVacuousGates` isn't turned on. Longer-term, the planner's first scaffold task is supposed to set up real scripts; if it didn't, add them yourself or via a follow-up task. |
-| A "hard" difficulty task always fails validation with a self-review error | The author and validator models are configured to be the same model for that difficulty tier — the validator refuses to review its own work. | Settings → Routing: make sure `validatorByDifficulty` never matches `byDifficulty`/`byRole` for the same tier. |
+| A "hard" difficulty task always fails validation with a self-review error | The author and validator models are configured to be the same model for that difficulty tier — the validator refuses to review its own work. | Settings → Models & routing → Routing: make sure `validatorByDifficulty` never matches `byDifficulty`/`byRole` for the same tier. |
 | Pressing Stop doesn't seem to do anything | You're on a very old build — this was a real bug (B1), fixed early in the productization pass: Stop now actually aborts the live process and can't be overtaken by an in-flight auto-merge. | Update to a current build. |
-| Approvals never reach Telegram | No bot token/chat id, network/429 trouble, or a Bot API formatting rejection. | Settings → Telegram: check Delivery/last error and use **Send test message**. Failed approval delivery also creates a web notification; decide there or run `/pending` after fixing Telegram. |
+| Approvals never reach Telegram | No bot token/chat id, network/429 trouble, or a Bot API formatting rejection. | Settings → Notifications → Telegram: check Delivery/last error and use **Send test message**. Failed approval delivery also creates a web notification; decide there or run `/pending` after fixing Telegram. |
 | The server won't start after setting `HOST=0.0.0.0` | No `API_TOKEN` set and `ALLOW_UNAUTHENTICATED` isn't `1` — this is an intentional refusal, not a bug. | Set `API_TOKEN` (see Remote setup above), or explicitly opt into `ALLOW_UNAUTHENTICATED=1` if you really mean to. |
 | The web UI shows nothing / a blank board in "real" (non-mock) mode | No project selected yet, or you're pointed at `MOCK=1` data. | Use the project picker in the nav; confirm `MOCK` isn't set in your `.env`/environment. |
 | The Plan tab replies "Mock planner (no model, CLI, MCP, or repository was used)." | The server is running with `MOCK=1` (`npm run mock`). Since VW01, mock planning is deterministic and never invokes a planner CLI, Figma MCP, or repository clone. | Expected in mock mode; the fixtures (`[MOCK_PLANNER_FAIL]` in a message, `MOCKFAIL-<figma_issue_code>` Figma file keys) are listed in `docs/CONTRACT.md`. For real planning, start the server without `MOCK`. |

@@ -8,9 +8,9 @@ This document records the requested product direction and implementation sequenc
 
 ## Start here
 
-VW01–VW04 are implemented, reviewed, and merged as of 21 September 2026;
+VW01–VW05 are implemented as of 21 September 2026;
 see the [current status and evidence](PRODUCTIZATION_PLAN.md#part-14--visual-development-workspace).
-The next item is **VW05 — organize existing settings and setup**. The initial
+The next item is **VW06 — durable planning operations and planning workbench**. The initial
 VW01 → VW02/VW03 → VW04 sequence remains the dependency foundation for the
 later work. Do not start by replacing the engine, creating a second
 scheduler, or implementing every screen at once.
@@ -26,16 +26,19 @@ For each item:
 3. Change the shared contract first if necessary, including ROUTES, server,
    mock, web client, persistence, tests, and CONTRACT.md. A pure UI rearrangement
    should not invent a replacement domain model.
-4. Run the focused coverage and every repository gate. Record exact evidence,
+4. Follow AGENTS.md's current owner-requested testing policy: focused local
+   coverage per item, comprehensive local regression after the plan finishes,
+   and unchanged required GitHub CI before merge. Record exact evidence,
    unavailable live checks, and the PR in the Part 14 status table. Merge only
    after required CI passes; verify substantial merged changes independently.
 5. Start the next item from the merged result. Do not combine unrelated slices
    into a large rewrite PR.
 
-**Next implementation request:** “Implement VW05 from
-VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md, starting from reviewed main. Organize
-the existing settings and setup experience while preserving current settings
-contracts and normalization. Follow AGENTS.md through verification and PR.”
+**Next implementation request:** “Implement VW06 from
+VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md, starting from reviewed main. Make
+planning operations durable through disconnect/restart, then build the planning
+workbench over those contracts. Split backward-compatible backend/UI slices as
+needed. Follow AGENTS.md's focused testing policy through verification and PR.”
 
 ## Recommendation
 
