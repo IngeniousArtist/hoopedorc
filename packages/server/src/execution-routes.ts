@@ -1,16 +1,18 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ResourceUnavailableError } from "@orc/types";
 import type { ExecutionService } from "./execution";
 import * as repo from "./db/repo";
 
-export function registerExecutionRoutes(app: FastifyInstance, execution: ExecutionService, mock: boolean) {
+export function registerExecutionRoutes(app: FastifyInstance, execution: ExecutionService, mock: boolean, cancellationFor?: (request: FastifyRequest, reply: FastifyReply) => { signal: AbortSignal; cleanup: () => void }) {
   app.get("/api/execution", () => Promise.resolve(execution.response()));
   app.post("/api/execution/profiles/:profileId/verify", async (req, reply) => {
     if (mock) return reply.code(409).send({ error: "Worker verification is unavailable in mock mode. No Docker commands were run." });
     const { profileId } = req.params as { profileId: string };
     const profile = repo.getSettings(execution.db)?.executionProfiles?.find((item) => item.id === profileId);
     if (!profile) return reply.code(404).send({ error: "Execution profile not found. Save settings first." });
-    return execution.verify(profile);
+    const cancellation = cancellationFor?.(req, reply);
+    try { return await execution.verify(profile, cancellation?.signal); }
+    finally { cancellation?.cleanup(); }
   });
   app.post("/api/execution/workers/:workerId/stop", async (req, reply) => {
     if (mock) return reply.code(409).send({ error: "Worker recovery is unavailable in mock mode." });

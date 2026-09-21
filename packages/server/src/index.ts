@@ -655,7 +655,7 @@ async function assembleServer(
   registerLibraryRoutes(app, db, env.mock);
   registerActivationRoutes(app, db);
   registerResourceRoutes(app, engine.resources, env.mock ? undefined : (id) => engine.execution.stopInvocation(id));
-  registerExecutionRoutes(app, engine.execution, env.mock);
+  registerExecutionRoutes(app, engine.execution, env.mock, (request, reply) => plannerRequestCancellation(request.raw, reply.raw, requestControllers));
   const unresolvedWorkers = env.mock ? [] : await engine.execution.recover();
   if (unresolvedWorkers.length) app.log.warn({ workerIds: unresolvedWorkers }, "Isolated workers remain unresolved; their workspaces and capacity are protected.");
   engine.activation.setBrowser(previews, reviews);

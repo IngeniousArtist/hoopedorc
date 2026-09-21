@@ -8759,3 +8759,8 @@ including the real Ubuntu Docker boundary (3m54s). The reviewed runtime-identity
 follow-up requires a fresh green head before merge; initial CI is not merge
 evidence for that follow-up. Its targeted real Docker/ownership tests (7),
 server/web typechecks, changed-file lint and five-width browser flow pass.
+
+The same review wires explicit worker-verification requests into the existing
+request-cancellation/shutdown registry, so they settle through the standard
+HTTP lifecycle before SQLite closes. Native health/planning cancellation keeps
+its existing owner; no second shutdown manager is introduced.
