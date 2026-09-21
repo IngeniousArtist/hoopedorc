@@ -1,5 +1,4 @@
 import {
-  TASK_STATUSES,
   type EstimateResponse,
   type LogEvent,
   type ModelId,
@@ -24,6 +23,13 @@ import {
 } from "react";
 import { api, isAbortError } from "../api/client";
 import { appendTaskLog, retainNewestTaskLogs } from "../lib/taskLogs";
+import {
+  BOARD_GROUPS,
+  defaultListGroup,
+  groupForStatus,
+  tasksInGroup,
+  type BoardGroupKey,
+} from "../lib/boardGroups";
 import { useWS } from "../hooks/useWS";
 import { useToast } from "../hooks/useToast";
 import { TaskDrawer } from "../components/TaskDrawer";
@@ -36,24 +42,39 @@ import {
   useConfirmation,
 } from "../components/ConfirmationDialog";
 
-// Record so adding a TaskStatus in @orc/types is a compile error here until
-// it gets a label too — the column list itself is derived from TASK_STATUSES
-// (single source of truth shared with the server's PATCH validation) so the
-// two can't silently drift apart.
-const COLUMN_LABELS: Record<TaskStatus, string> = {
-  backlog: "Backlog",
-  ready: "Ready",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  changes_requested: "Changes Req.",
-  blocked: "Blocked",
-  done: "Done",
-  failed: "Failed",
-};
-const COLUMNS: { status: TaskStatus; label: string }[] = TASK_STATUSES.map(
-  (status) => ({ status, label: COLUMN_LABELS[status] }),
-);
 const EMPTY_MODELS: NonNullable<SettingsType["models"]> = [];
+
+// VW04: the board is five outcome groups over the existing statuses (see
+// lib/boardGroups.ts). Phones default to a status-filtered list; the Kanban
+// stays one toggle away. Both preferences persist per browser.
+type BoardViewMode = "kanban" | "list";
+const VIEW_STORAGE_KEY = "hoop.board.view";
+const ENGINEERING_STORAGE_KEY = "hoop.board.engineering";
+const PHONE_MEDIA_QUERY = "(max-width: 639px)";
+
+function readStorage(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStorage(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* best effort — a private-mode browser just loses the preference */
+  }
+}
+
+function initialViewMode(): BoardViewMode {
+  const stored = readStorage(VIEW_STORAGE_KEY);
+  if (stored === "kanban" || stored === "list") return stored;
+  return typeof window !== "undefined" && window.matchMedia?.(PHONE_MEDIA_QUERY).matches
+    ? "list"
+    : "kanban";
+}
 
 type TaskAuthority = {
   projectId: string;
@@ -104,8 +125,17 @@ export function Board({
   // columns overflow at 1280px); a click or a drag hovering over one expands
   // it. Only ever holds statuses the user (or a drag) has explicitly opened —
   // a column with cards is never collapsed regardless of membership here.
-  const [expandedEmpty, setExpandedEmpty] = useState<Set<TaskStatus>>(new Set());
-  const [dragOverStatus, setDragOverStatus] = useState<TaskStatus | null>(null);
+  const [expandedEmpty, setExpandedEmpty] = useState<Set<BoardGroupKey>>(new Set());
+  const [dragOverGroup, setDragOverGroup] = useState<BoardGroupKey | null>(null);
+  const [viewMode, setViewModeState] = useState<BoardViewMode>(initialViewMode);
+  const [engineering, setEngineeringState] = useState(
+    () => readStorage(ENGINEERING_STORAGE_KEY) === "1",
+  );
+  // The phone list shows one group at a time; null means "not chosen yet",
+  // which resolves to the most urgent non-empty group.
+  const [listGroup, setListGroup] = useState<BoardGroupKey | null>(null);
+  const [pendingFocusGroup, setPendingFocusGroup] = useState<BoardGroupKey | null>(null);
+  const columnRefs = useRef(new Map<BoardGroupKey, HTMLElement>());
   // U13: when a task entered its current active (in_progress/in_review)
   // stretch — client receive time, kept stable across the in_progress <->
   // in_review transition within the same attempt (unlike task.updatedAt,
@@ -616,37 +646,67 @@ export function Board({
 
   // U3: a collapsed column still needs to accept a drop, so dragover expands
   // it first (rather than requiring a click before every drag).
-  const toggleColumnExpanded = (status: TaskStatus) => {
+  const toggleColumnExpanded = (group: BoardGroupKey) => {
     setExpandedEmpty((prev) => {
       const next = new Set(prev);
-      if (next.has(status)) next.delete(status);
-      else next.add(status);
+      if (next.has(group)) next.delete(group);
+      else next.add(group);
       return next;
     });
   };
 
-  const handleColumnDragOver = (status: TaskStatus, e: React.DragEvent) => {
+  const handleColumnDragOver = (group: BoardGroupKey, e: React.DragEvent) => {
     handleDragOver(e);
-    if (dragOverStatus !== status) setDragOverStatus(status);
+    if (dragOverGroup !== group) setDragOverGroup(group);
   };
 
-  const handleColumnDragLeave = (status: TaskStatus) => {
-    setDragOverStatus((cur) => (cur === status ? null : cur));
+  const handleColumnDragLeave = (group: BoardGroupKey) => {
+    setDragOverGroup((cur) => (cur === group ? null : cur));
   };
 
-  const handleColumnDrop = (status: TaskStatus, e: React.DragEvent) => {
-    setDragOverStatus(null);
-    handleDrop(status, e);
-  };
-
-  const handleDrop = async (
-    status: TaskStatus,
-    e: React.DragEvent,
-  ) => {
+  // VW04: dropping expresses one allowed action — "run this next" onto
+  // Planned (status ready). Other groups are engine evidence and accept no
+  // drops; their dragover is not prevented, so the browser refuses the drop.
+  const handleColumnDrop = (group: BoardGroupKey, e: React.DragEvent) => {
+    setDragOverGroup(null);
     e.preventDefault();
+    const definition = BOARD_GROUPS.find((candidate) => candidate.key === group);
+    if (definition?.dropAction !== "run_next") return;
     const taskId = e.dataTransfer.getData("text/plain");
     if (!taskId) return;
+    void changeStatus(taskId, "ready");
+  };
 
+  const setViewMode = (mode: BoardViewMode) => {
+    setViewModeState(mode);
+    writeStorage(VIEW_STORAGE_KEY, mode);
+  };
+
+  const setEngineering = (enabled: boolean) => {
+    setEngineeringState(enabled);
+    writeStorage(ENGINEERING_STORAGE_KEY, enabled ? "1" : "0");
+  };
+
+  const focusGroup = (group: BoardGroupKey) => {
+    if (viewMode === "list") {
+      setListGroup(group);
+      return;
+    }
+    setExpandedEmpty((prev) => (prev.has(group) ? prev : new Set(prev).add(group)));
+    setPendingFocusGroup(group);
+  };
+
+  useEffect(() => {
+    if (!pendingFocusGroup) return;
+    const column = columnRefs.current.get(pendingFocusGroup);
+    column?.scrollIntoView?.({ behavior: "smooth", block: "nearest", inline: "center" });
+    column?.focus?.({ preventScroll: true });
+    setPendingFocusGroup(null);
+  }, [pendingFocusGroup, expandedEmpty]);
+
+  /** Optimistic status change with rollback — the one path behind Planned
+   *  drops and the card menu's Run next / Move back to queue. */
+  const changeStatus = async (taskId: string, status: TaskStatus) => {
     const task = tasksRef.current.find((t) => t.id === taskId);
     if (!task || task.status === status) return;
     const request: BoardRequest = {
@@ -764,7 +824,12 @@ export function Board({
         </div>
       )}
 
-      <BoardSummary tasks={tasks} costUsd={costUsd} />
+      <BoardSummary
+        tasks={tasks}
+        costUsd={costUsd}
+        budgetUsd={budgetUsd}
+        onFocusGroup={focusGroup}
+      />
 
       <MissionControl
         projectId={projectId}
@@ -772,110 +837,185 @@ export function Board({
         models={settings?.models ?? []}
         activity={activity}
         activeSince={activeSince}
-        costUsd={costUsd}
-        budgetUsd={budgetUsd}
         onViewNotifications={() => onViewNotifications?.()}
       />
 
-      <div className="mb-4">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         {showAddTask ? (
-          <AddTaskForm
-            projectId={projectId}
-            tasks={tasks}
-            onCreated={handleTaskAdded}
-            onCancel={() => setShowAddTask(false)}
-          />
+          <div className="w-full">
+            <AddTaskForm
+              projectId={projectId}
+              tasks={tasks}
+              onCreated={handleTaskAdded}
+              onCancel={() => setShowAddTask(false)}
+            />
+          </div>
         ) : (
           <button
             onClick={() => setShowAddTask(true)}
-            className="rounded border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800"
+            className="rounded border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-blue-500"
           >
             + Add task
           </button>
         )}
-      </div>
-
-      {/* snap-x makes mobile a one-column-at-a-time swipe; sm: reverts to the
-          normal multi-column horizontal scroll once there's room for it. */}
-      <div
-        data-horizontal-scroll="board"
-        className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-4 sm:snap-none"
-      >
-        {COLUMNS.map((col) => {
-          const colTasks = tasks.filter((t) => t.status === col.status);
-          // U3: never collapse a column that has cards, even if it was
-          // toggled open-then-emptied earlier this session — only the
-          // "still empty and not explicitly opened" case collapses.
-          const collapsed =
-            colTasks.length === 0 &&
-            !expandedEmpty.has(col.status) &&
-            dragOverStatus !== col.status;
-
-          if (collapsed) {
-            return (
-              <button
-                key={col.status}
-                type="button"
-                onClick={() => toggleColumnExpanded(col.status)}
-                onDragOver={(e) => handleColumnDragOver(col.status, e)}
-                onDragLeave={() => handleColumnDragLeave(col.status)}
-                onDrop={(e) => handleColumnDrop(col.status, e)}
-                title={`${col.label} — empty, click to expand`}
-                className="flex w-9 shrink-0 flex-col items-center justify-between rounded-lg border border-neutral-800 bg-neutral-900/50 py-3 hover:border-neutral-700"
-              >
-                <span className="rounded-full bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-500">
-                  0
-                </span>
-                <span className="[writing-mode:vertical-rl] rotate-180 text-[10px] font-medium tracking-wider text-neutral-500 uppercase">
-                  {col.label}
-                </span>
-              </button>
-            );
-          }
-
-          return (
-            <section
-              key={col.status}
-              onDragOver={(e) => handleColumnDragOver(col.status, e)}
-              onDragLeave={() => handleColumnDragLeave(col.status)}
-              onDrop={(e) => handleColumnDrop(col.status, e)}
-              className="min-w-[85vw] max-w-[85vw] flex-1 snap-center rounded-lg border border-neutral-800 bg-neutral-900/50 p-3 sm:min-w-[220px] sm:max-w-[280px] sm:snap-none"
+        <div
+          role="group"
+          aria-label="Board layout"
+          className="ml-auto flex items-center rounded border border-neutral-700 text-xs"
+        >
+          {(["kanban", "list"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={viewMode === mode}
+              onClick={() => setViewMode(mode)}
+              className={
+                "px-3 py-1.5 first:rounded-l last:rounded-r focus-visible:ring-2 focus-visible:ring-blue-500 " +
+                (viewMode === mode
+                  ? "bg-neutral-700 text-neutral-100"
+                  : "text-neutral-400 hover:text-neutral-200")
+              }
             >
-              <h2
-                onClick={
-                  colTasks.length === 0
-                    ? () => toggleColumnExpanded(col.status)
-                    : undefined
-                }
+              {mode === "kanban" ? "Kanban" : "List"}
+            </button>
+          ))}
+        </div>
+        <label className="flex items-center gap-1.5 text-xs text-neutral-400">
+          <input
+            type="checkbox"
+            checked={engineering}
+            onChange={(e) => setEngineering(e.target.checked)}
+          />
+          Engineering details
+        </label>
+      </div>
+
+      {viewMode === "list" ? (
+        <BoardList
+          tasks={tasks}
+          group={listGroup ?? defaultListGroup(tasks)}
+          onGroupChange={setListGroup}
+          renderCard={(t) => (
+            <TaskCard
+              key={t.id}
+              task={t}
+              allTasks={tasks}
+              models={settings?.models ?? EMPTY_MODELS}
+              lastActivityAt={activity[t.id]}
+              estimate={estimates[t.id]}
+              onSelect={selectTask}
+              onStop={stoppingIds.has(t.id) ? undefined : stopTask}
+              onRunNext={(id) => void changeStatus(id, "ready")}
+              onDefer={(id) => void changeStatus(id, "backlog")}
+              onRetry={(id) => void handleRetry(id)}
+              isSelected={selectedTaskId === t.id}
+              engineering={engineering}
+            />
+          )}
+        />
+      ) : (
+        <div
+          data-horizontal-scroll="board"
+          className="flex snap-x snap-mandatory gap-3 overflow-x-auto pb-4 sm:snap-none"
+        >
+          {BOARD_GROUPS.map((group) => {
+            const colTasks = tasksInGroup(tasks, group.key);
+            const droppable = group.dropAction !== null;
+            // U3: never collapse a column that has cards, even if it was
+            // toggled open-then-emptied earlier this session — only the
+            // "still empty and not explicitly opened" case collapses.
+            const collapsed =
+              colTasks.length === 0 &&
+              !expandedEmpty.has(group.key) &&
+              dragOverGroup !== group.key;
+
+            if (collapsed) {
+              return (
+                <button
+                  key={group.key}
+                  ref={(el) => {
+                    if (el) columnRefs.current.set(group.key, el);
+                  }}
+                  type="button"
+                  onClick={() => toggleColumnExpanded(group.key)}
+                  onDragOver={droppable ? (e) => handleColumnDragOver(group.key, e) : undefined}
+                  onDragLeave={droppable ? () => handleColumnDragLeave(group.key) : undefined}
+                  onDrop={droppable ? (e) => handleColumnDrop(group.key, e) : undefined}
+                  title={`${group.label} — empty, click to expand`}
+                  className="flex w-9 shrink-0 flex-col items-center justify-between rounded-lg border border-neutral-800 bg-neutral-900/50 py-3 hover:border-neutral-700 focus-visible:ring-2 focus-visible:ring-blue-500"
+                >
+                  <span className="rounded-full bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-500">
+                    0
+                  </span>
+                  <span className="[writing-mode:vertical-rl] rotate-180 text-[10px] font-medium tracking-wider text-neutral-500 uppercase">
+                    {group.label}
+                  </span>
+                </button>
+              );
+            }
+
+            return (
+              <section
+                key={group.key}
+                ref={(el) => {
+                  if (el) columnRefs.current.set(group.key, el);
+                }}
+                tabIndex={-1}
+                aria-label={`${group.label} (${colTasks.length})`}
+                onDragOver={droppable ? (e) => handleColumnDragOver(group.key, e) : undefined}
+                onDragLeave={droppable ? () => handleColumnDragLeave(group.key) : undefined}
+                onDrop={droppable ? (e) => handleColumnDrop(group.key, e) : undefined}
                 className={
-                  "mb-3 flex items-center gap-2 text-xs font-medium text-neutral-400 uppercase tracking-wider" +
-                  (colTasks.length === 0 ? " cursor-pointer" : "")
+                  "min-w-[85vw] max-w-[85vw] flex-1 snap-center rounded-lg border bg-neutral-900/50 p-3 sm:min-w-[220px] sm:max-w-[280px] sm:snap-none focus:outline-none " +
+                  (dragOverGroup === group.key
+                    ? "border-blue-600"
+                    : "border-neutral-800")
                 }
               >
-                {col.label}
-                <span className="rounded-full bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400">
-                  {colTasks.length}
-                </span>
-              </h2>
-              <div className="space-y-2">
-                {colTasks.map((t) => (
-                  <TaskCard
-                    key={t.id}
-                    task={t}
-                    allTasks={tasks}
-                    models={settings?.models ?? EMPTY_MODELS}
-                    lastActivityAt={activity[t.id]}
-                    estimate={estimates[t.id]}
-                    onSelect={selectTask}
-                    onStop={stoppingIds.has(t.id) ? undefined : stopTask}
-                    isSelected={selectedTaskId === t.id}
-                  />
-                ))}
-              </div>
-            </section>
-          );
-        })}
-      </div>
+                <h2
+                  onClick={
+                    colTasks.length === 0
+                      ? () => toggleColumnExpanded(group.key)
+                      : undefined
+                  }
+                  title={group.description}
+                  className={
+                    "mb-3 flex items-center gap-2 text-xs font-medium text-neutral-400 uppercase tracking-wider" +
+                    (colTasks.length === 0 ? " cursor-pointer" : "")
+                  }
+                >
+                  {group.label}
+                  <span className="rounded-full bg-neutral-800 px-1.5 py-0.5 text-[10px] text-neutral-400">
+                    {colTasks.length}
+                  </span>
+                </h2>
+                {colTasks.length === 0 && (
+                  <p className="text-[11px] text-neutral-500">{group.description}</p>
+                )}
+                <div className="space-y-2">
+                  {colTasks.map((t) => (
+                    <TaskCard
+                      key={t.id}
+                      task={t}
+                      allTasks={tasks}
+                      models={settings?.models ?? EMPTY_MODELS}
+                      lastActivityAt={activity[t.id]}
+                      estimate={estimates[t.id]}
+                      onSelect={selectTask}
+                      onStop={stoppingIds.has(t.id) ? undefined : stopTask}
+                      onRunNext={(id) => void changeStatus(id, "ready")}
+                      onDefer={(id) => void changeStatus(id, "backlog")}
+                      onRetry={(id) => void handleRetry(id)}
+                      isSelected={selectedTaskId === t.id}
+                      engineering={engineering}
+                    />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      )}
 
       {selectedTask && (
         <TaskDrawer
@@ -891,6 +1031,7 @@ export function Board({
               ? rollbackJobs[selectedTask.id]
               : undefined
           }
+          estimate={estimates[selectedTask.id]}
           actionBusy={actionBusy}
           onClose={() => setSelectedTaskId(null)}
           onViewDiff={() => handleViewDiff(selectedTask.id)}
@@ -901,6 +1042,83 @@ export function Board({
           onModelChange={(m) => handleModelChange(selectedTask.id, m)}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * VW04: the phone-first status-filtered list — one group at a time behind a
+ * tab strip, with the same cards and actions as the Kanban columns.
+ */
+function BoardList({
+  tasks,
+  group,
+  onGroupChange,
+  renderCard,
+}: {
+  tasks: Task[];
+  group: BoardGroupKey;
+  onGroupChange: (group: BoardGroupKey) => void;
+  renderCard: (task: Task) => React.ReactNode;
+}) {
+  const definition = BOARD_GROUPS.find((candidate) => candidate.key === group) ?? BOARD_GROUPS[0]!;
+  const visible = tasksInGroup(tasks, group);
+  return (
+    <div>
+      <div
+        role="tablist"
+        aria-label="Task groups"
+        data-horizontal-scroll="board-groups"
+        className="mb-3 flex gap-1 overflow-x-auto"
+      >
+        {BOARD_GROUPS.map((candidate) => {
+          const count = tasks.filter((t) => groupForStatus(t.status) === candidate.key).length;
+          const selected = candidate.key === group;
+          return (
+            <button
+              key={candidate.key}
+              type="button"
+              role="tab"
+              id={`board-tab-${candidate.key}`}
+              aria-selected={selected}
+              aria-controls={`board-group-${candidate.key}`}
+              title={candidate.description}
+              onClick={() => onGroupChange(candidate.key)}
+              className={
+                "min-h-10 shrink-0 rounded px-3 py-1.5 text-xs focus-visible:ring-2 focus-visible:ring-blue-500 " +
+                (selected
+                  ? "bg-neutral-700 text-neutral-100"
+                  : "text-neutral-400 hover:text-neutral-200")
+              }
+            >
+              {candidate.label}
+              <span
+                className={
+                  "ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] " +
+                  (candidate.key === "attention" && count > 0
+                    ? "bg-amber-900/60 text-amber-300"
+                    : "bg-neutral-800 text-neutral-400")
+                }
+              >
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <section
+        role="tabpanel"
+        id={`board-group-${group}`}
+        aria-labelledby={`board-tab-${group}`}
+        className="rounded-lg border border-neutral-800 bg-neutral-900/50 p-3"
+      >
+        <p className="mb-3 text-[11px] text-neutral-500">{definition.description}</p>
+        {visible.length === 0 ? (
+          <p className="text-xs text-neutral-500">Nothing here right now.</p>
+        ) : (
+          <div className="space-y-2">{visible.map(renderCard)}</div>
+        )}
+      </section>
     </div>
   );
 }

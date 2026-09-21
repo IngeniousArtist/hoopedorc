@@ -8,6 +8,7 @@ import type {
   Run,
   Task,
   TaskDecisionsResponse,
+  TaskEstimate,
 } from "@orc/types";
 import { useEffect, useId, useState } from "react";
 import { api } from "../api/client";
@@ -59,6 +60,7 @@ export function TaskDrawer({
   logsOmittedOlder,
   diff,
   rollbackJob,
+  estimate,
   actionBusy,
   onClose,
   onViewDiff,
@@ -74,6 +76,8 @@ export function TaskDrawer({
   logsOmittedOlder?: boolean;
   diff: string | null;
   rollbackJob?: RollbackJob;
+  /** VW04: F7's pre-run estimate, shown here now that cards hide it by default. */
+  estimate?: TaskEstimate;
   actionBusy: boolean;
   onClose: () => void;
   onViewDiff: () => void;
@@ -247,6 +251,39 @@ export function TaskDrawer({
                   </span>
                 ))}
               </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">
+                  Status
+                </div>
+                <p className="text-neutral-300">
+                  {task.status.replaceAll("_", " ")}
+                  {task.dispatchRequestedAt ? " · run next requested" : ""}
+                </p>
+              </div>
+              <div>
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">
+                  Difficulty
+                </div>
+                <p className="text-neutral-300">{task.difficulty}</p>
+              </div>
+              {estimate && (
+                <div className="sm:col-span-2">
+                  <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">
+                    Estimated cost
+                  </div>
+                  <p className="text-neutral-300">
+                    ~${estimate.expectedUsd.toFixed(2)}
+                    <span className="text-neutral-500">
+                      {estimate.hasHistory
+                        ? ` · up to ${estimate.highUsd.toFixed(2)} across all attempts, from run history`
+                        : " · low confidence, no run history yet for this model"}
+                    </span>
+                  </p>
+                </div>
+              )}
             </div>
 
             <div>

@@ -27,7 +27,9 @@ const STARTABLE = ["created", "planned", "paused", "completed", "failed"];
  * U2: `compact` renders just the name/repo/status/run-controls row — used on
  * every project page except Board, where budget editing and the Advanced
  * accordion have nothing to do with the page's own content (Plan, Costs,
- * Audit, Notifications). Board keeps the full editor (compact omitted).
+ * Audit, Notifications). Board keeps the full editor (compact omitted), but
+ * VW04 folds it into a collapsed "Project settings" disclosure so the board's
+ * work is visible first; every control and its semantics are unchanged.
  */
 export function ProjectHeader({ project, compact = false }: { project: Project; compact?: boolean }) {
   const toast = useToast();
@@ -181,7 +183,17 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
       </div>
 
       {!compact && (
-        <>
+        <details className="mt-2 rounded border border-neutral-800/80">
+          <summary className="cursor-pointer list-none px-3 py-2 text-[11px] font-medium text-neutral-400 hover:text-neutral-200 focus-visible:ring-2 focus-visible:ring-blue-500">
+            Project settings
+            <span className="ml-2 font-normal text-neutral-500">
+              budget{project.budgetUsd != null ? ` ${project.budgetUsd}` : " none"} · gates, retries, merge policy, schedule
+              {(budgetDirty || configDirty) && (
+                <span className="ml-2 text-amber-400">unsaved</span>
+              )}
+            </span>
+          </summary>
+          <div className="border-t border-neutral-800/80 px-3 pb-3">
           <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-neutral-400">
             <label htmlFor="project-budget-editor">Budget $</label>
             <input
@@ -223,7 +235,8 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
               </div>
             )}
           </div>
-        </>
+          </div>
+        </details>
       )}
     </div>
   );

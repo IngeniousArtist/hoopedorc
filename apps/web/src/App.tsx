@@ -44,25 +44,32 @@ export type Page =
   // SetupView's "Re-run setup" link.
   | "welcome";
 
-const NAV: { page: Page; label: string }[] = [
-  { page: "board", label: "Board" },
-  { page: "plan", label: "Plan" },
-  { page: "costs", label: "Costs" },
-  { page: "audit", label: "Audit" },
-  { page: "notifications", label: "Notifications" },
-  { page: "projects", label: "Projects" },
-  { page: "settings", label: "Settings" },
-  { page: "model-slugs", label: "Model Slugs" },
-  { page: "setup", label: "Setup" },
+/** VW04: project work and installation administration are separate groups
+ *  with their own labels; every page keeps its label and URL. */
+const NAV_GROUPS: { label: string; items: { page: Page; label: string }[] }[] = [
+  {
+    label: "Project",
+    items: [
+      { page: "board", label: "Board" },
+      { page: "plan", label: "Plan" },
+      { page: "costs", label: "Costs" },
+      { page: "audit", label: "Audit" },
+      { page: "notifications", label: "Notifications" },
+    ],
+  },
+  {
+    label: "Workspace",
+    items: [
+      { page: "projects", label: "Projects" },
+      { page: "setup", label: "Setup" },
+      { page: "model-slugs", label: "Model Slugs" },
+      { page: "settings", label: "Settings" },
+    ],
+  },
 ];
 
 /** Pages that need a selected project to render anything useful. */
 const PROJECT_PAGES: Page[] = ["board", "plan", "costs", "audit", "notifications"];
-
-/** U9: first NAV index that isn't project-scoped — renders a divider there
- *  so project tabs (Board…Notifications) read as visually distinct from
- *  app-level ones (Projects/Settings/Setup). */
-const GLOBAL_NAV_START = NAV.findIndex((item) => !PROJECT_PAGES.includes(item.page));
 
 const STORAGE_KEY = "hoop.projectId";
 
@@ -606,32 +613,48 @@ export function App() {
 
         <div
           data-horizontal-scroll="navigation"
-          className="mt-2 flex items-center gap-1 overflow-x-auto"
+          className="mt-2 flex items-center gap-3 overflow-x-auto"
         >
-          {NAV.map((item, i) => (
-            <Fragment key={item.page}>
-              {i === GLOBAL_NAV_START && GLOBAL_NAV_START > 0 && (
+          {NAV_GROUPS.map((group, groupIndex) => (
+            <Fragment key={group.label}>
+              {groupIndex > 0 && (
                 <span
                   aria-hidden="true"
-                  className="mx-1 h-4 w-px shrink-0 bg-neutral-700"
+                  className="h-5 w-px shrink-0 bg-neutral-700"
                 />
               )}
-              <button
-                onClick={() => navigate(item.page)}
-                className={
-                  "min-h-10 shrink-0 rounded px-3 py-1 text-xs transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 " +
-                  (page === item.page
-                    ? "bg-neutral-700 text-neutral-100"
-                    : "text-neutral-400 hover:text-neutral-200")
-                }
+              <div
+                role="group"
+                aria-label={`${group.label} pages`}
+                className="flex shrink-0 items-center gap-1"
               >
-                {item.label}
-                {item.page === "notifications" && pendingApprovals > 0 && (
-                  <span className="ml-1.5 inline-flex min-w-[1.1rem] items-center justify-center rounded-full border border-amber-700 bg-amber-900/60 px-1 text-[10px] font-medium text-amber-300">
-                    {pendingApprovals}
-                  </span>
-                )}
-              </button>
+                <span
+                  aria-hidden="true"
+                  className="mr-1 hidden text-[10px] uppercase tracking-wider text-neutral-500 sm:inline"
+                >
+                  {group.label}
+                </span>
+                {group.items.map((item) => (
+                  <button
+                    key={item.page}
+                    onClick={() => navigate(item.page)}
+                    aria-current={page === item.page ? "page" : undefined}
+                    className={
+                      "min-h-10 shrink-0 rounded px-3 py-1 text-xs transition-colors focus-visible:ring-2 focus-visible:ring-blue-500 " +
+                      (page === item.page
+                        ? "bg-neutral-700 text-neutral-100"
+                        : "text-neutral-400 hover:text-neutral-200")
+                    }
+                  >
+                    {item.label}
+                    {item.page === "notifications" && pendingApprovals > 0 && (
+                      <span className="ml-1.5 inline-flex min-w-[1.1rem] items-center justify-center rounded-full border border-amber-700 bg-amber-900/60 px-1 text-[10px] font-medium text-amber-300">
+                        {pendingApprovals}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
             </Fragment>
           ))}
         </div>

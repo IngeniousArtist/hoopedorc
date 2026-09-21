@@ -10,15 +10,14 @@ import { useNowTick } from "../hooks/useNowTick";
 import { useWS } from "../hooks/useWS";
 import { Heartbeat, agoLabel } from "./TaskCard";
 
-const usd = (n: number) => "$" + n.toFixed(4);
-
 /**
  * Slim "what's the team doing right now" strip above the Board's columns
- * (F4): one row per active agent, project burn vs budget, and a pending
- * approvals count that deep-links to Notifications. Reuses data Board.tsx
- * already tracks (tasks, the activity/heartbeat map, live costUsd, and the
- * budget figure from the same costAnalytics call) — only the approvals count
- * needs its own fetch.
+ * (F4): one row per active agent and a pending approvals count that
+ * deep-links to Notifications. VW04 moved the budget bar into BoardSummary so
+ * the two strips no longer duplicate the runtime dashboard; `costUsd`/
+ * `budgetUsd` stay in the props for callers that still pass them. Reuses
+ * data Board.tsx already tracks (tasks, the activity/heartbeat map) — only
+ * the approvals count needs its own fetch.
  */
 export function MissionControl({
   projectId,
@@ -26,8 +25,6 @@ export function MissionControl({
   models,
   activity,
   activeSince,
-  costUsd,
-  budgetUsd,
   onViewNotifications,
 }: {
   projectId: string;
@@ -39,7 +36,8 @@ export function MissionControl({
    *  task.updatedAt (below) for a task active before the page loaded, the
    *  only case with no entry yet. */
   activeSince: Record<string, number>;
-  costUsd: number;
+  /** Kept for API compatibility; the budget bar now lives in BoardSummary. */
+  costUsd?: number;
   budgetUsd?: number;
   onViewNotifications: () => void;
 }) {
@@ -94,17 +92,18 @@ export function MissionControl({
     (t) => t.status === "in_progress" || t.status === "in_review",
   );
   useNowTick(active.length > 0);
-  const budgetPct =
-    budgetUsd && budgetUsd > 0 ? Math.min(100, (costUsd / budgetUsd) * 100) : null;
 
-  if (active.length === 0 && budgetPct === null && pendingApprovals === 0) {
+  if (active.length === 0 && pendingApprovals === 0) {
     return null;
   }
 
   return (
-    <div className="mb-4 space-y-3 rounded-lg border border-neutral-800 bg-neutral-900/50 p-3">
+    <div
+      data-testid="mission-control"
+      className="mb-3 space-y-2 rounded-lg border border-neutral-800 bg-neutral-900/50 px-3 py-2"
+    >
       {active.length > 0 && (
-        <div className="space-y-1.5">
+        <div className="space-y-1">
           {active.map((t) => {
             const model = models.find((m) => m.id === t.assignedModel);
             // U13: prefer the stable "entered the active set" timestamp over
@@ -132,36 +131,15 @@ export function MissionControl({
         </div>
       )}
 
-      {(budgetPct !== null || pendingApprovals > 0) && (
+      {pendingApprovals > 0 && (
         <div className="flex items-center gap-4">
-          {budgetPct !== null && (
-            <div className="flex flex-1 items-center gap-2 text-[11px]">
-              <span className="shrink-0 text-neutral-400">
-                {usd(costUsd)} / {usd(budgetUsd!)}
-              </span>
-              <div className="h-1.5 flex-1 overflow-hidden rounded bg-neutral-800">
-                <div
-                  className={
-                    "h-full " +
-                    (budgetPct > 90
-                      ? "bg-red-500"
-                      : budgetPct > 70
-                        ? "bg-amber-500"
-                        : "bg-green-600")
-                  }
-                  style={{ width: `${budgetPct}%` }}
-                />
-              </div>
-            </div>
-          )}
-          {pendingApprovals > 0 && (
-            <button
-              onClick={onViewNotifications}
-              className="shrink-0 rounded border border-amber-800 px-2 py-0.5 text-[11px] text-amber-300 hover:bg-amber-950/40"
-            >
-              {pendingApprovals} pending approval{pendingApprovals === 1 ? "" : "s"} {"→"}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onViewNotifications}
+            className="shrink-0 rounded border border-amber-800 px-2 py-0.5 text-[11px] text-amber-300 hover:bg-amber-950/40 focus-visible:ring-2 focus-visible:ring-amber-400"
+          >
+            {pendingApprovals} pending approval{pendingApprovals === 1 ? "" : "s"} {"→"}
+          </button>
         </div>
       )}
     </div>
