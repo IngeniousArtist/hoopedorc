@@ -7369,7 +7369,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | ID | Work item | Status | PR / acceptance evidence |
 |---|---|---|---|
 | VW01 | Deterministic mock planning; no real planner/Figma calls | Done (merged 2026-09-21) | [PR #262](https://github.com/IngeniousArtist/hoopedorc/pull/262) → main `c050b4d`; PR CI `build-and-test` passed; main CI run [35565173055](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35565173055) passed; see the VW01 acceptance record below |
-| VW02 | Preserve planning input and truthful draft-save state | Implemented; PR open, awaiting required CI and merge | [PR #264](https://github.com/IngeniousArtist/hoopedorc/pull/264); see the VW02 acceptance record below |
+| VW02 | Preserve planning input and truthful draft-save state | Done (merged 2026-09-21) | [PR #264](https://github.com/IngeniousArtist/hoopedorc/pull/264) → main `8d00383`; PR CI `build-and-test` passed; main CI run [35567524350](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35567524350) passed; see the VW02 acceptance record below |
 | VW03 | Repository-aware planning and truthful task history | Not started | — |
 | VW04 | Project navigation, compact board/list, task inspector | Not started | — |
 | VW05 | Organize existing settings and setup | Not started | — |
@@ -7586,4 +7586,13 @@ surfaces inside the viewport, and ≥40px phone touch targets at 360, 768, and
 **Gates (all passed, Node 22.23.0):** `npm run typecheck`, `npm run build`,
 `npm run lint` (330 legacy findings, baseline unchanged), 234 engine, 18
 adapter, 343 server, 109 web tests (26 files, 9 new), 21 Playwright scenarios,
-`git diff --check`. Publication: [PR #264](https://github.com/IngeniousArtist/hoopedorc/pull/264). Required PR CI must pass before merge; merge/main CI evidence is appended after merge.
+`git diff --check`.
+
+**Publication and merge evidence:**
+[PR #264](https://github.com/IngeniousArtist/hoopedorc/pull/264); required PR
+check `build-and-test` passed (2m42s, run 35567272820) before the squash
+merge to main as `8d00383` on 2026-09-21. Post-merge main CI run
+[35567524350](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35567524350)
+completed successfully. Independent post-merge check on `8d00383`: web
+typecheck and the 20 Plan view tests (9 VW02 + 11 existing) passed locally.
+Next: VW03, starting from the merged result.
