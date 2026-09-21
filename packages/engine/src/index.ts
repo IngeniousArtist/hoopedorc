@@ -63,6 +63,7 @@ export type {
 } from "./git-service.js";
 export { GateRunnerImpl } from "./gate-runner.js";
 export { WorkspaceInspectionError } from "./workspace-inspection.js";
+export { retainWorkspace, workspaceRetained } from "./workspace-leases.js";
 export { ValidatorImpl, SelfReviewError } from "./validator.js";
 export type { ValidatorInvocationSink } from "./validator.js";
 export { Orchestrator } from "./orchestrator.js";

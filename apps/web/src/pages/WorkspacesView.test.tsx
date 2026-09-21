@@ -11,6 +11,7 @@ const file = { workspace, path: "src/a.ts", content: "first\nsecond\n", contentS
 const handoff = vi.fn();
 beforeEach(() => { apiMock.mockReset(); handoff.mockReset(); });
 function defaults(key: string) {
+  if (key === "workspacePreview") return { preview: null, profile: null, projectUpdatedAt: "version", available: false, reason: "Choose a task workspace to preview." };
   if (key === "listWorkspaces") return { workspaces: [workspace] };
   if (key === "workspaceFiles") return { workspace, files: ["src/a.ts", "src/b.ts"].map((path) => ({ path, changed: false, untracked: false })), truncated: false };
   if (key === "workspaceFile") return file;

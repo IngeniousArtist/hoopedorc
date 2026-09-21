@@ -7378,7 +7378,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW06 | Durable planning operations and planning workbench | Implemented | [PR #272](https://github.com/IngeniousArtist/hoopedorc/pull/272), merged as `0e84781`; required CI passed; see VW06 acceptance record below |
 | VW07 | Propose/apply plan revisions during execution | Implemented | [PR #273](https://github.com/IngeniousArtist/hoopedorc/pull/273); see VW07 acceptance record below and PR checks for CI/merge evidence |
 | VW08 | Workspace inventory and read-only code inspection | Implemented | [PR #274](https://github.com/IngeniousArtist/hoopedorc/pull/274); see VW08 acceptance record below; PR records required CI/merge evidence |
-| VW09 | Managed environments and preview lifecycle | Not started | — |
+| VW09 | Managed environments and preview lifecycle | Implemented; AWS validation deferred | [#275](https://github.com/IngeniousArtist/hoopedorc/pull/275): native task preview ownership and separate-origin authenticated proxy |
 | VW10 | Full review workbench and browser evidence | Not started | — |
 | VW11 | Project design/reference library | Not started | — |
 | VW12 | Selective skills, plugins, and MCP activation | Not started | — |
@@ -8290,3 +8290,52 @@ Initial CI run `35590873677` found a TypeScript overload mismatch in the new
 engine test's `assert.throws` message argument (the runtime case had passed).
 The assertion uses the supported overload; the focused engine typecheck passed
 after correction. Required CI is rerun on the final head before merge.
+
+### VW09 — managed task preview lifecycle (2026-09-21)
+
+**Acceptance criteria before implementation:** a task preview has one durable
+owner, a validated task worktree, captured profile/HEAD and server-assigned
+ports. Structured commands are project configuration, never launch payloads.
+Start/stop are explicit and idempotent; readiness requires a live owned process
+and bounded successful HTTP probe. Port conflicts, missing tools, timeout,
+process exit, stopped/deleted workspace and restart are visible failures.
+Retain the workspace while preview processes are active. Closing the UI leaves
+server work intact; graceful shutdown and parent disappearance settle the
+whole child process group. Restart revokes preview access and records the
+interrupted generation without killing an unverified reused PID.
+
+Serve each preview from an allowlisted origin/port separate from the control
+plane. Authenticated launch exchanges a short-lived single-use ticket for a
+scoped session; authenticate HTTP and WebSocket upgrades. Never forward the
+control-plane token, authorization, session cookies or arbitrary client URLs
+to the application. Revoke sessions and close proxy sockets on stop. Show
+starting/ready/failed/stopped/interrupted, observed revision, bounded logs,
+iframe and a new-tab fallback; primary-clone execution is unavailable.
+
+**Scope/decisions:** first support explicitly labelled native host previews
+on macOS/Linux with process ownership tools. Required sandbox policy refuses
+this profile; it never silently downgrades. Full agent/container execution is
+VW14. Preview targets use project-local installed dependencies; no automatic
+installation, provider call, terminal, distributed worker or remote deployment.
+Local loopback is the default. AWS uses explicit private origin/port mappings;
+its live smoke remains required evidence. The owner confirmed on 2026-09-21
+that the old AWS server is shut down and the replacement is not set up yet.
+AWS validation is explicitly deferred until that replacement is ready; do not
+attempt to connect to the previous server. Tests exercise real local processes, proxy auth/WS,
+restart/cancellation and the focused UI; full local regression remains at the
+end of the implementation plan.
+
+**VW09 implementation evidence:** versioned preview profiles, durable session
+ownership, workspace retention, native IPC supervisor, authenticated separate
+HTTP/WS gateway, restart interruption and workspace controls are implemented.
+Focused checks: 9 server/policy/contract cases (real temporary Git worktrees,
+HTTP/WS, repeat start/stop, port ownership/conflict, spawn failure, readiness
+timeout, workspace replacement/cleanup refusal, abrupt owner death and restart),
+6 web interaction cases, and workspace/preview Playwright flows at 360, 390,
+768, 1280 and 1440px. The preview flow verifies keyboard confirmation, draft
+save, embedding, page reload, new-tab fallback and stop. Relevant server/web
+typechecks and engine/server/web builds passed; changed-file lint has no new
+warnings/errors. Screenshots were reviewed. Full local regression remains
+scheduled after the implementation plan, while required CI must pass before
+merge. AWS is owner-deferred as recorded above; native previews are not a
+container/agent sandbox. PR/CI evidence follows on the reviewed head.

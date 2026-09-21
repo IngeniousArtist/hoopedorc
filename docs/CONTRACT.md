@@ -672,6 +672,11 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `workspaceFiles` | `GET /api/projects/:id/workspaces/:workspaceId/files` | → `WorkspaceFilesResponse` |
 | `workspaceFile` | `GET /api/projects/:id/workspaces/:workspaceId/file` | Query `path` → `WorkspaceFileResponse` |
 | `workspaceDiff` | `GET /api/projects/:id/workspaces/:workspaceId/diff` | Query `path` → `WorkspaceDiffResponse` |
+| `workspacePreview` | `GET /api/projects/:id/workspaces/:workspaceId/preview` | → `WorkspacePreviewResponse` |
+| `startWorkspacePreview` | `POST /api/projects/:id/workspaces/:workspaceId/preview/start` | `StartWorkspacePreviewRequest` → `202 WorkspacePreviewResponse` |
+| `stopWorkspacePreview` | `POST /api/projects/:id/workspaces/:workspaceId/preview/stop` | → `WorkspacePreviewResponse` |
+| `openWorkspacePreview` | `POST /api/projects/:id/workspaces/:workspaceId/preview/open` | → `PreviewLaunchResponse` |
+| `setPreviewProfile` | `PUT /api/projects/:id/preview-profile` | `SetPreviewProfileRequest` → `WorkspacePreviewResponse` (primary context) |
 | `updateProject` | `PATCH /api/projects/:id` | `UpdateProjectRequest` → `UpdateProjectResponse` |
 | `deleteProject` | `DELETE /api/projects/:id` | → `DeleteProjectResponse` |
 | `planProject` | `POST /api/projects/:id/plan` | `PlanProjectRequest` → `PlanProjectResponse` |
@@ -855,3 +860,32 @@ primary-clone diffs compare against HEAD. Missing base refuses the diff. An
 untracked file has content but no tracked diff. There are no filesystem writes,
 cleanup, terminal or execution actions. Mock mode serves only fixed in-memory
 files, regardless of the configured host path. These APIs use normal API auth.
+
+### VW09 managed task previews
+
+`ProjectConfig.preview` is a structured `{command,args,readinessPath,
+startupTimeoutSeconds}` profile. The dedicated save endpoint requires the
+reviewed `projectUpdatedAt`; null removes the profile. Start accepts **only**
+`projectUpdatedAt`, rejects stale configuration/pending plan application, and
+never accepts a target URL or launch command. Stop is idempotent and waits for
+owned processes to settle. Project deletion refuses active/recovering previews.
+`primary` is inspectable but not executable. Mock sessions persist the same
+states without invoking a host command and return a fixed inert preview page.
+
+`WorkspacePreviewResponse` includes availability/reason, current profile/project
+version and latest durable session (or null). Sessions record project/task,
+profile, captured HEAD/dirty state, timestamps, bounded logs, host isolation,
+public origin, detail and `starting|ready|stopping|stopped|failed|interrupted`.
+The UI polls this resource; profile saves broadcast `project.updated`.
+
+Open issues a 60-second one-use launch URL on a separate configured origin.
+The gateway exchanges it for a two-hour HttpOnly session cookie and redirects
+to `/`. HTTP and WebSocket access are authenticated. Stop/restart revokes access;
+reopening refreshes it. Upstreams are server-assigned loopback ports verified
+against the owned process group, never client URLs. Authorization, control
+cookies and forwarding headers are stripped. App cookies are namespaced and
+HttpOnly; external redirects are refused. Service workers are disabled to keep
+one session from persisting into a reused slot. Cross-origin browser access to
+the control plane is refused unless its origin is explicitly allowed or the
+request carries a valid bearer token. CLI requests without Origin still follow
+the existing API authentication policy.

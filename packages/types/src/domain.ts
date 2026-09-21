@@ -259,7 +259,16 @@ export interface Project {
  * defaults. Every field is optional — an unset project keeps behaving
  * exactly as it did before F9.
  */
+export interface PreviewProfile {
+  command: string;
+  args: string[];
+  readinessPath: string;
+  startupTimeoutSeconds: number;
+}
+
 export interface ProjectConfig {
+  /** Explicit native task preview. {port}/{host} are server-owned placeholders. */
+  preview?: PreviewProfile;
   /**
    * B38: optional dependency/bootstrap command for non-Node stacks and
    * specialist SDKs. It is dispatched directly with an argument array —

@@ -140,6 +140,9 @@ test("O30: every ROUTES method and path is registered in Fastify", async () => {
   try {
     await app.ready();
     assert.deepEqual(unregisteredRoutes(app, ROUTES), []);
+    assert.equal((await app.inject({ url: "/api/projects", headers: { origin: "http://127.0.0.1:4318", host: "127.0.0.1:4317" } })).statusCode, 403, "preview browsers cannot read the control API");
+    assert.equal((await app.inject({ method: "POST", url: "/api/projects", headers: { origin: "http://127.0.0.1:4318", host: "127.0.0.1:4317" }, payload: {} })).statusCode, 403, "simple cross-origin mutations fail before routing");
+    assert.equal((await app.inject({ url: "/api/projects", headers: { origin: "http://127.0.0.1:4317", host: "127.0.0.1:4317" } })).statusCode, 200);
 
     const renamed = {
       ...ROUTES,

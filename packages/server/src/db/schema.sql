@@ -388,3 +388,20 @@ BEGIN SELECT RAISE(ABORT, 'plan application is pending; retry it before changing
 CREATE TRIGGER IF NOT EXISTS plan_change_task_delete BEFORE DELETE ON tasks
 WHEN EXISTS (SELECT 1 FROM plan_change_reviews WHERE project_id = OLD.project_id AND state = 'applying')
 BEGIN SELECT RAISE(ABORT, 'plan application is pending; retry it before changing tasks'); END;
+
+-- VW09: one durable process/port owner per active task preview.
+CREATE TABLE IF NOT EXISTS workspace_previews (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  state TEXT NOT NULL,
+  proxy_port INTEGER NOT NULL,
+  target_port INTEGER NOT NULL,
+  child_pid INTEGER,
+  workspace_path TEXT NOT NULL,
+  preview_json TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_preview_workspace_owner ON workspace_previews(project_id, task_id)
+  WHERE state IN ('starting', 'ready', 'stopping');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_preview_port_owner ON workspace_previews(proxy_port)
+  WHERE state IN ('starting', 'ready', 'stopping');

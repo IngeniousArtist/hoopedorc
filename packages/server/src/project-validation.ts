@@ -18,6 +18,7 @@ import {
   type Settings,
 } from "@orc/types";
 import { parseSetupCommand } from "./project-config.js";
+import { parsePreviewProfile } from "./preview-policy.js";
 
 const pexecFile = promisify(execFile);
 const VALID_BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
@@ -52,6 +53,12 @@ export function parseProjectConfig(
   }
   const raw = input as Record<string, unknown>;
   const value: ProjectConfig = {};
+
+  if (raw.preview !== undefined) {
+    const parsed = parsePreviewProfile(raw.preview);
+    if ("error" in parsed) return parsed;
+    value.preview = parsed.value;
+  }
 
   if (raw.setupCommand !== undefined) {
     const parsed = parseSetupCommand(raw.setupCommand);

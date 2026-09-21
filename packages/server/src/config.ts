@@ -687,6 +687,8 @@ export function defaultSettings(): Settings {
 const dbPath = process.env.DB_PATH ?? "hoopedorc.db";
 
 export const ENV = {
+  previewPorts: process.env.PREVIEW_PORTS ?? "4318,4319,4320,4321",
+  previewOrigins: process.env.PREVIEW_ORIGINS ?? "",
   port: Number(process.env.PORT ?? 4317),
   dbPath,
   // Loopback by default — the API is unauthenticated unless apiToken/API_TOKEN

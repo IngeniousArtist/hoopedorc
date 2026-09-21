@@ -111,3 +111,23 @@ project was designed around — see `docs/PRODUCTIZATION_PLAN.md`), bind
 `HOST` to the tailnet interface (or `0.0.0.0` behind a security group that
 only allows the tailnet) and set `API_TOKEN`. See the main README's Security
 section and `docs/USER_GUIDE.md` for the full remote-setup walkthrough.
+
+## Task preview origins (VW09)
+
+Native previews require Linux/macOS, `lsof`, `ps` and the project's installed
+runtime/dependencies. `PREVIEW_PORTS` defaults to `4318,4319,4320,4321`; gateways
+bind only `127.0.0.1`. For local use these loopback ports are separate browser
+origins. Do not reuse the API port or an allowed control-plane origin.
+
+For a remote host, configure one **private HTTPS origin** per gateway in
+`PREVIEW_ORIGINS`, in matching port order, and map each origin to its loopback
+port through the private reverse proxy. Preserve WebSocket upgrades and the
+public browser Origin. Every origin must be distinct and different from the
+control plane; do not expose raw upstream process ports or allow preview origins
+in `CORS_ORIGINS`. The authenticated app supplies short-lived launch links.
+Required sandbox policy refuses these native previews; there is no downgrade.
+
+AWS live validation is deferred by the owner (2026-09-21): the old server is
+shut down and the replacement is not yet set up. Before claiming remote support
+verified, test private access, HTTP and HMR WebSockets, stop/restart recovery,
+port conflicts and service-user ownership on the replacement installation.

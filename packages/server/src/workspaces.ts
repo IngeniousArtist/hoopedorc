@@ -22,7 +22,7 @@ export function registerWorkspaceRoutes(app: FastifyInstance, db: Db, mock: bool
     if (mock) {
       if (file && !Object.hasOwn(MOCK_FILES, file.path)) throw new WorkspaceInspectionError("File not found in mock workspace.", 404);
       const content = file ? MOCK_FILES[file.path]! : "";
-      return { branch: task?.branch ?? project.defaultBranch, headSha: "d".repeat(40), baseSha: "c".repeat(40),
+      return { branch: task ? task.branch ?? `orc/${task.id}` : project.defaultBranch, headSha: "d".repeat(40), baseSha: "c".repeat(40),
         dirty: !!task, changedFiles: task ? 1 : 0, truncated: false,
         files: Object.keys(MOCK_FILES).map((path) => ({ path, changed: !!task && path.startsWith("src/"), untracked: false })),
         contents: file && !file.diff ? { content, contentSha: createHash("sha256").update(content).digest("hex") } : undefined,
@@ -44,7 +44,7 @@ export function registerWorkspaceRoutes(app: FastifyInstance, db: Db, mock: bool
     const { id } = req.params as { id: string };
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "Project not found." });
-    const tasks = repo.getTasks(db, id).filter((task) => task.worktreePath || task.branch);
+    const tasks = repo.getTasks(db, id).filter((task) => task.worktreePath || task.branch || mock);
     const workspaces = [await summary(project)];
     // Bound concurrent subprocesses while retaining every recorded workspace.
     for (let index = 0; index < tasks.length; index += 4) {
