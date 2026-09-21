@@ -365,3 +365,26 @@ CREATE TABLE IF NOT EXISTS planning_operation_invocations (
   invocation_id TEXT NOT NULL UNIQUE REFERENCES model_invocations(id) ON DELETE CASCADE,
   PRIMARY KEY (operation_id, invocation_id)
 );
+
+-- VW07: immutable review and durable application ownership.
+CREATE TABLE IF NOT EXISTS plan_change_reviews (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  revision_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('reviewed', 'applying', 'applied')),
+  review_json TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_change_applying
+  ON plan_change_reviews(project_id) WHERE state = 'applying';
+CREATE INDEX IF NOT EXISTS idx_plan_change_revision ON plan_change_reviews(project_id, revision_id);
+-- No route, scheduler, or retry may change tasks during Git/archive persistence.
+-- Finalization releases this lock inside the SAME transaction as its task writes.
+CREATE TRIGGER IF NOT EXISTS plan_change_task_insert BEFORE INSERT ON tasks
+WHEN EXISTS (SELECT 1 FROM plan_change_reviews WHERE project_id = NEW.project_id AND state = 'applying')
+BEGIN SELECT RAISE(ABORT, 'plan application is pending; retry it before changing tasks'); END;
+CREATE TRIGGER IF NOT EXISTS plan_change_task_update BEFORE UPDATE ON tasks
+WHEN EXISTS (SELECT 1 FROM plan_change_reviews WHERE project_id = OLD.project_id AND state = 'applying')
+BEGIN SELECT RAISE(ABORT, 'plan application is pending; retry it before changing tasks'); END;
+CREATE TRIGGER IF NOT EXISTS plan_change_task_delete BEFORE DELETE ON tasks
+WHEN EXISTS (SELECT 1 FROM plan_change_reviews WHERE project_id = OLD.project_id AND state = 'applying')
+BEGIN SELECT RAISE(ABORT, 'plan application is pending; retry it before changing tasks'); END;

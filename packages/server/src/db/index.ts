@@ -108,6 +108,31 @@ CREATE TABLE IF NOT EXISTS planning_operation_invocations (
 );
 `;
 
+const VW07_PLAN_CHANGES_MIGRATION = `
+-- VW07: immutable review and durable application ownership.
+CREATE TABLE IF NOT EXISTS plan_change_reviews (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  revision_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('reviewed', 'applying', 'applied')),
+  review_json TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_change_applying
+  ON plan_change_reviews(project_id) WHERE state = 'applying';
+CREATE INDEX IF NOT EXISTS idx_plan_change_revision ON plan_change_reviews(project_id, revision_id);
+-- No route, scheduler, or retry may change tasks during Git/archive persistence.
+-- Finalization releases this lock inside the SAME transaction as its task writes.
+CREATE TRIGGER IF NOT EXISTS plan_change_task_insert BEFORE INSERT ON tasks
+WHEN EXISTS (SELECT 1 FROM plan_change_reviews WHERE project_id = NEW.project_id AND state = 'applying')
+BEGIN SELECT RAISE(ABORT, 'plan application is pending; retry it before changing tasks'); END;
+CREATE TRIGGER IF NOT EXISTS plan_change_task_update BEFORE UPDATE ON tasks
+WHEN EXISTS (SELECT 1 FROM plan_change_reviews WHERE project_id = OLD.project_id AND state = 'applying')
+BEGIN SELECT RAISE(ABORT, 'plan application is pending; retry it before changing tasks'); END;
+CREATE TRIGGER IF NOT EXISTS plan_change_task_delete BEFORE DELETE ON tasks
+WHEN EXISTS (SELECT 1 FROM plan_change_reviews WHERE project_id = OLD.project_id AND state = 'applying')
+BEGIN SELECT RAISE(ABORT, 'plan application is pending; retry it before changing tasks'); END;
+`;
+
 export type Db = Database.Database;
 
 export function openDb(path: string = ENV.dbPath): Db {
@@ -403,6 +428,7 @@ export function initDb(path: string = ENV.dbPath): Db {
     db.prepare("UPDATE settings SET json = ? WHERE id = 1").run(JSON.stringify(normalized));
   }
   db.exec(VW06_PLANNING_MIGRATION);
+  db.exec(VW07_PLAN_CHANGES_MIGRATION);
   // No CLI can be resumed by restoring an in-memory Promise. Keep the input,
   // settle orphaned ownership, and require an explicit, separately counted retry.
   db.prepare(`UPDATE planning_operations SET state = 'interrupted', ended_at = ?,

@@ -123,6 +123,8 @@ export interface PlanChatMessage {
 }
 
 export interface PlanChatRequest {
+  /** VW07: draft a separate proposal while execution continues. */
+  proposal?: boolean;
   /** O3: immutable server-issued id for this editable planning revision. */
   revisionId: string;
   messages: PlanChatMessage[];
@@ -368,6 +370,42 @@ export interface PlanningOperation {
 }
 
 export interface PlanOperationResponse { operation: PlanningOperation }
+
+export interface PlanChangeTask extends DraftTask {
+  /** Explicit operator selection; only never-started pending work is editable. */
+  existingTaskId?: string;
+  /** Dependencies on retained board tasks, in addition to draft indices. */
+  existingDependsOn: string[];
+}
+export interface ReviewPlanChangesRequest {
+  revisionId: string;
+  sessionVersion: number;
+  taskGeneration: number;
+  prdMarkdown: string;
+  agentsMd?: string;
+  tasks: PlanChangeTask[];
+}
+export interface PlanChangeReview {
+  id: string;
+  projectId: string;
+  state: "reviewed" | "applying" | "applied";
+  createdAt: string;
+  input: ReviewPlanChangesRequest;
+  previousPrd: string;
+  /** Stable IDs are reserved during review, not regenerated on apply/retry. */
+  changes: { before?: Task; after: Task }[];
+  retainedTasks: Task[];
+}
+export interface PlanChangeContextResponse {
+  revisionId: string;
+  sessionVersion: number;
+  taskGeneration: number;
+  tasks: Task[];
+  executionActive: boolean;
+  latestReview: PlanChangeReview | null;
+}
+export interface PlanChangeReviewResponse { review: PlanChangeReview }
+export interface ApplyPlanChangesRequest { reviewId: string }
 
 /**
  * F27: a file uploaded from PlanView as planning context — stored at
@@ -735,6 +773,9 @@ export const ROUTES = {
   planOperation: "GET /api/projects/:id/plan/operations/:operationId",
   planOperationRetry: "POST /api/projects/:id/plan/operations/:operationId/retry",
   planOperationCancel: "POST /api/projects/:id/plan/operations/:operationId/cancel",
+  planChangeContext: "GET /api/projects/:id/plan/changes",
+  reviewPlanChanges: "POST /api/projects/:id/plan/changes/review",
+  applyPlanChanges: "POST /api/projects/:id/plan/changes/apply",
   planCommit: "POST /api/projects/:id/plan/commit",
   planSession: "GET /api/projects/:id/plan/session",
   planSessionArchives: "GET /api/projects/:id/plan/sessions",

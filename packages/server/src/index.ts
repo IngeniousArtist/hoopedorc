@@ -1,3 +1,5 @@
+import { PlanChangeError, assertPlanChangeCurrent, getPlanChange, latestPlanChange, pendingPlanChange, reviewPlanChanges, validatePlanChangeInput } from "./plan-changes";
+import type { ApplyPlanChangesRequest } from "@orc/types";
 import "dotenv/config";
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
@@ -1238,6 +1240,7 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if (pendingPlanChange(db, id)) return reply.code(409).send({ error: "Plan application is pending; retry it before changing this project." });
 
     const body = req.body as {
       name?: string;
@@ -1284,7 +1287,8 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    if (activePlanningOperation(db, id)) return reply.code(409).send({ error: "planning is active — wait for it to settle first" });
+    if (pendingPlanChange(db, id)) return reply.code(409).send({ error: "Plan application is pending; retry it before changing this project." });
+    if (activePlanningOperation(db, id) || pendingPlanChange(db, id)) return reply.code(409).send({ error: "planning or its application is active — wait for it to settle first" });
     if (engine.hasActivity(id)) {
       return reply
         .code(409)
@@ -1462,9 +1466,11 @@ async function assembleServer(
   // batch would race the DAG the loop is already executing. Reads (session,
   // sessions archive, attachments list) stay open so the Plan tab can show
   // history during a run; chat re-opens when the run finishes.
-  const planningLockError = (project: Project): string | null =>
-    project.status === "running" || engine.hasActivity(project.id)
+  const planningLockError = (project: Project, proposal = false): string | null =>
+    !proposal && (project.status === "running" || engine.hasActivity(project.id))
       ? "tasks are running — planning re-opens when the run finishes (chat history stays visible below)"
+      : pendingPlanChange(db, project.id)
+        ? "plan application is pending — retry it before editing"
       : deletingProjects.has(project.id)
         ? "project deletion is in progress"
       : legacyPlanningProjects.has(project.id)
@@ -1529,7 +1535,7 @@ async function assembleServer(
       const repository = await planning.inspect(project, signal);
       const context = {
         project, plannerModel, messages, repository, signal, attachmentNames,
-        priorContext: buildPriorContext(db, project),
+        priorContext: [buildPriorContext(db, project), operation.input.proposal ? "This is a separate change proposal. Existing accepted and active tasks remain unchanged. Propose follow-up work; only the operator may select never-started tasks to revise. Do not edit repository files during planning." : undefined].filter(Boolean).join("\n\n"),
         onInvocation: (event: ModelInvocation) => db.transaction(() => {
           recordModelInvocation(event, id);
           db.prepare("INSERT OR IGNORE INTO planning_operation_invocations (operation_id, invocation_id) VALUES (?, ?)").run(operation.id, event.id);
@@ -1576,13 +1582,14 @@ async function assembleServer(
       if (body.sessionVersion !== undefined && (!Number.isSafeInteger(body.sessionVersion) || body.sessionVersion < 0)) {
         return reply.code(400).send({ error: "invalid sessionVersion" });
       }
+      if (body.proposal !== undefined && typeof body.proposal !== "boolean") return reply.code(400).send({ error: "invalid proposal mode" });
       if (body.background !== undefined && typeof body.background !== "boolean") return reply.code(400).send({ error: "invalid background mode" });
       if (body.figmaVerification !== undefined && !["live", "attachments"].includes(body.figmaVerification)) return reply.code(400).send({ error: "invalid figmaVerification mode" });
       try {
         // Existing identity is replayable even after its revision was committed.
         const existing = body.operationId ? getPlanningOperation(db, id, body.operationId) : null;
         if (!existing) {
-          const lockErr = planningLockError(project);
+          const lockErr = planningLockError(project, body.proposal === true);
           if (lockErr) throw new PlanningOperationError(lockErr);
           const revisionErr = planningRevisionError(id, body.revisionId);
           if (revisionErr) throw new PlanningOperationError(revisionErr.error, revisionErr.status);
@@ -1619,7 +1626,8 @@ async function assembleServer(
         if (action === "retry") {
           // Replaying an already-created retry is safe; a new retry needs ownership.
           const child = db.prepare("SELECT id FROM planning_operations WHERE retry_of = ? AND project_id = ?").get(operationId, id);
-          const lockErr = planningLockError(project);
+          const previous = getPlanningOperation(db, id, operationId);
+          const lockErr = planningLockError(project, previous?.input.proposal === true);
           if (!child && lockErr) throw new PlanningOperationError(lockErr);
         }
         const operation = action === "retry" ? operations.retry(id, operationId) : operations.cancel(id, operationId);
@@ -1636,7 +1644,7 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    const locked = planningLockError(project);
+    const locked = planningLockError(project, true);
     if (locked) return reply.code(409).send({ error: locked });
     const body = req.body as Partial<SaveDraftRequest> | undefined;
     const revisionErr = planningRevisionError(id, body?.revisionId);
@@ -1701,7 +1709,7 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    if (activePlanningOperation(db, id)) return reply.code(409).send({ error: "planning is active — wait for it to settle first" });
+    if (activePlanningOperation(db, id) || pendingPlanChange(db, id)) return reply.code(409).send({ error: "planning or its application is active — wait for it to settle first" });
 
     let data;
     try {
@@ -1731,7 +1739,7 @@ async function assembleServer(
       throw err;
     }
 
-    if (activePlanningOperation(db, id)) return reply.code(409).send({ error: "planning is active — wait for it to settle first" });
+    if (activePlanningOperation(db, id) || pendingPlanChange(db, id)) return reply.code(409).send({ error: "planning or its application is active — wait for it to settle first" });
     const dir = attachmentsDir(project, env.mock);
     return { attachments: saveAttachment(dir, sanitized, buffer) };
   });
@@ -1740,10 +1748,77 @@ async function assembleServer(
     const { id, name } = req.params as { id: string; name: string };
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    if (activePlanningOperation(db, id)) return reply.code(409).send({ error: "planning is active — wait for it to settle first" });
+    if (activePlanningOperation(db, id) || pendingPlanChange(db, id)) return reply.code(409).send({ error: "planning or its application is active — wait for it to settle first" });
     const updated = removeAttachment(attachmentsDir(project, env.mock), name);
     if (updated === null) return reply.code(404).send({ error: "attachment not found" });
     return { attachments: updated };
+  });
+
+  // VW07: comparisons are immutable; application reuses the existing Git receipt.
+  const executionActive = (id: string): boolean => engine.hasActivity(id) || repo.getProject(db, id)?.status === "running" ||
+    repo.getTasks(db, id).some((t) => t.status === "in_progress" || t.status === "in_review");
+  app.get("/api/projects/:id/plan/changes", (req, reply) => {
+    const { id } = req.params as RouteParams;
+    if (!repo.getProject(db, id)) return reply.code(404).send({ error: "project not found" });
+    const revisionId = repo.ensurePlanningRevision(db, id);
+    return { revisionId, sessionVersion: repo.getPlanningSession(db, id).sessionVersion,
+      taskGeneration: repo.getTaskGeneration(db, id), tasks: repo.getTasks(db, id), executionActive: executionActive(id),
+      latestReview: latestPlanChange(db, id, revisionId) };
+  });
+  app.post("/api/projects/:id/plan/changes/review", (req, reply) => {
+    const { id } = req.params as RouteParams;
+    try {
+      if (activePlanningOperation(db, id) || planningCommitInProgress(id) || deletingProjects.has(id)) throw new PlanChangeError("Wait for the current planning operation to settle before reviewing.");
+      validatePlanChangeInput(req.body);
+      return { review: reviewPlanChanges(db, id, req.body, repo.getSettings(db) ?? defaultSettings()) };
+    } catch (error) {
+      if (error instanceof PlanChangeError) return reply.code(error.status).send({ error: error.message, code: error.code });
+      throw error;
+    }
+  });
+  app.post("/api/projects/:id/plan/changes/apply", async (req, reply) => {
+    const { id } = req.params as RouteParams;
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    const body = req.body as Partial<ApplyPlanChangesRequest> | undefined;
+    if (typeof body?.reviewId !== "string") return reply.code(400).send({ error: "reviewId required" });
+    const review = getPlanChange(db, id, body.reviewId);
+    if (!review) return reply.code(404).send({ error: "plan comparison not found" });
+    try {
+      const assertIdle = () => {
+        if (executionActive(id) || activePlanningOperation(db, id) || deletingProjects.has(id)) {
+          throw new PlanChangeError("Pause dispatch, let active work finish, then refresh the comparison before applying.", "EXECUTION_ACTIVE");
+        }
+      };
+      if (review.state !== "applied") {
+        assertIdle();
+        assertPlanChangeCurrent(db, review, review.state === "applying");
+        // A pending receipt may have advanced HEAD itself; preserve its existing retry semantics.
+        if (review.state === "reviewed") {
+          const observed = repo.getPlanningSession(db, id).repository?.commit;
+          const current = await planning.inspect(project);
+          if (observed && current.commit !== observed) throw new PlanChangeError("The repository changed since generation. Regenerate the draft against current code before reviewing again.", "REPOSITORY_DRIFT");
+        }
+      }
+      const committed = await commitPlanningDraft(db, project, {
+        ...review.input, review,
+      }, repo.getSettings(db) ?? defaultSettings(), "planner", env.mock, (message) => app.log.warn(message), {
+        git: planningPersistence, assertIdle,
+      });
+      if (committed.createdTasks.length) {
+        broadcast({ type: "project.updated", payload: committed.project });
+        for (const task of committed.createdTasks) broadcast({ type: "task.updated", payload: task });
+      }
+      return { revisionId: committed.revisionId, project: committed.project,
+        tasks: committed.tasks, prdMarkdown: committed.prdMarkdown, agentsMd: committed.agentsMd };
+    } catch (error) {
+      if (error instanceof PlanChangeError) return reply.code(error.status).send({ error: error.message, code: error.code });
+      if (error instanceof RepositoryUnavailableError) return reply.code(503).send({ error: error.message, code: error.code });
+      if (error instanceof PlanningCommitError) {
+        return reply.code(["busy", "revision"].includes(error.stage) ? 409 : 502).send({ error: error.message, stage: error.stage });
+      }
+      throw error;
+    }
   });
 
   // Commit the (user-edited) draft tasks into real Task rows.
@@ -1751,7 +1826,7 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
-    if (activePlanningOperation(db, id)) return reply.code(409).send({ error: "planning is active — wait for it to settle first" });
+    if (activePlanningOperation(db, id) || pendingPlanChange(db, id)) return reply.code(409).send({ error: "planning or its application is active — wait for it to settle first" });
 
     const body = req.body as Partial<PlanCommitRequest> | undefined;
     if (!isPlanningRevisionId(body?.revisionId)) {
@@ -1900,6 +1975,7 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if (pendingPlanChange(db, id)) return reply.code(409).send({ error: "Plan application is pending; retry it before changing this project." });
 
     const bodyError = taskArrayFieldError(req.body, [
       "dependsOn",
@@ -1979,6 +2055,7 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     const existing = repo.getTask(db, id);
     if (!existing) return reply.code(404).send({ error: "task not found" });
+    if (pendingPlanChange(db, existing.projectId)) return reply.code(409).send({ error: "Plan application is pending; retry it before changing this project." });
 
     const bodyError = taskArrayFieldError(req.body, [
       "acceptanceCriteria",

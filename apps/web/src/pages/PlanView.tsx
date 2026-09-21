@@ -1,3 +1,4 @@
+import { PlanChanges } from "../components/PlanChanges";
 import type {
   Difficulty,
   DraftTask,
@@ -171,8 +172,8 @@ export function PlanView({
   // live session, including for the whole time the tasks are running.
   const [archives, setArchives] = useState<PlanSessionArchive[]>([]);
 
-  // Planning writes are locked server-side (409) while the project runs;
-  // mirror that here: banner instead of the input row, buttons disabled.
+  // VW07: proposal scratch is editable during execution. Legacy approval
+  // still waits; reviewed application uses the settled scheduler boundary.
   // Project deltas flip this live during a healthy connection; the global
   // project snapshot restores the same status after reconnect downtime.
   const running = project?.status === "running";
@@ -738,7 +739,7 @@ export function PlanView({
       pendingOperationId.current ??= crypto.randomUUID();
       const accepted = await queuePlanningWrite(projectId, () => api<PlanChatResponse | PlanOperationResponse>("planChat", {
         params: { id: projectId },
-        body: { revisionId: revision, messages: next, sessionVersion: versionsRef.current.get(projectId), operationId: pendingOperationId.current, background: true },
+        body: { revisionId: revision, messages: next, sessionVersion: versionsRef.current.get(projectId), operationId: pendingOperationId.current, background: true, proposal: true },
       }));
       const res = await observeResult<PlanChatResponse>(accepted, generation);
       pendingOperationId.current = null;
@@ -762,7 +763,7 @@ export function PlanView({
 
   function sendChat() {
     const text = input.trim();
-    if (!projectId || !revisionId || !text || chatting || deconstructing || committing || running || pendingTurn) {
+    if (!projectId || !revisionId || !text || chatting || deconstructing || committing || pendingTurn) {
       return;
     }
     setInput("");
@@ -773,7 +774,7 @@ export function PlanView({
    *  may mean the turn was already accepted, in which case the server's
    *  transcript is adopted instead of sending the same turn twice. */
   async function retrySend() {
-    if (!pendingTurn || !projectId || chatting || deconstructing || committing || running) return;
+    if (!pendingTurn || !projectId || chatting || deconstructing || committing) return;
     const turn = pendingTurn.content;
     const generation = loadGenerationRef.current;
     setPendingTurn({ content: turn, error: null });
@@ -856,7 +857,7 @@ export function PlanView({
   async function generateTable(
     figmaVerification: "live" | "attachments" = "live",
   ) {
-    if (!projectId || !revisionId || deconstructing || committing || chatting || running) return;
+    if (!projectId || !revisionId || deconstructing || committing || chatting) return;
     const generation = loadGenerationRef.current;
     const replacement = beginReplacement();
     let replaced = false;
@@ -886,7 +887,7 @@ export function PlanView({
             messages,
             sessionVersion: versionsRef.current.get(projectId),
             operationId: crypto.randomUUID(),
-            background: true,
+            background: true, proposal: true,
             ...(figmaVerification === "attachments"
               ? { figmaVerification }
               : {}),
@@ -1205,7 +1206,7 @@ export function PlanView({
             <button
               type="button"
               onClick={() => generateTable()}
-              disabled={deconstructing || running}
+              disabled={deconstructing || committing}
               className="min-h-10 rounded bg-amber-600 px-4 py-2 text-xs font-medium text-neutral-950 hover:bg-amber-500 focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
             >
               {deconstructing ? "Retrying…" : "Retry verification"}
@@ -1214,7 +1215,7 @@ export function PlanView({
               type="button"
               onClick={() => generateTable("attachments")}
               disabled={
-                deconstructing || running || attachments.length === 0
+                deconstructing || committing || attachments.length === 0
               }
               title={
                 attachments.length === 0
@@ -1280,10 +1281,10 @@ export function PlanView({
         <div className="flex flex-col items-start gap-3 rounded-lg border border-green-800 bg-green-950/20 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-medium text-green-300">
-              {committed.tasks.length} tasks created
+              {committed.project.status === "paused" ? "Plan changes applied" : `${committed.tasks.length} tasks created`}
             </p>
             <p className="text-xs text-neutral-400">
-              Project is planned. Use Start on the Board to run.
+              {committed.project.status === "paused" ? "Project remains paused. Resume on the Board when ready." : "Project is planned. Use Start on the Board to run."}
             </p>
           </div>
           <button
@@ -1312,7 +1313,7 @@ export function PlanView({
                 {operationAction || operation.state === "cancelling" ? "Stopping planning…" : "Cancel planning"}
               </button>
             ) : operation.state !== "succeeded" && (
-              <button type="button" disabled={operationAction || running || chatting || deconstructing} onClick={() => void operationActionRequest("retry")} className="min-h-10 rounded border border-neutral-600 px-3 py-2 disabled:opacity-50">
+              <button type="button" disabled={operationAction || chatting || deconstructing} onClick={() => void operationActionRequest("retry")} className="min-h-10 rounded border border-neutral-600 px-3 py-2 disabled:opacity-50">
                 {operationAction ? "Starting retry…" : "Retry planning"}
               </button>
             )}
@@ -1405,7 +1406,7 @@ export function PlanView({
                       <button
                         type="button"
                         onClick={() => void retrySend()}
-                        disabled={chatting || deconstructing || committing || running}
+                        disabled={chatting || deconstructing || committing}
                         className="min-h-10 rounded bg-red-700 px-3 py-2 text-xs font-medium text-white hover:bg-red-600 focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-50"
                       >
                         Retry send
@@ -1445,7 +1446,7 @@ export function PlanView({
                   <button
                     aria-label={`Remove attachment ${a.name}`}
                     onClick={() => removeAttachment(a.name)}
-                    disabled={chatting || deconstructing || committing || running}
+                    disabled={chatting || deconstructing || committing}
                     title="Remove attachment"
                     className="min-h-10 min-w-10 rounded text-neutral-500 hover:text-red-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-neutral-300 disabled:opacity-50"
                   >
@@ -1456,12 +1457,10 @@ export function PlanView({
             </div>
           )}
 
-          {running ? (
-            <div className="rounded border border-amber-800/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
-              Tasks are running — planning re-opens when the run finishes. Your
-              chat history stays available in "Past planning sessions" below.
-            </div>
-          ) : (
+          {running && <p className="rounded border border-amber-800/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
+            Work is running. Draft a separate proposal here; review and apply it after active work settles. Accepted tasks stay unchanged.
+          </p>}
+          {(
             <div className="space-y-1.5">
               <label
                 htmlFor="planning-message"
@@ -1529,7 +1528,7 @@ export function PlanView({
             </div>
           )}
 
-          {!running && messages.some((m) => m.role === "assistant") && (
+          {messages.some((m) => m.role === "assistant") && (
             <div className="space-y-2">
               {plannerReady && !deconstructing && (
                 <div className="rounded border border-green-700/50 bg-green-900/20 px-3 py-2 text-xs text-green-300">
@@ -1559,7 +1558,8 @@ export function PlanView({
 
       {/* ── Editable task table ── */}
       {tasks && !committed && (
-        <fieldset disabled={deconstructing || committing || chatting || running} className="min-w-0 space-y-4">
+        <div className="min-w-0 space-y-4">
+        <fieldset disabled={deconstructing || committing || chatting} className="min-w-0 space-y-4">
           <section className="rounded-lg border border-neutral-800 bg-neutral-900 p-4">
             <h3 className="mb-2 text-sm font-medium text-neutral-300">Brief</h3>
             <textarea aria-label="Planning brief" value={prd ?? ""} onChange={(event) => { markEdited(); setPrd(event.target.value); }} rows={8}
@@ -1836,6 +1836,24 @@ export function PlanView({
             )}
           </div>
         </fieldset>
+        <PlanChanges key={projectId} projectId={projectId} draftTitles={tasks.map((t) => t.title)}
+          disabled={chatting || deconstructing} onApplying={setCommitting}
+          prepareDraft={async () => {
+            if (!revisionId) throw new Error("Reload the planning session first.");
+            return queuePlanningWrite(projectId, async () => {
+              const draft = { revisionId, prdMarkdown: prd ?? "", tasks: draftTasksFromUi(tasks), agentsMd: agentsMd ?? "" };
+              const saved = await api<SaveDraftResponse>("planSaveDraft", { params: { id: projectId }, body: {
+                ...draft, sessionVersion: versionsRef.current.get(projectId),
+              } });
+              if (saved.sessionVersion !== undefined) versionsRef.current.set(projectId, saved.sessionVersion);
+              savedSeqRef.current = editSeqRef.current; setSavedSeq(editSeqRef.current);
+              return { ...draft, sessionVersion: versionsRef.current.get(projectId) ?? 0,
+                tasks: draft.tasks.map((t) => ({ ...t, existingDependsOn: [] })) };
+            });
+          }}
+          onApplied={(result) => { setCommitted(result); setProject(result.project); setTasks(null); setAgentsMd(null); setVerifiedFigmaReferences([]); }} />
+        </div>
+
       )}
 
       {!tasks && !committed && (

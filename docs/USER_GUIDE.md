@@ -773,6 +773,35 @@ while the composer contains unsent text or edits are unsaved triggers the
 browser's leave-page prompt. These local drafts are held in memory, not
 persisted across browser restarts.
 
+You can now draft a **separate proposal while work runs** (VW07). Chat, brief
+edits, and task generation change only the draft. The accepted plan and active
+agent prompts remain unchanged. Under the generated task outline, open
+**Review plan changes**. For each proposed task, choose **Add a new task** or
+select a never-started pending task to revise; expand dependencies to connect
+it to existing board work. Active, previously attempted, and completed tasks
+are retained. Add a follow-up task for a correction to that work.
+
+Choose **Prepare change comparison** to save your draft and inspect the exact
+added/revised/retained work, before/after brief and task details, and
+dependencies. Cost and completion time are not estimated here. If agents are
+still running, **Pause to apply changes** asks for confirmation and lets their
+current work finish. Click **Refresh task state** once execution settles, then
+prepare a fresh comparison if anything changed. Pause does not apply anything.
+
+**Apply reviewed changes** requires a second inline confirmation. If the task
+state, draft, or repository moved, application refuses rather than overwriting
+newer work. Refresh/review a changed task state; regenerate against the current
+code when repository drift is reported. Successful application keeps revised
+task IDs, adds new tasks once, and leaves the project paused. Resume from the
+Board when you are ready.
+
+If Git push or archive persistence fails, the exact comparison remains pending
+and task mutations are blocked. Reopen **Review plan changes** and choose
+**Retry reviewed application** to complete that same change; do not create a
+new plan to work around a pending commit. Retry does not repeat planning/model
+calls. Task deletion, automatic rebasing, and replacing live prompts are not
+part of this flow. Pending comparisons are in SQLite and survive a restart.
+
 Planning is grounded in the repository that actually exists (VW03). Before
 every planner call Hoopedorc inspects the project's clone and the Plan tab
 shows what it found under the title — for example **Planning against the

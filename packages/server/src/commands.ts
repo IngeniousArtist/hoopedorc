@@ -1,3 +1,4 @@
+import { pendingPlanChange } from "./plan-changes";
 // F40: action logic shared between the HTTP routes and the Telegram command
 // wave (`telegramCommand` in index.ts). Kept in its own module — unlike
 // index.ts, which boots a real server as a side effect of being imported
@@ -69,6 +70,7 @@ export async function startProject(
   id: string,
   idempotencyKey?: string,
 ): Promise<ProjectActionResult> {
+  if (pendingPlanChange(db, id)) return { ok: false, status: 409, error: "Plan application is pending; retry it before starting." };
   if (idempotencyKey) {
     type StartActionResult =
       | { ok: true; project: Project; previousStatus: Project["status"] }
@@ -297,6 +299,8 @@ export async function retryTask(
   actor: "human" | "telegram",
   idempotencyKey?: string,
 ): Promise<{ ok: true; task: Task } | { ok: false; status: number; error: string }> {
+  const lockedTask = repo.getTask(db, id);
+  if (lockedTask && pendingPlanChange(db, lockedTask.projectId)) return { ok: false, status: 409, error: "Plan application is pending; retry it before changing tasks." };
   if (idempotencyKey) {
     const action = commitTelegramActionEffect<
       { ok: true; task: Task } | { ok: false; status: number; error: string }

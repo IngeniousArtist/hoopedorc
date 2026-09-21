@@ -1651,3 +1651,29 @@ test("O14/B36: restart recovery re-arms the same durable approval without prepar
   await waitForRollback(db, started.id, (job) => job.status === "completed");
   assert.equal(fake.calls.merge, 1);
 });
+
+test("VW07: proposal planning shares execution, but a pending apply blocks every runtime entry", async () => {
+  const db = setup();
+  const p = project(db, "proposal-owner");
+  const task = seedTask(db, p.id, "pending");
+  const controlled = controlledOrchestrator();
+  const engine = new EngineRunner(db, new WsHub(), { orchestratorFactory: () => controlled.orchestrator, ensureClone: () => Promise.resolve() });
+  const revision = repo.ensurePlanningRevision(db, p.id);
+  const id = "proposal-op";
+  db.prepare("INSERT INTO planning_operations (id, project_id, revision_id, kind, state, input_json, created_at) VALUES (?, ?, ?, 'chat', 'running', ?, ?)")
+    .run(id, p.id, revision, JSON.stringify({ revisionId: revision, proposal: true, messages: [] }), new Date().toISOString());
+  try {
+    await engine.start(p); await controlled.started;
+    assert.equal(controlled.state.startCalls, 1);
+    assert.equal(engine.hasActivity(p.id), true);
+    const settled = activeRuntime(engine, p.id).settled;
+    controlled.resolveStart(); await settled;
+    db.prepare("UPDATE planning_operations SET state = 'succeeded' WHERE id = ?").run(id);
+    db.prepare("INSERT INTO plan_change_reviews (id, project_id, revision_id, state, review_json) VALUES ('applying', ?, ?, 'applying', '{}')").run(p.id, revision);
+    await assert.rejects(engine.start(p), /application is pending/);
+    await assert.rejects(engine.dispatchOne(p, task.id), /application is pending/);
+    await assert.rejects(engine.rollback(p, task), /application is pending/);
+    assert.equal(engine.resumeQueued(p), false);
+    assert.equal(repo.getTask(db, task.id)?.dispatchRequestedAt, undefined);
+  } finally { controlled.resolveStart(); db.close(); }
+});

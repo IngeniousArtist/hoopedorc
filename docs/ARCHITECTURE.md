@@ -140,6 +140,17 @@ planning refuses runtime activity. REST and project-scoped `planning.updated`
 snapshots expose the same state to the workbench. The legacy one-shot `/plan`
 route retains its request lifetime and cannot overlap durable planning.
 
+VW07 distinguishes proposal operations from normal planning: proposal calls
+only own scratch, so the same scheduler may continue. `plan-changes.ts` owns
+review validation, the combined dependency DAG, stable added-task IDs, and
+revision/version/generation checks. Immutable reviews live in
+`plan_change_reviews`. Applying reuses `planning-commit.ts` and its Git/archive
+receipt after the runtime fully settles; its durable applying state freezes
+task mutations with SQLite triggers as well as runtime/route guards. The lock
+is released within the same transaction as final task and receipt updates.
+Failure leaves a restart-safe exact retry. This uses no second scheduler or
+automatic resume path. Existing task/project WebSocket events publish results.
+
 Gate scripts, dependency installs, and structured project setup run through
 `@orc/engine`'s Docker sandbox (`sandbox.ts`) when a daemon is reachable — a
 disposable `docker run --rm` per command, mounting only the task's worktree

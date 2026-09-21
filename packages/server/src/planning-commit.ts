@@ -1,3 +1,5 @@
+import { PlanChangeError, assertPlanChangeCurrent, finalizePlanChanges, getPlanChange } from "./plan-changes";
+import type { PlanChangeReview } from "@orc/types";
 import { activePlanningOperation } from "./planning-operations.js";
 import crypto from "node:crypto";
 import type { RepositoryFileWrite } from "@orc/engine";
@@ -75,6 +77,8 @@ export function materializeTasks(
 }
 
 export interface PlanningCommitInput {
+  /** Server-loaded immutable VW07 review; never accepted by the legacy route. */
+  review?: PlanChangeReview;
   sessionVersion?: number;
   revisionId: string;
   prdMarkdown?: string;
@@ -93,6 +97,7 @@ export interface PlanningGitPersistence {
 export interface PlanningCommitDeps {
   git: PlanningGitPersistence;
   recordArchive?: typeof recordPlanCommit;
+  assertIdle?: () => void;
 }
 
 export interface PlanningCommitResult {
@@ -135,6 +140,7 @@ export function planningContentHash(
 ): string {
   const canonical = {
     version: 1,
+    ...(input.review ? { reviewId: input.review.id } : {}),
     prdMarkdown: effectivePrd(project, input),
     tasks: input.tasks.map((task) => ({
       title: task.title,
@@ -322,6 +328,13 @@ async function commitPlanningDraftOwned(
           "planning revision is stale — reload the planning session",
         );
       }
+      if (input.review) {
+        deps.assertIdle?.();
+        const stored = getPlanChange(db, project.id, input.review.id);
+        if (!stored || stored.state === "applied") throw new PlanningCommitError("revision", "review no longer owns this draft");
+        assertPlanChangeCurrent(db, stored, receipt?.state === "pending");
+        db.prepare("UPDATE plan_change_reviews SET state = 'applying' WHERE id = ?").run(stored.id);
+      }
       if (!receipt) {
         repo.createPendingPlanningCommit(
           db,
@@ -343,7 +356,7 @@ async function commitPlanningDraftOwned(
       }
     })();
   } catch (err) {
-    if (err instanceof PlanningCommitError) throw err;
+    if (err instanceof PlanningCommitError || err instanceof PlanChangeError) throw err;
     throw new PlanningCommitError(
       "database",
       "could not save the retryable planning draft",
@@ -398,8 +411,8 @@ async function commitPlanningDraftOwned(
   let storedResult: StoredPlanningCommitResult | undefined;
   try {
     db.transaction(() => {
-      created = materializeTasks(db, project, input.tasks, settings);
-      repo.updateProject(db, project.id, { status: "planned", prd: prdMarkdown });
+      created = input.review ? finalizePlanChanges(db, input.review) : materializeTasks(db, project, input.tasks, settings);
+      repo.updateProject(db, project.id, { status: input.review ? "paused" : "planned", prd: prdMarkdown });
       if (!repo.savePlanningSessionForRevision(db, project.id, input.revisionId, {
         messages: [],
         prd: null,
@@ -437,7 +450,7 @@ async function commitPlanningDraftOwned(
       }
     })();
   } catch (err) {
-    if (err instanceof PlanningCommitError && err.stage === "revision") throw err;
+    if (err instanceof PlanChangeError || (err instanceof PlanningCommitError && err.stage === "revision")) throw err;
     throw new PlanningCommitError(
       "database",
       "planning files were pushed but task finalization failed; the draft was kept for retry",

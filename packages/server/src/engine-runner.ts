@@ -1,4 +1,5 @@
-import { activePlanningOperation } from "./planning-operations";
+import { pendingPlanChange } from "./plan-changes";
+import { planningBlocksExecution } from "./planning-operations";
 import {
   GateRunnerImpl,
   GitServiceImpl,
@@ -1127,7 +1128,8 @@ export class EngineRunner {
    * is installed before any async work begins, closing the check-then-create
    * race between Start, manual Dispatch, and Stop. */
   private createRuntime(project: Project, autonomous: boolean): ProjectRuntime {
-    if (activePlanningOperation(this.db, project.id)) throw new Error("planning is active — wait for it to settle before running tasks");
+    if (pendingPlanChange(this.db, project.id)) throw new Error("plan application is pending — retry it before running tasks");
+    if (planningBlocksExecution(this.db, project.id)) throw new Error("planning is active — wait for it to settle before running tasks");
     const runtime: ProjectRuntime = {
       generation: this.nextRuntimeGeneration++,
       orchestrator: this.buildOrchestrator(project),
@@ -1186,6 +1188,7 @@ export class EngineRunner {
    * priority runtime already owns the project, promote that exact runtime;
    * never create a competing Orchestrator. */
   async start(project: Project): Promise<void> {
+    if (pendingPlanChange(this.db, project.id)) throw new Error("plan application is pending — retry it before running tasks");
     this.assertAcceptingWork();
     const persistenceError = planningPersistenceError(project);
     if (persistenceError) throw new Error(persistenceError);
@@ -1327,8 +1330,9 @@ export class EngineRunner {
 
   /** Persist and prioritize a task through the project's one scheduler. */
   async dispatchOne(project: Project, taskId: string): Promise<Task> {
+    if (pendingPlanChange(this.db, project.id)) throw new Error("plan application is pending — retry it before running tasks");
     this.assertAcceptingWork();
-    if (activePlanningOperation(this.db, project.id)) throw new Error("planning is active — wait for it to settle before dispatching");
+    if (planningBlocksExecution(this.db, project.id)) throw new Error("planning is active — wait for it to settle before dispatching");
     if (this.rollbackByProject.has(project.id)) {
       throw new Error("a rollback is active for this project");
     }
@@ -1364,7 +1368,7 @@ export class EngineRunner {
   /** Recreate a manual-only runtime for durable requests after process boot or
    * after an older runtime settles. Returns true only when one was started. */
   resumeQueued(project: Project): boolean {
-    if (!this.acceptingWork) return false;
+    if (!this.acceptingWork || pendingPlanChange(this.db, project.id)) return false;
     if (this.runtimes.has(project.id) || this.rollbackByProject.has(project.id)) {
       return false;
     }
@@ -1921,8 +1925,9 @@ export class EngineRunner {
 
   /** Persist and start a gated rollback PR. Duplicate calls return one job. */
   async rollback(project: Project, task: Task): Promise<RollbackJob> {
+    if (pendingPlanChange(this.db, project.id)) throw new Error("plan application is pending — retry it before running tasks");
     this.assertAcceptingWork();
-    if (activePlanningOperation(this.db, project.id)) throw new Error("planning is active — wait for it to settle before rollback");
+    if (planningBlocksExecution(this.db, project.id)) throw new Error("planning is active — wait for it to settle before rollback");
     if (task.prNumber == null) {
       throw new Error("task has no merged PR to roll back");
     }

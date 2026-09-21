@@ -7346,9 +7346,9 @@ owner later supplies Figma input.
 
 ## Part 14 — Visual development workspace
 
-**Status (2026-09-21):** VW01–VW06 are implemented, including the recovery
-fixes, settings/setup reorganization, and durable planning workbench below.
-VW07 is the next unstarted item. The
+**Status (2026-09-21):** VW01–VW07 are implemented, including recovery,
+settings/setup, the durable planning workbench, and reviewed plan changes.
+VW08 is the next unstarted item. The
 detailed scope, inspected source, research, acceptance criteria, non-goals,
 dependencies, and verification requirements are
 in [VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
@@ -7362,8 +7362,8 @@ existing Figma integration, gates/validation, accounting, and Telegram. Improve
 the user journey and failure handling, then extend capabilities incrementally.
 Small tasks and large briefs share the same execution system.
 
-**Next:** VW07 (propose/apply plan revisions during execution), starting from the
-reviewed VW01–VW06 result. Consult the focused plan's dependency table for
+**Next:** VW08 (workspace inventory and read-only code inspection), starting from
+the reviewed VW01–VW07 result. Consult the focused plan's dependency table for
 subsequent items. Do not start by replacing the scheduler or adding
 all future schemas. Use one scoped branch/PR per coherent change; split larger
 work packages into backward-compatible contract/backend/UI steps as needed.
@@ -7375,8 +7375,8 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW03 | Repository-aware planning and truthful task history | Done (merged 2026-09-21) | [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266) → main `9757a91`; PR CI `build-and-test` passed; main CI run [35570272080](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35570272080) passed; see the VW03 acceptance record below |
 | VW04 | Project navigation, compact board/list, task inspector | Done (merged and reviewed 2026-09-21) | Part 1: [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268) → main `88ca12b`, PR CI passed, main CI run [35571774985](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35571774985) passed. Part 2 and VW01–VW04 recovery review: [PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269) → main `9d2e270`; required exact-head CI passed; see the review/merge record below |
 | VW05 | Organize existing settings and setup | Implemented | [PR #271](https://github.com/IngeniousArtist/hoopedorc/pull/271); see VW05 acceptance record below and PR checks for required CI/merge evidence |
-| VW06 | Durable planning operations and planning workbench | Implemented | See VW06 acceptance record below; PR checks record CI/merge evidence |
-| VW07 | Propose/apply plan revisions during execution | Not started | — |
+| VW06 | Durable planning operations and planning workbench | Implemented | [PR #272](https://github.com/IngeniousArtist/hoopedorc/pull/272), merged as `0e84781`; required CI passed; see VW06 acceptance record below |
+| VW07 | Propose/apply plan revisions during execution | Implemented | See VW07 acceptance record below; PR checks record CI/merge evidence |
 | VW08 | Workspace inventory and read-only code inspection | Not started | — |
 | VW09 | Managed environments and preview lifecycle | Not started | — |
 | VW10 | Full review workbench and browser evidence | Not started | — |
@@ -8157,3 +8157,77 @@ before retrying. No authenticated model, Telegram, Docker, or EC2/systemd live
 smoke was performed. Existing rows and operator files are preserved. Local
 unsaved/conflict copies remain browser-memory-only. In-run revision application
 is VW07; comprehensive local regression remains deferred until the plan ends.
+
+### VW07 — reviewed plan revisions during execution (2026-09-21)
+
+**Acceptance criteria before implementation:**
+
+- Opt-in proposal chat/deconstruction can run beside the existing scheduler.
+  It updates planning scratch only; the accepted PRD, tasks, and active prompts
+  remain unchanged. Existing normal planning ownership remains supported.
+- Review persists an immutable before/after comparison bound to the exact
+  planning revision, draft version, and SQLite task generation. Show additions,
+  edits to never-started pending tasks, dependencies, retained active/completed
+  work, and honest cost/time uncertainty. Operator-selected task identities are
+  validated; the model cannot silently replace active or accepted work.
+- Apply requires an explicit confirmation after review and a fully settled
+  scheduler/rollback boundary. Offer Pause (finish current) while running;
+  re-review any intervening task changes. Do not interrupt or restart an active
+  attempt automatically. Corrections to active/completed work are new follow-ups.
+- Reuse the existing durable PRD/guidance Git commit and approval receipt.
+  Reserve application before Git; freeze task mutations while it is pending;
+  finalize task changes and the receipt atomically. Restart/retry uses the same
+  immutable review, task IDs, and commit; no duplicate tasks or automatic spend.
+- Reject stale revision/version/generation, invalid/cyclic/cross-project
+  dependencies, attempted-task replacement, and repository drift. Preserve
+  drafts and prior tasks on errors. Completed application stays replayable.
+- Additive persistence and typed REST/mock/UI behavior; no new scheduler or
+  dependencies. Task deletion, automatic rebasing, live prompt replacement,
+  automatic resume, and milestone-driven replanning are not this item's scope.
+
+**Verification scope:** focused revision policy/route/commit/runtime guards,
+planning interaction tests, one real-browser revision flow at the five required
+widths, affected package checks, and required remote CI. Use fake Git/runtime
+boundaries and mock planners; no authenticated model, Telegram, or AWS actions.
+Comprehensive local regression remains deferred under the owner's wave policy.
+
+**Implementation:** proposal-mode chat/deconstruction shares the existing runtime
+while keeping accepted PRD/tasks untouched. Plan changes are reviewed as an
+immutable before/after snapshot bound to revision, session version, and durable
+task generation. Explicit task matching preserves unstarted task IDs; active,
+attempted, and completed tasks remain retained and can receive new follow-ups.
+The combined dependency graph and model assignments are validated before review.
+
+Applying requires a settled runtime/rollback boundary and inline confirmation.
+The UI offers confirmed Pause (finish current), refresh, and comparison review;
+a stale comparison cannot overwrite intervening work. The existing Git/archive
+approval receipt owns persistence. Database-enforced task locks and runtime/
+HTTP/Telegram entry guards survive partial failure and restart. Finalization
+updates tasks, accepted brief, review, and receipt in one transaction, leaves
+the project paused, and emits existing task/project WebSocket updates. Retry
+uses the original task IDs and performs no planning model call. Guidance and
+scope/dependency changes are visible in the saved comparison.
+
+**Focused verification (Node 22.23.0):** seven new VW07 server cases passed:
+five policy/persistence cases, one real-route mock flow, and one controlled
+runtime ownership case. Eight existing planning-commit cases passed alongside
+the policy tests. Coverage includes active work retention, invalid/cyclic/
+foreign dependencies, stale version/generation, task mutation exclusion,
+concurrent/repeated apply, DB reopen after push failure, and transactional
+rollback of partial finalization. Thirty-four focused web cases passed across
+PlanChanges and the affected PlanView/operations/reliability suites. One focused
+Playwright flow passed using real mock routes: revise an existing task, retain
+an intervening task after a stale refusal, add work once, and replay apply.
+It covers 360/390/768/1280/1440px overflow/fixed surfaces and phone touch targets.
+Manual Chrome desktop/phone review confirmed the before/after comparison,
+retained active work, and disabled apply while execution is active. Types,
+server/web typechecks/builds, changed-file lint with unchanged baseline counts,
+and whitespace checks passed. Required remote CI/merge evidence is recorded in
+the PR; no required check is bypassed.
+
+**Limits:** application uses an explicit pause/settle/re-review boundary; it does
+not hot-swap prompts, cancel tasks, resume execution automatically, or rebase
+stale proposals automatically. No authenticated model, external Telegram,
+Docker, or EC2/systemd live smoke ran. Existing host-run planner isolation limits
+remain; proposal mode is not a new sandbox. Comprehensive local regression is
+still deferred until the implementation plan is complete. Next: VW08.
