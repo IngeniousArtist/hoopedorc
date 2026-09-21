@@ -4,6 +4,8 @@ import { readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  GeminiAdapter,
+  type AgentRunResult,
   classifyFailure,
   execManagedProcess,
   execInvocationProcess,
@@ -61,7 +63,7 @@ export interface PlannerModel {
   /** Logical Hoopedorc model id used for quotas/accounting. Older embedders
    * may omit it; resolved production routing always supplies it. */
   id?: ModelId;
-  runner: "claude-code" | "codex" | "opencode";
+  runner: import("@orc/types").RunnerKind;
   /** `claude --model` alias, `codex exec -m` id, or opencode `provider/model`
    *  id; omitted => CLI default (claude-code/codex only — opencode always
    *  requires an explicit model, enforced where this is constructed). */
@@ -102,6 +104,10 @@ export function resolvePlannerModel(
   const cfg = settings.models.find((m) => m.id === routedId);
   if (!cfg) throw new Error(`planner routing references missing model "${routedId}"`);
   if (!cfg.enabled) throw new Error(`planner model "${cfg.displayName}" is disabled`);
+  if (cfg.runner === "gemini") {
+    if (!cfg.geminiModel) throw new Error("Gemini planner requires an explicit model ID.");
+    return { id: cfg.id, runner: "gemini", model: cfg.geminiModel, effort: cfg.effort };
+  }
   if (cfg.runner === "codex") {
     return { id: cfg.id, runner: "codex", model: cfg.codexModel, effort: cfg.effort };
   }
@@ -139,6 +145,7 @@ export function resolvePlannerModel(
  *  model id. */
 export function plannerModelLabel(pm: PlannerModel): string {
   const effort = pm.effort ? ` [effort: ${pm.effort}]` : " [effort: CLI default]";
+  if (pm.runner === "gemini") return `gemini:${pm.model}${effort}`;
   if (pm.runner === "codex") return `codex:${pm.model ?? "default"}${effort}`;
   if (pm.runner === "opencode") return `opencode:${pm.model ?? "default"}${effort}`;
   return `${pm.model ?? "claude"}${effort}`;
@@ -1026,8 +1033,16 @@ async function runPlannerJson(
       tokensCached: 0,
     });
     let result: ClaudeJsonResult;
+    let geminiResult: AgentRunResult | undefined;
     try {
-      if (plannerModel.runner === "codex") {
+      if (plannerModel.runner === "gemini") {
+        geminiResult = await new GeminiAdapter(plannerModel.model ?? "", plannerModel.effort).run({
+          model: base.model, prompt, cwd, signal, onLog: () => {}, activation: prepared?.launch, execution: prepared?.execution,
+          timeoutMs: limits?.timeoutMs ?? 20 * 60_000, maxOutputBytes: limits?.maxOutputBytes,
+        });
+        if (!geminiResult.ok) throw new Error(geminiResult.summary || "Gemini planning failed.");
+        result = { text: geminiResult.summary ?? "", costUsd: geminiResult.costUsd, tokensIn: geminiResult.tokensIn, tokensOut: geminiResult.tokensOut, tokensCached: geminiResult.tokensCached ?? 0 };
+      } else if (plannerModel.runner === "codex") {
         result = await runCodexJson(
           prompt,
           cwd,
@@ -1080,11 +1095,13 @@ async function runPlannerJson(
         ...base,
         endedAt: new Date().toISOString(),
         outcome: signal?.aborted ? "stopped" : "failed",
-        exitReason: signal?.aborted ? "killed" : classifyFailure(err instanceof Error ? err.message + (err instanceof ManagedProcessError ? err.stdout : "") : String(err)),
-        costUsd: 0,
-        tokensIn: 0,
-        tokensOut: 0,
-        tokensCached: 0,
+        exitReason: geminiResult?.exitReason ?? (signal?.aborted ? "killed" : classifyFailure(err instanceof Error ? err.message + (err instanceof ManagedProcessError ? err.stdout : "") : String(err))),
+        accounting: prepared?.accounting,
+        reportedCostUsd: geminiResult?.costUsd ?? 0,
+        costUsd: prepared?.accounting ? invocationCost(prepared.accounting, geminiResult?.costUsd ?? 0, geminiResult?.tokensIn ?? 0, geminiResult?.tokensCached ?? 0, geminiResult?.tokensOut ?? 0) : geminiResult?.costUsd ?? 0,
+        tokensIn: geminiResult?.tokensIn ?? 0,
+        tokensOut: geminiResult?.tokensOut ?? 0,
+        tokensCached: geminiResult?.tokensCached ?? 0,
       });
       throw failure;
     }

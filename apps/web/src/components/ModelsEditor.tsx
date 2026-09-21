@@ -20,7 +20,7 @@ const ALL_ROLES: Role[] = [
   "updates",
 ];
 
-const RUNNERS: RunnerKind[] = ["opencode", "claude-code", "codex"];
+const RUNNERS: RunnerKind[] = ["opencode", "claude-code", "codex", "gemini"];
 
 export type ModelSlugSuggestions = Partial<Record<RunnerKind, string[]>>;
 
@@ -38,11 +38,12 @@ export function modelSlugSuggestions(
 const MODEL_LIST_IDS: Record<RunnerKind, string> = {
   "claude-code": "claude-code-model-catalog",
   codex: "codex-model-catalog",
+  gemini: "gemini-model-catalog",
   opencode: "opencode-model-catalog",
 };
 
 const inputCls =
-  "w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200";
+  "min-h-10 w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200";
 
 /**
  * B28: everywhere `routing` can name a model id — used before removing one,
@@ -231,13 +232,14 @@ export function ModelsEditor({
                   />
                 ) : (
                   <select
+                    disabled={m.runner === "gemini"}
                     aria-label={`${m.displayName} reasoning effort`}
                     value={m.effort ?? ""}
                     onChange={(e) => patch(idx, { effort: e.target.value || undefined })}
                     className={inputCls}
                   >
                     <option value="">CLI default</option>
-                    {(m.runner === "claude-code" ? CLAUDE_EFFORTS : CODEX_EFFORTS).map(
+                    {(m.runner === "gemini" ? [] : m.runner === "claude-code" ? CLAUDE_EFFORTS : CODEX_EFFORTS).map(
                       (effort) => (
                         <option key={effort} value={effort}>
                           {effort}
@@ -247,6 +249,7 @@ export function ModelsEditor({
                   </select>
                 )}
                 <p className="mt-1 text-[10px] text-neutral-600">
+                  {m.runner === "gemini" && "Gemini effort controls are not verified. "}
                   Applies to planning, authoring, validation, documentation,
                   and model health calls for this model.
                 </p>
@@ -258,7 +261,7 @@ export function ModelsEditor({
                     ? "claude --model (e.g. sonnet / opus)"
                     : m.runner === "codex"
                       ? "codex exec -m (optional — omit for the CLI default)"
-                      : "opencode model (provider/model from `opencode models`)"}
+                      : m.runner === "gemini" ? "Gemini model ID (required)" : "opencode model (provider/model from `opencode models`)"}
                 </label>
                 {m.runner === "claude-code" ? (
                   <input
@@ -290,6 +293,9 @@ export function ModelsEditor({
                     }
                     className={inputCls + " font-mono"}
                   />
+                ) : m.runner === "gemini" ? (
+                  <div className="space-y-2"><input aria-label={`${m.displayName} Gemini model`} value={m.geminiModel ?? ""} onChange={(e) => patch(idx, { geminiModel: e.target.value || undefined })} placeholder="Exact ID from your CLI account" className={inputCls + " font-mono"} />
+                  <p className="text-xs text-neutral-400">Requires Gemini CLI 0.60.0 and an existing CLI login. Native execution inherits CLI configuration. Selected skills, MCPs, plugins and isolation are not verified. Choose a subscription account pool in Resources or set all three token prices below before enabling.</p></div>
                 ) : (
                   <input
                     aria-label={`${m.displayName} OpenCode model`}

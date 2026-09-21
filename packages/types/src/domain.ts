@@ -30,7 +30,7 @@ export type Role =
   | "updates";
 
 /** How the orchestrator actually executes a model. */
-export type RunnerKind = "claude-code" | "opencode" | "codex";
+export type RunnerKind = "claude-code" | "opencode" | "codex" | "gemini";
 
 /** Runner-specific reasoning-effort values accepted by the installed CLIs.
  * OpenCode additionally accepts a provider-defined custom variant, validated
@@ -52,6 +52,7 @@ export function modelEffortError(
   effort: unknown,
 ): string | null {
   if (effort === undefined || effort === null || effort === "") return null;
+  if (runner === "gemini") return "is not verified for Gemini CLI; leave it unset";
   if (typeof effort !== "string") return "must be a string";
   if (runner === "claude-code" && !CLAUDE_EFFORTS.includes(effort as never)) {
     return `must be one of: ${CLAUDE_EFFORTS.join(", ")}`;
@@ -93,6 +94,8 @@ export interface ModelConfig {
    * "gpt-5.6-sol"). Omitted => CLI default, mirroring `claudeModel`.
    */
   codexModel?: string;
+  /** Required exact model ID for the opt-in native Gemini CLI. */
+  geminiModel?: string;
   /** Optional reasoning effort/variant. Unset means the CLI's own default.
    * Claude maps this to `--effort`, OpenCode to `--variant`, and Codex to
    * `-c model_reasoning_effort=...`. */

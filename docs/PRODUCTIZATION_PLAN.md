@@ -7349,7 +7349,7 @@ owner later supplies Figma input.
 **Status (2026-09-21):** VW01–VW13 are merged, including the planning workbench,
 reviewed plan changes, workspaces, previews, browser evidence and source Library.
 VW13 adds shared account resource controls; VW14 isolated execution is implemented
-with provider/AWS acceptance pending. VW15 milestone acceptance is merged with provider acceptance pending. VW16 environments are in progress. The
+with provider/AWS acceptance pending. VW15 milestone acceptance is merged with provider acceptance pending. VW16 environments are merged with Python Docker/provider acceptance pending. VW17 harness compatibility is in progress. The
 detailed scope, inspected source, research, acceptance criteria, non-goals,
 dependencies, and verification requirements are
 in [VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
@@ -7363,7 +7363,7 @@ existing Figma integration, gates/validation, accounting, and Telegram. Improve
 the user journey and failure handling, then extend capabilities incrementally.
 Small tasks and large briefs share the same execution system.
 
-**Current:** VW16 (portable framework/environment profiles), starting from
+**Current:** VW17 (additional harness compatibility), starting from
 the reviewed VW01–VW15 implementation result. VW14 provider-auth/model and AWS
 acceptance remain pending; do not advertise those as verified. Consult the focused plan's dependency table for
 subsequent items. Do not start by replacing the scheduler or adding
@@ -7387,8 +7387,8 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW13 | Shared account pools and resource allocation | Done (merged 2026-09-21) | [PR #279](https://github.com/IngeniousArtist/hoopedorc/pull/279) → main `e96d6d0`; CI `35611869922` passed; see acceptance and audit below |
 | VW14 | Verified isolated agent execution profiles | Implementation merged; provider/AWS checks pending | [PR #280](https://github.com/IngeniousArtist/hoopedorc/pull/280) → `f8aa175`; final CI `35619841075`; no-model Linux Docker boundary passed |
 | VW15 | Milestone acceptance and bounded replanning | Implementation merged; provider/AWS acceptance pending | PR #281; merge audit below |
-| VW16 | Portable framework/environment profiles | In progress | `vw16-environment-profiles`; acceptance below |
-| VW17 | Additional harness compatibility | Not started | — |
+| VW16 | Portable framework/environment profiles | Merged; live acceptance pending | PR #282; evidence below |
+| VW17 | Additional harness compatibility | In progress | `vw17-harness-compatibility`; acceptance below |
 | VW18 | Optional Jev routing evaluation | Not started | — |
 
 **Release boundary:** first prove an existing-project feature from planning to
@@ -8949,3 +8949,79 @@ Python Docker, provider-powered end-to-end work and AWS remain unverified; AWS
 is owner-deferred. This is verified repository setup/check execution, not a
 claim that every framework or SDK is provisioned. No provider calls or credentials
 were used. Comprehensive local regression remains deferred until VW18.
+
+
+### VW16 merge audit (2026-09-21)
+
+PR [#282](https://github.com/IngeniousArtist/hoopedorc/pull/282) passed required
+CI [35629549213](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35629549213)
+on `9a0a3f29fbaabfafb2bd55de0e0a567c7fbea060`, including Linux tests, browser
+checks and the real Docker boundary. Merged as
+`e65014fc940f29f44d3ae6e5324d79cb0219cda4`. Independent fetch/comparison confirmed
+identical tested/merged trees and main at 0/0 divergence. The operator-owned
+untracked dependency directory remains untouched.
+
+### VW17 — additional harness compatibility (implementation acceptance)
+
+Dependencies VW12–VW14 are merged. Add opt-in Gemini CLI native execution and
+publish an explicit harness capability matrix; keep existing scheduler, resource
+admission, worktree, invocation ledger and retry ownership.
+
+- Require an explicit Gemini model ID and CLI 0.60.0 (the inspected version).
+  No default roster/routing changes, invented catalog, automatic installation,
+  login, credential copying or paid test during discovery.
+- Use structured arguments, stdin prompts, a sanitized environment and existing
+  managed process cancellation/settlement. Parse streamed text and final usage
+  exactly once, normalize cached tokens, and fail closed on malformed/missing
+  results or process failure. Preserve observed usage on failed calls.
+- Support the existing planning, authoring, review and health entry points.
+  Refuse unsupported effort, selected activation and isolated execution. Probe
+  version compatibility before task dispatch and again at the adapter boundary.
+- Display installed versions and separate native execution from selective
+  skills/MCPs, native plugins, isolated execution and provider acceptance. A
+  version/help probe is not an authentication or provider completion test.
+- Gemini must use an explicitly subscription-priced account pool or complete
+  manual token pricing; its CLI does not report dollar cost. No silent unknown
+  metered cost displayed as known zero. Existing models preserve their behavior.
+- Cover process success/failure/malformed output/rate limit/cancellation/retry,
+  planner and ledger persistence, configuration refusal, discovery/mock behavior,
+  and UI loading/error/empty/success across the five required widths. Check the
+  installed CLI version/help and unauthenticated refusal using an isolated temp
+  config, without a provider request. Publish exact observed host/version pairs.
+- Provider-powered completion and AWS commissioning remain pending; AWS is
+  explicitly owner-deferred. This item does not certify all CLI versions,
+  third-party plugins or provider billing plans. Focused local checks now, full
+  required CI before merge, comprehensive local regression after VW18.
+
+
+### VW17 implementation and local evidence (2026-09-21)
+
+Added the opt-in, version-pinned Gemini CLI adapter and exact model/billing
+configuration; planning and all adapter-backed roles share the existing managed
+process and invocation lifecycle. Setup → Harnesses displays four separate
+capability profiles, installed versions, unavailable/mismatch explanations and
+explicit provider-test requirements. Mock discovery starts no tools. Unsupported
+selective activation, Gemini effort and isolation fail closed.
+
+Focused verification: 6 adapter/discovery/config/planner-ledger tests passed,
+including real subprocess tree cancellation, failure usage, retry and database
+reopen/exactly-once persistence. Existing setup tests passed (5). Harness/model
+editor interaction tests passed (5). The real browser discovery → error/retry →
+profile save journey passed at 360/390/768/1280/1440px with keyboard, touch target,
+overflow and fixed-surface checks; phone/desktop screenshots inspected. Affected
+package typechecks and production builds passed. Lint/diff and required CI/merge
+evidence follow in the PR. Comprehensive local regression remains after VW18.
+
+Actual Gemini CLI 0.60.0 headless invocation in a temporary empty config/workspace
+refused missing authentication with exit 41 before a provider request. Its help
+and installed stream implementation were inspected, including session-only trust
+required for new worktrees. No credentials were changed and no provider was
+called. Live authenticated Gemini completion, Linux provider execution and AWS
+commissioning remain pending, as detailed in the
+[compatibility spec](specs/harness-compatibility.md). AWS is owner-deferred.
+
+
+VW17 CI review caught a missing row in CONTRACT.md's canonical route inventory
+(the endpoint and detailed contract were present). Added the row and reran the
+focused O33 inventory check; no required check was bypassed. Local lint passed
+with 330 legacy findings unchanged; whitespace checks passed.

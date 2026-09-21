@@ -459,3 +459,12 @@ author preflight reuse these boundaries. ProjectConfigFields exposes confirmed
 presets and preserves preview configuration; Review uses the output preference
 for web versus artifact presentation. No model-accounting or scheduler path is
 duplicated. See [environment behavior and compatibility](specs/environments.md).
+
+VW17 adds an opt-in native Gemini adapter, with its exact version/protocol guard
+and streamed token normalization in `packages/adapters/src/gemini.ts`. Planner
+calls share that adapter; all roles retain the existing invocation ledger and
+resource manager. No alternate scheduler, worktree or credential service is
+introduced. `server/src/harnesses.ts` owns fixed, bounded local version probes;
+shared API types and Setup's Harnesses panel expose separate capability limits.
+Gemini requires explicit billing configuration because the CLI reports no USD.
+See [harness compatibility](specs/harness-compatibility.md).

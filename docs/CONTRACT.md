@@ -796,6 +796,7 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `selfUpdateStatus` | `GET /api/setup/self-update` | → `SelfUpdateStatusResponse` (deployment availability, temporary blockers, and current/last update phase) |
 | `startSelfUpdate` | `POST /api/setup/self-update` | no body → `StartSelfUpdateResponse` (202; launches only the fixed guarded updater in a separate systemd unit) |
 | `setupModels` | `GET /api/setup/models` | → `ModelRosterResponse` |
+| `harnessCompatibility` | `GET /api/setup/harnesses` | → `HarnessCompatibilityResponse`; fixed local version probes, no model calls; mock starts no tools |
 | `modelCatalog` | `GET /api/setup/model-catalog` | → `ModelCatalogResponse` (installed Codex catalog, Claude Code aliases/current IDs, and OpenCode `zai/`/`zai-coding-plan/`/`xai/`/`deepseek/` models) |
 | `modelHealth` | `GET /api/setup/model-health` | → `ModelHealthResponse` |
 | `testModels` | `POST /api/setup/test-models` | no body → `TestModelsResponse` |
@@ -1120,3 +1121,22 @@ including mock mode, use the same validation. Existing ROUTES are unchanged.
 `TaskReviewResponse.output` reflects the project preference (legacy: `web`) in
 real and mock contexts. `GateResult.environment` records the actual runtime probe
 when configured, rather than assuming every project uses Node.
+
+### VW17 — harness compatibility and Gemini profiles
+
+`GET /api/setup/harnesses` (`ROUTES.harnessCompatibility`) returns
+`HarnessCompatibilityResponse`: `generatedAt` plus `harnesses`, each with runner,
+label, optional installedVersion, probe (`available|unavailable|mock`), detail,
+verifiedVersion, native/selective/isolated capability booleans, `plugins: false`
+and `providerAcceptance: operator-check-required`. These are version/capability
+probes, not model tests. Mock mode executes nothing. CLI failures are represented
+per harness without exposing raw process output. Existing authentication and
+request cancellation apply. No request body or client-selected command is used.
+
+`RunnerKind` adds `gemini`; `ModelConfig.geminiModel` is its required explicit
+safe model ID (1–200 ASCII letters/numbers/dot/underscore/slash/hyphen, first
+character alphanumeric). Gemini rejects nonempty effort and nonmatching execution
+profiles. Enabled Gemini profiles require a subscription pool or all three manual
+token prices. Legacy model normalization is preserved. The model catalog includes
+an empty Gemini entry with an explanation; no model aliases are invented.
+Activation compatibility includes Gemini as unsupported for selected mode.

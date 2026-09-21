@@ -72,7 +72,7 @@ export class ActivationStore {
   response(projectId: string): ActivationResponse {
     return { current: this.version(projectId), revisions: (this.db.prepare("SELECT json FROM activation_versions WHERE project_id = ? ORDER BY revision DESC").all(projectId) as { json: string }[]).map((r) => JSON.parse(r.json) as ActivationRevision),
       manifests: (this.db.prepare("SELECT json FROM activation_manifests WHERE project_id = ? ORDER BY rowid DESC LIMIT 50").all(projectId) as { json: string }[]).map((r) => JSON.parse(r.json) as ActivationManifest),
-      compatibility: [ { runner: "claude-code", selective: true, detail: `Claude Code ${SELECTIVE_CLAUDE_VERSION}: selected instruction snapshots and MCPs; repository instructions and managed policy remain inherited.` }, ...(["codex", "opencode"] as const).map((runner) => ({ runner, selective: false, detail: "Selective activation is not yet verified. Inherited CLI configuration remains available." })) ],
+      compatibility: [ { runner: "claude-code", selective: true, detail: `Claude Code ${SELECTIVE_CLAUDE_VERSION}: selected instruction snapshots and MCPs; repository instructions and managed policy remain inherited.` }, ...(["codex", "opencode", "gemini"] as const).map((runner) => ({ runner, selective: false, detail: "Selective activation is not yet verified. Inherited CLI configuration remains available." })) ],
       nativePlugins: { supported: false, reason: "Native plugin bundles may include agents, hooks, skills and MCPs with different controls. Complete selective activation is not verified; register individual skills and MCPs instead." } };
   }
 }
