@@ -398,6 +398,36 @@ Figma probe, clears the verified session list on successful deconstruction,
 and removes unverified Figma URLs from task descriptions/criteria so later
 execution cannot mistake them for proved live-node fidelity.
 
+VW01: the planning routes (`planProject`, `planChat`, `planDeconstruct`)
+call one `PlanningService` chosen once at the server's composition boundary
+(`packages/server/src/planning-service.ts`, injectable through
+`BuildAppDependencies.planning`). Production wraps the real CLI-backed
+planner and the existing clone-then-fallback working-directory rule. Under
+`MOCK=1` the server selects the deterministic mock planner
+(`packages/server/src/mock-planner.ts`): no planner CLI is spawned, no
+Figma MCP is contacted, no repository is cloned or read, and no
+`ModelInvocation` is recorded, so mock planning costs `$0.00`. Routes,
+payloads, revision guards (`400`/`409`), the running-project planning lock,
+attachment validation, persistence, plan-session archives, and error envelopes
+are unchanged and shared by both services. Mock behavior is a pure function
+of the request: a chat reply starts with
+`Mock planner (no model, CLI, MCP, or repository was used).` and ends with
+`[PLAN_COMPLETE]` whenever the latest user message has content; deconstruction
+returns a PRD, generated `agentsMd`, and two tasks (`Implement: <brief>` then a
+dependent `Add regression coverage: <brief>`, with URLs in the brief replaced
+by "the referenced design"), after which the server's real docs-task and
+visual-QA insertion apply. Exact Figma node URLs verify through the same
+fail-closed normalizer with fixed `Mock frame <nodeId>` metadata at 1440×900
+and the routed planner's model/runner identity; a file key of
+`MOCKFAIL-<figma_issue_code>` fails live verification with that typed
+`FIGMA_VERIFICATION_FAILED` issue (unknown suffixes become
+`figma_unavailable`), and the `"attachments"` fallback behaves as in
+production. A user message containing `[MOCK_PLANNER_FAIL]` makes chat or
+deconstruction fail through the existing `502` envelope with a message that
+names the fixture; the legacy `planProject` route keeps its stub fallback.
+The guarantee is bounded to planning: `MOCK=1` does not by itself isolate
+setup checks, model tests, or any other operation.
+
 B42 repeats the proof at the execution boundary. Before a task containing an
 exact canonical Figma node creates a worktree or consumes an author attempt,
 `EngineRunner` extracts the references with the same allowlisted parser and
@@ -630,4 +660,7 @@ in-flight request rather than a debounce timer.
 - Money is USD floats; tokens are integers.
 - The mock server (`npm run mock`) implements all GET endpoints + a synthetic
   project-scoped `log` stream broadcast through the same hub/backpressure path
-  as production; its server-owned timer is cleared during shutdown.
+  as production; its server-owned timer is cleared during shutdown. VW01: its
+  planning routes answer through the deterministic mock planner described
+  above, so mock planning never spawns a planner CLI, contacts a Figma MCP, or
+  clones a repository; that isolation is bounded to planning.

@@ -72,6 +72,12 @@ npm run dev    # all workspaces in watch mode
 npm run mock   # web app on :5173 with a mock API and no model calls
 ```
 
+In mock mode the Plan tab answers through a deterministic mock planner: no
+planner CLI, Figma MCP, or repository clone is used, and planning cost stays
+`$0.00`. Its fixtures (`[MOCK_PLANNER_FAIL]`, `MOCKFAIL-<figma_issue_code>`
+Figma file keys) are documented in `docs/CONTRACT.md`. That guarantee covers
+planning only; other setup/health operations keep their own behavior.
+
 ## From idea to merged code
 
 1. **Plan** — refine the goal in a conversational planning session. Hoopedorc

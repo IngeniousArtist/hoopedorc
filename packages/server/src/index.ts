@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -47,12 +47,15 @@ import {
   FigmaVerificationError,
   plannerModelLabel,
   resolvePlannerModel,
-  runPlanner,
-  runPlannerChat,
-  runPlannerDeconstruct,
   type PlanOutput,
   type PlannerModel,
 } from "./planner";
+import { mockPlanningService } from "./mock-planner";
+import {
+  productionPlanningService,
+  selectPlanningService,
+  type PlanningService,
+} from "./planning-service";
 import { createGithubRepo, getPrDiff, slugifyRepoName } from "./github";
 import { checkBudget } from "./budget";
 import {
@@ -169,6 +172,9 @@ export interface BuildAppDependencies {
   repoRoot: string;
   version: string;
   planningGitPersistence?: PlanningGitPersistence;
+  /** VW01: planner behind the planning routes. Defaults by `env.mock`:
+   *  the deterministic mock service, or the real CLI-backed one. */
+  planning?: PlanningService;
   webDist?: string;
   logger?: boolean;
 }
@@ -332,23 +338,6 @@ const planningGitPersistence = ENV.mock
   : gitForPlanning;
 
 /**
- * Resolve the working directory for a planning call. Clones the project's
- * repo on first use (it already exists on GitHub by the time planning runs —
- * see createGithubRepo at project creation) so `claude -p` runs inside the
- * real codebase and can read existing files with its built-in tools instead
- * of planning blind in an empty tmp dir. Falls back to tmpdir() so planning
- * never hard-fails if the clone can't be reached (e.g. offline).
- */
-async function resolvePlannerCwd(project: Project): Promise<string> {
-  try {
-    await gitForPlanning.ensureClone(project);
-    return project.localPath;
-  } catch {
-    return tmpdir();
-  }
-}
-
-/**
  * For a follow-up planning iteration: summarize what the project already
  * shipped — prior PRD, completed/failed tasks, and recent audit activity — so
  * the planner builds on it instead of re-planning from scratch. Returns
@@ -416,9 +405,19 @@ async function assembleServer(
     version,
     webDist,
     planningGitPersistence: injectedPlanningGitPersistence,
+    planning: injectedPlanning,
   } = dependencies;
   const planningPersistence =
     injectedPlanningGitPersistence ?? planningGitPersistence;
+  // VW01: `MOCK=1` must never reach a planner CLI, an MCP, or a repository
+  // clone. The choice is made once here, from the injected environment, so
+  // tests can prove both sides without a paid model call.
+  const planning =
+    injectedPlanning ??
+    selectPlanningService(env.mock, {
+      production: () => productionPlanningService({ git: gitForPlanning }),
+      mock: () => mockPlanningService(),
+    });
   if (!repo.getSettings(db)) {
     repo.upsertSettings(db, defaultSettings());
   }
@@ -1364,16 +1363,14 @@ async function assembleServer(
       // rather than a special-cased error — this legacy single-shot endpoint
       // never hard-fails, by design.
       const plannerModel = resolvePlannerModel(settings, "deconstruct");
-      const cwd = await resolvePlannerCwd(project);
-      const plan = await runPlanner(
+      const plan = await planning.planGoal({
+        project,
         goal,
-        project.name,
-        cwd,
         plannerModel,
-        (msg) => app.log.warn(msg),
-        cancellation.signal,
-        (event) => recordModelInvocation(event, id),
-      );
+        onWarn: (msg) => app.log.warn(msg),
+        signal: cancellation.signal,
+        onInvocation: (event) => recordModelInvocation(event, id),
+      });
       prdMarkdown = plan.prdMarkdown;
       // No review step on this single-shot path, so inject the standing docs
       // task here directly rather than relying on the Plan tab to add it.
@@ -1517,23 +1514,21 @@ async function assembleServer(
       requestControllers,
     );
     try {
-      const cwd = await resolvePlannerCwd(project);
       // F27: name-only list of whatever's currently in context/attachments/
       // — buildChatPrompt turns this into a "read these with your file
       // tools" pointer, not an inline dump.
       const attachmentNames = listAttachments(attachmentsDir(project, env.mock)).map(
         (a) => a.name,
       );
-      const { reply: text, costUsd } = await runPlannerChat(
+      const { reply: text, costUsd } = await planning.chat({
+        project,
         messages,
-        project.name,
-        cwd,
         plannerModel,
-        buildPriorContext(db, project),
+        priorContext: buildPriorContext(db, project),
         attachmentNames,
-        cancellation.signal,
-        (event) => recordModelInvocation(event, id),
-      );
+        signal: cancellation.signal,
+        onInvocation: (event) => recordModelInvocation(event, id),
+      });
       // Persist the full conversation (including assistant reply) so the Plan
       // tab can restore it on reload or after a tab switch.
       const updatedMessages = [...messages, { role: "assistant" as const, content: text }];
@@ -1600,7 +1595,6 @@ async function assembleServer(
       requestControllers,
     );
     try {
-      const cwd = await resolvePlannerCwd(project);
       const attachmentNames = listAttachments(attachmentsDir(project, env.mock)).map(
         (a) => a.name,
       );
@@ -1613,23 +1607,22 @@ async function assembleServer(
         });
       }
       const planningSession = repo.getPlanningSession(db, id);
-      const { output, costUsd, verifiedFigmaReferences } = await runPlannerDeconstruct(
+      const { output, costUsd, verifiedFigmaReferences } = await planning.deconstruct({
+        project,
         messages,
-        project.name,
-        cwd,
         plannerModel,
-        buildPriorContext(db, project),
+        priorContext: buildPriorContext(db, project),
         attachmentNames,
-        (msg) => app.log.warn(msg),
-        cancellation.signal,
-        (event) => recordModelInvocation(event, id),
-        planningSession.verifiedFigmaReferences,
-        (references) =>
+        onWarn: (msg) => app.log.warn(msg),
+        signal: cancellation.signal,
+        onInvocation: (event) => recordModelInvocation(event, id),
+        cachedVerifiedFigmaReferences: planningSession.verifiedFigmaReferences,
+        onVerifiedFigmaReferences: (references) =>
           savePlanningRevision(id, revisionId, {
             verifiedFigmaReferences: references,
           }),
-        body?.figmaVerification ?? "live",
-      );
+        figmaVerification: body?.figmaVerification ?? "live",
+      });
       const tasks = withAssignedModels(
         output,
         settings,

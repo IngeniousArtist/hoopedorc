@@ -7368,7 +7368,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 
 | ID | Work item | Status | PR / acceptance evidence |
 |---|---|---|---|
-| VW01 | Deterministic mock planning; no real planner/Figma calls | Not started | — |
+| VW01 | Deterministic mock planning; no real planner/Figma calls | Implemented; PR open, awaiting required CI and merge | [PR #262](https://github.com/IngeniousArtist/hoopedorc/pull/262); see the VW01 acceptance record below |
 | VW02 | Preserve planning input and truthful draft-save state | Not started | — |
 | VW03 | Repository-aware planning and truthful task history | Not started | — |
 | VW04 | Project navigation, compact board/list, task inspector | Not started | — |
@@ -7417,3 +7417,85 @@ permission. New document links, all 18 backlog/table entries, concept ID/view
 references, and concept JavaScript syntax were checked. No runtime code changed.
 Publication: [PR #261](https://github.com/IngeniousArtist/hoopedorc/pull/261).
 Required PR CI must also pass before merge; the PR records its final result.
+
+### VW01 — deterministic mock planning (implemented 2026-09-21)
+
+**Problem confirmed on main (80cbd96):** `POST /plan/chat`, `/plan/deconstruct`,
+and the legacy `POST /plan` called `runPlannerChat`/`runPlannerDeconstruct`/
+`runPlanner` regardless of `ENV.mock`, and `resolvePlannerCwd` ran
+`ensureClone` against the seed project's `localPath: "."` — the primary
+Hoopedorc clone — so a mock chat could launch the authenticated production
+planner inside this repository (the audit's `$0.15` turn).
+
+**Scope delivered:**
+
+- `packages/server/src/planning-service.ts`: one `PlanningService` contract
+  (`chat`, `deconstruct`, `planGoal`), the production implementation wrapping
+  the real planner functions plus the existing clone-then-tmpdir working
+  directory rule (moved out of `index.ts` unchanged; VW03 owns disclosing the
+  fallback), and `selectPlanningService(env.mock, …)`.
+- `packages/server/src/mock-planner.ts`: deterministic chat, deconstruction,
+  legacy single-shot plan, and Figma verification computed from the request
+  alone. Reuses the real `extractFigmaReferences`,
+  `normalizeVerifiedFigmaReferences`, `makeFigmaIssue` (now exported),
+  `FigmaVerificationError`, and `ensureVerifiedFigmaTaskHandoff`. Fixtures:
+  `[MOCK_PLANNER_FAIL]` → explicit `MockPlannerUnavailableError` (routes emit
+  their existing `502`); `MOCKFAIL-<figma_issue_code>` file key → typed
+  `FIGMA_VERIFICATION_FAILED` `409`; every other exact node verifies with fixed
+  `Mock frame <nodeId>` 1440×900 metadata. Replies are labeled
+  `Mock planner (no model, CLI, MCP, or repository was used).`
+- `packages/server/src/index.ts`: `BuildAppDependencies.planning` injection;
+  the service is selected once in `assembleServer` from the injected `env`;
+  the three planning routes delegate to it and keep their revision guards,
+  running-project lock, attachment validation, docs/visual-QA insertion,
+  persistence, plan-session archives, and error envelopes.
+- Docs: CONTRACT.md (VW01 paragraph + mock-server convention),
+  ARCHITECTURE.md, README.md, USER_GUIDE.md troubleshooting row.
+
+**Non-goals honored:** no production prompt, routing, credential, dashboard,
+or CLI-authentication change; no `ROUTES`/payload change; no fixture platform.
+
+**Acceptance evidence (all local, Node 22.23.0):**
+
+- `packages/server/src/mock-planner.test.ts` (7): deterministic identical
+  outputs for repeated inputs; labeled reply ending in `[PLAN_COMPLETE]`;
+  empty brief does not claim readiness; failure token rejects chat,
+  deconstruct, and plan explicitly; valid two-task DAG (`dependsOn` earlier
+  indices only); production-shaped verified references with model/runner
+  identity, cache reuse without re-verification, re-verification for another
+  runner; typed `figma_auth_required`/`figma_unavailable`/`figma_invalid_node`
+  failures; attachment fallback verifies nothing; fake `claude`/`codex`/
+  `opencode` on `PATH` never invoked and the project path never created.
+- `packages/server/src/planning-service.test.ts` (3): `env.mock` selection
+  builds only the chosen side; production forwards every argument in order
+  with the clone path; unreachable clone keeps the documented fallback.
+- `packages/server/src/planning-routes.test.ts` (6, real `buildApp`): mock
+  chat/deconstruct return `200`, `$0.00`, persisted session/draft, docs task
+  appended, deterministic repeat, no CLI invoked, no clone; `400` missing
+  revision/empty messages/invalid mode/missing attachments, `409` stale
+  revision and running lock, failed turns not persisted; `502` envelopes for
+  the failure token; `409 FIGMA_VERIFICATION_FAILED` with `figma_auth_required`
+  and node identity; verified references persisted and the generated
+  `Visual fidelity QA` task (`generatedTaskKind: "visual-qa"`) inserted before
+  docs with correct dependencies; legacy `POST /plan` creates mock tasks and
+  sets `planned`; real mode (`env.mock: false`) with an offline local clone
+  reaches the fake `claude` CLI and returns its reply — production selection
+  proven without a paid call.
+- `apps/web/e2e/app.spec.ts` "VW01: the mock planner answers the real planning
+  routes without any model call": pauses the seed project through the real
+  pause route, sends a brief through the un-intercepted `/plan/chat`, sees the
+  labeled reply, readiness banner, `planning cost $0.00`, generates the table
+  through the un-intercepted `/plan/deconstruct`, and gets the three expected
+  tasks with no visual-QA task. Runs last in the serial suite because it
+  changes the shared seed status.
+- Gates: `npm run typecheck`, `npm run build`, `npm run lint` (330 legacy
+  findings, baseline unchanged), 234 engine, 18 adapter, 343 server, 100 web
+  tests, 20 Playwright scenarios, `git diff --check` — all passed.
+
+**Not required / outstanding:** no live paid-model verification (production
+behavior unchanged); no UI code changed, so no new responsive browser pass
+beyond the existing Playwright suite at 1280×800 and the unchanged responsive
+suite. Publication:
+[PR #262](https://github.com/IngeniousArtist/hoopedorc/pull/262). Required PR
+CI must pass before merge; the PR records its final result, and merge/main CI
+evidence is appended after merge.
