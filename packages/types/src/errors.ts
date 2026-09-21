@@ -15,3 +15,9 @@ export class InvocationLedgerError extends Error {
     super(message, options);
   }
 }
+
+/** Admission refusal is not a model failure and must not consume a call. */
+export class ResourceUnavailableError extends Error {
+  override readonly name = "ResourceUnavailableError";
+  constructor(message: string, readonly retryable = true) { super(message); }
+}

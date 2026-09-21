@@ -68,6 +68,8 @@ export function modelEffortError(
 }
 
 export interface ModelConfig {
+  /** Profiles sharing one CLI account must use the same resource pool. */
+  accountPoolId?: string;
   id: ModelId;
   displayName: string;
   runner: RunnerKind;
@@ -391,6 +393,10 @@ export type InvocationOutcome =
   | "interrupted";
 
 export interface ModelInvocation {
+  /** Immutable ownership and billing policy captured before model work. */
+  accounting?: import("./resources").InvocationAccounting;
+  /** CLI-reported estimate before subscription/manual-pricing normalization. */
+  reportedCostUsd?: number;
   id: string;
   projectId?: string;
   taskId?: string;
@@ -669,6 +675,8 @@ export const SECRET_SENTINEL = "__SET__";
 
 /** Global, persisted settings. */
 export interface Settings {
+  /** Optional for old persisted settings; normalized reads always supply []. */
+  accountPools?: import("./resources").AccountPool[];
   models: ModelConfig[];
   /** Role/difficulty -> model assignment. Edited via the Settings selectors. */
   routing: RoutingPolicy;

@@ -1,5 +1,6 @@
 import {
   InvocationLedgerError,
+  ResourceUnavailableError,
   type ModelInvocation,
   type Settings,
 } from "@orc/types";
@@ -7,6 +8,7 @@ import { defaultSettings } from "./config.js";
 import type { Db } from "./db/index.js";
 import * as repo from "./db/repo.js";
 import { manualCostUsd } from "./pricing.js";
+import { ResourceManager, accountingSnapshot, invocationCost } from "./resources";
 
 export interface PersistedInvocationEvent {
   invocation: ModelInvocation;
@@ -35,11 +37,18 @@ export function persistInvocationEvent(
   settingsSnapshot?: Settings,
 ): PersistedInvocationEvent {
   try {
+    const resources = new ResourceManager(db);
     if (event.outcome === "running") {
-      return {
-        invocation: repo.createInvocation(db, event),
-        transitioned: false,
-      };
+      return db.transaction(() => {
+        const previous = repo.getInvocation(db, event.id);
+        if (previous) return { invocation: previous, transitioned: false };
+        const settings = settingsSnapshot ?? repo.getSettings(db) ?? defaultSettings();
+        const model = settings.models.find((candidate) => candidate.id === event.model);
+        const reserved = resources.activate(event);
+        if (!reserved && (event.accounting?.poolId || model?.accountPoolId && !event.accounting)) throw new ResourceUnavailableError("This model invocation has not reserved shared account capacity.", false);
+        const accounting = reserved ?? event.accounting ?? (model ? accountingSnapshot(model) : { billing: "metered" as const });
+        return { invocation: repo.createInvocation(db, { ...event, accounting }), transitioned: false };
+      })();
     }
 
     // Defensive compatibility for callers that only have a terminal callback:
@@ -66,18 +75,29 @@ export function persistInvocationEvent(
       event.tokensOut,
       event.tokensCached,
     );
-    const terminal = repo.terminalizeInvocation(db, event.id, {
-      outcome: event.outcome,
-      endedAt: event.endedAt ?? new Date().toISOString(),
-      exitReason: event.exitReason,
-      costUsd: manual ?? event.costUsd,
-      tokensIn: event.tokensIn,
-      tokensOut: event.tokensOut,
-      tokensCached: event.tokensCached,
-    });
+    const accounting = repo.getInvocation(db, event.id)?.accounting;
+    const reported = event.reportedCostUsd ?? event.costUsd;
+    const terminal = db.transaction(() => {
+      const saved = repo.terminalizeInvocation(db, event.id, {
+        outcome: event.outcome,
+        endedAt: event.endedAt ?? new Date().toISOString(),
+        exitReason: event.exitReason,
+        costUsd: accounting ? invocationCost(accounting, reported, event.tokensIn, event.tokensCached, event.tokensOut) : manual ?? event.costUsd,
+        reportedCostUsd: reported,
+        tokensIn: event.tokensIn,
+        tokensOut: event.tokensOut,
+        tokensCached: event.tokensCached,
+      });
+      if (saved?.transitioned) {
+        resources.release(event.id);
+        if (saved.invocation.exitReason === "rate_limited" && saved.invocation.accounting?.poolId) resources.cooldown(saved.invocation.accounting.poolId);
+      }
+      return saved;
+    })();
     if (!terminal) throw new Error(`invocation ${event.id} disappeared`);
     return terminal;
   } catch (error) {
+    if (error instanceof ResourceUnavailableError) throw error;
     if (error instanceof InvocationLedgerError) throw error;
     throw new InvocationLedgerError(
       `failed to persist invocation ${event.id}`,

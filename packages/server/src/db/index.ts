@@ -153,6 +153,32 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_preview_port_owner ON workspace_previews(p
   WHERE state IN ('starting', 'ready', 'stopping');
 `;
 
+const VW13_RESOURCE_MIGRATION = `
+-- VW13: shared account admission, immutable pricing snapshots and explicit recovery.
+CREATE TABLE IF NOT EXISTS resource_reservations (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  task_id TEXT,
+  model TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  pool_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('reserved', 'active', 'unresolved', 'released')),
+  accounting_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_resource_reservations_pool ON resource_reservations(pool_id, state, created_at);
+CREATE TABLE IF NOT EXISTS resource_cooldowns (pool_id TEXT PRIMARY KEY, until_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS resource_recoveries (
+  request_id TEXT PRIMARY KEY,
+  reservation_id TEXT NOT NULL REFERENCES resource_reservations(id),
+  request_hash TEXT NOT NULL,
+  result_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_invocations_account_started
+  ON model_invocations(json_extract(accounting_json, '$.poolId'), started_at);
+`;
+
 const VW12_ACTIVATION_MIGRATION = `
 -- VW12: immutable activation settings and credential-free invocation receipts.
 CREATE TABLE IF NOT EXISTS activation_versions (
@@ -285,6 +311,8 @@ export function initDb(path: string = ENV.dbPath): Db {
     "ALTER TABLE tasks ADD COLUMN run_rate_limit_retries INTEGER NOT NULL DEFAULT 0",
     // Cached-input token counts, for manual per-model pricing (fresh vs
     // cached input bill at different rates).
+    "ALTER TABLE model_invocations ADD COLUMN accounting_json TEXT",
+    "ALTER TABLE model_invocations ADD COLUMN reported_cost_usd REAL",
     "ALTER TABLE runs ADD COLUMN tokens_cached INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE costs ADD COLUMN tokens_cached INTEGER NOT NULL DEFAULT 0",
     // F48: attempt-stable CLI effort used for this run (`default` when the
@@ -511,6 +539,12 @@ export function initDb(path: string = ENV.dbPath): Db {
   db.exec(VW10_REVIEW_MIGRATION);
   db.exec(VW11_LIBRARY_MIGRATION);
   db.exec(VW12_ACTIVATION_MIGRATION);
+  db.exec(VW13_RESOURCE_MIGRATION);
+  // A dead server does not prove its child CLI stopped. Never auto-expire
+  // potentially live capacity; only unstarted or terminal calls can release.
+  db.prepare(`UPDATE resource_reservations SET state = CASE
+    WHEN EXISTS (SELECT 1 FROM model_invocations i WHERE i.id = resource_reservations.id AND i.outcome = 'interrupted') THEN 'unresolved'
+    ELSE 'released' END, updated_at = ? WHERE state IN ('reserved', 'active')`).run(new Date().toISOString());
   // No CLI can be resumed by restoring an in-memory Promise. Keep the input,
   // settle orphaned ownership, and require an explicit, separately counted retry.
   db.prepare(`UPDATE planning_operations SET state = 'interrupted', ended_at = ?,

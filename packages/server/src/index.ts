@@ -1,3 +1,5 @@
+import { prepareProjectInvocation } from "./invocation-preparation";
+import { registerResourceRoutes } from "./resource-routes";
 import { registerActivationRoutes } from "./activation-routes";
 import { PlanChangeError, assertPlanChangeCurrent, getPlanChange, latestPlanChange, pendingPlanChange, reviewPlanChanges, validatePlanChangeInput } from "./plan-changes";
 import { registerWorkspaceRoutes } from "./workspaces";
@@ -651,6 +653,7 @@ async function assembleServer(
   registerReviewRoutes(app, db, reviews);
   registerLibraryRoutes(app, db, env.mock);
   registerActivationRoutes(app, db);
+  registerResourceRoutes(app, engine.resources);
   engine.activation.setBrowser(previews, reviews);
   app.addHook("onClose", () => reviews.close());
 
@@ -1430,7 +1433,7 @@ async function assembleServer(
       // never hard-fails, by design.
       const plannerModel = resolvePlannerModel(settings, "deconstruct");
       const activationRevision = engine.activation.store.resolve(project.id);
-      plannerModel.prepareActivation = (invocationId, stage, cwd, signal) => engine.activation.prepare({ id: invocationId, project, stage, cwd, signal, runner: plannerModel.runner }, activationRevision);
+      plannerModel.prepareActivation = (invocationId, stage, cwd, signal) => prepareProjectInvocation(engine.resources, engine.activation, { id: invocationId, project, stage, cwd, signal, runner: plannerModel.runner }, settings.models.find((model) => model.id === plannerModel.id)!, activationRevision);
       // VW03: no planning against a temporary directory — an unreachable
       // repository lands in this route's documented stub fallback below.
       const repository = await planning.inspect(project, cancellation.signal);
@@ -1578,7 +1581,7 @@ async function assembleServer(
       const settings = repo.getSettings(db) ?? defaultSettings();
       const plannerModel = resolvePlannerModel(settings, operation.kind);
       const activationRevision = engine.activation.store.resolve(project.id);
-      plannerModel.prepareActivation = (invocationId, stage, cwd, signal) => engine.activation.prepare({ id: invocationId, project, stage, cwd, signal, runner: plannerModel.runner }, activationRevision);
+      plannerModel.prepareActivation = (invocationId, stage, cwd, signal) => prepareProjectInvocation(engine.resources, engine.activation, { id: invocationId, project, stage, cwd, signal, runner: plannerModel.runner }, settings.models.find((model) => model.id === plannerModel.id)!, activationRevision);
       const messages = operation.input.messages;
       const attachmentNames = listAttachments(attachmentsDir(project, env.mock)).map((a) => a.name);
       const repository = await planning.inspect(project, signal);
@@ -2470,7 +2473,9 @@ async function assembleServer(
       throw err;
     }
 
-    const saved = repo.upsertSettings(db, merged);
+    let saved: SettingsType;
+    try { saved = repo.upsertSettings(db, merged); }
+    catch (error) { if (error instanceof SettingsValidationError) return reply.code(409).send({ error: error.message }); throw error; }
     configureTelegram(); // apply enable/disable/token/chatId changes live
 
     // B28: this edit itself can only produce a routing-referenced model
@@ -2644,6 +2649,7 @@ async function assembleServer(
         env.opencodeBaseUrl,
         (event) => recordModelInvocation(event),
         cancellation.signal,
+        async (model, id, signal) => ({ accounting: await engine.resources.acquire({ id, model: model.id, modelConfig: model, stage: "health" }, signal, false), release: () => engine.resources.releaseUnstarted(id) }),
       );
     } finally {
       cancellation.cleanup();
@@ -2652,6 +2658,7 @@ async function assembleServer(
     // that survives a reload, not just whatever's in this response.
     const ts = new Date().toISOString();
     for (const r of result.results) {
+      if (!r.invocationId) continue; // Admission refusal is not a model health call.
       repo.createModelCheck(db, {
         invocationId: r.invocationId,
         modelId: r.id,

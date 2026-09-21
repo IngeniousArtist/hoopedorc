@@ -1,5 +1,39 @@
 # The Contract
 
+## VW13 shared account resources
+
+`Settings.accountPools` normalizes to an empty list for existing installations.
+`ModelConfig.accountPoolId` optionally assigns a profile to a configured pool.
+Pools contain a stable ID, display name, billing mode, shared concurrency,
+reserved validator slots, and optional rolling call/observed-cost limits.
+Subscription pools accept call limits and record zero incremental USD. Model
+limits remain independent additional constraints. Pool membership does not
+select or change CLI authentication. Removing a pool with reserved, active or
+unresolved workers returns 409; detach profile memberships explicitly.
+
+`GET /api/resources` returns `ResourcesResponse`: saved pool settings, observed
+calls (including unstarted reservations), tokens, incremental cost, incomplete
+interrupted usage, occupied/free capacity, cooldowns, unresolved workers and
+unpooled profiles. Provider allowance is always `unknown`. No credentials or
+provider subscription balances are inferred. Mock mode uses the same SQLite
+admission/status implementation without model calls.
+
+`POST /api/resources/:reservationId/recover` takes `RecoverResourceRequest`
+(UUID v4 `requestId`, exact `expectedUpdatedAt`, `confirmWorkerStopped: true`)
+and returns `RecoverResourceResponse`. It releases only an unresolved worker;
+it never kills a process or changes interrupted usage history. The operator
+must first verify/stop that worker. A persisted receipt makes identical retries
+idempotent; a stale version, reused request ID for a different action, or missing
+confirmation returns 409. Persistence failure returns 500.
+
+SQLite resource reservations, cooldowns and recovery receipts migrate
+idempotently. Admission and ledger activation are transactional; the first
+terminal transition releases capacity. Restart releases unstarted reservations
+and holds interrupted workers as unresolved. Invocation `accounting` fixes pool,
+billing and token prices at admission; `reportedCostUsd` preserves the CLI's
+original estimate. Existing unpooled history is not reassigned retroactively.
+See [account resource semantics](specs/resources.md).
+
 ## VW12 activation
 
 `GET /api/projects/:id/activation` returns the saved default, immutable revisions,
@@ -745,6 +779,8 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `costAnalytics` | `GET /api/projects/:id/analytics` | → `CostAnalyticsResponse` |
 | `estimatePlan` | `GET /api/projects/:id/estimate` | → `EstimateResponse` |
 | `getSettings` | `GET /api/settings` | → `GetSettingsResponse` |
+| `resources` | `GET /api/resources` | → `ResourcesResponse` saved pool usage and unresolved workers |
+| `recoverResource` | `POST /api/resources/:reservationId/recover` | `RecoverResourceRequest` → `RecoverResourceResponse`; confirmed, versioned, idempotent capacity release |
 | `updateSettings` | `PUT /api/settings` | `UpdateSettingsRequest` → `UpdateSettingsResponse` |
 | `telegramTest` | `POST /api/telegram/test` | `TelegramTestRequest` → `TelegramTestResponse` |
 | `listNotifications` | `GET /api/notifications` | → `ListNotificationsResponse` |

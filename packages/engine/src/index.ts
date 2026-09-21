@@ -14,6 +14,7 @@ import type {
   LogEvent,
   MergeDecision,
   ModelId,
+  ModelConfig,
   Project,
   RollbackJob,
   Run,
@@ -343,7 +344,7 @@ export interface SchedulerDeps {
   getSettings?: () => Settings;
   events: EngineEvents;
   /** Resolves an author model id to the adapter that runs it. */
-  adapterFor: (modelId: ModelId) => AgentAdapter;
+  adapterFor: (modelId: ModelId, snapshot?: ModelConfig) => AgentAdapter;
   /** Base URL of the running `opencode serve` instance (for opencode adapters). */
   opencodeBaseUrl: string;
   /**
@@ -392,6 +393,10 @@ export interface SchedulerDeps {
   getPendingApproval?: (projectId: string) => { title: string } | undefined;
   /** VW11: resolve only explicitly pinned references; refuse before an attempt. */
   checkActivation?: (project: Project, task: Task, model: ModelId, signal?: AbortSignal) => Promise<string | null>;
+  /** Atomically reserve the next author call before consuming its attempt. */
+  reserveAuthor?: (project: Project, task: Task, model: ModelId, invocationId: string) => string | null;
+  releaseUnstartedInvocation?: (invocationId: string) => void;
+  beforeDocsInvocation?: (project: Project, task: Task, model: ModelConfig, invocationId: string, signal?: AbortSignal) => Promise<void>;
   checkTaskReferences?: (project: Project, task: Task) => string | null;
   taskReferenceContext?: (project: Project, task: Task) => string;
   /**

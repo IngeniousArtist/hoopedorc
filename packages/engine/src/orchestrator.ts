@@ -1,4 +1,4 @@
-import { InvocationLedgerError } from "@orc/types";
+import { InvocationLedgerError, ResourceUnavailableError } from "@orc/types";
 import type {
   Difficulty,
   FigmaCapabilityIssue,
@@ -673,7 +673,7 @@ export class Orchestrator implements Scheduler {
       // let it fail closed through the owning runtime error path (the
       // outer executeTask catch) instead of reporting a false capability
       // block and losing the attempt/worktree bookkeeping that implies.
-      if (error instanceof InvocationLedgerError) throw error;
+      if (error instanceof InvocationLedgerError || error instanceof ResourceUnavailableError) throw error;
       if (
         signal.aborted &&
         (this.paused || this.stopRequested.has(task.id))
@@ -1528,6 +1528,7 @@ export class Orchestrator implements Scheduler {
     this.switchRunningModel(task.id, currentModel);
 
     let preservePreflightWorkspace = true;
+    let reservedInvocationId: string | undefined;
     try {
       const referenceIssue = this.deps.checkTaskReferences?.(project, task);
       if (referenceIssue) {
@@ -1622,6 +1623,7 @@ export class Orchestrator implements Scheduler {
         // for whichever model is about to actually run this attempt.
         const quotaMsg = this.deps.checkModelQuota?.(currentModel) ?? null;
         if (quotaMsg) {
+          preservePreflightWorkspace = true;
           this.emit(
             "warn",
             "engine",
@@ -1657,6 +1659,14 @@ export class Orchestrator implements Scheduler {
         // Reserve the author invocation durably only after every zero-attempt
         // preflight/budget/quota refusal has passed, but before the subprocess
         // may start. A crash can therefore never repeat an unaccounted call.
+        const nextInvocationId = taskRunId({ ...task, attempts: task.attempts + 1 });
+        const resourceIssue = this.deps.reserveAuthor?.(project, task, currentModel, nextInvocationId);
+        if (resourceIssue) {
+          preservePreflightWorkspace = true;
+          task.status = "backlog"; task.statusReason = `Waiting for account capacity: ${resourceIssue}`;
+          this.emit("info", "engine", task.statusReason, task.id); this.deps.events.onTaskUpdated(task); return;
+        }
+        reservedInvocationId = nextInvocationId;
         task.attempts++;
         this.deps.events.onTaskUpdated(task);
         const attemptLimit = effectiveAttemptLimit(task);
@@ -2053,6 +2063,11 @@ export class Orchestrator implements Scheduler {
         if (this.stopRequested.has(task.id)) this.bailIfStopRequested(task);
         return;
       }
+      if (err instanceof ResourceUnavailableError) {
+        preservePreflightWorkspace = true;
+        task.status = "blocked"; task.statusReason = `Account resources need attention: ${err.message}`;
+        this.emit("warn", "engine", task.statusReason, task.id); this.deps.events.onTaskUpdated(task); return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.emit("error", "engine", `Fatal: ${message}`, task.id);
       task.status = "failed";
@@ -2065,6 +2080,7 @@ export class Orchestrator implements Scheduler {
       this.stopRequested.delete(task.id);
       this.figmaCapabilityByTask.delete(task.id);
       this.noFigmaReferenceTasks.delete(task.id);
+      if (reservedInvocationId) this.deps.releaseUnstartedInvocation?.(reservedInvocationId);
       try {
         if (!preservePreflightWorkspace) await this.deps.worktrees.remove(project, task);
       } catch (err) {
@@ -2466,7 +2482,7 @@ export class Orchestrator implements Scheduler {
       throw new Error(`model ${model} is ${config ? "disabled" : "not configured"}`);
     }
     const effort = config.effort ?? "default";
-    const adapter = this.deps.adapterFor(model);
+    const adapter = this.deps.adapterFor(model, config);
     const prompt = this.buildAuthorPrompt(project, task, fixInstructions);
 
     const controller = new AbortController();
@@ -2637,18 +2653,22 @@ export class Orchestrator implements Scheduler {
     this.emit("info", "engine", `Documenting merged change with ${docsModel}…`, task.id);
 
     const runId = docsRunId(task);
-    const startedAt = new Date().toISOString();
+    let startedAt = new Date().toISOString();
     const effort = docsConfig.effort ?? "default";
     const controller = new AbortController();
     const onTaskAbort = () => controller.abort();
     if (taskSignal?.aborted) onTaskAbort();
     else taskSignal?.addEventListener("abort", onTaskAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), DOCS_STAGE_TIMEOUT_MS);
-    this.emitRunEvent(task, null, "running", docsModel, startedAt, runId, effort);
+    let started = false;
 
     let result: AgentRunResult;
     try {
-      result = await this.deps.adapterFor(docsModel).run({
+      await this.deps.beforeDocsInvocation?.(project, task, docsConfig, runId, controller.signal);
+      startedAt = new Date().toISOString();
+      this.emitRunEvent(task, null, "running", docsModel, startedAt, runId, effort);
+      started = true;
+      result = await this.deps.adapterFor(docsModel, docsConfig).run({
         invocation: { id: runId, taskId: task.id, stage: "docs" },
         model: docsModel,
         prompt: this.buildDocsPrompt(project, task),
@@ -2667,7 +2687,7 @@ export class Orchestrator implements Scheduler {
       });
     } catch (err: unknown) {
       if (taskSignal?.aborted) {
-        this.emitRunEvent(task, null, "stopped", docsModel, startedAt, runId, effort);
+        if (started) this.emitRunEvent(task, null, "stopped", docsModel, startedAt, runId, effort);
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
@@ -2677,10 +2697,11 @@ export class Orchestrator implements Scheduler {
         `Documentation stage errored (${message}) — merging without a docs update`,
         task.id,
       );
-      this.emitRunEvent(task, null, "failed", docsModel, startedAt, runId, effort);
+      if (started) this.emitRunEvent(task, null, "failed", docsModel, startedAt, runId, effort);
       return;
     } finally {
       clearTimeout(timer);
+      this.deps.releaseUnstartedInvocation?.(runId);
       taskSignal?.removeEventListener("abort", onTaskAbort);
     }
 

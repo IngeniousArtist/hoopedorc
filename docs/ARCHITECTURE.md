@@ -387,3 +387,14 @@ active attempt. The same server resolver feeds author and validator (including
 the existing recovery construction). Figma preflight also sees selected reference
 text, preserving its existing exact-node capability guard. Unselected Library
 entries are absent; native harness discovery remains VW12's separate boundary.
+
+### Shared account admission (VW13)
+
+`packages/server/src/resources.ts` owns cross-project/model pool admission,
+immutable per-call accounting snapshots and durable unresolved-worker recovery.
+The engine reserves authors before an attempt and uses the same owner for docs
+and validator admission. Planner capability preparation composes admission with
+activation; health checks reserve before invoking adapters. `invocation-ledger.ts`
+activates a reservation in the running-row transaction, then releases it and
+applies shared cooldowns in the exactly-once terminal transaction. Restart never
+assumes interrupted CLI children are dead. See [resources](specs/resources.md).

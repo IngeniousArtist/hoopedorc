@@ -3,12 +3,13 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { InvocationLedgerError, type ModelInvocation } from "@orc/types";
+import { InvocationLedgerError, ResourceUnavailableError, type ModelInvocation } from "@orc/types";
 import { ENV, defaultSettings } from "./config.js";
 import {
   buildChatPrompt,
   buildDeconstructPrompt,
   buildFigmaVerificationPrompt,
+  verifyFigmaReferences,
   ensureVerifiedFigmaTaskHandoff,
   extractJsonObject,
   FigmaVerificationError,
@@ -1659,5 +1660,33 @@ let text='';process.stdin.on('data',b=>text+=b);process.stdin.on('end',()=>conso
     const report = JSON.parse(result.reply) as { text: string; args: string[] }; assert.match(report.text, /SELECTED_CONTEXT/); assert.ok(report.args.includes("--strict-mcp-config")); assert.equal(closed, 1); assert.match(seen[0]!, /^planner:planner-/);
     await assert.rejects(runPlannerChat([{ role: "user", content: "Plan" }], "Activation", root, { runner: "codex", prepareActivation: () => Promise.resolve({ launch: { mcpConfigPath: "owned.json" }, instructions: "", close: () => { closed++; return Promise.resolve(); } }) }), /not verified/);
     assert.equal(closed, 2);
+  } finally { process.env.PATH = oldPath; rmSync(root, { recursive: true, force: true }); }
+});
+
+test("VW13: planning admission refusal starts no invocation or model call", async () => {
+  const events: ModelInvocation[] = [];
+  await assert.rejects(runPlannerChat([{ role: "user", content: "Plan" }], "Resources", "/tmp", {
+    runner: "claude-code", prepareActivation: () => Promise.reject(new Error("Account capacity unavailable")),
+  }, undefined, undefined, undefined, (event) => events.push(event)), /Account capacity unavailable/);
+  assert.equal(events.length, 0);
+});
+
+
+test("VW13: Figma admission failures keep their resource error identity", async () => {
+  const denied = new ResourceUnavailableError("Account removed", false);
+  await assert.rejects(verifyFigmaReferences([{ canonicalUrl: "https://www.figma.com/design/abc/Test?node-id=1-2", fileKey: "abc", nodeId: "1:2" }], "/tmp", {
+    runner: "claude-code", prepareActivation: () => Promise.reject(denied),
+  }), (error: unknown) => error === denied);
+});
+
+test("VW13: planner rate limits feed shared cooldown accounting", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vw13-planner-rate-")); const oldPath = process.env.PATH;
+  writeFileSync(join(root, "claude"), `#!${process.execPath}
+process.stdin.resume();process.stdin.on('end',()=>{process.stderr.write('HTTP 429 rate limit');process.exit(1);});`);
+  chmodSync(join(root, "claude"), 0o755); process.env.PATH = `${root}:${oldPath}`;
+  const events: ModelInvocation[] = [];
+  try {
+    await assert.rejects(runPlannerChat([{ role: "user", content: "Plan" }], "Limits", root, { runner: "claude-code" }, undefined, undefined, undefined, (event) => events.push(event)), /429/);
+    assert.equal(events.length, 2); assert.equal(events[1]!.exitReason, "rate_limited");
   } finally { process.env.PATH = oldPath; rmSync(root, { recursive: true, force: true }); }
 });

@@ -3,6 +3,7 @@ import type {
   GateResult,
   MergeDecision,
   ModelId,
+  ModelConfig,
   ModelInvocation,
   Project,
   Settings,
@@ -47,11 +48,12 @@ export type ValidatorInvocationSink = (event: ModelInvocation) => void;
 
 export class ValidatorImpl implements Validator {
   constructor(
-    private readonly adapterFactory: (modelId: ModelId) => AgentAdapter,
+    private readonly adapterFactory: (modelId: ModelId, snapshot?: ModelConfig) => AgentAdapter,
     private readonly settingsSource: Settings | (() => Settings),
     /** Optional for embedders/tests; production persists every lifecycle. */
     private readonly onInvocation?: ValidatorInvocationSink,
     private readonly referenceContext?: (project: Project, task: Task) => string,
+    private readonly beforeInvocation?: (id: string, project: Project, task: Task, model: ModelConfig, signal: AbortSignal | undefined, onLog: (line: string) => void) => Promise<{ accounting: import("@orc/types").InvocationAccounting; release: () => void }>,
   ) {}
 
   private settings(): Settings {
@@ -95,7 +97,7 @@ export class ValidatorImpl implements Validator {
 
     const cwd = task.worktreePath ?? project.localPath;
     const diff = await this.getDiff(project, cwd, signal);
-    const adapter = this.adapterFactory(validatorModel);
+    const adapter = this.adapterFactory(validatorModel, validatorConfig);
     const prompt = this.buildReviewPrompt(task, gate, diff, attemptSettings) + (this.referenceContext?.(project, task) ?? "");
     const invocationId = `validator-${task.id}-${randomUUID()}`;
     const startedAt = new Date().toISOString();
@@ -109,85 +111,90 @@ export class ValidatorImpl implements Validator {
       effort: validatorConfig.effort ?? "default",
       startedAt,
     };
-    this.onInvocation?.({
-      ...baseInvocation,
-      outcome: "running",
-      costUsd: 0,
-      tokensIn: 0,
-      tokensOut: 0,
-      tokensCached: 0,
-    });
-
-    let result;
+    const admission = await this.beforeInvocation?.(invocationId, project, task, validatorConfig, signal, onLog);
+    baseInvocation.startedAt = new Date().toISOString();
     try {
-      result = await adapter.run({
-        invocation: { id: invocationId, taskId: task.id, stage: "validator" },
-        model: validatorModel,
-        prompt,
-        cwd,
-        onLog,
-        signal,
-      });
-    } catch (err) {
       this.onInvocation?.({
         ...baseInvocation,
-        endedAt: new Date().toISOString(),
-        outcome: signal?.aborted ? "stopped" : "failed",
-        exitReason: signal?.aborted ? "killed" : "error",
+        accounting: admission?.accounting,
+        outcome: "running",
         costUsd: 0,
         tokensIn: 0,
         tokensOut: 0,
         tokensCached: 0,
       });
-      throw err;
-    }
-    this.onInvocation?.({
-      ...baseInvocation,
-      endedAt: new Date().toISOString(),
-      outcome: result.ok
-        ? "completed"
-        : result.exitReason === "killed"
-          ? "stopped"
-          : "failed",
-      exitReason: result.exitReason,
-      costUsd: result.costUsd,
-      tokensIn: result.tokensIn,
-      tokensOut: result.tokensOut,
-      tokensCached: result.tokensCached ?? 0,
-    });
 
-    const decision = this.parseDecision(
-      result.summary ?? "",
-      project,
-      task,
-      gate,
-      validatorModel,
-    );
+      let result;
+      try {
+        result = await adapter.run({
+          invocation: { id: invocationId, taskId: task.id, stage: "validator" },
+          model: validatorModel,
+          prompt,
+          cwd,
+          onLog,
+          signal,
+        });
+      } catch (err) {
+        this.onInvocation?.({
+          ...baseInvocation,
+          endedAt: new Date().toISOString(),
+          outcome: signal?.aborted ? "stopped" : "failed",
+          exitReason: signal?.aborted ? "killed" : "error",
+          costUsd: 0,
+          tokensIn: 0,
+          tokensOut: 0,
+          tokensCached: 0,
+        });
+        throw err;
+      }
+      this.onInvocation?.({
+        ...baseInvocation,
+        endedAt: new Date().toISOString(),
+        outcome: result.ok
+          ? "completed"
+          : result.exitReason === "killed"
+            ? "stopped"
+            : "failed",
+        exitReason: result.exitReason,
+        costUsd: result.costUsd,
+        tokensIn: result.tokensIn,
+        tokensOut: result.tokensOut,
+        tokensCached: result.tokensCached ?? 0,
+      });
 
-    if (!diff.ok || diff.truncated) {
-      decision.verdict = "escalate";
-      decision.confidence = 0;
-      decision.reasons = [
-        `Validator could not acquire a complete diff; human review is required${diff.error ? `: ${diff.error.slice(0, 300)}` : "."}`,
-        ...decision.reasons,
-      ];
-    }
+      const decision = this.parseDecision(
+        result.summary ?? "",
+        project,
+        task,
+        gate,
+        validatorModel,
+      );
 
-    // Enforce the confidence threshold: a low-confidence approval is escalated
-    // to a human rather than auto-merged.
-    const liveSettings = this.settings();
-    if (
-      decision.verdict === "approve" &&
-      decision.confidence < liveSettings.confidenceThreshold
-    ) {
-      decision.verdict = "escalate";
-      decision.reasons = [
-        `Validator confidence ${decision.confidence} is below threshold ${liveSettings.confidenceThreshold}.`,
-        ...decision.reasons,
-      ];
-    }
+      if (!diff.ok || diff.truncated) {
+        decision.verdict = "escalate";
+        decision.confidence = 0;
+        decision.reasons = [
+          `Validator could not acquire a complete diff; human review is required${diff.error ? `: ${diff.error.slice(0, 300)}` : "."}`,
+          ...decision.reasons,
+        ];
+      }
 
-    return decision;
+      // Enforce the confidence threshold: a low-confidence approval is escalated
+      // to a human rather than auto-merged.
+      const liveSettings = this.settings();
+      if (
+        decision.verdict === "approve" &&
+        decision.confidence < liveSettings.confidenceThreshold
+      ) {
+        decision.verdict = "escalate";
+        decision.reasons = [
+          `Validator confidence ${decision.confidence} is below threshold ${liveSettings.confidenceThreshold}.`,
+          ...decision.reasons,
+        ];
+      }
+
+      return decision;
+    } finally { admission?.release(); }
   }
 
   private async getDiff(

@@ -1,9 +1,12 @@
+import { invocationCost } from "./resources";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { makeAdapter, sanitizedEnv } from "@orc/adapters";
 import { DEFAULT_GATE_IMAGE, resolveSandboxMode, WorktreeManagerImpl } from "@orc/engine";
 import type {
+  InvocationAccounting,
+  ModelConfig,
   ModelCatalogEntry,
   ModelCatalogResponse,
   ModelRosterResponse,
@@ -427,6 +430,7 @@ export async function testModels(
   opencodeBaseUrl: string,
   onInvocation?: (event: ModelInvocation) => void,
   signal?: AbortSignal,
+  beforeInvocation?: (model: ModelConfig, id: string, signal?: AbortSignal) => Promise<{ accounting: InvocationAccounting; release: () => void }>,
 ): Promise<TestModelsResponse> {
   const enabled = settings.models.filter((m) => m.enabled);
   const results: ModelTestResult[] = await Promise.all(
@@ -440,17 +444,23 @@ export async function testModels(
         effort: cfg.effort ?? "default",
         startedAt: new Date().toISOString(),
       };
-      onInvocation?.({
-        ...baseInvocation,
-        outcome: "running",
-        costUsd: 0,
-        tokensIn: 0,
-        tokensOut: 0,
-        tokensCached: 0,
-      });
+      let started = false;
+      let admission: { accounting: InvocationAccounting; release: () => void } | undefined;
       try {
+        admission = await beforeInvocation?.(cfg, baseInvocation.id, signal);
+        baseInvocation.startedAt = new Date().toISOString();
+        onInvocation?.({
+          ...baseInvocation,
+          accounting: admission?.accounting,
+          outcome: "running",
+          costUsd: 0,
+          tokensIn: 0,
+          tokensOut: 0,
+          tokensCached: 0,
+        });
+        started = true;
         const adapter = makeAdapter(cfg, opencodeBaseUrl);
-        const res = await adapter.run({
+        let res = await adapter.run({
           model: cfg.id,
           // F33: "OK" only proved liveness, not identity — the owner wants to
           // see the model actually say who it is, so a passing test reads
@@ -461,8 +471,11 @@ export async function testModels(
           onLog: () => {},
           signal,
         });
+        const reportedCostUsd = res.costUsd;
+        if (admission) res = { ...res, costUsd: invocationCost(admission.accounting, reportedCostUsd, res.tokensIn, res.tokensCached ?? 0, res.tokensOut) };
         onInvocation?.({
           ...baseInvocation,
+          reportedCostUsd,
           endedAt: new Date().toISOString(),
           outcome: res.ok
             ? "completed"
@@ -488,7 +501,7 @@ export async function testModels(
           error: res.ok ? undefined : (res.summary || "no output").slice(0, 200),
         };
       } catch (err) {
-        onInvocation?.({
+        if (started) onInvocation?.({
           ...baseInvocation,
           endedAt: new Date().toISOString(),
           outcome: signal?.aborted ? "stopped" : "failed",
@@ -501,14 +514,14 @@ export async function testModels(
         return {
           id: cfg.id,
           displayName: cfg.displayName,
-          invocationId: baseInvocation.id,
+          invocationId: started ? baseInvocation.id : undefined,
           effort: cfg.effort ?? "default",
           ok: false,
           costUsd: 0,
           ms: Date.now() - start,
           error: (err as Error).message.slice(0, 200),
         };
-      }
+      } finally { admission?.release(); }
     }),
   );
   const totalCostUsd = results.reduce((s, r) => s + r.costUsd, 0);

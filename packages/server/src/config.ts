@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   modelEffortError,
+  type AccountPool,
   type MergePolicy,
   type ModelConfig,
   type ModelId,
@@ -109,6 +110,7 @@ export const DEFAULT_GUIDELINES = {
 
 function rawDefaultSettings(): Settings {
   return {
+    accountPools: [],
     models: DEFAULT_MODELS.map((model) => ({ ...model, roles: [...model.roles] })),
     routing: {
       planner: "claude",
@@ -304,6 +306,7 @@ function normalizeModel(value: unknown, index: number): ModelConfig {
   if (effortError) throw new SettingsValidationError(field("effort"), effortError);
 
   const model: ModelConfig = {
+    accountPoolId: optionalString(raw.accountPoolId, field("accountPoolId"), 64),
     id,
     displayName,
     runner,
@@ -425,6 +428,29 @@ function migrateLegacyGlmProvider(modelsRaw: unknown[]): unknown[] {
  * read/write path calls this function, so HTTP, Telegram, boot migration and
  * active runtimes cannot disagree about what a valid policy means.
  */
+function normalizeAccountPools(value: unknown): AccountPool[] {
+  if (!Array.isArray(value) || value.length > 32) throw new SettingsValidationError("accountPools", "must contain at most 32 pools");
+  const ids = new Set<string>();
+  return value.map((entry, index) => {
+    const field = `accountPools[${index}]`; const raw = record(entry, field);
+    const id = string(raw.id, `${field}.id`, { nonEmpty: true, max: 64 })!;
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(id) || ids.has(id)) throw new SettingsValidationError(`${field}.id`, "must be a unique stable ID using letters, digits, underscores or hyphens");
+    ids.add(id);
+    const maxConcurrent = finiteNumber(raw.maxConcurrent, `${field}.maxConcurrent`, { min: 1, max: 100, integer: true })!;
+    const pool: AccountPool = { id, name: string(raw.name, `${field}.name`, { nonEmpty: true, max: 160 })!.trim(), billing: enumValue(raw.billing, ["subscription", "metered"], `${field}.billing`), maxConcurrent,
+      reviewSlots: finiteNumber(raw.reviewSlots ?? 0, `${field}.reviewSlots`, { min: 0, max: maxConcurrent - 1, integer: true })! };
+    if (raw.quota !== undefined && raw.quota !== null) {
+      const quota = record(raw.quota, `${field}.quota`);
+      const maxCalls = finiteNumber(quota.maxCalls, `${field}.quota.maxCalls`, { optional: true, min: 1, max: 1_000_000, integer: true });
+      const maxCostUsd = finiteNumber(quota.maxCostUsd, `${field}.quota.maxCostUsd`, { optional: true, min: 0, exclusiveMin: true });
+      if (maxCalls === undefined && maxCostUsd === undefined) throw new SettingsValidationError(`${field}.quota`, "requires a call or cost limit");
+      if (pool.billing === "subscription" && maxCostUsd !== undefined) throw new SettingsValidationError(`${field}.quota.maxCostUsd`, "subscription activity has zero incremental metered cost; use a call limit instead");
+      pool.quota = { windowHours: finiteNumber(quota.windowHours, `${field}.quota.windowHours`, { min: 0.01, max: 8760 })!, maxCalls, maxCostUsd };
+    }
+    return pool;
+  });
+}
+
 export function normalizeSettings(value: unknown): Settings {
   const defaults = rawDefaultSettings();
   const raw = record(value, "settings");
@@ -433,6 +459,10 @@ export function normalizeSettings(value: unknown): Settings {
     throw new SettingsValidationError("models", "must be a non-empty array");
   }
   const models = migrateLegacyGlmProvider(modelsRaw).map(normalizeModel);
+  const accountPools = normalizeAccountPools(raw.accountPools ?? []);
+  for (const model of models) {
+    if (model.accountPoolId && !accountPools.some((pool) => pool.id === model.accountPoolId)) throw new SettingsValidationError(`models.${model.id}.accountPoolId`, "must reference a configured account pool; detach the profile explicitly before removing a pool");
+  }
   const ids = new Set<string>();
   for (const model of models) {
     if (ids.has(model.id)) {
@@ -594,6 +624,7 @@ export function normalizeSettings(value: unknown): Settings {
 
   return {
     models,
+    accountPools,
     routing,
     mergePolicy: enumValue(
       raw.mergePolicy ?? defaults.mergePolicy,
