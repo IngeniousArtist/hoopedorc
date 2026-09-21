@@ -121,6 +121,7 @@ export class ValidatorImpl implements Validator {
     let result;
     try {
       result = await adapter.run({
+        invocation: { id: invocationId, taskId: task.id, stage: "validator" },
         model: validatorModel,
         prompt,
         cwd,

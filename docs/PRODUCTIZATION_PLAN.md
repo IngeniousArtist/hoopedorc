@@ -7380,8 +7380,8 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW08 | Workspace inventory and read-only code inspection | Implemented | [PR #274](https://github.com/IngeniousArtist/hoopedorc/pull/274); see VW08 acceptance record below; PR records required CI/merge evidence |
 | VW09 | Managed environments and preview lifecycle | Implemented; AWS validation deferred | [#275](https://github.com/IngeniousArtist/hoopedorc/pull/275): native task preview ownership and separate-origin authenticated proxy |
 | VW10 | Full review workbench and browser evidence | Done; merged and verified | [PR #276](https://github.com/IngeniousArtist/hoopedorc/pull/276), CI `35599020994`, merge `629cb7d`; acceptance evidence below |
-| VW11 | Project design/reference library | Implemented; CI/merge pending | Versioned sources, selective handoff, preserved legacy references; focused evidence below |
-| VW12 | Selective skills, plugins, and MCP activation | Not started | — |
+| VW11 | Project design/reference library | Done; merged and verified | [PR #277](https://github.com/IngeniousArtist/hoopedorc/pull/277), CI `35601341252`, merge `31a853d`; focused evidence below |
+| VW12 | Selective skills, plugins, and MCP activation | Implemented; CI/merge pending | Claude selective instructions/MCPs and scoped browser; unsupported combinations explicit; evidence below |
 | VW13 | Shared account pools and resource allocation | Not started | — |
 | VW14 | Verified isolated agent execution profiles | Not started | — |
 | VW15 | Milestone acceptance and bounded replanning | Not started | — |
@@ -8461,3 +8461,88 @@ Affected typechecks/builds, focused lint (new files warning-free; existing
 baseline findings unchanged) and `git diff --check` passed. Required CI and
 merged-tree verification follow in the merge audit. No live model/Figma/MCP,
 Telegram or AWS action was performed; AWS remains owner-deferred.
+
+**VW11 merge audit:** PR #277 passed required `build-and-test` in CI run
+[35601341252](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35601341252).
+Tested head `f71466a6f02b57091c8edda3b670603a7c988d07` merged as
+`31a853df9e42143495e45b0c5862ad2b5a79af3b`. Independent comparison found identical
+tested/merged trees, tracked-clean main and zero divergence from origin/main.
+The unrelated untracked dependency directory was preserved.
+
+### VW12 — selective harness activation (implementation acceptance)
+
+Depends on VW11. Keep one scheduler and CLI-owned authentication. Add immutable
+project activation revisions, a project default and explicit task revision
+markers. Existing projects retain inherited CLI behavior until an operator
+chooses a selective policy. Skills are pinned Library instruction snapshots;
+MCP registrations and activation are separate from installation. Saving must
+not launch a process, install a package, fetch a URL or invoke a model.
+
+Acceptance for this bounded compatibility slice:
+
+- Versioned, optimistic/idempotent saves preserve old revisions and drafts.
+  Metadata, selected instruction hashes and per-invocation manifests are visible
+  in the project Library. Task overrides survive planning as exact markers.
+- Claude Code 2.1.278 is the initially verified selective runner: exclude
+  inherited skill catalogs, plugin components, hooks and MCP configurations;
+  deliver only selected instruction snapshots and explicit MCP configurations.
+  Repository CLAUDE.md and managed policy remain CLI-owned and are explicitly
+  identified as inherited instructions, not claimed disabled or isolated.
+- A bounded no-model control initialization verifies the selected MCP tool
+  catalog (schema hashes only where the CLI exposes schemas) and excludes unselected skill/plugin metadata before sending work.
+  Preserve HOME/auth ownership; never use `--bare`, inject provider keys or
+  change subscription billing. Record observed version, selections, schema
+  hashes, refusal and limitations without credentials or full instruction text.
+- Unsupported versions, Codex/OpenCode selective profiles and native plugin
+  bundles fail explicitly; inherited mode still works. A native plugin is not
+  called activated when its hooks/skills/MCP are silently dropped. Additional
+  compatibility is VW17. No prompt-only “off” switch.
+- Apply the same policy to planning/deconstruction/Figma probes, author,
+  validator and documentation invocations. Unsupported task policies refuse
+  before consuming an author attempt and preserve existing worktrees. Running
+  invocations retain their resolved revision if the default changes.
+- Deliver the existing supervised Playwright review capability to an explicitly
+  selected task through a scoped MCP bridge. The bridge can operate only on its
+  owned task preview/evidence; credentials expire with the invocation, separate
+  contexts and evidence binding remain intact, and cancellation settles owned
+  checks. Operator browser capture remains independently available.
+- Library UI covers loading/empty/unavailable/error/save/retry and effective
+  history at 360, 390, 768, 1280 and 1440px. Focused persistence, adapter/protocol,
+  scheduler refusal and browser interactions verify the behavior. Full required
+  CI still gates merge; comprehensive local regression follows the final item.
+
+Non-goals: plugin installation/marketplaces, full host filesystem isolation,
+arbitrary remote browser sessions or automatic paid auth fallback. Native
+plugin bundles are visible as unsupported, not offered as a false off/on control.
+AWS checks are owner-deferred: the previous host is shut down and a replacement
+has not been configured. No production model call is required for the local
+no-model activation probes; actual authenticated model use remains a separately
+reported live check.
+
+
+**VW12 implementation and focused evidence (2026-09-21):** shared activation
+contracts/routes; immutable SQLite revisions/idempotent writes; task selection
+markers; project Library controls and credential-free invocation manifests.
+Planner/Figma/author/reviewer/docs use the shared preparation boundary. Selective
+Claude 2.1.278 verifies auth continuity and a bounded MCP/tool catalog before
+model work; other harnesses/native bundles explicitly refuse selective mode.
+Unselected registrations stay out of config. Task browser MCP delegates to the
+existing supervised Playwright worker and preserves operator-started previews.
+Cleanup failures preserve already-incurred model usage while refusing success.
+Detailed limits and primary CLI references: [activation design](specs/activation.md).
+
+Passed 1 adapter protocol test (allowlists, unselected catalog/server refusal,
+auth-method change refusal, cancellation, argument delivery); 5 server activation
+tests (durable versions/retries, pinned snapshots, inert REST, browser task scope,
+cleanup accounting); 1 planner invocation test; 1 scheduler zero-attempt refusal
+test; 3 focused existing route/ownership tests; 7 web interactions; and 2 focused
+Playwright scenarios (dashboard at 360/390/768/1280/1440, actual native preview,
+real PNG/trace/diagnostics, cancellation, preserving an operator preview).
+Screenshots at 390/1440 were visually inspected. Installed Claude no-model probes
+verified synthetic unwanted skill/plugin/MCP/hook exclusion and discovery of the
+real scoped browser MCP tools. Read-only auth and the production auth helper
+confirmed unchanged logged-in OAuth/first-party authentication. No model prompt,
+paid invocation, Telegram send or deployment occurred. Affected package builds/
+typechecks and focused lint passed (new files warning-free, existing baseline
+warnings unchanged); `git diff --check` passed. Full required CI/merge audit
+follows. Authenticated model execution remains untested; AWS is owner-deferred.

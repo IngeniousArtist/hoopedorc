@@ -1,5 +1,28 @@
 # User Guide
 
+In **Library → Agent capabilities**, choose inherited CLI configuration or
+selective activation. Inherited mode preserves your existing setup. Selective
+mode currently requires Claude Code 2.1.278 for both author and reviewer; other
+harnesses/versions show a refusal instead of pretending to disable tools.
+Select Skill references, register installed MCP commands or HTTP servers, and
+enable only what calls need. Registration does not install/connect; invocation
+preflight checks availability. Authenticate using the owning CLI, never by
+putting secrets in MCP arguments/URLs. Native plugin bundles remain unsupported
+in selective mode; individual skills and MCPs can be selected separately.
+
+Saving creates a new project default. **Use revision N in Plan** adds a pinned
+selection to your unsent draft; applicable tasks retain it. Saved history shows
+effective invocation manifests and refusals. Existing calls retain their resolved
+revision; unsaved edits survive navigation in the same browser session. Repository
+CLAUDE.md and managed policy still apply. This does not isolate the host filesystem.
+
+Enable **Task browser** to grant author/reviewer calls the supervised Playwright
+tools. Save a preview profile in Workspaces and install Chromium first. The tools
+operate on that task's preview and store screenshots/traces in Review. They do
+not grant planning calls an arbitrary browser. Invocation cleanup settles its
+checks and preserves previews you started yourself. Required code checks and
+merge approvals still apply. See [compatibility and limits](specs/activation.md).
+
 This doc is for using Hoopedorc, not building it — see the main
 [README](../README.md) and [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) if you
 want the contributor/internals view instead.

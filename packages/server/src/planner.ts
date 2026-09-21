@@ -6,6 +6,8 @@ import {
   execManagedProcess,
   ManagedProcessError,
   modelEffortArgs,
+  selectiveClaudeArgs,
+  type SelectiveLaunch,
   sanitizedEnv,
 } from "@orc/adapters";
 import { InvocationLedgerError } from "@orc/types";
@@ -51,6 +53,7 @@ import { shortCommit } from "./repository-inspection.js";
 
 /** Which CLI + model id to run the planner through (F37/F45). */
 export interface PlannerModel {
+  prepareActivation?: (id: string, stage: ModelInvocation["stage"], cwd: string, signal?: AbortSignal) => Promise<import("./activation").PreparedActivation>;
   /** Logical Hoopedorc model id used for quotas/accounting. Older embedders
    * may omit it; resolved production routing always supplies it. */
   id?: ModelId;
@@ -260,6 +263,7 @@ Rules for each task:
   subsections (omit either entire subsection when it has no entries):
   - "### Relevant references": preserve exact hoop-reference:<id>@<revision> tokens from
     explicitly selected Library entries in each applicable task; never invent or rewrite a token.
+    Preserve an explicitly selected hoop-activation:<revision> marker in the applicable task description.
     Include only the exact sources this task must inspect — for example
     "docs/PRD.md — Authentication / Login", "docs/specs/auth.md — Session rotation", or
     "context/attachments/login-copy.md". Preserve exact paths, PRD headings, attachment names, and
@@ -732,6 +736,7 @@ async function runClaudeJson(
   signal?: AbortSignal,
   timeoutMs = PLAN_TIMEOUT_MS,
   maxOutputBytes?: number,
+  activation?: SelectiveLaunch,
 ): Promise<ClaudeJsonResult> {
   // Prompt goes on stdin, not argv: a long planning chat (full transcript +
   // prior-context inlined) can exceed macOS's ~1MB total argv cap and fail
@@ -739,7 +744,7 @@ async function runClaudeJson(
   // from stdin (verified against the real CLI).
   const args = ["-p", "--output-format", "json"];
   if (model) args.push("--model", model);
-  args.push(...modelEffortArgs("claude-code", effort));
+  args.push(...modelEffortArgs("claude-code", effort), ...selectiveClaudeArgs(activation));
   const { stdout: out } = await execManagedProcess("claude", args, {
     cwd,
     env: sanitizedEnv({ PWD: cwd }),
@@ -1001,86 +1006,92 @@ async function runPlannerJson(
     ModelInvocation,
     "id" | "stage" | "model" | "runner" | "effort" | "startedAt"
   >;
-  emitPlannerInvocation(onInvocation, {
-    ...base,
-    outcome: "running",
-    costUsd: 0,
-    tokensIn: 0,
-    tokensOut: 0,
-    tokensCached: 0,
-  });
-  let result: ClaudeJsonResult;
+  const prepared = await plannerModel.prepareActivation?.(base.id, stage, cwd, signal);
   try {
-    if (plannerModel.runner === "codex") {
-      result = await runCodexJson(
-        prompt,
-        cwd,
-        plannerModel.model,
-        plannerModel.effort,
-        outputSchema,
-        signal,
-        limits?.timeoutMs,
-        limits?.maxOutputBytes,
-      );
-    } else if (plannerModel.runner === "opencode") {
-      if (!plannerModel.model) {
-        throw new Error("opencode planner model has no model id configured");
-      }
-      result = await runOpencodeJson(
-        prompt,
-        cwd,
-        plannerModel.model,
-        plannerModel.effort,
-        plannerModel.opencodeBaseUrl ?? "",
-        signal,
-        limits?.timeoutMs,
-        limits?.maxOutputBytes,
-      );
-    } else {
-      result = await runClaudeJson(
-        prompt,
-        cwd,
-        plannerModel.model,
-        plannerModel.effort,
-        signal,
-        limits?.timeoutMs,
-        limits?.maxOutputBytes,
-      );
-    }
-  } catch (err) {
-    const failure =
-      err instanceof ManagedProcessError &&
-      err.outputLimitExceeded &&
-      limits?.maxOutputBytes !== undefined
-        ? new PlannerOutputLimitError(
-            plannerModel.runner,
-            limits.maxOutputBytes,
-            { cause: err },
-          )
-        : err;
+    if (prepared?.launch && plannerModel.runner !== "claude-code") throw new Error("Selective activation is not verified for this planner harness.");
+    prompt += prepared?.instructions ?? "";
     emitPlannerInvocation(onInvocation, {
       ...base,
-      endedAt: new Date().toISOString(),
-      outcome: signal?.aborted ? "stopped" : "failed",
-      exitReason: signal?.aborted ? "killed" : "error",
+      outcome: "running",
       costUsd: 0,
       tokensIn: 0,
       tokensOut: 0,
       tokensCached: 0,
     });
-    throw failure;
-  }
-  emitPlannerInvocation(onInvocation, {
-    ...base,
-    endedAt: new Date().toISOString(),
-    outcome: "completed",
-    exitReason: "completed",
-    costUsd: result.costUsd,
-    tokensIn: result.tokensIn,
-    tokensOut: result.tokensOut,
-    tokensCached: result.tokensCached,
-  });
-  return result;
+    let result: ClaudeJsonResult;
+    try {
+      if (plannerModel.runner === "codex") {
+        result = await runCodexJson(
+          prompt,
+          cwd,
+          plannerModel.model,
+          plannerModel.effort,
+          outputSchema,
+          signal,
+          limits?.timeoutMs,
+          limits?.maxOutputBytes,
+        );
+      } else if (plannerModel.runner === "opencode") {
+        if (!plannerModel.model) {
+          throw new Error("opencode planner model has no model id configured");
+        }
+        result = await runOpencodeJson(
+          prompt,
+          cwd,
+          plannerModel.model,
+          plannerModel.effort,
+          plannerModel.opencodeBaseUrl ?? "",
+          signal,
+          limits?.timeoutMs,
+          limits?.maxOutputBytes,
+        );
+      } else {
+        result = await runClaudeJson(
+          prompt,
+          cwd,
+          plannerModel.model,
+          plannerModel.effort,
+          signal,
+          limits?.timeoutMs,
+          limits?.maxOutputBytes,
+          prepared?.launch,
+        );
+      }
+    } catch (err) {
+      const failure =
+        err instanceof ManagedProcessError &&
+        err.outputLimitExceeded &&
+        limits?.maxOutputBytes !== undefined
+          ? new PlannerOutputLimitError(
+              plannerModel.runner,
+              limits.maxOutputBytes,
+              { cause: err },
+            )
+          : err;
+      emitPlannerInvocation(onInvocation, {
+        ...base,
+        endedAt: new Date().toISOString(),
+        outcome: signal?.aborted ? "stopped" : "failed",
+        exitReason: signal?.aborted ? "killed" : "error",
+        costUsd: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        tokensCached: 0,
+      });
+      throw failure;
+    }
+    emitPlannerInvocation(onInvocation, {
+      ...base,
+      endedAt: new Date().toISOString(),
+      outcome: "completed",
+      exitReason: "completed",
+      costUsd: result.costUsd,
+      tokensIn: result.tokensIn,
+      tokensOut: result.tokensOut,
+      tokensCached: result.tokensCached,
+    });
+    return result;
+  } finally { await prepared?.close(); }
 }
 
 /**

@@ -1,3 +1,4 @@
+import { ActivationService } from "./activation";
 import { pendingPlanChange } from "./plan-changes";
 import { planningBlocksExecution } from "./planning-operations";
 import { LibraryStore } from "./library";
@@ -194,11 +195,13 @@ export class EngineRunner {
   private static readonly LOG_BATCH_SIZE = 200;
   private static readonly MAX_PENDING_LOGS = 1_000;
 
+  readonly activation: ActivationService;
+
   constructor(
     private readonly db: Db,
     private readonly hub: WsHub,
     private readonly options: EngineRunnerOptions = {},
-  ) {}
+  ) { this.activation = new ActivationService(db); }
 
   private enqueueLog(e: Parameters<typeof repo.createLog>[1]): void {
     this.logQueue.push(e);
@@ -552,7 +555,7 @@ export class EngineRunner {
       const cfg = liveSettings().models.find((m) => m.id === modelId);
       if (!cfg) throw new Error(`no ModelConfig for ${modelId}`);
       if (!cfg.enabled) throw new Error(`model ${modelId} is disabled`);
-      return makeAdapter(cfg, ENV.opencodeBaseUrl);
+      return this.activation.wrap(project, makeAdapter(cfg, ENV.opencodeBaseUrl));
     };
 
     const worktrees = new WorktreeManagerImpl(settings);
@@ -577,6 +580,16 @@ export class EngineRunner {
       adapterFor,
       opencodeBaseUrl: ENV.opencodeBaseUrl,
       getTasks: () => repo.getTasks(this.db, project.id),
+      checkActivation: async (owner, task, model, signal) => {
+        const config = liveSettings().models.find((candidate) => candidate.id === model);
+        if (!config) return "Author model is unavailable.";
+        const issue = await this.activation.check(owner, task, config.runner, signal);
+        if (issue) return issue;
+        const settings = liveSettings();
+        const reviewer = settings.models.find((candidate) => candidate.id === settings.routing.validatorByDifficulty[task.difficulty]);
+        if (reviewer && this.activation.store.resolve(owner.id, task.description).policy.mode === "selected" && reviewer.runner !== "claude-code") return `Reviewer ${reviewer.displayName} uses ${reviewer.runner}, whose selective activation is not verified. Choose an eligible independent reviewer.`;
+        return null;
+      },
       checkTaskReferences: (owner, task) => new LibraryStore(this.db).checkTask(owner.id, task.description),
       taskReferenceContext: (owner, task) => new LibraryStore(this.db).context(owner.id, task.description),
       taskChanges: {
@@ -631,6 +644,7 @@ export class EngineRunner {
             model,
             config.runner,
             configuredRunnerModel ?? "cli-default",
+            this.activation.store.resolve(project.id, task.description).revision,
             fileKey,
           ].join("\u0000");
         const isFresh = (fileKey: string): boolean => {
@@ -644,7 +658,9 @@ export class EngineRunner {
           return { required: true, context };
         }
 
+        const activationRevision = this.activation.store.resolve(project.id, task.description);
         const plannerModel: PlannerModel = {
+          prepareActivation: (id, stage, cwd, signal) => this.activation.prepare({ id, project, task, stage, cwd, signal, runner: config.runner }, activationRevision),
           id: model,
           runner: config.runner,
           model: configuredRunnerModel,
@@ -1010,7 +1026,7 @@ export class EngineRunner {
       const config = liveSettings().models.find((model) => model.id === modelId);
       if (!config) throw new Error(`no ModelConfig for ${modelId}`);
       if (!config.enabled) throw new Error(`model ${modelId} is disabled`);
-      return makeAdapter(config, ENV.opencodeBaseUrl);
+      return this.activation.wrap(project, makeAdapter(config, ENV.opencodeBaseUrl));
     };
     const worktrees = new WorktreeManagerImpl(settings);
     const git = new GitServiceImpl();

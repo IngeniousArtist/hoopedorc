@@ -445,3 +445,19 @@ CREATE TABLE IF NOT EXISTS library_writes (
   request_hash TEXT NOT NULL,
   FOREIGN KEY (project_id, reference_id, revision) REFERENCES library_versions(project_id, reference_id, revision) ON DELETE CASCADE
 );
+
+-- VW12: immutable activation settings and credential-free invocation receipts.
+CREATE TABLE IF NOT EXISTS activation_versions (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  revision INTEGER NOT NULL,
+  request_id TEXT NOT NULL UNIQUE,
+  request_hash TEXT NOT NULL,
+  json TEXT NOT NULL,
+  PRIMARY KEY (project_id, revision)
+);
+CREATE TABLE IF NOT EXISTS activation_manifests (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activation_manifests_project ON activation_manifests(project_id);

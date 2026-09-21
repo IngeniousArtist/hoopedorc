@@ -1342,6 +1342,7 @@ test("O27: project deletion refuses an active runtime before disk or DB mutation
   const root = mkdtempSync(join(tmpdir(), "hoopedorc-active-delete-"));
   const deps = dependencies(root);
   deps.engine = {
+    activation: deps.engine.activation,
     hasActivity: () => true,
   } as unknown as EngineRunner;
   const app = await buildApp(deps);
