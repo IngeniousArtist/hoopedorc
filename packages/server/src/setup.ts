@@ -2,7 +2,7 @@ import { invocationCost } from "./resources";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { makeAdapter, sanitizedEnv } from "@orc/adapters";
+import { checkGeminiVersion, makeAdapter, sanitizedEnv } from "@orc/adapters";
 import { DEFAULT_GATE_IMAGE, resolveSandboxMode, WorktreeManagerImpl } from "@orc/engine";
 import type {
   InvocationAccounting,
@@ -117,6 +117,9 @@ export async function runSetupChecks(
           signal,
         )
       : Promise.resolve({ name: "Codex CLI (codex)", ok: true, detail: "not configured" }),
+    settings.models.some((model) => model.enabled && model.runner === "gemini")
+      ? checkGeminiVersion(signal).then((version) => ({ name: "Gemini CLI (gemini)", ok: true, detail: `${version}; authentication not checked — use an explicit model test` }), (error: unknown) => { signal?.throwIfAborted(); return { name: "Gemini CLI (gemini)", ok: false, detail: cliErrorMessage(error) }; })
+      : Promise.resolve({ name: "Gemini CLI (gemini)", ok: true, detail: "not configured" }),
     gateSandboxCheck(settings, signal),
   ]);
   checks.push(...projectChecks);
@@ -416,7 +419,7 @@ export async function getModelCatalog(
   ]);
   return {
     generatedAt: new Date().toISOString(),
-    catalogs: [codex, claudeCodeCatalog(), opencode],
+    catalogs: [codex, claudeCodeCatalog(), opencode, { runner: "gemini", label: "Gemini CLI", source: "Explicit model ID from your Gemini CLI account", models: [], error: "No verified local model-catalog command. Enter your exact model ID; discovery does not authenticate or query a provider." }],
   };
 }
 

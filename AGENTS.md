@@ -112,7 +112,7 @@ packages/types
   Shared domain types, API payloads, route manifest, WebSocket events.
 
 packages/adapters
-  Claude Code, Codex, and OpenCode process invocation and output parsing.
+  Claude Code, Codex, OpenCode, and Gemini process invocation/output parsing.
 
 packages/engine
   Scheduling, task ownership, worktrees, gates, validation, sandboxing,

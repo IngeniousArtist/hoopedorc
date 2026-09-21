@@ -1120,3 +1120,22 @@ including mock mode, use the same validation. Existing ROUTES are unchanged.
 `TaskReviewResponse.output` reflects the project preference (legacy: `web`) in
 real and mock contexts. `GateResult.environment` records the actual runtime probe
 when configured, rather than assuming every project uses Node.
+
+### VW17 — harness compatibility and Gemini profiles
+
+`GET /api/setup/harnesses` (`ROUTES.harnessCompatibility`) returns
+`HarnessCompatibilityResponse`: `generatedAt` plus `harnesses`, each with runner,
+label, optional installedVersion, probe (`available|unavailable|mock`), detail,
+verifiedVersion, native/selective/isolated capability booleans, `plugins: false`
+and `providerAcceptance: operator-check-required`. These are version/capability
+probes, not model tests. Mock mode executes nothing. CLI failures are represented
+per harness without exposing raw process output. Existing authentication and
+request cancellation apply. No request body or client-selected command is used.
+
+`RunnerKind` adds `gemini`; `ModelConfig.geminiModel` is its required explicit
+safe model ID (1–200 ASCII letters/numbers/dot/underscore/slash/hyphen, first
+character alphanumeric). Gemini rejects nonempty effort and nonmatching execution
+profiles. Enabled Gemini profiles require a subscription pool or all three manual
+token prices. Legacy model normalization is preserved. The model catalog includes
+an empty Gemini entry with an explanation; no model aliases are invented.
+Activation compatibility includes Gemini as unsupported for selected mode.

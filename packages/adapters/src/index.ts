@@ -1,16 +1,19 @@
 // @orc/adapters — how the orchestrator actually runs a model on a task.
 //
-// Three runners:
+// Native runners:
 //   - ClaudeAdapter   -> Claude Code headless (`claude -p`), uses the Pro sub
 //   - OpenCodeAdapter -> the `opencode run` CLI (every other model)
 //   - CodexAdapter    -> the native Codex CLI (`codex exec`), uses the
 //                        ChatGPT subscription's flat rate
 //
-// All three stream output to onLog AND capture the model's final text into
+// GeminiAdapter uses the version-pinned Gemini CLI stream protocol.
+// All runners stream output to onLog AND capture the model's final text into
 // `summary` (the Validator parses summary for its JSON verdict).
 //
 // Depend ONLY on @orc/types.
 
+import { GeminiAdapter } from "./gemini.js";
+export * from "./gemini.js";
 import type { AgentExecution } from "./execution.js";
 export * from "./execution.js";
 import { randomUUID } from "node:crypto";
@@ -89,7 +92,7 @@ export function classifyFailure(summary: string): "error" | "rate_limited" {
 }
 
 export interface AgentAdapter {
-  readonly runner: "claude-code" | "opencode" | "codex";
+  readonly runner: RunnerKind;
   run(opts: AgentRunOptions): Promise<AgentRunResult>;
 }
 
@@ -692,6 +695,8 @@ export function makeAdapter(
   if (!cfg.enabled) throw new Error(`model ${cfg.id} is disabled`);
   if (cfg.runner === "claude-code") return new ClaudeAdapter(cfg.claudeModel, cfg.effort);
   if (cfg.runner === "codex") return new CodexAdapter(cfg.codexModel, cfg.effort);
+  if (cfg.runner === "gemini") return new GeminiAdapter(cfg.geminiModel ?? "", cfg.effort);
+  if (cfg.runner !== "opencode") throw new Error(`Unsupported runner: ${String(cfg.runner)}`);
   if (!cfg.opencodeModel) {
     throw new Error(`model ${cfg.id} is runner=opencode but has no opencodeModel`);
   }

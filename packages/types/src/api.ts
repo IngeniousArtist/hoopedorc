@@ -886,6 +886,24 @@ export interface ModelCatalogEntry {
   reasoningEfforts?: string[];
 }
 
+export interface HarnessCompatibility {
+  runner: RunnerKind;
+  label: string;
+  installedVersion?: string;
+  probe: "available" | "unavailable" | "mock";
+  detail: string;
+  verifiedVersion: string;
+  native: boolean;
+  selective: boolean;
+  isolated: boolean;
+  plugins: false;
+  providerAcceptance: "operator-check-required";
+}
+export interface HarnessCompatibilityResponse {
+  generatedAt: string;
+  harnesses: HarnessCompatibility[];
+}
+
 export interface RunnerModelCatalog {
   runner: RunnerKind;
   label: string;
@@ -1020,6 +1038,7 @@ export const ROUTES = {
   startSelfUpdate: "POST /api/setup/self-update",
   setupModels: "GET /api/setup/models",
   modelCatalog: "GET /api/setup/model-catalog",
+  harnessCompatibility: "GET /api/setup/harnesses",
   modelHealth: "GET /api/setup/model-health",
   testModels: "POST /api/setup/test-models",
   stopAll: "POST /api/engine/stop-all",

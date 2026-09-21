@@ -182,7 +182,7 @@ export class SettingsValidationError extends Error {
   }
 }
 
-const RUNNERS: RunnerKind[] = ["claude-code", "opencode", "codex"];
+const RUNNERS: RunnerKind[] = ["claude-code", "opencode", "codex", "gemini"];
 const ROLES: Role[] = [
   "planner",
   "frontend",
@@ -315,6 +315,7 @@ function normalizeModel(value: unknown, index: number): ModelConfig {
     opencodeModel: optionalString(raw.opencodeModel, field("opencodeModel")),
     claudeModel: optionalString(raw.claudeModel, field("claudeModel")),
     codexModel: optionalString(raw.codexModel, field("codexModel")),
+    geminiModel: optionalString(raw.geminiModel, field("geminiModel"), 200),
     effort,
     roles,
     enabled: boolean(raw.enabled, field("enabled"), true),
@@ -343,6 +344,7 @@ function normalizeModel(value: unknown, index: number): ModelConfig {
     }),
   };
 
+  if (runner === "gemini" && !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(model.geminiModel ?? "")) throw new SettingsValidationError(field("geminiModel"), "requires an explicit safe Gemini model ID");
   if (runner === "opencode" && !model.opencodeModel) {
     throw new SettingsValidationError(
       field("opencodeModel"),
@@ -485,6 +487,9 @@ export function normalizeSettings(value: unknown): Settings {
   const models = migrateLegacyGlmProvider(modelsRaw).map(normalizeModel);
   const accountPools = normalizeAccountPools(raw.accountPools ?? []);
   const executionProfiles = normalizeExecutionProfiles(raw.executionProfiles ?? [], accountPools);
+  for (const model of models) {
+    if (model.runner === "gemini" && model.enabled && accountPools.find((pool) => pool.id === model.accountPoolId)?.billing !== "subscription" && [model.costPerMInputUsd, model.costPerMCachedInputUsd, model.costPerMOutputUsd].some((value) => value === undefined)) throw new SettingsValidationError(`models.${model.id}`, "Gemini requires a subscription account pool or all three manual token prices; its CLI does not report dollar cost");
+  }
   for (const model of models) {
     if (model.accountPoolId && !accountPools.some((pool) => pool.id === model.accountPoolId)) throw new SettingsValidationError(`models.${model.id}.accountPoolId`, "must reference a configured account pool; detach the profile explicitly before removing a pool");
   }

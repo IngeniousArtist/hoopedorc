@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { modelFixture, settingsFixture } from "../test/fixtures";
@@ -101,4 +101,13 @@ describe("ModelsEditor effort controls", () => {
     await user.click(screen.getByRole("button", { name: "Remove model" }));
     expect(onChange).toHaveBeenCalledWith([]);
   });
+});
+
+it("VW17: Gemini exposes its exact model ID and unsupported effort instead of a guessed catalog", () => {
+  const onChange = vi.fn();
+  render(<ModelsEditor models={[{ id: "gemini", displayName: "Google", runner: "gemini", geminiModel: "owned-model", enabled: false, roles: [], maxConcurrent: 1 }]} onChange={onChange} />);
+  expect(screen.getByLabelText("Google reasoning effort")).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Google Gemini model"), { target: { value: "another-model" } });
+  expect(onChange).toHaveBeenCalledWith([expect.objectContaining({ runner: "gemini", geminiModel: "another-model" })]);
+  expect(screen.getByText(/Requires Gemini CLI 0.60.0/)).toBeVisible();
 });

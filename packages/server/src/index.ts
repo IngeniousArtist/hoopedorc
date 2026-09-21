@@ -1,3 +1,4 @@
+import { harnessCompatibility } from "./harnesses";
 import { MilestoneError, createMilestoneRepairDraft, milestoneOutcomes, withMilestoneDraft } from "./milestones";
 import type { MilestoneRepairDraftRequest } from "@orc/types";
 import { registerExecutionRoutes } from "./execution-routes";
@@ -2720,6 +2721,12 @@ async function assembleServer(
     } finally {
       cancellation.cleanup();
     }
+  });
+
+  app.get("/api/setup/harnesses", async (req, reply) => {
+    const cancellation = plannerRequestCancellation(req.raw, reply.raw, requestControllers);
+    try { return await harnessCompatibility(ENV.mock, cancellation.signal); }
+    finally { cancellation.cleanup(); }
   });
 
   app.get("/api/setup/model-catalog", async (req, reply) => {

@@ -1481,3 +1481,20 @@ and inspect checks/attach diagnostics in Review. Runtime/platform requirements
 are checked in the chosen host or gate container; Linux Docker/AWS cannot
 satisfy a macOS-only toolchain. See the [tested environment matrix](specs/environments.md)
 for the precise scope and pending provider/AWS checks.
+
+### Check harness capabilities and add Gemini
+
+Setup → Harnesses shows the server's installed CLI versions, tested versions and
+separate capability limits. Refresh versions is free of model calls. To check a
+provider login, deliberately use the Models test action, which can use quota.
+Missing versions and mismatches explain what needs installation or verification.
+
+Gemini CLI 0.60.0 is an opt-in native runner. Configure the operator's CLI login
+outside Hoopedorc, add a Gemini profile with an exact model ID, and choose a
+subscription pool in Resources or supply all three token prices. Save a disabled
+profile while preparing access. Assign it to routing only when ready. There is no
+automatic paid-auth fallback or model catalog. Native CLI skills, extensions and
+MCPs remain inherited; selected activation, plugin isolation, effort controls and
+isolated Gemini workers are not verified. See the
+[harness compatibility matrix](specs/harness-compatibility.md) for evidence and
+pending provider/AWS checks.

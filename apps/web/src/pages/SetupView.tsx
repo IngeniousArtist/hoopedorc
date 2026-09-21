@@ -1,3 +1,4 @@
+import { HarnessCompatibilityPanel } from "../components/HarnessCompatibilityPanel";
 import type {
   HealthResponse,
   ModelHealthResponse,
@@ -66,6 +67,7 @@ function updateStateLabel(state: SelfUpdateStatusResponse["state"]): string {
 const SETUP_SECTIONS = [
   { id: "overview", label: "Overview" },
   { id: "models", label: "Models" },
+  { id: "harnesses", label: "Harnesses" },
   { id: "updates", label: "Updates" },
 ] as const;
 
@@ -250,6 +252,7 @@ export function SetupView({
         </button>
       )}
 
+      <SectionPanel group="setup" id="harnesses" selected={section}>{section === "harnesses" && <HarnessCompatibilityPanel />}</SectionPanel>
       <SectionPanel group="setup" id="overview" selected={section}>
         <p className="text-sm text-neutral-400">Connection checks inspect installed tools and authentication. Configure models, rules, and notification preferences in Settings.</p>
         {loading && !runtimeHealth ? (

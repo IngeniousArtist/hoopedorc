@@ -19,7 +19,7 @@ import {
   type Validator,
   type WorktreeManager,
 } from "@orc/engine";
-import { makeAdapter, type AgentAdapter } from "@orc/adapters";
+import { checkGeminiVersion, makeAdapter, type AgentAdapter } from "@orc/adapters";
 import { InvocationLedgerError, ResourceUnavailableError } from "@orc/types";
 import type {
   FigmaCapabilityIssue,
@@ -598,6 +598,10 @@ export class EngineRunner {
         }
         const config = liveSettings().models.find((candidate) => candidate.id === model);
         if (!config) return "Author model is unavailable.";
+        const plannedReviewer = liveSettings().models.find((candidate) => candidate.id === liveSettings().routing.validatorByDifficulty[task.difficulty]);
+        if (!ENV.mock && (config.runner === "gemini" || plannedReviewer?.runner === "gemini")) {
+          try { await checkGeminiVersion(signal); } catch (error) { signal?.throwIfAborted(); return `Gemini preflight: ${error instanceof Error ? error.message : String(error)}`; }
+        }
         if (this.execution.workspaceHeld(owner.id, task.id)) return "An isolated worker still owns this task workspace. Resolve it in Settings → Resources.";
         const executionIssue = await this.execution.check(config, signal);
         if (executionIssue) return executionIssue;
@@ -654,6 +658,8 @@ export class EngineRunner {
         const configuredRunnerModel =
           config.runner === "codex"
             ? config.codexModel
+            : config.runner === "gemini"
+              ? config.geminiModel
             : config.runner === "opencode"
               ? config.opencodeModel
               : config.claudeModel;
