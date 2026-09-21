@@ -699,6 +699,8 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `openWorkspacePreview` | `POST /api/projects/:id/workspaces/:workspaceId/preview/open` | → `PreviewLaunchResponse` |
 | `setPreviewProfile` | `PUT /api/projects/:id/preview-profile` | `SetPreviewProfileRequest` → `WorkspacePreviewResponse` (primary context) |
 | `taskReview` | `GET /api/projects/:id/tasks/:taskId/review` | → `TaskReviewResponse` |
+| `projectActivation` | `GET /api/projects/:id/activation` | → `ActivationResponse` saved revisions, invocation manifests and compatibility |
+| `saveProjectActivation` | `PUT /api/projects/:id/activation` | `SaveActivationRequest` → `SaveActivationResponse`; inert optimistic/idempotent save |
 | `projectLibrary` | `GET /api/projects/:id/library` | → `LibraryResponse` metadata and known task marker usage |
 | `libraryReference` | `GET /api/projects/:id/library/:referenceId` | → `LibraryDetailResponse` current and historical snapshots |
 | `saveLibraryReference` | `PUT /api/projects/:id/library/:referenceId` | `SaveLibraryReferenceRequest` → `SaveLibraryReferenceResponse` |
