@@ -1245,3 +1245,32 @@ Ignored files, Git metadata, symlinks and shared hardlinks are not browsable.
 Binary/non-UTF-8 files and files over 128 KiB or 5,000 lines show a refusal; diffs
 are limited to 256 KiB and inventory to 5,000 paths. Refresh retries unavailable
 reads. Inspect larger files with your trusted local tools.
+
+### Run a task preview
+
+In **Workspaces**, choose a task workspace and expand **Preview command**.
+Save the executable, JSON argument array, readiness path and startup timeout.
+For a typical Vite project use `npm` with
+`["run","dev","--","--host","{host}","--port","{port}"]`. The application must
+bind the assigned address/port; dependencies must already be installed.
+Commands run directly in the worktree, without an implicit shell or install.
+
+Choose **Start preview**, review the saved command and confirm. This starts
+repository code as a native host process; it is not a sandbox. Required
+sandbox policy disables this option. Linux/macOS hosts need `lsof` and `ps`.
+The view shows startup/failure detail, logs and the observed HEAD. Preview files
+can change as agents work. **Show preview here** embeds it; **Open in new tab**
+is the fallback for apps that refuse embedding. Closing the page leaves the
+preview running. **Stop preview** settles its processes and preserves files.
+
+A restart revokes browser access and labels interrupted previews. Restart the
+preview explicitly after the old process settles. An occupied gateway port,
+missing executable or failed readiness check produces a visible failure;
+correct the command or conflict and retry. No automatic model call is involved.
+
+Preview access lasts two hours; reopen it to renew. Each open link works once
+and expires after one minute. App cookies are isolated by name and forced
+HttpOnly, so apps requiring JavaScript-readable cookies need a different local
+verification path. Service workers are disabled; external authentication
+redirects are refused. These previews are for trusted development code and do
+not provide host filesystem or network isolation.

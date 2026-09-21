@@ -1,6 +1,7 @@
 import type { ListWorkspacesResponse, WorkspaceSummary, WorkspaceFilesResponse, WorkspaceFileResponse, WorkspaceDiffResponse } from "@orc/types";
 import { useEffect, useState } from "react";
 import { api, isAbortError } from "../api/client";
+import { WorkspacePreview } from "../components/WorkspacePreview";
 
 const control = "min-h-10 rounded border border-neutral-700 bg-neutral-900 px-3 text-sm focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50";
 const message = (error: unknown) => error instanceof Error ? error.message : "Could not load workspace. Try again.";
@@ -44,6 +45,7 @@ export function WorkspacesView({ projectId, onAddToPlan }: { projectId: string; 
       </div>
       {workspace?.state === "unavailable" && <div role="status" className="rounded-lg border border-amber-800 p-4 text-sm text-amber-200">{workspace.reason} Nothing is cleaned up here.</div>}
       {workspace?.taskId && <a className="inline-flex min-h-10 items-center text-sm text-blue-400 underline" href={`#/p/${projectId}/board/${encodeURIComponent(workspace.taskId)}`}>View task and recovery</a>}
+      {workspace && <WorkspacePreview key={`${projectId}:${workspace.id}`} projectId={projectId} workspaceId={workspace.id} />}
       {workspace?.state === "available" && <WorkspaceFiles key={`${projectId}:${workspace.id}:${refresh}`} projectId={projectId} workspace={workspace} onAddToPlan={onAddToPlan} />}
     </>}
   </section>;

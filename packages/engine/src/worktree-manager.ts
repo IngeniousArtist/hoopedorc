@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { workspaceRetained } from "./workspace-leases.js";
 import {
   accessSync,
   constants,
@@ -519,6 +520,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
     let metadataMutationStarted = false;
     try {
       await this.sharedRepositoryLock.run(project.localPath, async () => {
+        if (workspaceRetained(path)) throw new Error("Stop this task's preview before replacing its worktree.");
         metadataMutationStarted = true;
         // Always branch off the latest remote default branch. The entire
         // stale-ref cleanup + worktree add sequence owns the common Git dir.
@@ -643,6 +645,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
     taskId = branch.startsWith("orc/") ? branch.slice("orc/".length) : "",
   ): Promise<unknown[]> {
     this.assertManagedWorktree(project, path, branch, taskId);
+    if (workspaceRetained(path)) return [];
     const failures: unknown[] = [];
     const attempt = async (operation: () => Promise<void>): Promise<void> => {
       try {

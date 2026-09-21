@@ -12,6 +12,7 @@ import type {
   PlanningOperationState,
   Project,
   ProjectConfig,
+  PreviewProfile,
   Role,
   RollbackJob,
   Run,
@@ -115,6 +116,33 @@ export interface WorkspaceDiffResponse {
   diff: string;
   observedAt: string;
 }
+
+export type PreviewState = "starting" | "ready" | "stopping" | "stopped" | "failed" | "interrupted";
+export interface WorkspacePreview {
+  id: string;
+  projectId: string;
+  taskId: string;
+  state: PreviewState;
+  profile: PreviewProfile;
+  headSha?: string;
+  dirty: boolean;
+  isolation: "host";
+  publicOrigin: string;
+  detail: string;
+  logs: string;
+  startedAt: string;
+  updatedAt: string;
+}
+export interface WorkspacePreviewResponse {
+  preview: WorkspacePreview | null;
+  profile: PreviewProfile | null;
+  projectUpdatedAt: string;
+  available: boolean;
+  reason?: string;
+}
+export interface SetPreviewProfileRequest { profile: PreviewProfile | null; projectUpdatedAt: string }
+export interface StartWorkspacePreviewRequest { projectUpdatedAt: string }
+export interface PreviewLaunchResponse { url: string; expiresAt: string }
 
 export interface DeleteProjectResponse {
   ok: true;
@@ -807,6 +835,11 @@ export const ROUTES = {
   workspaceFiles: "GET /api/projects/:id/workspaces/:workspaceId/files",
   workspaceFile: "GET /api/projects/:id/workspaces/:workspaceId/file",
   workspaceDiff: "GET /api/projects/:id/workspaces/:workspaceId/diff",
+  workspacePreview: "GET /api/projects/:id/workspaces/:workspaceId/preview",
+  startWorkspacePreview: "POST /api/projects/:id/workspaces/:workspaceId/preview/start",
+  stopWorkspacePreview: "POST /api/projects/:id/workspaces/:workspaceId/preview/stop",
+  openWorkspacePreview: "POST /api/projects/:id/workspaces/:workspaceId/preview/open",
+  setPreviewProfile: "PUT /api/projects/:id/preview-profile",
   updateProject: "PATCH /api/projects/:id",
   deleteProject: "DELETE /api/projects/:id",
   planProject: "POST /api/projects/:id/plan",

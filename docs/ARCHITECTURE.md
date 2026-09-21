@@ -315,3 +315,24 @@ never bootstrap a clone or invoke repository-defined Git filters/monitors.
 Mock inventory/content stays in memory. The Workspaces view consumes shared
 contracts; selected lines enter the existing planning composer as an explicit,
 version-labelled reference, preserving its current text without a model call.
+
+### Managed previews (VW09)
+
+`server/previews.ts` owns one durable preview generation per task and reserves
+one configured gateway slot in SQLite. It reuses GitService workspace checks,
+retains the task worktree through `engine/workspace-leases.ts`, captures the
+profile/revision and starts `preview-worker.mjs`. The IPC supervisor gives the
+repository process an explicit environment with a temporary HOME and no
+inherited control-plane secrets. It settles the managed process group on stop,
+normal exit or parent disconnect. Readiness is bounded and verifies the listener
+belongs to that group using lsof/ps. Gateway requests recheck workspace identity
+and port ownership. This is native host execution, not filesystem/network
+isolation; required sandbox policy refuses it.
+
+The gateway binds loopback and proxies authenticated HTTP/WS on a distinct
+browser origin. Restart marks unfinished generations interrupted, restores no
+browser session, and retains a workspace while its recorded process group is
+still present; it never kills an unverified reused PID. A new start must wait
+for recovery to settle. Shutdown stops previews alongside the existing engine,
+then flushes/checkpoints state. The bundled server ships the supervisor as a
+separate adjacent file. Previews create no second task scheduler or model calls.

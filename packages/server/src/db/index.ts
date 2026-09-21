@@ -135,6 +135,24 @@ BEGIN SELECT RAISE(ABORT, 'plan application is pending; retry it before changing
 
 export type Db = Database.Database;
 
+const VW09_PREVIEW_MIGRATION = `
+CREATE TABLE IF NOT EXISTS workspace_previews (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  state TEXT NOT NULL,
+  proxy_port INTEGER NOT NULL,
+  target_port INTEGER NOT NULL,
+  child_pid INTEGER,
+  workspace_path TEXT NOT NULL,
+  preview_json TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_preview_workspace_owner ON workspace_previews(project_id, task_id)
+  WHERE state IN ('starting', 'ready', 'stopping');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_preview_port_owner ON workspace_previews(proxy_port)
+  WHERE state IN ('starting', 'ready', 'stopping');
+`;
+
 export function openDb(path: string = ENV.dbPath): Db {
   const db = new Database(path);
   db.pragma("journal_mode = WAL");
@@ -429,6 +447,7 @@ export function initDb(path: string = ENV.dbPath): Db {
   }
   db.exec(VW06_PLANNING_MIGRATION);
   db.exec(VW07_PLAN_CHANGES_MIGRATION);
+  db.exec(VW09_PREVIEW_MIGRATION);
   // No CLI can be resumed by restoring an in-memory Promise. Keep the input,
   // settle orphaned ownership, and require an explicit, separately counted retry.
   db.prepare(`UPDATE planning_operations SET state = 'interrupted', ended_at = ?,

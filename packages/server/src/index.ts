@@ -1,5 +1,8 @@
 import { PlanChangeError, assertPlanChangeCurrent, getPlanChange, latestPlanChange, pendingPlanChange, reviewPlanChanges, validatePlanChangeInput } from "./plan-changes";
 import { registerWorkspaceRoutes } from "./workspaces";
+import { registerPreviewRoutes } from "./preview-routes";
+import { previewSlots } from "./preview-policy";
+import { PreviewManager } from "./previews";
 import type { ApplyPlanChangesRequest } from "@orc/types";
 import "dotenv/config";
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -468,6 +471,20 @@ async function assembleServer(
   // built web app itself (F10), production traffic is same-origin and this
   // allowlist stops mattering.
   const DEV_WEB_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"];
+  // CORS response headers alone do not stop simple cross-origin mutations or
+  // WebSocket upgrades. Preview pages must never reach the control plane.
+  app.addHook("onRequest", async (req, reply) => {
+    const path = req.raw.url ?? "";
+    const origin = req.headers.origin;
+    if (!origin || (!path.startsWith("/api/") && !path.startsWith("/ws"))) return;
+    const token = getApiToken();
+    const bearer = req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : undefined;
+    if (token && safeTokenEqual(bearer, token)) return;
+    const allowed = [...DEV_WEB_ORIGINS, ...env.corsOrigins];
+    let sameHost = false;
+    try { sameHost = new URL(origin).host === req.headers.host; } catch { /* Opaque/invalid origins fail closed. */ }
+    if (!sameHost && !allowed.includes(origin)) return reply.code(403).send({ error: "Browser origin is not allowed to access the control plane." });
+  });
   await app.register(cors, {
     origin: [...DEV_WEB_ORIGINS, ...env.corsOrigins],
   });
@@ -621,6 +638,11 @@ async function assembleServer(
   }
 
   registerWorkspaceRoutes(app, db, env.mock);
+  const slots = previewSlots(env.previewPorts, env.previewOrigins);
+  if (slots.some((slot) => slot.port === env.port || [...DEV_WEB_ORIGINS, ...env.corsOrigins].includes(slot.origin))) throw new Error("Preview ports/origins must be separate from the control plane.");
+  const previews = new PreviewManager(db, slots, env.mock);
+  registerPreviewRoutes(app, db, previews, env.mock, (project) => broadcast({ type: "project.updated", payload: project }));
+  app.addHook("onClose", () => previews.close());
 
   type ApprovalResolutionState =
     | "applied"
@@ -1046,14 +1068,21 @@ async function assembleServer(
   }
 
   let engineShutdown: ReturnType<EngineRunner["shutdown"]> | undefined;
+  let previewShutdown: Promise<PromiseSettledResult<void>[]> | undefined;
   const shutdown = new ShutdownCoordinator({
     stopAccepting: () => {
       for (const timer of maintenanceTimers) clearInterval(timer);
       for (const controller of requestControllers) controller.abort();
       requestControllers.clear();
       engineShutdown ??= engine.shutdown(repo.getProjects(db));
+      previewShutdown ??= Promise.allSettled([previews.close()]);
     },
-    stopEngine: () => engineShutdown ?? engine.shutdown(repo.getProjects(db)),
+    stopEngine: async () => {
+      const result = await (engineShutdown ?? engine.shutdown(repo.getProjects(db)));
+      const previewResults = await previewShutdown;
+      if (previewResults?.[0]?.status === "rejected") throw previewResults[0].reason;
+      return result;
+    },
     stopTelegram: () => {
       telegram?.stop();
       if (telegram) telegramHealth = telegram.health;
@@ -1290,6 +1319,7 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if (previews.hasActivity(id)) return reply.code(409).send({ error: "Stop this project's previews before deleting it." });
     if (pendingPlanChange(db, id)) return reply.code(409).send({ error: "Plan application is pending; retry it before changing this project." });
     if (activePlanningOperation(db, id) || pendingPlanChange(db, id)) return reply.code(409).send({ error: "planning or its application is active — wait for it to settle first" });
     if (engine.hasActivity(id)) {
