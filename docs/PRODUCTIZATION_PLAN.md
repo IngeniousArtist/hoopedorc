@@ -7346,9 +7346,9 @@ owner later supplies Figma input.
 
 ## Part 14 — Visual development workspace
 
-**Status (2026-09-21):** VW01–VW07 are implemented, including recovery,
-settings/setup, the durable planning workbench, and reviewed plan changes.
-VW08 is the next unstarted item. The
+**Status (2026-09-21):** VW01–VW11 are merged, including the planning workbench,
+reviewed plan changes, workspaces, previews, browser evidence and source Library.
+VW12 is implemented with CI/merge pending; VW13 is the next unstarted item. The
 detailed scope, inspected source, research, acceptance criteria, non-goals,
 dependencies, and verification requirements are
 in [VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
@@ -7362,8 +7362,8 @@ existing Figma integration, gates/validation, accounting, and Telegram. Improve
 the user journey and failure handling, then extend capabilities incrementally.
 Small tasks and large briefs share the same execution system.
 
-**Next after VW11 merge:** VW12 (selective skills/plugins/MCP activation), starting from
-the reviewed VW01–VW11 result. Consult the focused plan's dependency table for
+**Next after VW12 merge:** VW13 (shared account pools/resource allocation), starting from
+the reviewed VW01–VW12 result. Consult the focused plan's dependency table for
 subsequent items. Do not start by replacing the scheduler or adding
 all future schemas. Use one scoped branch/PR per coherent change; split larger
 work packages into backward-compatible contract/backend/UI steps as needed.
