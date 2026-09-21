@@ -7,6 +7,12 @@ const ACTIVE = "('queued', 'running', 'cancelling')";
 export const planningOperationActive = (operation: PlanningOperation | null): boolean =>
   !!operation && ["queued", "running", "cancelling"].includes(operation.state);
 
+/** Proposal calls only change scratch; they do not exclude the scheduler. */
+export function planningBlocksExecution(db: Db, projectId: string): boolean {
+  const operation = activePlanningOperation(db, projectId);
+  return !!operation && operation.input.proposal !== true;
+}
+
 export class PlanningOperationError extends Error {
   constructor(message: string, readonly status = 409, readonly code = "PLANNING_CONFLICT", readonly details?: unknown) {
     super(message);
@@ -74,11 +80,13 @@ export class PlanningOperations {
       const input = {
         revisionId: request.revisionId,
         messages: request.messages,
+        ...(request.proposal ? { proposal: true } : {}),
         ...(kind === "deconstruct" ? { figmaVerification: request.figmaVerification ?? "live" } : {}),
       };
       if (existing) {
         if (existing.kind !== kind || existing.retryOf !== retryOf || JSON.stringify({
           revisionId: existing.input.revisionId, messages: existing.input.messages,
+          ...(existing.input.proposal ? { proposal: true } : {}),
           ...(kind === "deconstruct" ? { figmaVerification: existing.input.figmaVerification } : {}),
         }) !== JSON.stringify(input) || (request.sessionVersion !== undefined && request.sessionVersion !== existing.input.sessionVersion)) {
           throw new PlanningOperationError("This operation id belongs to a different planning request.");

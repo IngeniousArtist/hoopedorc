@@ -975,3 +975,34 @@ test("VW06: shutdown settles a real process; reopening and explicit retry count 
     assert.equal(repo.getInvocations(fx.deps.db, { projectId: PROJECT_ID }).length, 2);
   } finally { await app.close(); fx.restore(); rmSync(root, { recursive: true, force: true }); }
 });
+
+test("VW07: proposal planning runs beside execution; review refuses active/stale apply and replays safely", async () => {
+  const fx = fixture({ mock: true, localPath: "/unused" });
+  const app = await buildApp(fx.deps);
+  const db = fx.deps.db;
+  try {
+    const revisionId = (await app.inject({ method: "GET", url: `/api/projects/${PROJECT_ID}/plan/session` })).json<{ revisionId: string }>().revisionId;
+    repo.updateProject(db, PROJECT_ID, { status: "running" });
+    const chat = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/chat`, payload: { revisionId, proposal: true, messages: [{ role: "user", content: "Add a health check" }] } });
+    assert.equal(chat.statusCode, 200, chat.body);
+    assert.equal(repo.getProject(db, PROJECT_ID)?.status, "running");
+    const generated = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/deconstruct`, payload: { revisionId, proposal: true, sessionVersion: chat.json<PlanChatResponse>().sessionVersion, messages: [{ role: "user", content: "Add a health check" }] } });
+    assert.equal(generated.statusCode, 200, generated.body);
+    const draft = generated.json<PlanDeconstructResponse>();
+    const context = (await app.inject({ method: "GET", url: `/api/projects/${PROJECT_ID}/plan/changes` })).json<import("@orc/types").PlanChangeContextResponse>();
+    const reviewed = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/changes/review`, payload: {
+      ...draft, revisionId, taskGeneration: context.taskGeneration, tasks: draft.tasks.map((t) => ({ ...t, existingDependsOn: [] })),
+    } });
+    assert.equal(reviewed.statusCode, 200, reviewed.body);
+    const review = reviewed.json<import("@orc/types").PlanChangeReviewResponse>().review;
+    const apply = () => app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/changes/apply`, payload: { reviewId: review.id } });
+    const busy = await apply(); assert.equal(busy.statusCode, 409, busy.body);
+    assert.equal(busy.json<{ code: string }>().code, "EXECUTION_ACTIVE");
+    repo.updateProject(db, PROJECT_ID, { status: "paused" });
+    const applied = await apply(); assert.equal(applied.statusCode, 200, applied.body);
+    assert.equal(repo.getProject(db, PROJECT_ID)?.status, "paused");
+    assert.equal(repo.getTasks(db, PROJECT_ID).length, draft.tasks.length);
+    assert.deepEqual((await apply()).json(), applied.json());
+    assert.equal(repo.getTasks(db, PROJECT_ID).length, draft.tasks.length);
+  } finally { await app.close(); fx.restore(); }
+});

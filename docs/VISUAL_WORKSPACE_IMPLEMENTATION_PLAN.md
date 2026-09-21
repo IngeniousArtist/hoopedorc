@@ -8,9 +8,9 @@ This document records the requested product direction and implementation sequenc
 
 ## Start here
 
-VW01–VW06 are implemented as of 21 September 2026;
+VW01–VW07 are implemented as of 21 September 2026;
 see the [current status and evidence](PRODUCTIZATION_PLAN.md#part-14--visual-development-workspace).
-The next item is **VW07 — propose and apply plan revisions during execution**. The initial
+The next item is **VW08 — workspace inventory and read-only code inspection**. The initial
 VW01 → VW02/VW03 → VW04 sequence remains the dependency foundation for the
 later work. Do not start by replacing the engine, creating a second
 scheduler, or implementing every screen at once.
@@ -34,11 +34,11 @@ For each item:
 5. Start the next item from the merged result. Do not combine unrelated slices
    into a large rewrite PR.
 
-**Next implementation request:** “Implement VW07 from
-VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md, starting from reviewed main. Propose
-and apply plan revisions with compare-and-swap checks for the revision and task
-generation; preserve accepted tasks and in-flight ownership. Follow AGENTS.md's
-focused testing policy through verification and PR.”
+**Next implementation request:** “Implement VW08 from
+VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md, starting from reviewed main. Add
+workspace inventory and read-only code inspection with ownership checks,
+traversal/symlink protection, and bounded reads. Follow AGENTS.md's focused
+testing policy through verification and PR.”
 
 ## Recommendation
 

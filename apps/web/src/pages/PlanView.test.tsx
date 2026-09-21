@@ -363,7 +363,7 @@ describe("PlanView Figma verification", () => {
     renderPlan();
 
     expect(
-      await screen.findByText(/Tasks are running — planning re-opens/),
+      await screen.findByText(/Work is running. Draft a separate proposal/),
     ).toBeVisible();
     act(() => {
       wsState.handler?.({
@@ -374,7 +374,7 @@ describe("PlanView Figma verification", () => {
 
     expect(await screen.findByLabelText("Planning message")).toBeVisible();
     expect(
-      screen.queryByText(/Tasks are running — planning re-opens/),
+      screen.queryByText(/Work is running. Draft a separate proposal/),
     ).not.toBeInTheDocument();
   });
 
@@ -414,7 +414,7 @@ describe("PlanView Figma verification", () => {
 
     expect(await screen.findByLabelText("Planning message")).toBeVisible();
     expect(
-      screen.queryByText(/Tasks are running — planning re-opens/),
+      screen.queryByText(/Work is running. Draft a separate proposal/),
     ).not.toBeInTheDocument();
   });
 });

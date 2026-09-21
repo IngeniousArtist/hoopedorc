@@ -137,6 +137,45 @@ conflicting unsaved draft is preserved as a readable recovery copy while the
 current server session loads; it is never automatically written over newer
 content. Local recovery copies still live only in browser memory.
 
+VW07 adds explicit `proposal: true` to chat/deconstruction. Such an operation
+owns planning scratch and the usual invocation ledger, but allows the existing
+scheduler to continue. Normal calls retain VW06's execution exclusion. Draft
+saves are allowed during execution; application and active planning still
+exclude each other. Proposal completion cannot publish `Project.prd` or mutate
+board tasks. Applying changes remains an explicit operator action.
+
+`GET plan/changes` returns the current revision, draft version, task generation,
+tasks, execution activity (including draining/stopping/rollback and active task
+rows), and latest revision-scoped review. `POST plan/changes/review` validates a
+`ReviewPlanChangesRequest` and stores an immutable `PlanChangeReview`. Each
+`PlanChangeTask` may select `existingTaskId` only for a never-started pending
+task (no attempt, prior run, branch, worktree, or PR), and adds
+`existingDependsOn` board IDs alongside the draft-index dependencies. Foreign,
+missing, duplicate, self/cyclic, or ineligible targets are refused. The complete
+resulting DAG is checked. Added tasks receive stable server-owned IDs at review.
+The comparison includes full before/after tasks, retained work, and the previous
+accepted brief. Review itself changes no board task or accepted PRD.
+
+`POST plan/changes/apply` accepts only `{ reviewId }` and returns the existing
+`PlanCommitResponse`. It requires a fully settled runtime/rollback boundary and
+no active planning operation, then compares revision, session version, and
+`task_generation`. Repository drift requires regeneration, with no bypass in
+this reviewed path. The existing approval receipt reserves the exact review
+before Git/archive persistence. `plan_change_reviews.state = applying` blocks
+task INSERT/UPDATE/DELETE through SQLite triggers and Start/dispatch/retry/
+rollback at their owning entry points, surviving restart. The final transaction
+rechecks the generation, releases that lock, applies task changes, publishes the
+brief, clears scratch, and completes both review and approval receipt. Failure
+rolls back that whole transition. Retry uses the original review/IDs; successful
+replay makes no Git, task, or WebSocket effects. Application leaves the project
+paused; it never starts models or silently replaces an active prompt. Normal
+`task.updated`/`project.updated` events carry the applied result.
+
+Errors include `409 PLAN_CHANGES_STALE`, `409 EXECUTION_ACTIVE`,
+`409 TASK_NOT_EDITABLE`, and `400 INVALID_PLAN_CHANGES`/`INVALID_DEPENDENCY`/
+`INVALID_MODEL`, as well as repository and staged persistence errors. No task
+deletion, automatic rebase, active-attempt rewrite, or automatic resume is added.
+
 VW03 grounds planning in the repository that actually exists. Before every
 planner call, `PlanningService.inspect` reads the primary clone (production:
 `ensureClone` then `GitServiceImpl.describeRepository`, a read-only branch/HEAD/
@@ -637,6 +676,9 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `planOperation` | `GET /api/projects/:id/plan/operations/:operationId` | → `PlanOperationResponse` |
 | `planOperationRetry` | `POST /api/projects/:id/plan/operations/:operationId/retry` | → `202 PlanOperationResponse` (idempotent child retry) |
 | `planOperationCancel` | `POST /api/projects/:id/plan/operations/:operationId/cancel` | → `202 PlanOperationResponse` (cancelling until settled) |
+| `planChangeContext` | `GET /api/projects/:id/plan/changes` | → `PlanChangeContextResponse` |
+| `reviewPlanChanges` | `POST /api/projects/:id/plan/changes/review` | `ReviewPlanChangesRequest` → `PlanChangeReviewResponse` |
+| `applyPlanChanges` | `POST /api/projects/:id/plan/changes/apply` | `ApplyPlanChangesRequest` → replayable `PlanCommitResponse` |
 | `planCommit` | `POST /api/projects/:id/plan/commit` | `PlanCommitRequest` (incl. O3 `revisionId`; VW03 optional `acknowledgeRepositoryDrift`) → replayable `PlanCommitResponse`, or `409 REPOSITORY_DRIFT` with `RepositoryDriftDetails` |
 | `planSession` | `GET /api/projects/:id/plan/session` | → `PlanningSessionResponse` (incl. O3 `revisionId`, F38's `agentsMd`, F52's optional verified Figma list, and VW03's optional `repository`) |
 | `planSessionArchives` | `GET /api/projects/:id/plan/sessions` | → `ListPlanSessionArchivesResponse` |
