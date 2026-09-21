@@ -8,6 +8,7 @@ describe("application deep links", () => {
       projectId: "proj-1",
     });
     expect(parseHash(hashFor("settings", "proj-1"))).toEqual({ page: "settings" });
+    expect(parseHash(hashFor("workspaces", "proj-1"))).toEqual({ page: "workspaces", projectId: "proj-1" });
     expect(parseHash(hashFor("model-slugs", "proj-1"))).toEqual({
       page: "model-slugs",
     });

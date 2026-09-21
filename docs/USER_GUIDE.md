@@ -1223,3 +1223,25 @@ A few things follow from that split:
 | The web UI shows nothing / a blank board in "real" (non-mock) mode | No project selected yet, or you're pointed at `MOCK=1` data. | Use the project picker in the nav; confirm `MOCK` isn't set in your `.env`/environment. |
 | The Plan tab replies "Mock planner (no model, CLI, MCP, or repository was used)." | The server is running with `MOCK=1` (`npm run mock`). Since VW01, mock planning is deterministic and never invokes a planner CLI, Figma MCP, or repository clone. | Expected in mock mode; the fixtures (`[MOCK_PLANNER_FAIL]` in a message, `MOCKFAIL-<figma_issue_code>` Figma file keys) are listed in `docs/CONTRACT.md`. For real planning, start the server without `MOCK`. |
 | Full-app Docker: `claude` fails to authenticate inside the container | Claude Code's login on macOS lives in the system Keychain, which a Linux container can't reach; Hoopedorc also does not forward provider-key environment variables. | Use the supported native install under the same OS user that authenticated the CLIs. Docker remains reference-only; the gate-only Docker sandbox does not run model CLIs. |
+
+### Inspect workspaces and add code to a plan
+
+Open **Workspaces** for the primary clone and recorded task branches. Cards show
+branch/commit, working-tree changes, task status and worker. A missing or removed
+worktree stays visible as unavailable; **View task and recovery** opens its task.
+Nothing is cleaned or changed by this page.
+
+Choose a workspace, filter paths and open **Code** or **Changes**. Changes compare
+the primary clone with HEAD, or a task with its default-branch merge base. New
+untracked files appear under Code. Refresh after an agent changes files. Commit,
+observation time and file hash describe the content read, not a frozen preview.
+
+Select a From/To line range and **Add lines to plan**. Your existing message is
+preserved; review the appended reference before sending it. Up to 200 lines /
+16,000 characters can be added at once. Browsing and adding references do not
+start a model, grant shell access or change a running task.
+
+Ignored files, Git metadata, symlinks and shared hardlinks are not browsable.
+Binary/non-UTF-8 files and files over 128 KiB or 5,000 lines show a refusal; diffs
+are limited to 256 KiB and inventory to 5,000 paths. Refresh retries unavailable
+reads. Inspect larger files with your trusted local tools.

@@ -78,6 +78,44 @@ export interface GetProjectResponse {
   project: Project | null;
 }
 
+/** VW08: server-owned IDs, never client-supplied filesystem roots. */
+export interface WorkspaceSummary {
+  id: string;
+  projectId: string;
+  taskId?: string;
+  title: string;
+  worker?: string;
+  taskStatus?: TaskStatus;
+  state: "available" | "unavailable";
+  reason?: string;
+  branch?: string;
+  headSha?: string;
+  baseSha?: string;
+  dirty?: boolean;
+  changedFiles?: number;
+}
+export interface WorkspaceFileEntry { path: string; changed: boolean; untracked: boolean }
+export interface ListWorkspacesResponse { workspaces: WorkspaceSummary[] }
+export interface WorkspaceFilesResponse {
+  workspace: WorkspaceSummary;
+  files: WorkspaceFileEntry[];
+  truncated: boolean;
+  observedAt: string;
+}
+export interface WorkspaceFileResponse {
+  workspace: WorkspaceSummary;
+  path: string;
+  content: string;
+  contentSha: string;
+  observedAt: string;
+}
+export interface WorkspaceDiffResponse {
+  workspace: WorkspaceSummary;
+  path: string;
+  diff: string;
+  observedAt: string;
+}
+
 export interface DeleteProjectResponse {
   ok: true;
 }
@@ -765,6 +803,10 @@ export const ROUTES = {
   createProject: "POST /api/projects",
   listProjects: "GET /api/projects",
   getProject: "GET /api/projects/:id",
+  listWorkspaces: "GET /api/projects/:id/workspaces",
+  workspaceFiles: "GET /api/projects/:id/workspaces/:workspaceId/files",
+  workspaceFile: "GET /api/projects/:id/workspaces/:workspaceId/file",
+  workspaceDiff: "GET /api/projects/:id/workspaces/:workspaceId/diff",
   updateProject: "PATCH /api/projects/:id",
   deleteProject: "DELETE /api/projects/:id",
   planProject: "POST /api/projects/:id/plan",

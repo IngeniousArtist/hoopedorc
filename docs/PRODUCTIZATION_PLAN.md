@@ -7377,7 +7377,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW05 | Organize existing settings and setup | Implemented | [PR #271](https://github.com/IngeniousArtist/hoopedorc/pull/271); see VW05 acceptance record below and PR checks for required CI/merge evidence |
 | VW06 | Durable planning operations and planning workbench | Implemented | [PR #272](https://github.com/IngeniousArtist/hoopedorc/pull/272), merged as `0e84781`; required CI passed; see VW06 acceptance record below |
 | VW07 | Propose/apply plan revisions during execution | Implemented | [PR #273](https://github.com/IngeniousArtist/hoopedorc/pull/273); see VW07 acceptance record below and PR checks for CI/merge evidence |
-| VW08 | Workspace inventory and read-only code inspection | Not started | — |
+| VW08 | Workspace inventory and read-only code inspection | Implemented | See VW08 acceptance record below; PR records required CI/merge evidence |
 | VW09 | Managed environments and preview lifecycle | Not started | — |
 | VW10 | Full review workbench and browser evidence | Not started | — |
 | VW11 | Project design/reference library | Not started | — |
@@ -8243,3 +8243,45 @@ stale proposals automatically. No authenticated model, external Telegram,
 Docker, or EC2/systemd live smoke ran. Existing host-run planner isolation limits
 remain; proposal mode is not a new sandbox. Comprehensive local regression is
 still deferred until the implementation plan is complete. Next: VW08.
+
+### VW08 — workspace inventory and read-only inspection (2026-09-21)
+
+**Acceptance criteria before implementation:** inventory the durable primary
+clone and recorded task worktrees with branch/HEAD/base, dirty files, worker and
+task identity. Missing/removed/unowned workspaces remain visible with a reason.
+Every file/diff access revalidates the project, task, canonical Git root and
+common repository; task paths/branches must match their recorded ownership.
+Reject traversal, Git metadata, symlinks, special files and unlisted paths.
+Bound filenames, Git output, file bytes and UTF-8/binary handling. Do not clone,
+execute repository commands, edit files, start agents, or clean worktrees.
+
+Provide a project Workspaces page with searchable files, read-only content and
+per-file diffs, reload/error/unavailable states, and explicit file/line context
+handoff to the existing planning composer without sending a model call or
+replacing unsent text. Show current working-copy identity honestly. Preserve
+existing navigation, data and controls at 360/390/768/1280/1440 widths.
+
+**Dependencies/non-goals:** VW04/VW07; reuse GitServiceImpl and shared route
+contracts. Preview/process ownership belongs to VW09, evidence to VW10. No
+terminal, browser-based editing, remote IDE or automatic workspace cleanup.
+Verify with real temporary Git/worktree fixtures, focused server/UI/browser
+checks and required CI. No AWS/model invocation is needed for these local
+read-only boundaries; comprehensive local regression follows the full plan.
+
+**Implementation and focused evidence:** shared workspace contracts/routes,
+read-only GitService inspection, deterministic mock files, searchable workspace
+UI and line-reference handoff are implemented. Missing/foreign workspaces and
+unsafe files fail explicitly. External Git clean/process/smudge filters and
+filesystem monitors are disabled; tests verify the repository cannot launch
+their marker command during inspection. No cleanup or code-writing API exists.
+
+Node 22.23.0 verification: three new real-Git/worktree cases passed (ownership,
+reads/diffs, missing paths, symlink/hardlink/binary/size limits and repository
+command refusal); one server route case plus two canonical route/doc checks
+passed. Twenty-seven focused web cases passed across Workspaces, API client,
+App routing and affected PlanView coverage. One Playwright flow passed at all
+five required widths, verifying overflow, fixed surfaces, phone touch targets,
+keyboard handoff and preservation of the unsent planning composer. Rendered
+390px and 1440px screenshots were reviewed. Affected package builds/typechecks,
+changed-file lint (existing GitService warnings unchanged) and whitespace checks
+passed. PR records required CI/merge evidence. Next: VW09.
