@@ -1,3 +1,4 @@
+import { RoutingEvaluationPanel } from "../components/RoutingEvaluationPanel";
 import { ExecutionPanel } from "../components/ExecutionPanel";
 import {
   SECRET_SENTINEL,
@@ -88,6 +89,7 @@ const SETTINGS_SECTIONS = [
   { id: "policy", label: "Run policy" },
   { id: "models", label: "Models & routing" },
   { id: "resources", label: "Resources" },
+  { id: "evaluation", label: "Routing evaluation" },
   { id: "guidelines", label: "Guidelines" },
   { id: "notifications", label: "Notifications" },
   { id: "installation", label: "Installation" },
@@ -561,6 +563,7 @@ export function Settings({
             onChange={updateRouting}
           />
         </SectionPanel>
+        <SectionPanel group="settings" id="evaluation" selected={section}><RoutingEvaluationPanel active={section === "evaluation"} /></SectionPanel>
         <SectionPanel group="settings" id="resources" selected={section}>
           <ResourcesPanel settings={settings} active={section === "resources"} onChange={(patch) => { setSettings((previous) => previous ? { ...previous, ...patch } : previous); setDirty(true); setSaved(false); }} />
           <ExecutionPanel settings={settings} saved={saved} active={section === "resources"} onChange={(patch) => { setSettings((previous) => previous ? { ...previous, ...patch } : previous); setDirty(true); setSaved(false); }} />
@@ -864,7 +867,7 @@ export function Settings({
         </SectionPanel>
       </fieldset>
 
-      <div className="sticky bottom-0 z-10 space-y-2 border-t border-neutral-800 bg-neutral-950 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
+      {(section !== "evaluation" || dirty || saving || !!error) && <div className="sticky bottom-0 z-10 space-y-2 border-t border-neutral-800 bg-neutral-950 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
         {error && (
           <div role="alert" className="break-words rounded border border-red-800 bg-red-950/50 px-3 py-2 text-sm text-red-300">
             <p>{error}</p>
@@ -880,7 +883,7 @@ export function Settings({
           </span>
           <span className="text-xs text-neutral-500">Saves changes across all sections.</span>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

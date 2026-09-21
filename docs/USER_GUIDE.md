@@ -1498,3 +1498,21 @@ MCPs remain inherited; selected activation, plugin isolation, effort controls an
 isolated Gemini workers are not verified. See the
 [harness compatibility matrix](specs/harness-compatibility.md) for evidence and
 pending provider/AWS checks.
+
+### Evaluate a routing classifier before paying for it
+
+Settings → Routing evaluation compares recorded Jev choices with static routing.
+Load the synthetic example to inspect the workflow, or import a versioned dataset
+of held-out tasks and independently reviewed outcomes. Evaluate and save report
+shows repair-inclusive cost, quality, latency, token/call usage and fallback
+reasons. Download reports or reopen them after a server restart. Input drafts are
+retained in the browser tab, and failed requests can be retried without duplicating
+reports. This action is separate from Save Settings.
+
+No classifier is called or enabled by this screen. Synthetic data and incomplete
+outcomes cannot establish real savings. A successful imported comparison only
+suggests a separately authorized live pilot; static routing remains active. See
+[collecting routing evidence](specs/routing-evaluation.md) for the import format,
+limits and remaining measured/provider work.
+
+For release readiness, use the [remaining live commissioning matrix](specs/commissioning.md). AWS is owner-deferred; the previous server is shut down.

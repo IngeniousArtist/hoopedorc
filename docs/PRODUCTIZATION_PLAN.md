@@ -7349,7 +7349,7 @@ owner later supplies Figma input.
 **Status (2026-09-21):** VW01–VW13 are merged, including the planning workbench,
 reviewed plan changes, workspaces, previews, browser evidence and source Library.
 VW13 adds shared account resource controls; VW14 isolated execution is implemented
-with provider/AWS acceptance pending. VW15 milestone acceptance is merged with provider acceptance pending. VW16 environments are merged with Python Docker/provider acceptance pending. VW17 harness compatibility is in progress. The
+with provider/AWS acceptance pending. VW15 milestone acceptance is merged with provider acceptance pending. VW16 environments are merged with Python Docker/provider acceptance pending. VW17 harness compatibility is merged with provider acceptance pending. VW18 offline evaluation is implemented; measured Jev benefit and live integration remain conditional follow-up work. The
 detailed scope, inspected source, research, acceptance criteria, non-goals,
 dependencies, and verification requirements are
 in [VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
@@ -7363,12 +7363,11 @@ existing Figma integration, gates/validation, accounting, and Telegram. Improve
 the user journey and failure handling, then extend capabilities incrementally.
 Small tasks and large briefs share the same execution system.
 
-**Current:** VW17 (additional harness compatibility), starting from
-the reviewed VW01–VW15 implementation result. VW14 provider-auth/model and AWS
-acceptance remain pending; do not advertise those as verified. Consult the focused plan's dependency table for
-subsequent items. Do not start by replacing the scheduler or adding
-all future schemas. Use one scoped branch/PR per coherent change; split larger
-work packages into backward-compatible contract/backend/UI steps as needed.
+**Current:** implementation work through VW18 is locally complete, including the
+comprehensive final regression pass. Required CI and the final merge are recorded
+in the final evaluation PR. Remaining work is [live commissioning](specs/commissioning.md)
+and a measured Jev comparison before any live-classifier implementation. Do not
+advertise pending provider/AWS acceptance as verified.
 
 | ID | Work item | Status | PR / acceptance evidence |
 |---|---|---|---|
@@ -7388,8 +7387,8 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW14 | Verified isolated agent execution profiles | Implementation merged; provider/AWS checks pending | [PR #280](https://github.com/IngeniousArtist/hoopedorc/pull/280) → `f8aa175`; final CI `35619841075`; no-model Linux Docker boundary passed |
 | VW15 | Milestone acceptance and bounded replanning | Implementation merged; provider/AWS acceptance pending | PR #281; merge audit below |
 | VW16 | Portable framework/environment profiles | Merged; live acceptance pending | PR #282; evidence below |
-| VW17 | Additional harness compatibility | In progress | `vw17-harness-compatibility`; acceptance below |
-| VW18 | Optional Jev routing evaluation | Not started | — |
+| VW17 | Additional harness compatibility | Merged; live acceptance pending | PR #283; evidence below |
+| VW18 | Optional Jev routing evaluation | Offline tooling implemented; measured benefit/live pilot pending | [PR #284](https://github.com/IngeniousArtist/hoopedorc/pull/284); final-wave evidence below |
 
 **Release boundary:** first prove an existing-project feature from planning to
 parallel implementation, preview, visual correction, and reviewed integrated
@@ -9025,3 +9024,122 @@ VW17 CI review caught a missing row in CONTRACT.md's canonical route inventory
 (the endpoint and detailed contract were present). Added the row and reran the
 focused O33 inventory check; no required check was bypassed. Local lint passed
 with 330 legacy findings unchanged; whitespace checks passed.
+
+
+VW17 merge audit: PR [#283](https://github.com/IngeniousArtist/hoopedorc/pull/283)
+passed required CI [35632318907](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35632318907)
+on `2b43a73f74c33ef5e884ee09910283dbc20d58e9`. Merged as
+`19af1ed45f4fb752353df441be004a7716112404`; independent fetch confirmed identical
+tested/merged trees and main at 0/0 divergence. All required checks passed,
+including browser and the real Linux Docker boundary. Provider/AWS limitations
+remain explicit; the operator-owned dependency directory was preserved.
+
+### VW18 — optional Jev routing evaluation (implementation acceptance)
+
+Dependencies VW13 and VW15 are merged. Jev must earn deployment through measured
+allocation results. This item ships offline evaluation and bounded suggestion
+policy; it does not enable a paid classifier in the scheduler before that evidence
+exists. Static routing and its existing escalation remain authoritative.
+
+- Define a versioned import format for held-out development tasks, eligible
+  candidate snapshots, fixed confidence/cost/latency limits, recorded Jev Choice
+  responses, classifier overhead, and independently reviewed downstream outcomes.
+  Include initial work, validation and repair cost, calls, tokens and duration.
+- Compare matched held-out cases against their static choice. Missing outcome or
+  cost evidence is unknown, never zero/success. Require a representative sample,
+  observed provenance and evidence references before recommending even a pilot.
+  Synthetic examples can demonstrate the evaluator but cannot justify deployment.
+- Suggestions choose only among eligible candidates. Down/timeout/malformed,
+  over-budget, low-confidence and ineligible responses select exactly the static
+  fallback and retain a reason. No recursive classifier retries or dynamic tool
+  activation. Imported task text/response never becomes executable instructions.
+- Provide a visual Settings evaluation workspace: load a clearly synthetic example,
+  import/edit a bounded JSON dataset, evaluate, inspect cost/quality/latency/quota
+  comparisons and per-case reasons, reopen saved reports and download evidence.
+  Show idle/loading/unavailable/error/success, preserve drafts and prevent duplicate
+  submission. No API key input, background provider call or silent routing change.
+- Save the exact dataset hash, evaluation version, report and idempotency receipt
+  transactionally. Repeated requests after a restart return the same record; reuse
+  with different input refuses. Preserve existing settings and ledger rows. Recorded
+  imported calls are not new live invocations and must not bill the ledger again.
+- Test threshold/eligibility/failure fallback, downstream repair erasing apparent
+  savings, failures outweighing cheap choices, missing/zero subscription costs,
+  duplicate/restart behavior, body bounds, contract and visual interactions across
+  five widths. Publish a synthetic fixture result and state its limitation.
+- Actual Jev efficacy, provider-cost comparison and an authorized live routing pilot
+  remain pending measured owner data; enabling live routing is a separate decision
+  only after the benchmark succeeds. AWS stays owner-deferred. After implementing this
+  item, run the comprehensive local repository gates and fix regressions before
+  handing off the implementation wave.
+
+
+### VW18 local implementation and final-wave verification
+
+Implemented the offline evaluation workspace, shared import/report contract,
+bounded fallback policy, immutable SQLite reports and restart-safe request
+receipts. The synthetic 12-task example totals $6.0000 static versus $6.0120
+proposed, including $2.4000 repairs and $0.0120 classifier overhead; these are
+fabricated demonstrations, not measured Jev efficacy. Live routing stays off.
+
+Focused checks passed: 4 policy/persistence/API tests (including error, bounds,
+retry and database reopen); 2 interaction tests; the canonical O33 route-inventory
+check; and the real browser input → refusal/retry → report → download → reload
+journey at 360/390/768/1280/1440px. Keyboard, touch targets, fixed surfaces and
+overflow were checked, and phone/desktop captures inspected. Typechecks/builds
+passed. Lint remains at 330 legacy findings with no increase. Full final-wave
+local checks are now running before the final PR so their evidence and any fixes
+ship together; independently compare the merged tree afterward. This timing
+refines the implementation acceptance's handoff sequence without rerunning the
+full suite for earlier individual items.
+
+
+### Comprehensive local regression — completed 2026-09-21
+
+After the final item's implementation, the complete requested local pass ran
+once on Node 22.23.0/macOS arm64. Results:
+
+| Gate | Result |
+| --- | --- |
+| `npm run typecheck` | Passed all workspaces |
+| `npm run build` | Passed all workspaces |
+| `npm run lint` | Passed; 296 files, 330 legacy findings unchanged |
+| `npm test -w @orc/engine` | 251 passed |
+| `npm test -w @orc/adapters` | 22 passed |
+| `npm test -w @orc/server` | 434 passed; one explicit Docker opt-in skipped |
+| `npm run test:web` | 194 passed in 43 files |
+| `npm run test:e2e` | 38 passed, including responsive and real local browser/process flows |
+| `git diff --check` | Passed |
+
+The four test workspaces ran through the root `npm test` script in that order.
+The one local skip is `execution-boundary.test.ts`, gated by
+`HOOPEDORC_DOCKER_BOUNDARY=1`; it is not a failed gate or a claimed local rerun.
+That real no-provider Docker boundary already passed in the VW14 local Linux VM
+and is a separate mandatory Ubuntu CI step on each final PR. Do not conflate
+those checks with provider authentication or AWS commissioning.
+
+This is 901 passing local unit/interaction tests plus 38 browser tests. No new
+failure was found in this comprehensive pass. The earlier route inventory omission
+was fixed before it. Logs are `/tmp/hoop-wave-{typecheck,build,lint,tests,e2e}.log`;
+focused evidence and exact PR/CI/merge audit remain recorded per item and in the
+final PR. No paid calls, credential changes, Telegram sends or AWS actions were
+performed. The preserved operator-owned dependency directory is still untracked.
+
+Implementation completion is not production acceptance. See the concise
+[remaining commissioning matrix](specs/commissioning.md) for the real provider
+journey, isolated-worker account, framework image, milestone, Telegram and AWS
+checks. Jev remains off; the synthetic example is not evidence of real savings.
+
+
+Final VW18 diff review identified a draft-recovery edge case: downloading input
+required valid JSON, which was unhelpful when preserving an unfinished malformed
+draft after browser storage failure. Input download now preserves the exact raw
+text. The focused browser regression verifies malformed-input download alongside
+the existing report/retry/reload flow; only affected checks are repeated after
+this small fix, not the comprehensive suite.
+
+
+The comprehensive pass covered `3f65371b929dac864ef41f016a51593b4e391346`'s code.
+The final raw-draft download correction then passed its focused real-browser
+journey (including malformed text preservation), web typecheck, affected-component
+lint and whitespace checks. Required CI runs on the final head; its exact SHA,
+run link and independently verified merge are recorded in PR #284.

@@ -796,6 +796,9 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `selfUpdateStatus` | `GET /api/setup/self-update` | → `SelfUpdateStatusResponse` (deployment availability, temporary blockers, and current/last update phase) |
 | `startSelfUpdate` | `POST /api/setup/self-update` | no body → `StartSelfUpdateResponse` (202; launches only the fixed guarded updater in a separate systemd unit) |
 | `setupModels` | `GET /api/setup/models` | → `ModelRosterResponse` |
+| `routingEvaluations` | `GET /api/routing/evaluations` | → `RoutingEvaluationsResponse`; latest 50 immutable offline evaluation summaries |
+| `routingEvaluation` | `GET /api/routing/evaluations/:id` | → `EvaluateRoutingResponse`; saved dataset, hash and report, or 404 |
+| `evaluateRouting` | `POST /api/routing/evaluations` | `EvaluateRoutingRequest` → `EvaluateRoutingResponse`; UUID idempotency, no model calls or routing mutation |
 | `harnessCompatibility` | `GET /api/setup/harnesses` | → `HarnessCompatibilityResponse`; fixed local version probes, no model calls; mock starts no tools |
 | `modelCatalog` | `GET /api/setup/model-catalog` | → `ModelCatalogResponse` (installed Codex catalog, Claude Code aliases/current IDs, and OpenCode `zai/`/`zai-coding-plan/`/`xai/`/`deepseek/` models) |
 | `modelHealth` | `GET /api/setup/model-health` | → `ModelHealthResponse` |
@@ -1140,3 +1143,21 @@ profiles. Enabled Gemini profiles require a subscription pool or all three manua
 token prices. Legacy model normalization is preserved. The model catalog includes
 an empty Gemini entry with an explanation; no model aliases are invented.
 Activation compatibility includes Gemini as unsupported for selected mode.
+
+### VW18 — offline routing evidence
+
+`EvaluateRoutingRequest` contains a UUID v4 `requestId` and version-1
+`RoutingBenchmark` dataset. POST `/api/routing/evaluations` returns
+`EvaluateRoutingResponse.evaluation` with immutable ID/time/hash, exact normalized
+dataset and `RoutingEvaluationReport` (including per-case reasons and
+`liveRoutingEnabled: false`). GET `/api/routing/evaluations` returns the latest
+50 `RoutingEvaluationSummary` entries; GET by ID returns the full record or 404.
+Existing authentication, origin and shutdown mutation protections apply.
+
+Validation errors return 400, ID reuse with different input or the 200-report
+storage limit returns 409, and an oversized HTTP body returns 413. Same ID/data
+is idempotent across restart. Dataset input is capped at 512 KB, HTTP body 550 KB;
+1–100 cases and 1–12 candidates per case. Shared types define the full field and
+nullable-metric contract; unknown is never silently zero. Mock uses the same
+pure evaluator/persistence and makes no provider calls. No settings/task/ledger
+state is modified. See [evaluation specification](specs/routing-evaluation.md).

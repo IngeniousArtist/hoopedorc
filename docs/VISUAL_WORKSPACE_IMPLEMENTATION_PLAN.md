@@ -13,8 +13,10 @@ see the [current status and evidence](PRODUCTIZATION_PLAN.md#part-14--visual-dev
 VW14 isolated execution implementation is merged; its real no-model Docker
 boundary is tested, while provider login/model and AWS checks remain pending.
 VW15 milestone acceptance and VW16 environment profiles are merged, with their
-provider-powered checks pending. The current implementation item is
-**VW17 — additional harness compatibility**. The initial
+provider-powered checks pending. VW17 harness compatibility is merged.
+**VW18 offline evaluation is implemented and the comprehensive local regression
+pass is complete.** Measured Jev efficacy/live routing and provider/AWS
+commissioning remain pending; see the [commissioning matrix](specs/commissioning.md). The initial
 VW01 → VW02/VW03 → VW04 sequence remains the dependency foundation for the
 later work. Do not start by replacing the engine, creating a second
 scheduler, or implementing every screen at once.
@@ -38,11 +40,11 @@ For each item:
 5. Start the next item from the merged result. Do not combine unrelated slices
    into a large rewrite PR.
 
-**Current implementation request:** “Implement VW17 from this plan and its
-acceptance record in PRODUCTIZATION_PLAN.md, starting from reviewed main. Add
-explicit harness capabilities and an opt-in native adapter through the existing
-settings, invocation ledger and scheduler. Follow AGENTS.md's focused testing policy
-through verification and PR.”
+**Current handoff:** the implementation wave is complete locally. Its final
+[PR #284](https://github.com/IngeniousArtist/hoopedorc/pull/284) records required CI
+and the independent tested/merged-tree audit. Keep live commissioning
+and measured routing follow-up explicit; do not enable Jev from synthetic results.
+The full local suite has passed once at the end of the wave, as requested.
 
 ## Recommendation
 

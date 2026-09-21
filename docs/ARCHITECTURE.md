@@ -468,3 +468,12 @@ introduced. `server/src/harnesses.ts` owns fixed, bounded local version probes;
 shared API types and Setup's Harnesses panel expose separate capability limits.
 Gemini requires explicit billing configuration because the CLI reports no USD.
 See [harness compatibility](specs/harness-compatibility.md).
+
+VW18 keeps optional routing evaluation outside live scheduling. A pure server
+policy validates recorded classifier suggestions and compares matched downstream
+outcomes. `routing-evaluation-store.ts` persists immutable dataset/report hashes
+with UUID idempotency in an additive SQLite table; imported calls never enter the
+live invocation ledger. Shared types, route manifest, real/mock endpoints and
+Settings' evaluation workspace use one contract. No TypeSafe client, API key,
+background classifier or alternative scheduler is introduced before measured
+benefit supports a separate pilot. See [routing evaluation](specs/routing-evaluation.md).

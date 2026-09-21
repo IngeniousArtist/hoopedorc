@@ -524,3 +524,15 @@ CREATE TABLE IF NOT EXISTS milestone_repairs (
   PRIMARY KEY (milestone_id, round),
   UNIQUE (milestone_id, revision_id)
 );
+
+-- VW18: immutable offline benchmark evidence, separate from live billing.
+CREATE TABLE IF NOT EXISTS routing_evaluations (
+  id TEXT PRIMARY KEY,
+  dataset_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  name TEXT NOT NULL,
+  provenance TEXT NOT NULL CHECK(provenance IN ('synthetic', 'observed')),
+  status TEXT NOT NULL CHECK(status IN ('insufficient_evidence', 'keep_static', 'candidate_for_pilot')),
+  json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_routing_evaluations_created ON routing_evaluations(created_at);
