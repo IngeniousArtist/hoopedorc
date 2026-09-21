@@ -102,6 +102,13 @@ function capturingAdapterFactory(sink: string[]): (modelId: string) => AgentAdap
   });
 }
 
+test("VW11: validator receives the same selected immutable reference context", async () => {
+  const prompts: string[] = [];
+  const validator = new ValidatorImpl(capturingAdapterFactory(prompts), baseSettings(), undefined, (_project, candidate) => candidate.description.includes("hoop-reference:design@1") ? "\nSelected immutable design: use the saved button." : "");
+  await validator.review(PROJECT, task({ description: "hoop-reference:design@1" }), GATE, "deepseek-flash");
+  assert.match(prompts[0]!, /Selected immutable design: use the saved button/);
+});
+
 test("F31: validator review prompt includes guidelines — ux only for a frontend-role task", async () => {
   const prompts: string[] = [];
   const settings = baseSettings();

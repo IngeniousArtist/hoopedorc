@@ -1527,7 +1527,18 @@ export class Orchestrator implements Scheduler {
     }
     this.switchRunningModel(task.id, currentModel);
 
+    let referenceBlocked = true;
     try {
+      const referenceIssue = this.deps.checkTaskReferences?.(project, task);
+      if (referenceIssue) {
+        referenceBlocked = true;
+        task.status = "blocked";
+        task.statusReason = `Library reference needs attention: ${referenceIssue}`;
+        this.emit("warn", "engine", task.statusReason, task.id);
+        this.deps.events.onTaskUpdated(task);
+        return;
+      }
+      referenceBlocked = false;
       // B46: resolve to a live, enabled candidate — including when
       // task.assignedModel itself starts disabled/missing — before the
       // first Figma proof or worktree creation, so neither ever happens
@@ -2041,7 +2052,7 @@ export class Orchestrator implements Scheduler {
       this.figmaCapabilityByTask.delete(task.id);
       this.noFigmaReferenceTasks.delete(task.id);
       try {
-        await this.deps.worktrees.remove(project, task);
+        if (!referenceBlocked) await this.deps.worktrees.remove(project, task);
       } catch (err) {
         this.emit(
           "warn",
@@ -2794,6 +2805,7 @@ export class Orchestrator implements Scheduler {
     );
     prompt += SAFETY_GUARDRAILS_BLOCK;
     prompt += buildSkillsBlock(project.config?.skillHints);
+    prompt += this.deps.taskReferenceContext?.(project, task) ?? "";
     if (task.worktreePath) prompt += buildAgentsMdBlock(task.worktreePath);
     if (this.figmaCapabilityByTask.has(task.id)) {
       prompt +=

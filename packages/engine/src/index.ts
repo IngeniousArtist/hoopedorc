@@ -390,6 +390,9 @@ export interface SchedulerDeps {
    * still blocks only its own task, exactly as before F41.
    */
   getPendingApproval?: (projectId: string) => { title: string } | undefined;
+  /** VW11: resolve only explicitly pinned references; refuse before an attempt. */
+  checkTaskReferences?: (project: Project, task: Task) => string | null;
+  taskReferenceContext?: (project: Project, task: Task) => string;
   /**
    * B42: verifies the exact Figma references in a task through the model that
    * is about to author it. Production keeps any positive cache inside the

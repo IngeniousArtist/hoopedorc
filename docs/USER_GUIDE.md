@@ -1315,3 +1315,46 @@ existing evidence until expiry. Expired/missing evidence is never treated as a p
 Use **Reference in repair**, describe the correction and **Add repair to plan**.
 Your unsent planning message is preserved. Review/send the follow-up there; this
 handoff does not start a model, change a task or approve a merge.
+
+### Project Library
+
+Use **Library** to keep design documents, rules, tokens, component/Storybook
+links, framework docs, Figma nodes, screenshot pointers and skill references.
+**New reference** stores text and source metadata; it does not fetch a URL, read
+a supplied path, or install/activate a tool. For images, upload through Plan's
+existing attachment control, then import or record the attachment path here.
+An existing component library remains a useful source alongside Figma.
+
+**Import existing sources** snapshots root AGENTS.md/CLAUDE.md/DESIGN.md/brand.md
+and safe text attachments, and indexes existing Figma and legacy task handoffs.
+Original files and tasks stay untouched. Binary attachments remain unverified
+pointers. Import reports unreadable/oversized/unsafe sources and bounds; repeating
+it leaves unchanged entries alone. Manually edited or archived imported entries
+are preserved rather than replaced on the next import.
+
+Each edit creates a revision; **Version history** retains old snapshots. Source
+versions are observed hashes when imported, otherwise operator-supplied or unknown.
+**Archive** stops new selections while preserving history and existing pinned
+tasks. The Library supports 200 entries/project, 50 revisions/entry, 32 KiB text
+per revision and 10 MiB total history. Limit refusals preserve existing data.
+
+Select at most 20 relevant revisions (64 KiB text total), then **Add selected to
+plan**. This appends to your unsent message; review and send it yourself. The
+planner is instructed to retain exact `hoop-reference` markers in each applicable
+task. Author and validator receive the same selected snapshots. Unselected Library
+content is not automatically loaded; harness discovery of repository instructions
+and installed tools is a separate capability policy. A task's **Referenced by**
+listing identifies its marker, not proof it read or obeyed that source.
+
+Give mutually exclusive alternatives the same **Alternative source group**.
+Selecting competing sources, multiple versions of one source, or a missing
+reference is refused before author work begins. Inspect the task's reference
+markers, choose an alternative/revision and Retry; existing work is preserved.
+The app does not infer every semantic contradiction. Task requirements take
+precedence, followed by project rules, existing components/code, design system
+and defaults; report unresolved contradictions in the brief.
+
+Failed saves retain the editor and its request identity. Unsaved edits survive
+navigation in the same browser session; a storage failure is shown inline.
+A stale-save refusal requires inspecting the latest source and reconciling the
+draft explicitly. Stored reference revisions are backed up with SQLite.

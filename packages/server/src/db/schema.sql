@@ -428,3 +428,20 @@ CREATE TABLE IF NOT EXISTS review_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_review_artifact_evidence ON review_artifacts(evidence_id);
 CREATE INDEX IF NOT EXISTS idx_review_artifact_expiry ON review_artifacts(expires_at);
+
+-- VW11: immutable project source revisions and idempotent write receipts.
+CREATE TABLE IF NOT EXISTS library_versions (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  reference_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  json TEXT NOT NULL,
+  PRIMARY KEY (project_id, reference_id, revision)
+);
+CREATE TABLE IF NOT EXISTS library_writes (
+  request_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  reference_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  request_hash TEXT NOT NULL,
+  FOREIGN KEY (project_id, reference_id, revision) REFERENCES library_versions(project_id, reference_id, revision) ON DELETE CASCADE
+);

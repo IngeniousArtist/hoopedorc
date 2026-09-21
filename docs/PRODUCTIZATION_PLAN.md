@@ -7362,8 +7362,8 @@ existing Figma integration, gates/validation, accounting, and Telegram. Improve
 the user journey and failure handling, then extend capabilities incrementally.
 Small tasks and large briefs share the same execution system.
 
-**Next after VW10 merge:** VW11 (project design/reference library), starting from
-the reviewed VW01–VW10 result. Consult the focused plan's dependency table for
+**Next after VW11 merge:** VW12 (selective skills/plugins/MCP activation), starting from
+the reviewed VW01–VW11 result. Consult the focused plan's dependency table for
 subsequent items. Do not start by replacing the scheduler or adding
 all future schemas. Use one scoped branch/PR per coherent change; split larger
 work packages into backward-compatible contract/backend/UI steps as needed.
@@ -7379,8 +7379,8 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW07 | Propose/apply plan revisions during execution | Implemented | [PR #273](https://github.com/IngeniousArtist/hoopedorc/pull/273); see VW07 acceptance record below and PR checks for CI/merge evidence |
 | VW08 | Workspace inventory and read-only code inspection | Implemented | [PR #274](https://github.com/IngeniousArtist/hoopedorc/pull/274); see VW08 acceptance record below; PR records required CI/merge evidence |
 | VW09 | Managed environments and preview lifecycle | Implemented; AWS validation deferred | [#275](https://github.com/IngeniousArtist/hoopedorc/pull/275): native task preview ownership and separate-origin authenticated proxy |
-| VW10 | Full review workbench and browser evidence | Implemented; required CI/merge pending | Full review workspace, supervised Chromium evidence, authenticated retained artifacts; acceptance evidence below |
-| VW11 | Project design/reference library | Not started | — |
+| VW10 | Full review workbench and browser evidence | Done; merged and verified | [PR #276](https://github.com/IngeniousArtist/hoopedorc/pull/276), CI `35599020994`, merge `629cb7d`; acceptance evidence below |
+| VW11 | Project design/reference library | Implemented; CI/merge pending | Versioned sources, selective handoff, preserved legacy references; focused evidence below |
 | VW12 | Selective skills, plugins, and MCP activation | Not started | — |
 | VW13 | Shared account pools and resource allocation | Not started | — |
 | VW14 | Verified isolated agent execution profiles | Not started | — |
@@ -8401,3 +8401,63 @@ phone interaction input was fixed and protected by a width assertion. The final
 browser run passed both scenarios in 14.7s. Required remote CI and merged-tree
 verification are recorded with the merge audit; no paid model, Telegram or AWS
 call was made. Comprehensive local regression remains deferred until plan end.
+
+**Merge audit:** PR #276 passed required `build-and-test` in CI run
+[35599020994](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35599020994).
+Tested head `7a6e60f0bf16e48485cddaf217e92d9ae1e5d921` merged as
+`629cb7df1289a10e40ec0c0bb333b62dd10908c6`. Independent comparison found identical
+tested/merged trees, tracked-clean main, and zero divergence from origin/main.
+The pre-existing untracked dependency directory was preserved.
+
+### VW11 — project reference library
+
+**Acceptance criteria before implementation:** add a project Library for rules,
+design documents, tokens, components, framework docs, optional Figma/screenshots
+and skill references. Immutable revisions record source, provenance, content
+hash, applicability and optional conflict group. Save uses optimistic revision
+checks and idempotent request IDs; archive preserves history. Metadata lists do
+not automatically inject content into any model call.
+
+An explicit, bounded selection enters the existing planning composer with
+pinned reference tokens. Authors and validators resolve the same immutable
+selected revisions. Missing references, multiple revisions of one source, or
+selected conflicting alternatives block before consuming an author attempt.
+Show task token usage as referenced, not proof the agent read or followed it.
+Explain precedence: task requirements, project rules, existing components/code,
+design system, defaults. Operator conflict groups expose known contradictions;
+this feature does not claim semantic contradiction detection.
+
+Explicit legacy import safely snapshots root guidance and text attachments,
+indexes existing Figma/attachment sources and Markdown task handoffs, preserves
+original files/tasks, and reports unavailable/oversized/unsafe sources. Repeated
+import is idempotent; changed content creates a revision. External URLs are
+recorded without fetching. No-Figma projects make no Figma probes.
+
+UI covers empty/loading/error, preserved edits, stale-save refusal, history,
+inline archive confirmation, import results, selection conflicts and draft-safe
+handoff at five widths. Dependencies: VW03/VW04/VW08 and existing Markdown task
+handoffs. Capability installation/activation remains VW12; no new scheduler,
+automatic repository edits, paid calls or AWS deployment. Focused local checks
+and required CI apply; comprehensive local regression remains deferred.
+
+**Implementation/focused evidence:** immutable SQLite source revisions and
+transactional request receipts, metadata/detail/import/handoff routes, project
+Library UI, conflict refusal and the existing author/validator integration are
+implemented. Existing Markdown and files remain unchanged. Source snapshots and
+task markers distinguish recorded references from verified tool access. Unsaved
+editor drafts survive navigation in the browser session; errors preserve edits.
+
+Seven focused server tests passed (five Library tests plus route/contract checks),
+including real Git import, unchanged/changed reimport, symlink/size refusal,
+history, idempotency, archive, project ownership and conflict policy. Three
+focused VW11 engine tests passed: refusal before an attempt without deleting an
+existing worktree, selected author context, and matching validator context.
+Eleven focused web/deep-link tests passed. The real-browser Library journey
+passed at 360/390/768/1280/1440px with no document overflow, contained fixed
+surfaces, phone touch targets and keyboard handoff. Screenshots at 390/1440px
+were inspected. The journey covers legacy import, creation/edit/history, plan
+draft preservation, archive refusal and navigation-safe unsaved edits.
+Affected typechecks/builds, focused lint (new files warning-free; existing
+baseline findings unchanged) and `git diff --check` passed. Required CI and
+merged-tree verification follow in the merge audit. No live model/Figma/MCP,
+Telegram or AWS action was performed; AWS remains owner-deferred.

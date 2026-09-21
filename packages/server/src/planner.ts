@@ -258,7 +258,9 @@ Rules for each task:
   constraints/edge cases, and relevant existing code paths so the author does not need the planning
   transcript to understand the work. When applicable, end the description with these exact Markdown
   subsections (omit either entire subsection when it has no entries):
-  - "### Relevant references": only the exact sources this task must inspect — for example
+  - "### Relevant references": preserve exact hoop-reference:<id>@<revision> tokens from
+    explicitly selected Library entries in each applicable task; never invent or rewrite a token.
+    Include only the exact sources this task must inspect — for example
     "docs/PRD.md — Authentication / Login", "docs/specs/auth.md — Session rotation", or
     "context/attachments/login-copy.md". Preserve exact paths, PRD headings, attachment names, and
     external design links from the conversation/prior context/repository; do not invent pointers or

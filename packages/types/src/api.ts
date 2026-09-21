@@ -212,6 +212,44 @@ export interface TaskReviewResponse {
 }
 export interface ReviewEvidenceResponse { evidence: ReviewEvidence }
 
+export type ReferenceKind = "rules" | "design" | "tokens" | "component" | "framework" | "figma" | "screenshot" | "skill" | "reference";
+export interface ReferenceSource {
+  type: "text" | "url" | "repository" | "attachment" | "legacy-task";
+  locator: string;
+  /** Observed hash/commit or an explicitly operator-supplied version. */
+  revision?: string;
+}
+export interface ReferenceInput {
+  title: string;
+  kind: ReferenceKind;
+  source: ReferenceSource;
+  applicability: string;
+  conflictGroup: string;
+  content: string;
+  archived: boolean;
+}
+export interface LibraryReference extends ReferenceInput {
+  id: string;
+  projectId: string;
+  revision: number;
+  contentSha: string;
+  createdAt: string;
+  provenance: "operator" | "legacy-import";
+}
+export interface LibraryEntry extends Omit<LibraryReference, "content"> {
+  contentBytes: number;
+  referencedByTasks: { id: string; title: string; revisions: number[] }[];
+  conflictsWith: string[];
+}
+export interface LibraryResponse { entries: LibraryEntry[] }
+export interface LibraryDetailResponse { reference: LibraryReference; versions: LibraryReference[] }
+export interface SaveLibraryReferenceRequest { requestId: string; expectedRevision: number; reference: ReferenceInput }
+export interface SaveLibraryReferenceResponse { reference: LibraryReference }
+export interface LibrarySelection { id: string; revision: number }
+export interface LibraryHandoffRequest { references: LibrarySelection[] }
+export interface LibraryHandoffResponse { markdown: string }
+export interface ImportLibraryResponse { imported: number; unchanged: number; issues: string[] }
+
 export interface DeleteProjectResponse {
   ok: true;
 }
@@ -913,6 +951,11 @@ export const ROUTES = {
   uploadReviewEvidence: "POST /api/projects/:id/tasks/:taskId/review/evidence",
   cancelReviewCapture: "POST /api/projects/:id/tasks/:taskId/review/evidence/:evidenceId/cancel",
   reviewArtifact: "GET /api/projects/:id/tasks/:taskId/review/artifacts/:artifactId",
+  projectLibrary: "GET /api/projects/:id/library",
+  libraryReference: "GET /api/projects/:id/library/:referenceId",
+  saveLibraryReference: "PUT /api/projects/:id/library/:referenceId",
+  importProjectLibrary: "POST /api/projects/:id/library/import",
+  libraryHandoff: "POST /api/projects/:id/library/handoff",
   updateProject: "PATCH /api/projects/:id",
   deleteProject: "DELETE /api/projects/:id",
   planProject: "POST /api/projects/:id/plan",
