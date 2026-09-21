@@ -7376,7 +7376,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW04 | Project navigation, compact board/list, task inspector | Done (merged and reviewed 2026-09-21) | Part 1: [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268) → main `88ca12b`, PR CI passed, main CI run [35571774985](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35571774985) passed. Part 2 and VW01–VW04 recovery review: [PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269) → main `9d2e270`; required exact-head CI passed; see the review/merge record below |
 | VW05 | Organize existing settings and setup | Implemented | [PR #271](https://github.com/IngeniousArtist/hoopedorc/pull/271); see VW05 acceptance record below and PR checks for required CI/merge evidence |
 | VW06 | Durable planning operations and planning workbench | Implemented | [PR #272](https://github.com/IngeniousArtist/hoopedorc/pull/272), merged as `0e84781`; required CI passed; see VW06 acceptance record below |
-| VW07 | Propose/apply plan revisions during execution | Implemented | See VW07 acceptance record below; PR checks record CI/merge evidence |
+| VW07 | Propose/apply plan revisions during execution | Implemented | [PR #273](https://github.com/IngeniousArtist/hoopedorc/pull/273); see VW07 acceptance record below and PR checks for CI/merge evidence |
 | VW08 | Workspace inventory and read-only code inspection | Not started | — |
 | VW09 | Managed environments and preview lifecycle | Not started | — |
 | VW10 | Full review workbench and browser evidence | Not started | — |
@@ -8224,6 +8224,14 @@ retained active work, and disabled apply while execution is active. Types,
 server/web typechecks/builds, changed-file lint with unchanged baseline counts,
 and whitespace checks passed. Required remote CI/merge evidence is recorded in
 the PR; no required check is bypassed.
+
+**CI integration correction:** run `35587208239` passed build, typecheck, lint,
+and repository tests, then exposed shared mock-state pollution: the new browser
+scenario left its project behind, making later responsive Delete selectors
+ambiguous. The scenario now deletes only its own project in `finally` and
+asserts the route's 204 response. A focused run of the VW07 scenario followed by
+the affected 360px editing workflow passed (2/2); changed-file lint and whitespace
+checks passed. Required CI is rerun on the corrected PR head before merge.
 
 **Limits:** application uses an explicit pause/settle/re-review boundary; it does
 not hot-swap prompts, cancel tasks, resume execution automatically, or rebase
