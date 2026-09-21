@@ -201,6 +201,8 @@ export interface ReviewEvidence {
   artifacts: ReviewArtifact[];
 }
 export interface TaskReviewResponse {
+  /** Environment preference; legacy projects default to web. */
+  output?: import("./environment").EnvironmentProfile["output"];
   task: Task;
   runs: Run[];
   decisions: MergeDecision[];

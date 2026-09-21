@@ -8764,3 +8764,30 @@ The same review wires explicit worker-verification requests into the existing
 request-cancellation/shutdown registry, so they settle through the standard
 HTTP lifecycle before SQLite closes. Native health/planning cancellation keeps
 its existing owner; no second shutdown manager is introduced.
+
+### VW16 — portable environment profiles (implementation acceptance)
+
+Dependencies VW09/VW10 are merged. This item keeps setup, worktree, preview,
+review artifacts and scheduler ownership in their existing layers.
+
+- Add explicit, portable project runtime/platform requirements and structured
+  argument arrays for every validation gate. Legacy setup/gate/preview config
+  remains compatible; a configured command that fails or is missing fails closed.
+- Provide reviewable Node web and Python standard-library backend presets.
+  Presets explain the commands they replace, retain unrelated project settings,
+  and do not silently install frameworks, services or authenticated tools.
+- Probe the selected runtime in the actual gate/setup environment before task
+  model work. Setup health explains unsupported host/runtime combinations. A
+  Linux container cannot satisfy a macOS-only profile. Runtime evidence records
+  the observed version; setup reuse binds to that identity and declared inputs.
+- Reuse existing preview/readiness for web output and Review artifacts for batch
+  output. Managed databases/services, Windows hosts, native simulators and new
+  package managers are non-goals; do not advertise them as verified.
+- Exercise a real Python backend fixture through worktree setup, command arrays,
+  failure/retry, cancellation/settlement, fresh manager/restart, retained output
+  and cleanup. Cover API normalization, legacy preservation and the visual
+  preset/edit/save states at the five required widths. No provider call is needed
+  for repository setup; existing invocation accounting stays authoritative.
+- Publish exact tested combinations only. AWS and provider-powered journeys are
+  owner-deferred/pending. Focused local checks now; comprehensive local suite
+  after VW18 and full required GitHub CI before merge.

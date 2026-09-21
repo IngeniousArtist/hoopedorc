@@ -90,3 +90,12 @@ it("keeps load errors distinct from empty evidence and ignores a response for an
   expect(screen.queryByText("Expected text did not appear")).not.toBeInTheDocument();
   expect(screen.queryByText(/No evidence recorded yet/)).not.toBeInTheDocument();
 });
+
+it("VW16: artifact output keeps diagnostics available without opening an unusable preview", async () => {
+  mock.mockImplementation(async (key) => key === "taskReview" ? { ...context, output: "artifacts" } : response(key));
+  render(<ReviewView projectId="p" taskId="t" onSelectTask={select} onAddToPlan={handoff} />);
+  expect(await screen.findByRole("button", { name: "Artifacts", exact: true })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Browser check unavailable for artifact output" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Read diagnostics" })).toBeVisible();
+  expect(mock.mock.calls.some(([key]) => key === "workspacePreview")).toBe(false);
+});

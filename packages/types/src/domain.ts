@@ -271,6 +271,7 @@ export interface PreviewProfile {
 }
 
 export interface ProjectConfig {
+  environment?: import("./environment").EnvironmentProfile;
   /** Explicit native task preview. {port}/{host} are server-owned placeholders. */
   preview?: PreviewProfile;
   /**
@@ -285,6 +286,8 @@ export interface ProjectConfig {
     args: string[];
   };
   gates?: {
+    /** Explicit commands take precedence over legacy script/testCommand fields. */
+    commands?: Partial<Record<import("./environment").ValidationSlot, import("./environment").ProjectCommand | false>>;
     /**
      * npm script name to run for each gate slot; falls back to the slot's
      * own name ("typecheck"/"lint"/"build"/"test") when unset. Set to
@@ -462,6 +465,8 @@ export interface LogEvent {
 
 /** Objective pre-merge gates. ALL must pass for an auto-merge. */
 export interface GateResult {
+  /** Actual gate runtime, not just the requested sandbox policy. */
+  environment?: string;
   typecheck: boolean;
   lint: boolean;
   build: boolean;

@@ -1,3 +1,4 @@
+import { parseEnvironmentProfile, parseProjectCommand } from "@orc/types";
 import { execFile } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
 import {
@@ -53,6 +54,12 @@ export function parseProjectConfig(
   }
   const raw = input as Record<string, unknown>;
   const value: ProjectConfig = {};
+
+  if (raw.environment !== undefined) {
+    const parsed = parseEnvironmentProfile(raw.environment);
+    if ("error" in parsed) return parsed;
+    value.environment = parsed.value;
+  }
 
   if (raw.preview !== undefined) {
     const parsed = parsePreviewProfile(raw.preview);
@@ -120,6 +127,16 @@ export function parseProjectConfig(
           `config.gates.${key} must be a non-empty script name ` +
           `(<=100 chars) or false`,
       };
+    }
+    if (rawGates.commands !== undefined) {
+      if (!rawGates.commands || typeof rawGates.commands !== "object" || Array.isArray(rawGates.commands)) return { error: "config.gates.commands must be an object" };
+      gates.commands = {};
+      for (const [key, command] of Object.entries(rawGates.commands)) {
+        if (!["typecheck", "lint", "build", "tests"].includes(key)) return { error: "Unknown validation slot" };
+        const parsed = command === false ? { value: false as const } : parseProjectCommand(command);
+        if ("error" in parsed) return { error: `config.gates.commands.${key}: ${parsed.error}` };
+        gates.commands[key as keyof typeof gates.commands] = parsed.value;
+      }
     }
     if (rawGates.testCommand !== undefined) {
       if (
