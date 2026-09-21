@@ -7,7 +7,7 @@ import type { ReviewPlanChangesRequest } from "@orc/types";
 import { defaultSettings } from "./config";
 import { initDb } from "./db/index";
 import * as repo from "./db/repo";
-import { assertPlanChangeCurrent, getPlanChange, pendingPlanChange, reviewPlanChanges } from "./plan-changes";
+import { assertPlanChangeCurrent, getPlanChange, latestPlanChange, pendingPlanChange, reviewPlanChanges } from "./plan-changes";
 import { commitPlanningDraft } from "./planning-commit";
 
 function fixture(path = ":memory:") {
@@ -71,8 +71,11 @@ test("VW07: application reserves one durable owner and blocks writes until atomi
     const apply = () => commitPlanningDraft(f.db, f.project, { ...review.input, review }, f.settings, "planner", true, () => {}, {
       git: { async commitFiles() { commits++; await held; } }, recordArchive: () => ({ ok: true }),
     });
+    const newer = reviewPlanChanges(f.db, "p", f.input, f.settings);
+    assert.equal(latestPlanChange(f.db, "p", f.input.revisionId)?.id, newer.id);
     const first = apply(); const duplicate = apply();
     assert.equal(pendingPlanChange(f.db, "p"), true);
+    assert.equal(latestPlanChange(f.db, "p", f.input.revisionId)?.id, review.id, "reopening must find the actual pending owner, even if another review was prepared later");
     assert.throws(() => repo.updateTask(f.db, "pending", { title: "Racing edit" }), /application is pending/);
     assert.throws(() => repo.createTask(f.db, { ...f.task, id: "racing" }), /application is pending/);
     assert.throws(() => f.db.prepare("DELETE FROM tasks WHERE id = 'pending'").run(), /application is pending/);

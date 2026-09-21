@@ -18,7 +18,7 @@ export function getPlanChange(db: Db, projectId: string, id: string): PlanChange
 }
 
 export function latestPlanChange(db: Db, projectId: string, revisionId: string): PlanChangeReview | null {
-  const row = db.prepare("SELECT id FROM plan_change_reviews WHERE project_id = ? AND revision_id = ? ORDER BY rowid DESC LIMIT 1")
+  const row = db.prepare("SELECT id FROM plan_change_reviews WHERE project_id = ? AND revision_id = ? ORDER BY (state = 'applying') DESC, rowid DESC LIMIT 1")
     .get(projectId, revisionId) as { id: string } | undefined;
   return row ? getPlanChange(db, projectId, row.id) : null;
 }
