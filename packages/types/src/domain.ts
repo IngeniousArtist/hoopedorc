@@ -792,3 +792,7 @@ export function pickAssignedModel(
   }
   return routing.byDifficulty[difficulty];
 }
+/** VW06: server-owned planning work; retry starts a new, linked operation. */
+export type PlanningOperationState =
+  | "queued" | "running" | "cancelling"
+  | "succeeded" | "failed" | "interrupted" | "cancelled";

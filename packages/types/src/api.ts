@@ -9,6 +9,7 @@ import type {
   MergeDecision,
   ModelId,
   Notification,
+  PlanningOperationState,
   Project,
   ProjectConfig,
   Role,
@@ -125,6 +126,12 @@ export interface PlanChatRequest {
   /** O3: immutable server-issued id for this editable planning revision. */
   revisionId: string;
   messages: PlanChatMessage[];
+  /** VW06: compare-and-swap version; optional for older synchronous clients. */
+  sessionVersion?: number;
+  /** Client UUID: repeating the exact request returns the same operation. */
+  operationId?: string;
+  /** Return 202 PlanOperationResponse immediately instead of waiting for a result. */
+  background?: boolean;
 }
 
 /**
@@ -162,6 +169,7 @@ export interface RepositoryDriftDetails {
 }
 
 export interface PlanChatResponse {
+  sessionVersion?: number;
   /** The planner's conversational reply to the latest user turn. */
   reply: string;
   /** USD spent on this single turn (also recorded against the project). */
@@ -201,10 +209,7 @@ export interface DraftTask {
   generatedTaskKind?: "visual-qa";
 }
 
-export interface PlanDeconstructRequest {
-  /** O3: immutable server-issued id for this editable planning revision. */
-  revisionId: string;
-  messages: PlanChatMessage[];
+export interface PlanDeconstructRequest extends PlanChatRequest {
   /**
    * Explicit screenshot fallback after a typed live-node failure. Exact node
    * URLs remain in chat history but are not promoted into task fidelity.
@@ -260,6 +265,7 @@ export interface FigmaVerificationFailureDetails {
 }
 
 export interface PlanDeconstructResponse {
+  sessionVersion?: number;
   prdMarkdown: string;
   tasks: DraftTask[];
   costUsd: number;
@@ -274,6 +280,7 @@ export interface PlanDeconstructResponse {
 }
 
 export interface PlanCommitRequest {
+  sessionVersion?: number;
   /** O3: idempotency key returned by PlanningSessionResponse. */
   revisionId: string;
   prdMarkdown: string;
@@ -297,6 +304,10 @@ export interface PlanCommitResponse {
 
 /** Persisted planning state for a project — fetched on Plan page load. */
 export interface PlanningSessionResponse {
+  /** VW06: changes whenever transcript/brief/task draft changes. */
+  sessionVersion?: number;
+  /** Most recent operation for this revision; null when none has started. */
+  operation?: PlanningOperation | null;
   /** O3: server-issued id reused by every write/retry for this revision. */
   revisionId: string;
   messages: PlanChatMessage[];
@@ -327,6 +338,7 @@ export interface ListPlanSessionArchivesResponse {
 }
 
 export interface SaveDraftRequest {
+  sessionVersion?: number;
   /** O3: immutable server-issued id for this editable planning revision. */
   revisionId: string;
   prdMarkdown: string;
@@ -335,7 +347,27 @@ export interface SaveDraftRequest {
 }
 export interface SaveDraftResponse {
   ok: true;
+  sessionVersion?: number;
 }
+
+/** Durable status: polling is authoritative even when WebSocket updates are missed. */
+export interface PlanningOperation {
+  id: string;
+  projectId: string;
+  revisionId: string;
+  kind: "chat" | "deconstruct";
+  state: PlanningOperationState;
+  input: PlanDeconstructRequest;
+  retryOf?: string;
+  createdAt: string;
+  startedAt?: string;
+  endedAt?: string;
+  result?: PlanChatResponse | PlanDeconstructResponse;
+  error?: { message: string; status: number; code?: string; details?: unknown };
+  invocationIds: string[];
+}
+
+export interface PlanOperationResponse { operation: PlanningOperation }
 
 /**
  * F27: a file uploaded from PlanView as planning context — stored at
@@ -700,6 +732,9 @@ export const ROUTES = {
   planProject: "POST /api/projects/:id/plan",
   planChat: "POST /api/projects/:id/plan/chat",
   planDeconstruct: "POST /api/projects/:id/plan/deconstruct",
+  planOperation: "GET /api/projects/:id/plan/operations/:operationId",
+  planOperationRetry: "POST /api/projects/:id/plan/operations/:operationId/retry",
+  planOperationCancel: "POST /api/projects/:id/plan/operations/:operationId/cancel",
   planCommit: "POST /api/projects/:id/plan/commit",
   planSession: "GET /api/projects/:id/plan/session",
   planSessionArchives: "GET /api/projects/:id/plan/sessions",

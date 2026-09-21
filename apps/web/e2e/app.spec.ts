@@ -572,7 +572,7 @@ test.describe.serial("critical operator workflows", () => {
     await page
       .getByRole("button", { name: /Generate task table →|Re-generate task table/ })
       .click();
-    expect((await deconstructed).status()).toBe(200);
+    expect((await deconstructed).status()).toBe(202);
     await expect(page.getByLabel("Task 1 title")).toHaveValue(
       "Implement: Add an API health endpoint.",
     );
@@ -666,7 +666,7 @@ test.describe.serial("critical operator workflows", () => {
     await page
       .getByRole("button", { name: /Generate task table →|Re-generate task table/ })
       .click();
-    expect((await deconstructed).status()).toBe(200);
+    expect((await deconstructed).status()).toBe(202);
     await expect(page.getByRole("button", { name: "Re-generate task table" })).toBeEnabled();
     const firstTitle = page.getByLabel("Task 1 title");
     await expect(firstTitle).toHaveValue("Implement: Add an API health endpoint.");

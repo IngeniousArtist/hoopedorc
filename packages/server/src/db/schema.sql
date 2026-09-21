@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS projects (
   planning_agents_md    TEXT,   -- AGENTS.md draft from last deconstruct (F38, user-editable)
   planning_figma_refs   TEXT,   -- JSON VerifiedFigmaReference[] (F52, small session scratch)
   planning_repository   TEXT,   -- JSON RepositoryInspection (VW03, session scratch; cleared at commit)
+  planning_version      INTEGER NOT NULL DEFAULT 0,
   planning_revision_id  TEXT,   -- O3: immutable id for the current editable planning revision
   config                TEXT,   -- JSON ProjectConfig (F9): gate/retry/merge-policy overrides
   task_generation       INTEGER NOT NULL DEFAULT 0, -- O35: monotonic scheduler reconciliation version
@@ -339,3 +340,28 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail     TEXT             -- optional JSON blob
 );
 CREATE INDEX IF NOT EXISTS idx_audit_project ON audit_log(project_id);
+
+-- VW06: immutable requests and atomic transcript/draft finalization.
+CREATE TABLE IF NOT EXISTS planning_operations (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  revision_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('chat', 'deconstruct')),
+  state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'cancelling', 'succeeded', 'failed', 'interrupted', 'cancelled')),
+  input_json TEXT NOT NULL,
+  retry_of TEXT UNIQUE REFERENCES planning_operations(id),
+  result_json TEXT,
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  ended_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_planning_operations_active
+  ON planning_operations(project_id) WHERE state IN ('queued', 'running', 'cancelling');
+CREATE INDEX IF NOT EXISTS idx_planning_operations_revision
+  ON planning_operations(project_id, revision_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS planning_operation_invocations (
+  operation_id TEXT NOT NULL REFERENCES planning_operations(id) ON DELETE CASCADE,
+  invocation_id TEXT NOT NULL UNIQUE REFERENCES model_invocations(id) ON DELETE CASCADE,
+  PRIMARY KEY (operation_id, invocation_id)
+);

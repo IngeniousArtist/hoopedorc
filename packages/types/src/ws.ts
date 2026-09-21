@@ -1,4 +1,5 @@
 // WebSocket contract for realtime updates (live logs, board changes, alerts).
+import type { PlanningOperation } from "./api";
 
 import type {
   CostRecord,
@@ -32,6 +33,7 @@ export type ProjectSnapshot = {
 
 /** Server -> client events, pushed over the WS connection at WS_PATH. */
 export type ServerEvent =
+  | { type: "planning.updated"; payload: PlanningOperation }
   | { type: "log"; payload: LogEvent }
   | { type: "task.updated"; payload: Task }
   | { type: "run.updated"; payload: Run }

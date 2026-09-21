@@ -94,6 +94,49 @@ one session visit, including A → B → A navigation; composer/failed-turn stat
 is held per project in memory. A `beforeunload` guard is registered only while a turn is unsent or edits
 are unsaved.
 
+VW06 makes chat/deconstruction server-owned operations. Both routes accept an
+optional client UUID `operationId`, optimistic `sessionVersion`, and
+`background: true`. Background callers receive `202 PlanOperationResponse`;
+legacy callers still await their original result or error. Closing the HTTP
+connection does not cancel either form after acceptance. The same ID and exact
+input replay the original operation without another model call; changed input
+is `409`. `plan/session` returns the current `sessionVersion` and latest
+revision-scoped `operation`. The project-scoped operation GET returns its
+immutable input, state, timestamps, result/error, retry lineage, and invocation
+IDs. Background execution failures are persisted in `operation.error`
+(`message`, `status`, optional `code`/`details`), including existing repository
+and Figma capability details; they do not turn an accepted `202` into success.
+
+`planning_operations` has one active row per project enforced by a partial
+unique index. States are `queued`, `running`, `cancelling`, `succeeded`,
+`failed`, `interrupted`, and `cancelled`. Cancel is idempotent and holds
+ownership in `cancelling` until the managed process group settles. Explicit
+retry of a failed/interrupted/cancelled operation creates a new attempt; a
+unique `retry_of` constraint makes repeated retry requests return the same
+child. Retry requires the original draft version to remain current. Startup
+marks unfinished operations interrupted once, preserving input and prior
+session contents, without automatically spawning another CLI. Invocation
+ledger rows and operation links are written together, including zero-cost
+calls. Session updates and successful operation results finalize in one SQLite
+transaction; readable chat archives remain best effort, unlike approval's
+required archive/commit boundary.
+
+The updated workbench echoes `sessionVersion` on chat, deconstruct, save, and
+approval. The version increments with transcript/PRD/task/guidance changes.
+Stale requests receive `409 PLANNING_STALE`; optional versions retain legacy
+client compatibility, so this is not a mandatory lock for older clients.
+An existing approval receipt remains replayable independently of version.
+Active operations refuse draft saves, approval, attachment mutations, project
+deletion, and execution/dispatch/rollback; active execution refuses planning.
+The legacy one-shot `/plan` route excludes concurrent durable planning but
+retains its existing request-bound lifetime.
+
+VW06 extends VW02's local recovery: generation first saves any visible edited
+draft. Navigation reconnects to accepted work without resubmitting it. A
+conflicting unsaved draft is preserved as a readable recovery copy while the
+current server session loads; it is never automatically written over newer
+content. Local recovery copies still live only in browser memory.
+
 VW03 grounds planning in the repository that actually exists. Before every
 planner call, `PlanningService.inspect` reads the primary clone (production:
 `ensureClone` then `GitServiceImpl.describeRepository`, a read-only branch/HEAD/
@@ -589,8 +632,11 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `updateProject` | `PATCH /api/projects/:id` | `UpdateProjectRequest` → `UpdateProjectResponse` |
 | `deleteProject` | `DELETE /api/projects/:id` | → `DeleteProjectResponse` |
 | `planProject` | `POST /api/projects/:id/plan` | `PlanProjectRequest` → `PlanProjectResponse` |
-| `planChat` | `POST /api/projects/:id/plan/chat` | `PlanChatRequest` (incl. O3 `revisionId`) → `PlanChatResponse` (VW03: optional `repository`; `503 REPOSITORY_UNAVAILABLE`) |
-| `planDeconstruct` | `POST /api/projects/:id/plan/deconstruct` | `PlanDeconstructRequest` (incl. O3 `revisionId`) → `PlanDeconstructResponse` (incl. F38's `agentsMd`; F52 optionally returns `verifiedFigmaReferences`, or typed 409 capability details; VW03: optional `repository`, `503 REPOSITORY_UNAVAILABLE`) |
+| `planChat` | `POST /api/projects/:id/plan/chat` | `PlanChatRequest` (incl. O3 `revisionId`) → `PlanChatResponse`, or `202 PlanOperationResponse` with `background: true` (VW03: optional `repository`; `503 REPOSITORY_UNAVAILABLE`) |
+| `planDeconstruct` | `POST /api/projects/:id/plan/deconstruct` | `PlanDeconstructRequest` (incl. O3 `revisionId`) → `PlanDeconstructResponse`, or `202 PlanOperationResponse` with `background: true` (incl. F38's `agentsMd`; F52 optionally returns `verifiedFigmaReferences`, or typed 409 capability details; VW03: optional `repository`, `503 REPOSITORY_UNAVAILABLE`) |
+| `planOperation` | `GET /api/projects/:id/plan/operations/:operationId` | → `PlanOperationResponse` |
+| `planOperationRetry` | `POST /api/projects/:id/plan/operations/:operationId/retry` | → `202 PlanOperationResponse` (idempotent child retry) |
+| `planOperationCancel` | `POST /api/projects/:id/plan/operations/:operationId/cancel` | → `202 PlanOperationResponse` (cancelling until settled) |
 | `planCommit` | `POST /api/projects/:id/plan/commit` | `PlanCommitRequest` (incl. O3 `revisionId`; VW03 optional `acknowledgeRepositoryDrift`) → replayable `PlanCommitResponse`, or `409 REPOSITORY_DRIFT` with `RepositoryDriftDetails` |
 | `planSession` | `GET /api/projects/:id/plan/session` | → `PlanningSessionResponse` (incl. O3 `revisionId`, F38's `agentsMd`, F52's optional verified Figma list, and VW03's optional `repository`) |
 | `planSessionArchives` | `GET /api/projects/:id/plan/sessions` | → `ListPlanSessionArchivesResponse` |
@@ -637,11 +683,11 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 Server → client `ServerEvent`: `log`, `task.updated`, `run.updated`,
 `project.updated`, `project.deleted`, `projects.snapshot`, `merge.decision`,
 `rollback.updated`, `notification`, `notifications.snapshot`, `cost.updated`,
-`cost.snapshot`.
+`cost.snapshot`, `planning.updated`.
 Client → server `ClientEvent`: `subscribe`, `unsubscribe`, `ping`.
 
 Broadcast scoping: `log`/`task.updated`/`run.updated`/`merge.decision`/
-`rollback.updated`/`cost.updated`/`cost.snapshot` only reach clients currently
+`rollback.updated`/`cost.updated`/`cost.snapshot`/`planning.updated` only reach clients currently
 `subscribe`d to that event's `projectId` (`LogEvent`/`Run`/`MergeDecision` all
 carry one).
 `project.updated`, `project.deleted`, `notification`, and
@@ -659,7 +705,9 @@ totalUsd }`. The complete catch-up state is captured and serialization-checked
 synchronously on subscribe, then flow-controlled one frame at a time in the
 order authoritative project-list snapshot (selected project first), bounded
 global notification inbox (including every still-pending approval), cost,
-tasks, and runs. This
+tasks, runs, and the latest operation for the current planning revision.
+`planning.updated` carries a complete `PlanningOperation`; REST remains the
+authoritative fallback if status delivery is interrupted. This
 durable global prefix restores project and approval state missed while the
 socket was offline. Matching broadcasts accepted while that replay is in
 flight queue behind it and drain in order, so no later delta can interleave

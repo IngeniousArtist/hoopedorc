@@ -1,3 +1,4 @@
+import { activePlanningOperation } from "./planning-operations.js";
 import crypto from "node:crypto";
 import type { RepositoryFileWrite } from "@orc/engine";
 import type { DraftTask, Project, Settings, Task } from "@orc/types";
@@ -74,6 +75,7 @@ export function materializeTasks(
 }
 
 export interface PlanningCommitInput {
+  sessionVersion?: number;
   revisionId: string;
   prdMarkdown?: string;
   tasks: DraftTask[];
@@ -301,7 +303,10 @@ async function commitPlanningDraftOwned(
       }
 
       const currentProject = repo.getProject(db, project.id);
-      const currentRevision = repo.getPlanningSession(db, project.id).revisionId;
+      const currentSession = repo.getPlanningSession(db, project.id);
+      const currentRevision = currentSession.revisionId;
+      if (activePlanningOperation(db, project.id)) throw new PlanningCommitError("busy", "planning is active — wait for it to settle before approval");
+      if (!receipt && input.sessionVersion !== undefined && input.sessionVersion !== currentSession.sessionVersion) throw new PlanningCommitError("revision", "The planning session changed. Reload before approving.");
       if (!currentProject) {
         throw new PlanningCommitError("revision", "project no longer exists");
       }

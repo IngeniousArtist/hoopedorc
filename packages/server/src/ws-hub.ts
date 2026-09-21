@@ -48,6 +48,7 @@ function eventProjectId(event: ServerEvent): string | undefined {
     case "cost.snapshot":
     case "merge.decision":
     case "rollback.updated":
+    case "planning.updated":
       return event.payload.projectId;
     case "project.updated":
     case "project.deleted":

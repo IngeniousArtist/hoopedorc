@@ -7346,8 +7346,9 @@ owner later supplies Figma input.
 
 ## Part 14 — Visual development workspace
 
-**Status (2026-09-21):** VW01–VW05 are implemented, including the recovery
-fixes and settings/setup reorganization below. VW06 is the next unstarted item. The
+**Status (2026-09-21):** VW01–VW06 are implemented, including the recovery
+fixes, settings/setup reorganization, and durable planning workbench below.
+VW07 is the next unstarted item. The
 detailed scope, inspected source, research, acceptance criteria, non-goals,
 dependencies, and verification requirements are
 in [VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
@@ -7361,8 +7362,8 @@ existing Figma integration, gates/validation, accounting, and Telegram. Improve
 the user journey and failure handling, then extend capabilities incrementally.
 Small tasks and large briefs share the same execution system.
 
-**Next:** VW06 (durable planning operations and planning workbench), starting from the
-reviewed VW01–VW05 result. Consult the focused plan's dependency table for
+**Next:** VW07 (propose/apply plan revisions during execution), starting from the
+reviewed VW01–VW06 result. Consult the focused plan's dependency table for
 subsequent items. Do not start by replacing the scheduler or adding
 all future schemas. Use one scoped branch/PR per coherent change; split larger
 work packages into backward-compatible contract/backend/UI steps as needed.
@@ -7374,7 +7375,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW03 | Repository-aware planning and truthful task history | Done (merged 2026-09-21) | [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266) → main `9757a91`; PR CI `build-and-test` passed; main CI run [35570272080](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35570272080) passed; see the VW03 acceptance record below |
 | VW04 | Project navigation, compact board/list, task inspector | Done (merged and reviewed 2026-09-21) | Part 1: [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268) → main `88ca12b`, PR CI passed, main CI run [35571774985](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35571774985) passed. Part 2 and VW01–VW04 recovery review: [PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269) → main `9d2e270`; required exact-head CI passed; see the review/merge record below |
 | VW05 | Organize existing settings and setup | Implemented | [PR #271](https://github.com/IngeniousArtist/hoopedorc/pull/271); see VW05 acceptance record below and PR checks for required CI/merge evidence |
-| VW06 | Durable planning operations and planning workbench | Not started | — |
+| VW06 | Durable planning operations and planning workbench | Implemented | See VW06 acceptance record below; PR checks record CI/merge evidence |
 | VW07 | Propose/apply plan revisions during execution | Not started | — |
 | VW08 | Workspace inventory and read-only code inspection | Not started | — |
 | VW09 | Managed environments and preview lifecycle | Not started | — |
@@ -8076,3 +8077,83 @@ that ran passed; the failed check was held for correction before merge.
 `npm run test:e2e -- app.spec.ts --grep 'destructive dialogs preserve settings'`
 then passed locally (one scenario); only that newly affected scenario was
 rerun, plus lint for its file and `git diff --check`.
+
+### VW06 — durable planning operations and planning workbench (2026-09-21)
+
+**Acceptance criteria before implementation:**
+
+- Persist chat/deconstruction operation identity, immutable input, lifecycle,
+  result/error, retry lineage, and invocation links before execution. One active
+  operation per project; an idempotent repeated submission cannot call a model
+  or finalize a transcript/draft twice.
+- A browser disconnect/navigation does not cancel server-owned planning. Session
+  reload and REST/WS status recover its progress/result. Explicit cancellation
+  settles the managed child process before releasing ownership.
+- Restart marks orphaned operations interrupted and leaves their input/draft
+  intact. Retry is explicit and starts a new operation/CLI attempt; it does not
+  pretend to resume a CLI session or automatically spend again. The existing
+  invocation ledger accounts each attempt exactly once, including zero-cost
+  subscription calls. Completed results and session updates finalize atomically.
+- Optimistic session versions reject stale writes from the updated workbench;
+  active operations exclude draft/commit/attachment changes and execution start.
+  Existing synchronous chat/deconstruction callers remain supported.
+- The workbench presents conversation beside an editable brief/task outline on
+  desktop, stacks them on smaller screens, and shows actionable running,
+  cancelling, interrupted, failed, and completed states. Existing repository
+  inspection, Figma fallback, draft saves, approval, and navigation protections
+  remain available. Applying revisions during a run belongs to VW07.
+- Preserve existing rows and user files with idempotent schema upgrades. No new
+  scheduler, paid live-model smoke, AWS change, or automatic restart retry.
+
+**Focused verification:** operation persistence/recovery and route tests,
+planning workbench interaction tests, relevant package typecheck/build,
+changed-file lint, and targeted browser flows across the five required widths.
+Use a managed fake CLI for cancellation/disconnect/restart boundaries; do not
+invoke authenticated models. Full local regression remains deferred by owner
+request; required remote CI must pass before merge.
+
+**Implementation:** SQLite owns each chat/deconstruction request and its
+single active project slot; exact submission and retry replays do not spawn
+another call. Background `202` submission, operation GET/retry/cancel, session
+recovery, and project-scoped WebSocket status share the typed contract. The
+legacy synchronous response remains supported. Atomic version-checked result
+finalization, restart interruption, explicit retry lineage, invocation links,
+and execution/mutation guards protect the existing draft and accounting.
+
+The workbench shows conversation beside an editable brief, project guidance,
+and task outline at desktop widths, stacked on smaller screens. It reconnects
+to server-owned work, reports status-read outages truthfully, confirms
+cancellation inline, and discloses retry as another model attempt. Generation
+saves visible edits first; stale tabs retain a recovery copy rather than
+silently overwriting the current draft. Existing Figma and approval paths remain.
+
+**Focused local evidence (Node 22.23.0):**
+
+- 26 server cases passed across `planning-operations`, `planning-routes`, and
+  `planning-commit`; one additional VW06 WebSocket project-isolation case passed.
+  Coverage includes additive migration, file-backed restart recovery,
+  transaction rollback, exact replay, stale versions, mutation refusals, and
+  two real managed fake-CLI boundaries: disconnected HTTP continues; explicit
+  cancellation settles a grandchild; graceful shutdown/reopen/retry links two
+  distinct ledger attempts even with zero metered cost.
+- 40 distinct web cases passed across PlanView, reliability, repository,
+  operations, and API-client coverage. The new save-version regression caught
+  a missing version in autosave; after fixing it, only the two affected suites
+  were rerun (20 cases), with the other three suites already passing.
+- Three focused Playwright cases passed: the new recovery/stale-tab scenario
+  plus the affected existing VW01/VW02 flows. The new scenario checks
+  360/390/768/1280/1440px overflow/fixed surfaces and phone touch targets.
+  Manual Chrome review confirmed the populated desktop and phone workbench.
+- Types built, affected server/web typechecks and builds passed. Changed-file
+  ESLint retained the exact existing warning counts with no new errors or
+  warnings. `git diff --check` passed. Full local suites were deliberately not
+  repeated under the owner's current-wave policy; required GitHub CI must pass
+  before merge and its exact evidence is recorded in the PR.
+
+**Limits:** restart recovers durable state, not a killed CLI session. Graceful
+shutdown and production systemd control-group ownership settle processes; a
+force-killed local parent can leave an orphaned CLI that the operator must stop
+before retrying. No authenticated model, Telegram, Docker, or EC2/systemd live
+smoke was performed. Existing rows and operator files are preserved. Local
+unsaved/conflict copies remain browser-memory-only. In-run revision application
+is VW07; comprehensive local regression remains deferred until the plan ends.

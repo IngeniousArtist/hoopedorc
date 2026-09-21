@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import type { DraftTask, PlanChatResponse, PlanDeconstructResponse, RepositoryInspection, VerifiedFigmaReference } from "@orc/types";
+import type { PlanOperationResponse, DraftTask, PlanChatResponse, PlanDeconstructResponse, RepositoryInspection, VerifiedFigmaReference } from "@orc/types";
 import { defaultSettings, ENV } from "./config.js";
 import { initDb } from "./db/index.js";
 import * as repo from "./db/repo.js";
@@ -195,6 +195,7 @@ test("VW01: mock planning chat and deconstruction never reach a CLI, a clone, or
     });
     assert.equal(deconstruct.statusCode, 200, deconstruct.body);
     const plan = deconstruct.json<{
+      sessionVersion?: number;
       prdMarkdown: string;
       tasks: DraftTask[];
       costUsd: number;
@@ -234,8 +235,10 @@ test("VW01: mock planning chat and deconstruction never reach a CLI, a clone, or
     });
     const stripInspectedAt = (value: typeof plan & { repository?: RepositoryInspection }) => ({
       ...value,
+      sessionVersion: 0, // generation advances the session version even for identical text
       repository: value.repository ? { ...value.repository, inspectedAt: "x" } : undefined,
     });
+    assert.equal(again.json<PlanDeconstructResponse>().sessionVersion, plan.sessionVersion! + 1);
     assert.deepEqual(stripInspectedAt(again.json()), stripInspectedAt(plan));
     assert.equal(plan.repository?.commit, MOCK_REPOSITORY_COMMIT);
     assert.equal(repo.getPlanningSession(fx.deps.db, PROJECT_ID).repository?.commit, MOCK_REPOSITORY_COMMIT);
@@ -812,7 +815,10 @@ test("VW03 review: further chat cannot rebase the repository observation of an e
     assert.equal(repo.getPlanningSession(fx.deps.db, PROJECT_ID).repository?.commit, planned, "draft stays anchored to its original observation");
     const committed = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/commit`, payload: { revisionId, ...generated.json<PlanDeconstructResponse>() } });
     assert.equal(committed.statusCode, 409, committed.body);
-    assert.equal(committed.json<{ code: string }>().code, "REPOSITORY_DRIFT");
+    assert.equal(committed.json<{ code: string }>().code, "PLANNING_STALE");
+    const current = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/commit`, payload: { revisionId, ...generated.json<PlanDeconstructResponse>(), sessionVersion: repo.getPlanningSession(fx.deps.db, PROJECT_ID).sessionVersion } });
+    assert.equal(current.statusCode, 409);
+    assert.equal(current.json<{ code: string }>().code, "REPOSITORY_DRIFT");
   } finally {
     await app.close();
     fx.restore();
@@ -863,4 +869,109 @@ test("VW03 review: retry recovers a pending receipt after its own Git commit adv
     fx.restore();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+async function until(check: () => boolean | Promise<boolean>, label: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!await check()) {
+    assert.ok(Date.now() < deadline, `timed out: ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+function slowCli(fx: Fixture): void {
+  const script = FAKE_CLI.replace(
+    'process.stdout.write(JSON.stringify({ result, total_cost_usd: 0.01 }));',
+    `const child = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  fs.writeFileSync(path.join(dir, "child-pid"), String(child.pid));
+  const timer = setInterval(() => {
+    if (!fs.existsSync(path.join(dir, "release"))) return;
+    clearInterval(timer);
+    child.kill();
+    process.stdout.write(JSON.stringify({ result, total_cost_usd: 0 }));
+  }, 20);`,
+  );
+  writeFileSync(join(fx.bin, "claude"), script);
+}
+
+// Cross the real HTTP/socket + managed fake-CLI boundary; no authenticated model.
+test("VW06: disconnect does not cancel planning; replay, mutation guards, and cancellation retain one owner", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-vw06-http-"));
+  const localPath = join(root, "clone");
+  await committedRepo(localPath, { "src/app.ts": "export const app = true;" });
+  const fx = fixture({ mock: false, localPath });
+  slowCli(fx);
+  const app = await buildApp(fx.deps);
+  try {
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const revisionId = await currentRevision(app);
+    const operationId = "66666666-6666-4666-8666-666666666666";
+    const payload = { revisionId, operationId, sessionVersion: 0, messages: [{ role: "user", content: "Continue after disconnect" }] };
+    const controller = new AbortController();
+    const request = fetch(`${address}/api/projects/${PROJECT_ID}/plan/chat`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload), signal: controller.signal }).catch(() => null);
+    await until(() => existsSync(join(fx.bin, "child-pid")), "fake CLI started");
+    controller.abort();
+    await request;
+    const status = () => app.inject({ method: "GET", url: `/api/projects/${PROJECT_ID}/plan/operations/${operationId}` });
+    assert.equal((await status()).json<PlanOperationResponse>().operation.state, "running");
+    assert.equal((await app.inject({ method: "GET", url: `/api/projects/wrong/plan/operations/${operationId}` })).statusCode, 404);
+    assert.equal((await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/save-draft`, payload: { revisionId, prdMarkdown: "Overwrite", tasks: [] } })).statusCode, 409);
+    assert.equal((await app.inject({ method: "DELETE", url: `/api/projects/${PROJECT_ID}` })).statusCode, 409);
+    await assert.rejects(fx.deps.engine.start(repo.getProject(fx.deps.db, PROJECT_ID)!), /planning is active/);
+    writeFileSync(join(fx.bin, "release"), "1");
+    await until(async () => (await status()).json<PlanOperationResponse>().operation.state === "succeeded", "disconnected work completed");
+    const replay = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/chat`, payload: { ...payload, background: true } });
+    assert.equal(replay.statusCode, 202);
+    assert.equal(replay.json<PlanOperationResponse>().operation.state, "succeeded");
+    assert.equal(fx.prompts().length, 1);
+    assert.equal(repo.getPlanningSession(fx.deps.db, PROJECT_ID).messages.length, 2);
+    assert.equal(repo.getInvocations(fx.deps.db, { projectId: PROJECT_ID }).length, 1);
+    assert.equal(replay.json<PlanOperationResponse>().operation.invocationIds.length, 1);
+
+    rmSync(join(fx.bin, "release"));
+    rmSync(join(fx.bin, "child-pid"));
+    const next = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/chat`, payload: { ...payload, operationId: "77777777-7777-4777-8777-777777777777", sessionVersion: 1, background: true } });
+    const nextId = next.json<PlanOperationResponse>().operation.id;
+    await until(() => existsSync(join(fx.bin, "child-pid")), "second fake CLI started");
+    const childPid = Number(readFileSync(join(fx.bin, "child-pid"), "utf8"));
+    await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/operations/${nextId}/cancel` });
+    await until(async () => (await app.inject({ method: "GET", url: `/api/projects/${PROJECT_ID}/plan/operations/${nextId}` })).json<PlanOperationResponse>().operation.state === "cancelled", "cancel settled");
+    await until(() => { try { process.kill(childPid, 0); return false; } catch { return true; } }, "child group stopped");
+    assert.equal(repo.getPlanningSession(fx.deps.db, PROJECT_ID).sessionVersion, 1);
+  } finally { await app.close(); fx.restore(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("VW06: shutdown settles a real process; reopening and explicit retry count both attempts once", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-vw06-restart-"));
+  const localPath = join(root, "clone");
+  await committedRepo(localPath, { "src/app.ts": "export const app = true;" });
+  const fx = fixture({ mock: false, localPath });
+  slowCli(fx);
+  let app = await buildApp(fx.deps);
+  try {
+    const revisionId = await currentRevision(app);
+    const accepted = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/chat`, payload: { revisionId, messages: [{ role: "user", content: "Recover me" }], background: true } });
+    const id = accepted.json<PlanOperationResponse>().operation.id;
+    await until(() => existsSync(join(fx.bin, "child-pid")), "CLI started before shutdown");
+    await app.close();
+    app = await buildApp(fx.deps);
+    const restored = await app.inject({ method: "GET", url: `/api/projects/${PROJECT_ID}/plan/session` });
+    assert.equal(restored.json<PlanOperationResponse>().operation.state, "interrupted");
+    assert.equal(restored.json<PlanOperationResponse>().operation.input.messages[0]?.content, "Recover me");
+    assert.equal(fx.prompts().length, 1, "reopening does not automatically call a model");
+    const retryUrl = `/api/projects/${PROJECT_ID}/plan/operations/${id}/retry`;
+    const retry = await app.inject({ method: "POST", url: retryUrl });
+    const retryId = retry.json<PlanOperationResponse>().operation.id;
+    assert.notEqual(retryId, id);
+    assert.equal((await app.inject({ method: "POST", url: retryUrl })).json<PlanOperationResponse>().operation.id, retryId);
+    writeFileSync(join(fx.bin, "release"), "1");
+    await until(async () => (await app.inject({ method: "GET", url: `/api/projects/${PROJECT_ID}/plan/operations/${retryId}` })).json<PlanOperationResponse>().operation.state === "succeeded", "retry completed");
+    const invocations = repo.getInvocations(fx.deps.db, { projectId: PROJECT_ID });
+    assert.equal(invocations.length, 2);
+    assert.ok(invocations.every((invocation) => invocation.outcome !== "running"));
+    assert.equal(invocations.reduce((sum, invocation) => sum + invocation.costUsd, 0), 0, "zero-cost calls are still individually counted");
+    assert.equal(repo.getPlanningSession(fx.deps.db, PROJECT_ID).messages.length, 2);
+    assert.equal((await app.inject({ method: "POST", url: retryUrl })).json<PlanOperationResponse>().operation.id, retryId);
+    assert.equal(repo.getInvocations(fx.deps.db, { projectId: PROJECT_ID }).length, 2);
+  } finally { await app.close(); fx.restore(); rmSync(root, { recursive: true, force: true }); }
 });

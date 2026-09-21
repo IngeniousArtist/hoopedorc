@@ -540,7 +540,8 @@ describe("VW02: draft saves are truthful", () => {
     });
     rerender(slowView(project.id));
     expect(await screen.findByLabelText("Task 1 title")).toHaveValue(succeeds ? "Generated replacement" : "Unsaved edit");
-    expect(writes).toEqual(succeeds ? [] : ["Unsaved edit"]);
+    // VW06 persists the visible draft before starting a durable replacement.
+    expect(writes).toEqual(["Unsaved edit"]);
   });
 
   it("guards reload/close only while work is unsaved", async () => {

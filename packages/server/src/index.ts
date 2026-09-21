@@ -13,6 +13,7 @@ import type {
   MergePolicy,
   ModelId,
   ModelInvocation,
+  PlanningOperation,
   Project,
   Role,
   ServerEvent,
@@ -48,7 +49,6 @@ import {
   plannerModelLabel,
   resolvePlannerModel,
   type PlanOutput,
-  type PlannerModel,
 } from "./planner";
 import { mockPlanningService } from "./mock-planner";
 import {
@@ -57,6 +57,7 @@ import {
   selectPlanningService,
   type PlanningService,
 } from "./planning-service";
+import { PlanningOperations, PlanningOperationError, activePlanningOperation, getPlanningOperation, latestPlanningOperation } from "./planning-operations";
 import { shortCommit } from "./repository-inspection";
 import { createGithubRepo, getPrDiff, slugifyRepoName } from "./github";
 import { checkBudget } from "./budget";
@@ -133,7 +134,6 @@ import {
 import type {
   DraftTask,
   Notification,
-  PlanChatRequest,
   PlanCommitRequest,
   PlanDeconstructRequest,
   RepositoryInspection,
@@ -491,6 +491,8 @@ async function assembleServer(
   const maintenanceTimers: ReturnType<typeof setInterval>[] = [];
   const backgroundOperations = new Set<Promise<void>>();
   const requestControllers = new Set<AbortController>();
+  const legacyPlanningProjects = new Set<string>();
+  const deletingProjects = new Set<string>();
   const reportBackgroundFailure: BackgroundFailureReporter = (label, error) => {
     app.log.error(
       `${label} failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`,
@@ -1282,66 +1284,70 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if (activePlanningOperation(db, id)) return reply.code(409).send({ error: "planning is active — wait for it to settle first" });
     if (engine.hasActivity(id)) {
       return reply
         .code(409)
         .send({ error: "project execution is active or still stopping — wait for it to settle before deleting" });
     }
 
-    // Best-effort cleanup of the local clone + any leftover task worktrees.
-    // The DB delete below is the source of truth; refused/failed disk cleanup
-    // leaves explicit operator work intact. Validate every candidate before
-    // deleting any of them so removing the primary clone cannot invalidate a
-    // worktree's .git pointer midway through the safety inspection.
+    deletingProjects.add(id);
     try {
-      const exists = existsSync(project.localPath);
-      if (exists && (await safeToDeleteLocalPath(project.localPath, project.repoUrl))) {
-        const parent = dirname(project.localPath);
-        const base = project.localPath.slice(parent.length + 1);
-        const safeWorktrees: string[] = [];
-        let refusedWorktree = false;
-        if (existsSync(parent)) {
-          for (const entry of readdirSync(parent)) {
-            if (entry.startsWith(`${base}-wt-`)) {
-              const candidate = join(parent, entry);
-              if (await safeToDeleteLocalPath(candidate, project.repoUrl)) {
-                safeWorktrees.push(candidate);
-              } else {
-                refusedWorktree = true;
-                app.log.warn(
-                  `refusing to delete project worktree ${candidate}: it is ` +
-                    `dirty or is not a recognized clone of ${project.repoUrl}`,
-                );
+      // Best-effort cleanup of the local clone + any leftover task worktrees.
+      // The DB delete below is the source of truth; refused/failed disk cleanup
+      // leaves explicit operator work intact. Validate every candidate before
+      // deleting any of them so removing the primary clone cannot invalidate a
+      // worktree's .git pointer midway through the safety inspection.
+      try {
+        const exists = existsSync(project.localPath);
+        if (exists && (await safeToDeleteLocalPath(project.localPath, project.repoUrl))) {
+          const parent = dirname(project.localPath);
+          const base = project.localPath.slice(parent.length + 1);
+          const safeWorktrees: string[] = [];
+          let refusedWorktree = false;
+          if (existsSync(parent)) {
+            for (const entry of readdirSync(parent)) {
+              if (entry.startsWith(`${base}-wt-`)) {
+                const candidate = join(parent, entry);
+                if (await safeToDeleteLocalPath(candidate, project.repoUrl)) {
+                  safeWorktrees.push(candidate);
+                } else {
+                  refusedWorktree = true;
+                  app.log.warn(
+                    `refusing to delete project worktree ${candidate}: it is ` +
+                      `dirty or is not a recognized clone of ${project.repoUrl}`,
+                  );
+                }
               }
             }
           }
-        }
-        if (refusedWorktree) {
-          app.log.warn(
-            `refusing to delete local files for project ${id}: at least one ` +
-              `matching worktree could not be proved safe — DB rows removed, ` +
-              `all project files left untouched`,
-          );
-        } else {
-          for (const worktree of safeWorktrees) {
-            rmSync(worktree, { recursive: true, force: true });
+          if (refusedWorktree) {
+            app.log.warn(
+              `refusing to delete local files for project ${id}: at least one ` +
+                `matching worktree could not be proved safe — DB rows removed, ` +
+                `all project files left untouched`,
+            );
+          } else {
+            for (const worktree of safeWorktrees) {
+              rmSync(worktree, { recursive: true, force: true });
+            }
+            rmSync(project.localPath, { recursive: true, force: true });
           }
-          rmSync(project.localPath, { recursive: true, force: true });
+        } else if (exists) {
+          app.log.warn(
+            `refusing to delete local files for project ${id}: ${project.localPath} ` +
+              `is dirty or is not a recognized clone of ${project.repoUrl} — ` +
+              `DB rows removed, disk left untouched`,
+          );
         }
-      } else if (exists) {
-        app.log.warn(
-          `refusing to delete local files for project ${id}: ${project.localPath} ` +
-            `is dirty or is not a recognized clone of ${project.repoUrl} — ` +
-            `DB rows removed, disk left untouched`,
-        );
+      } catch (err) {
+        app.log.warn(`could not clean up local files for project ${id}: ${err}`);
       }
-    } catch (err) {
-      app.log.warn(`could not clean up local files for project ${id}: ${err}`);
-    }
 
-    repo.deleteProject(db, id);
-    broadcast({ type: "project.deleted", payload: { id } });
-    return reply.code(204).send();
+      repo.deleteProject(db, id);
+      broadcast({ type: "project.deleted", payload: { id } });
+      return reply.code(204).send();
+    } finally { deletingProjects.delete(id); }
   });
 
   app.post("/api/projects/:id/plan", async (req, reply) => {
@@ -1354,6 +1360,7 @@ async function assembleServer(
 
     const body = req.body as { goal?: string; requireApproval?: boolean } | undefined;
 
+    legacyPlanningProjects.add(id);
     repo.updateProject(db, id, { status: "planning" });
     const goal = body?.goal ?? "";
     const settings = repo.getSettings(db) ?? defaultSettings();
@@ -1431,6 +1438,7 @@ async function assembleServer(
       createdTasks.push(t1, t2);
     } finally {
       cancellation.cleanup();
+      legacyPlanningProjects.delete(id);
     }
 
     repo.updateProject(db, id, { status: "planned" });
@@ -1455,8 +1463,14 @@ async function assembleServer(
   // sessions archive, attachments list) stay open so the Plan tab can show
   // history during a run; chat re-opens when the run finishes.
   const planningLockError = (project: Project): string | null =>
-    project.status === "running"
+    project.status === "running" || engine.hasActivity(project.id)
       ? "tasks are running — planning re-opens when the run finishes (chat history stays visible below)"
+      : deletingProjects.has(project.id)
+        ? "project deletion is in progress"
+      : legacyPlanningProjects.has(project.id)
+        ? "legacy planning is active — wait for it to settle"
+      : activePlanningOperation(db, project.id)
+        ? "planning is active — wait for it to finish or cancel it before changing this project"
       : planningCommitInProgress(project.id)
         ? "planning commit is in progress — wait for it to finish before editing or retrying"
         : null;
@@ -1485,234 +1499,145 @@ async function assembleServer(
     projectId: string,
     revisionId: string,
     update: repo.PlanningSessionUpdate,
+    version?: number,
   ): void => {
-    if (!repo.savePlanningSessionForRevision(db, projectId, revisionId, update)) {
+    if (!repo.savePlanningSessionForRevision(db, projectId, revisionId, update, version)) {
       throw new PlanningRevisionConflictError(
         "planning revision is stale — reload the planning session",
       );
     }
   };
 
-  // One conversational turn. The web chat panel sends the full transcript.
-  app.post("/api/projects/:id/plan/chat", async (req, reply) => {
-    const { id } = req.params as RouteParams;
-    const project = repo.getProject(db, id);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    const lockErr = planningLockError(project);
-    if (lockErr) return reply.code(409).send({ error: lockErr });
-
-    const body = req.body as Partial<PlanChatRequest> | undefined;
-    const revisionErr = planningRevisionError(id, body?.revisionId);
-    if (revisionErr) {
-      return reply.code(revisionErr.status).send({ error: revisionErr.error });
-    }
-    const revisionId = body!.revisionId!;
-    const messages = body?.messages ?? [];
-    if (messages.length === 0) {
-      return reply.code(400).send({ error: "messages required" });
-    }
-
-    // F37: an opencode-runner planner is a config problem, not a runtime
-    // failure — reject it up front with a clear 400 instead of letting it
-    // surface as an opaque 502 from deep inside the try block below.
-    let plannerModel: PlannerModel;
-    try {
-      plannerModel = resolvePlannerModel(repo.getSettings(db) ?? defaultSettings(), "chat");
-    } catch (err) {
-      return reply.code(400).send({ error: (err as Error).message });
-    }
-
-    const cancellation = plannerRequestCancellation(
-      req.raw,
-      reply.raw,
-      requestControllers,
-    );
-    try {
-      // F27: name-only list of whatever's currently in context/attachments/
-      // — buildChatPrompt turns this into a "read these with your file
-      // tools" pointer, not an inline dump.
-      const attachmentNames = listAttachments(attachmentsDir(project, env.mock)).map(
-        (a) => a.name,
-      );
-      // VW03: inspect the real clone first; failure is reported, not papered
-      // over with a temporary directory, and the transcript is untouched.
-      const repository = await planning.inspect(project, cancellation.signal);
-      const { reply: text, costUsd } = await planning.chat({
-        project,
-        messages,
-        plannerModel,
-        repository,
+  // VW06: HTTP owns submission only; SQLite and the managed operation own execution.
+  const operationError = (error: unknown, kind?: PlanningOperation["kind"]): NonNullable<PlanningOperation["error"]> => {
+    if (error instanceof PlanningOperationError) return { message: error.message, status: error.status, code: error.code, details: error.details };
+    if (error instanceof RepositoryUnavailableError) return { message: error.message, status: 503, code: error.code };
+    if (error instanceof FigmaVerificationError) return { message: error.message, status: 409, code: "FIGMA_VERIFICATION_FAILED", details: { issue: error.issue, costUsd: error.costUsd } };
+    return { message: `${kind === "chat" ? "planner chat failed" : kind === "deconstruct" ? "deconstruction failed" : "Planning failed"}: ${error instanceof Error ? error.message : String(error)}`, status: 502 };
+  };
+  const operations = new PlanningOperations({
+    db, controllers: requestControllers, own: runBackground,
+    warn: (message) => app.log.warn(message), error: operationError,
+    onUpdate: (operation) => broadcast({ type: "planning.updated", payload: operation }),
+    async execute(operation, signal) {
+      const id = operation.projectId;
+      const project = repo.getProject(db, id)!;
+      const settings = repo.getSettings(db) ?? defaultSettings();
+      const plannerModel = resolvePlannerModel(settings, operation.kind);
+      const messages = operation.input.messages;
+      const attachmentNames = listAttachments(attachmentsDir(project, env.mock)).map((a) => a.name);
+      const repository = await planning.inspect(project, signal);
+      const context = {
+        project, plannerModel, messages, repository, signal, attachmentNames,
         priorContext: buildPriorContext(db, project),
-        attachmentNames,
-        signal: cancellation.signal,
-        onInvocation: (event) => recordModelInvocation(event, id),
-      });
-      // Persist the full conversation (including assistant reply) so the Plan
-      // tab can restore it on reload or after a tab switch.
-      const updatedMessages = [...messages, { role: "assistant" as const, content: text }];
-      // A later chat observes current code but must not silently rebase an
-      // already generated task draft's drift guard.
-      const hasDraft = repo.getPlanningSession(db, id).draftTasks !== undefined;
-      savePlanningRevision(id, revisionId, {
-        messages: updatedMessages,
-        ...(!hasDraft ? { repository } : {}),
-      });
-      recordPlanChatTurn(
-        db,
-        project,
-        env.mock,
-        updatedMessages,
-        plannerModelLabel(plannerModel),
-        (msg) => app.log.warn(msg),
-        repository,
-      );
-      return { reply: text, costUsd, repository };
-    } catch (err) {
-      if (err instanceof PlanningRevisionConflictError) {
-        return reply.code(409).send({ error: err.message });
-      }
-      if (err instanceof RepositoryUnavailableError) {
-        return reply.code(503).send({ error: err.message, code: err.code });
-      }
-      return reply.code(502).send({
-        error: `planner chat failed: ${err instanceof Error ? err.message : String(err)}`,
-      });
-    } finally {
-      cancellation.cleanup();
-    }
-  });
-
-  // Deconstruct the agreed conversation into a draft task DAG (NOT yet persisted as tasks).
-  app.post("/api/projects/:id/plan/deconstruct", async (req, reply) => {
-    const { id } = req.params as RouteParams;
-    const project = repo.getProject(db, id);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    const lockErr = planningLockError(project);
-    if (lockErr) return reply.code(409).send({ error: lockErr });
-
-    const body = req.body as Partial<PlanDeconstructRequest> | undefined;
-    const revisionErr = planningRevisionError(id, body?.revisionId);
-    if (revisionErr) {
-      return reply.code(revisionErr.status).send({ error: revisionErr.error });
-    }
-    const revisionId = body!.revisionId!;
-    const messages = body?.messages ?? [];
-    if (messages.length === 0) {
-      return reply.code(400).send({ error: "messages required" });
-    }
-    if (
-      body?.figmaVerification !== undefined &&
-      body.figmaVerification !== "live" &&
-      body.figmaVerification !== "attachments"
-    ) {
-      return reply.code(400).send({ error: "invalid figmaVerification mode" });
-    }
-
-    const settings = repo.getSettings(db) ?? defaultSettings();
-    // F37: same up-front rejection as /plan/chat above.
-    let plannerModel: PlannerModel;
-    try {
-      plannerModel = resolvePlannerModel(settings, "deconstruct");
-    } catch (err) {
-      return reply.code(400).send({ error: (err as Error).message });
-    }
-
-    const cancellation = plannerRequestCancellation(
-      req.raw,
-      reply.raw,
-      requestControllers,
-    );
-    try {
-      const attachmentNames = listAttachments(attachmentsDir(project, env.mock)).map(
-        (a) => a.name,
-      );
-      if (
-        body?.figmaVerification === "attachments" &&
-        attachmentNames.length === 0
-      ) {
-        return reply.code(400).send({
-          error: "attach at least one screenshot before using the Figma attachment fallback",
-        });
-      }
-      const planningSession = repo.getPlanningSession(db, id);
-      const repository = await planning.inspect(project, cancellation.signal);
-      const { output, costUsd, verifiedFigmaReferences } = await planning.deconstruct({
-        project,
-        messages,
-        plannerModel,
-        repository,
-        priorContext: buildPriorContext(db, project),
-        attachmentNames,
-        onWarn: (msg) => app.log.warn(msg),
-        signal: cancellation.signal,
-        onInvocation: (event) => recordModelInvocation(event, id),
-        cachedVerifiedFigmaReferences: planningSession.verifiedFigmaReferences,
-        onVerifiedFigmaReferences: (references) =>
-          savePlanningRevision(id, revisionId, {
-            verifiedFigmaReferences: references,
-          }),
-        figmaVerification: body?.figmaVerification ?? "live",
-      });
-      const tasks = withAssignedModels(
-        output,
-        settings,
-        verifiedFigmaReferences,
-      );
-      // Persist draft tasks + PRD + AGENTS.md (F38) so the Plan tab can
-      // restore them on reload.
-      savePlanningRevision(id, revisionId, {
-        messages,
-        prd: output.prdMarkdown,
-        draftTasks: tasks,
-        agentsMd: output.agentsMd,
-        verifiedFigmaReferences: verifiedFigmaReferences ?? null,
-        repository,
-      });
-      recordPlanDeconstruct(
-        db,
-        project,
-        env.mock,
-        messages,
-        output.prdMarkdown,
-        tasks,
-        plannerModelLabel(plannerModel),
-        (msg) => app.log.warn(msg),
-        repository,
-      );
-      return {
-        prdMarkdown: output.prdMarkdown,
-        tasks,
-        costUsd,
-        agentsMd: output.agentsMd,
-        verifiedFigmaReferences,
-        repository,
+        onInvocation: (event: ModelInvocation) => db.transaction(() => {
+          recordModelInvocation(event, id);
+          db.prepare("INSERT OR IGNORE INTO planning_operation_invocations (operation_id, invocation_id) VALUES (?, ?)").run(operation.id, event.id);
+        })(),
       };
-    } catch (err) {
-      if (err instanceof PlanningRevisionConflictError) {
-        return reply.code(409).send({ error: err.message });
+      if (operation.kind === "chat") {
+        const result = await planning.chat(context);
+        const updatedMessages = [...messages, { role: "assistant" as const, content: result.reply }];
+        const hasDraft = repo.getPlanningSession(db, id).draftTasks !== undefined;
+        return {
+          result: { ...result, repository },
+          update: { messages: updatedMessages, ...(!hasDraft ? { repository } : {}) },
+          archive: () => recordPlanChatTurn(db, project, env.mock, updatedMessages, plannerModelLabel(plannerModel), (msg) => app.log.warn(msg), repository),
+        };
       }
-      if (err instanceof RepositoryUnavailableError) {
-        return reply.code(503).send({ error: err.message, code: err.code });
-      }
-      if (err instanceof FigmaVerificationError) {
-        return reply.code(409).send({
-          error: err.message,
-          code: "FIGMA_VERIFICATION_FAILED",
-          details: { issue: err.issue, costUsd: err.costUsd },
-        });
-      }
-      return reply.code(502).send({
-        error: `deconstruction failed: ${err instanceof Error ? err.message : String(err)}`,
+      const { output, costUsd, verifiedFigmaReferences } = await planning.deconstruct({
+        ...context, onWarn: (msg) => app.log.warn(msg),
+        cachedVerifiedFigmaReferences: repo.getPlanningSession(db, id).verifiedFigmaReferences,
+        onVerifiedFigmaReferences: (references) => savePlanningRevision(id, operation.revisionId, { verifiedFigmaReferences: references }),
+        figmaVerification: operation.input.figmaVerification ?? "live",
       });
-    } finally {
-      cancellation.cleanup();
-    }
+      const tasks = withAssignedModels(output, settings, verifiedFigmaReferences);
+      return {
+        result: { prdMarkdown: output.prdMarkdown, tasks, costUsd, agentsMd: output.agentsMd, verifiedFigmaReferences, repository },
+        update: { messages, prd: output.prdMarkdown, draftTasks: tasks, agentsMd: output.agentsMd, verifiedFigmaReferences: verifiedFigmaReferences ?? null, repository },
+        archive: () => recordPlanDeconstruct(db, project, env.mock, messages, output.prdMarkdown, tasks, plannerModelLabel(plannerModel), (msg) => app.log.warn(msg), repository),
+      };
+    },
   });
+  app.addHook("onClose", () => operations.stop());
+
+  for (const kind of ["chat", "deconstruct"] as const) {
+    app.post(`/api/projects/:id/plan/${kind}`, async (req, reply) => {
+      const { id } = req.params as RouteParams;
+      const project = repo.getProject(db, id);
+      if (!project) return reply.code(404).send({ error: "project not found" });
+      const body = req.body as Partial<PlanDeconstructRequest> | undefined;
+      if (!isPlanningRevisionId(body?.revisionId) || (body?.operationId !== undefined && !isPlanningRevisionId(body.operationId))) {
+        return reply.code(400).send({ error: "valid revisionId and operationId UUIDs are required" });
+      }
+      if (!Array.isArray(body?.messages) || !body.messages.length || body.messages.some((m) => !m || !["user", "assistant"].includes(m.role) || typeof m.content !== "string")) {
+        return reply.code(400).send({ error: "messages required with user/assistant roles and text content" });
+      }
+      if (body.sessionVersion !== undefined && (!Number.isSafeInteger(body.sessionVersion) || body.sessionVersion < 0)) {
+        return reply.code(400).send({ error: "invalid sessionVersion" });
+      }
+      if (body.background !== undefined && typeof body.background !== "boolean") return reply.code(400).send({ error: "invalid background mode" });
+      if (body.figmaVerification !== undefined && !["live", "attachments"].includes(body.figmaVerification)) return reply.code(400).send({ error: "invalid figmaVerification mode" });
+      try {
+        // Existing identity is replayable even after its revision was committed.
+        const existing = body.operationId ? getPlanningOperation(db, id, body.operationId) : null;
+        if (!existing) {
+          const lockErr = planningLockError(project);
+          if (lockErr) throw new PlanningOperationError(lockErr);
+          const revisionErr = planningRevisionError(id, body.revisionId);
+          if (revisionErr) throw new PlanningOperationError(revisionErr.error, revisionErr.status);
+          try { resolvePlannerModel(repo.getSettings(db) ?? defaultSettings(), kind); }
+          catch (error) { throw new PlanningOperationError((error as Error).message, 400); }
+          if (kind === "deconstruct" && body.figmaVerification === "attachments" && listAttachments(attachmentsDir(project, env.mock)).length === 0) {
+            throw new PlanningOperationError("attach at least one screenshot before using the Figma attachment fallback", 400);
+          }
+        }
+        const operation = operations.start(id, kind, body as PlanDeconstructRequest);
+        if (body.background) return reply.code(202).send({ operation });
+        const completed = await operations.wait(id, operation.id);
+        if (completed.state === "succeeded") return completed.result;
+        const failure = completed.error ?? { message: "Planning has not completed.", status: 409 };
+        return reply.code(failure.status).send({ error: failure.message, code: failure.code, details: failure.details });
+      } catch (error) {
+        const failure = operationError(error);
+        return reply.code(failure.status).send({ error: failure.message, code: failure.code, details: failure.details });
+      }
+    });
+  }
+
+  app.get("/api/projects/:id/plan/operations/:operationId", (req, reply) => {
+    const { id, operationId } = req.params as { id: string; operationId: string };
+    const operation = getPlanningOperation(db, id, operationId);
+    return operation ? { operation } : reply.code(404).send({ error: "planning operation not found" });
+  });
+  for (const action of ["retry", "cancel"] as const) {
+    app.post(`/api/projects/:id/plan/operations/:operationId/${action}`, (req, reply) => {
+      const { id, operationId } = req.params as { id: string; operationId: string };
+      const project = repo.getProject(db, id);
+      if (!project) return reply.code(404).send({ error: "project not found" });
+      try {
+        if (action === "retry") {
+          // Replaying an already-created retry is safe; a new retry needs ownership.
+          const child = db.prepare("SELECT id FROM planning_operations WHERE retry_of = ? AND project_id = ?").get(operationId, id);
+          const lockErr = planningLockError(project);
+          if (!child && lockErr) throw new PlanningOperationError(lockErr);
+        }
+        const operation = action === "retry" ? operations.retry(id, operationId) : operations.cancel(id, operationId);
+        return reply.code(202).send({ operation });
+      } catch (error) {
+        const failure = operationError(error);
+        return reply.code(failure.status).send({ error: failure.message, code: failure.code, details: failure.details });
+      }
+    });
+  }
 
   // Save the user's in-progress edits to the draft task table without committing.
   app.post("/api/projects/:id/plan/save-draft", async (req, reply) => {
     const { id } = req.params as RouteParams;
-    if (!repo.getProject(db, id)) return reply.code(404).send({ error: "project not found" });
+    const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    const locked = planningLockError(project);
+    if (locked) return reply.code(409).send({ error: locked });
     const body = req.body as Partial<SaveDraftRequest> | undefined;
     const revisionErr = planningRevisionError(id, body?.revisionId);
     if (revisionErr) {
@@ -1723,7 +1648,7 @@ async function assembleServer(
         prd: body?.prdMarkdown,
         draftTasks: body?.tasks ?? null,
         agentsMd: body?.agentsMd,
-      });
+      }, body?.sessionVersion);
     } catch (err) {
       // VW02: a revision that went stale between the guard above and the
       // conditional UPDATE is a conflict the client can act on (reload the
@@ -1733,7 +1658,7 @@ async function assembleServer(
       }
       throw err;
     }
-    return { ok: true };
+    return { ok: true, sessionVersion: repo.getPlanningSession(db, id).sessionVersion };
   });
 
   // Return the persisted planning session for the Plan tab to restore on load.
@@ -1749,7 +1674,7 @@ async function assembleServer(
          WHERE project_id = ? AND stage IN ('planner', 'deconstructor', 'health')`,
       ).get(id) as { total: number }
     ).total;
-    return { ...session, revisionId, planCostUsd };
+    return { ...session, revisionId, planCostUsd, operation: latestPlanningOperation(db, id, revisionId) };
   });
 
   // F28 read side: the archived plan-session markdown files, newest first —
@@ -1776,6 +1701,7 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if (activePlanningOperation(db, id)) return reply.code(409).send({ error: "planning is active — wait for it to settle first" });
 
     let data;
     try {
@@ -1805,6 +1731,7 @@ async function assembleServer(
       throw err;
     }
 
+    if (activePlanningOperation(db, id)) return reply.code(409).send({ error: "planning is active — wait for it to settle first" });
     const dir = attachmentsDir(project, env.mock);
     return { attachments: saveAttachment(dir, sanitized, buffer) };
   });
@@ -1813,6 +1740,7 @@ async function assembleServer(
     const { id, name } = req.params as { id: string; name: string };
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if (activePlanningOperation(db, id)) return reply.code(409).send({ error: "planning is active — wait for it to settle first" });
     const updated = removeAttachment(attachmentsDir(project, env.mock), name);
     if (updated === null) return reply.code(404).send({ error: "attachment not found" });
     return { attachments: updated };
@@ -1823,6 +1751,7 @@ async function assembleServer(
     const { id } = req.params as RouteParams;
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
+    if (activePlanningOperation(db, id)) return reply.code(409).send({ error: "planning is active — wait for it to settle first" });
 
     const body = req.body as Partial<PlanCommitRequest> | undefined;
     if (!isPlanningRevisionId(body?.revisionId)) {
@@ -1852,6 +1781,9 @@ async function assembleServer(
     const planningSession = repo.getPlanningSession(db, id);
     const plannedCommit = planningSession.repository?.commit;
     const receipt = repo.getPlanningCommitReceipt(db, id, body.revisionId);
+    if (!receipt && body.sessionVersion !== undefined && planningSession.sessionVersion !== body.sessionVersion) {
+      return reply.code(409).send({ error: "The planning session changed. Reload before approving.", code: "PLANNING_STALE" });
+    }
     if (
       plannedCommit &&
       !receipt &&
@@ -1884,6 +1816,7 @@ async function assembleServer(
         project,
         {
           revisionId: body.revisionId,
+          sessionVersion: body.sessionVersion,
           prdMarkdown: body.prdMarkdown,
           tasks: body.tasks,
           agentsMd: body.agentsMd,
@@ -2667,6 +2600,9 @@ async function assembleServer(
     ];
 
     if (!selectedProject) return events;
+    const planningRevision = repo.getPlanningSession(db, projectId).revisionId;
+    const planningOperation = planningRevision ? latestPlanningOperation(db, projectId, planningRevision) : null;
+    if (planningOperation) events.push({ type: "planning.updated", payload: planningOperation });
 
     events.push({
       type: "cost.snapshot",
