@@ -719,7 +719,7 @@ test("B42: capability notification and Telegram alert dedupe durably across runt
   );
 });
 
-test("B42: a run with blocked work finishes paused, never falsely completed", () => {
+test("B42: a run with blocked work finishes paused, never falsely completed", async () => {
   const db = setup();
   const hub = new WsHub();
   const proj = project(db, "figma-paused", { status: "running" });
@@ -728,9 +728,9 @@ test("B42: a run with blocked work finishes paused, never falsely completed", ()
     statusReason: "Fix Figma access, then Retry.",
   });
   const engine = new EngineRunner(db, hub);
-  (
+  await (
     engine as unknown as {
-      finishAutonomousRun(project: Project, startedAt: string): void;
+      finishAutonomousRun(project: Project, startedAt: string): Promise<void>;
     }
   ).finishAutonomousRun(proj, new Date().toISOString());
   assert.equal(repo.getProject(db, proj.id)?.status, "paused");

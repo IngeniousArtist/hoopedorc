@@ -1,3 +1,4 @@
+import { assertRepairProposal, validateMilestoneDrafts } from "./milestones";
 import { randomUUID } from "node:crypto";
 import type { PlanChangeReview, ReviewPlanChangesRequest, Settings, Task } from "@orc/types";
 import type { Db } from "./db/index";
@@ -24,7 +25,7 @@ export function latestPlanChange(db: Db, projectId: string, revisionId: string):
 }
 
 export function taskCanBeRevised(task: Task): boolean {
-  return ["ready", "backlog", "blocked"].includes(task.status) && task.attempts === 0 &&
+  return !task.milestone && !task.repairFor && ["ready", "backlog", "blocked"].includes(task.status) && task.attempts === 0 &&
     task.runGeneration === 0 && !task.branch && !task.worktreePath && task.prNumber === undefined;
 }
 
@@ -59,6 +60,8 @@ export function validatePlanChangeInput(value: unknown): asserts value is Review
 
 export function reviewPlanChanges(db: Db, projectId: string, input: ReviewPlanChangesRequest, settings: Settings): PlanChangeReview {
   validatePlanChangeInput(input);
+  validateMilestoneDrafts(input.tasks, true);
+  assertRepairProposal(db, projectId, input.revisionId, input.tasks, input.prdMarkdown);
   return db.transaction(() => {
     if (pendingPlanChange(db, projectId) || repo.getPlanningCommitReceipt(db, projectId, input.revisionId)?.state === "pending") {
       throw new PlanChangeError("Finish the pending plan application before creating another comparison.");
@@ -85,6 +88,8 @@ export function reviewPlanChanges(db: Db, projectId: string, input: ReviewPlanCh
       const after: Task = {
         ...(before ?? { id: ids[index]!, projectId, createdAt: now, attempts: 0, maxAttempts: project.config?.maxAttempts ?? 3,
           runGeneration: 0, runExtraAttempts: 0, runExhaustedModels: [], runRateLimitRetries: 0 }),
+        milestone: draft.milestone, repairFor: draft.repairFor,
+        maxAttempts: draft.milestone || draft.repairFor ? 1 : before?.maxAttempts ?? project.config?.maxAttempts ?? 3,
         title: draft.title, description: draft.description, difficulty: draft.difficulty,
         role: draft.role, assignedModel: draft.assignedModel, acceptanceCriteria: draft.acceptanceCriteria,
         scopePaths: draft.scopePaths, dependsOn, status: dependsOn.length ? "backlog" : "ready",
@@ -118,6 +123,11 @@ export function finalizePlanChanges(db: Db, review: PlanChangeReview): Task[] {
   assertPlanChangeCurrent(db, review, true);
   const changed = db.prepare("UPDATE plan_change_reviews SET state = 'applied' WHERE id = ? AND state = 'applying'").run(review.id);
   if (changed.changes !== 1) throw new PlanChangeError("This comparison no longer owns plan application.");
+  const repair = review.input.tasks.find((task) => task.repairFor)?.repairFor;
+  if (repair) {
+    const applied = db.prepare("UPDATE milestone_repairs SET applied = 1 WHERE milestone_id = ? AND round = ? AND revision_id = ? AND applied = 0").run(repair.milestoneId, repair.round, review.input.revisionId);
+    if (applied.changes !== 1) throw new PlanChangeError("The milestone repair was already applied or superseded.");
+  }
   return review.changes.map(({ before, after }) => before
     ? repo.updateTask(db, before.id, { title: after.title, description: after.description, difficulty: after.difficulty,
       assignedModel: after.assignedModel, role: after.role, scopePaths: after.scopePaths,

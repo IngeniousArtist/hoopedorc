@@ -161,7 +161,7 @@ export const TaskCard = memo(function TaskCard({
 
   const isActive = task.status === "in_progress" || task.status === "in_review";
   const modelName =
-    models.find((m) => m.id === task.assignedModel)?.displayName ?? task.assignedModel;
+    task.milestone ? "Independent review" : models.find((m) => m.id === task.assignedModel)?.displayName ?? task.assignedModel;
 
   return (
     <article

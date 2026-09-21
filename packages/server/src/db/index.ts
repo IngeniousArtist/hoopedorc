@@ -256,6 +256,10 @@ export function initDb(path: string = ENV.dbPath): Db {
   // Safe column migrations for existing databases (SQLite ignores IF NOT EXISTS
   // on ALTER TABLE, so we catch the "duplicate column" error instead).
   for (const col of [
+    "ALTER TABLE tasks ADD COLUMN milestone TEXT",
+    "ALTER TABLE tasks ADD COLUMN repair_for TEXT",
+    "ALTER TABLE merge_decisions ADD COLUMN criterion_evidence TEXT",
+    "ALTER TABLE merge_decisions ADD COLUMN milestone_proof TEXT",
     "ALTER TABLE projects ADD COLUMN planning_version INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE projects ADD COLUMN planning_messages TEXT",
     "ALTER TABLE projects ADD COLUMN planning_prd TEXT",
@@ -540,6 +544,28 @@ export function initDb(path: string = ENV.dbPath): Db {
   db.exec(VW11_LIBRARY_MIGRATION);
   db.exec(VW12_ACTIVATION_MIGRATION);
   db.exec(VW13_RESOURCE_MIGRATION);
+  db.exec(`
+CREATE TABLE IF NOT EXISTS milestone_budgets (
+  task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  started_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS milestone_calls (
+  invocation_id TEXT PRIMARY KEY,
+  milestone_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_milestone_calls_root ON milestone_calls(milestone_id);
+CREATE TABLE IF NOT EXISTS milestone_repairs (
+  milestone_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  round INTEGER NOT NULL,
+  revision_id TEXT NOT NULL,
+  draft_json TEXT NOT NULL,
+  applied INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (milestone_id, round),
+  UNIQUE (milestone_id, revision_id)
+);
+`);
   db.exec(`
 -- VW14: durable ownership precedes Docker mutations; records outlive projects.
 CREATE TABLE IF NOT EXISTS execution_installation (id INTEGER PRIMARY KEY CHECK(id = 1), owner TEXT NOT NULL);

@@ -317,7 +317,7 @@ export async function retryTask(
       }
       const settings = repo.getSettings(db);
       if (!settings) return { ok: false, status: 500, error: "settings not found" };
-      const budgetMsg = checkBudget(db, task.projectId, task.assignedModel, settings);
+      const budgetMsg = checkBudget(db, task.projectId, task.milestone ? settings.routing.validatorByDifficulty[task.difficulty] : task.assignedModel, settings);
       if (budgetMsg) {
         return { ok: false, status: 403, error: `budget cap: ${budgetMsg}` };
       }
@@ -361,7 +361,7 @@ export async function retryTask(
   const settings = repo.getSettings(db);
   if (!settings) return { ok: false, status: 500, error: "settings not found" };
 
-  const budgetMsg = checkBudget(db, task.projectId, task.assignedModel, settings);
+  const budgetMsg = checkBudget(db, task.projectId, task.milestone ? settings.routing.validatorByDifficulty[task.difficulty] : task.assignedModel, settings);
   if (budgetMsg) return { ok: false, status: 403, error: `budget cap: ${budgetMsg}` };
 
   // O34: status qualification, generation increment, task-run reset, stale

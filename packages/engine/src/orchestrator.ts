@@ -1,3 +1,4 @@
+import { verifyMilestone } from "./milestone-verification.js";
 import { InvocationLedgerError, ResourceUnavailableError } from "@orc/types";
 import type {
   Difficulty,
@@ -1080,8 +1081,9 @@ export class Orchestrator implements Scheduler {
           continue;
         }
 
+        const baseModel = task.milestone ? this.settings().routing.validatorByDifficulty[task.difficulty] : task.assignedModel;
         const cfg = this.settings().models.find(
-          (m) => m.id === task.assignedModel,
+          (m) => m.id === baseModel,
         );
         if (!cfg || !cfg.enabled) {
           // B28: don't just hold this forever in "ready" — requeue it to
@@ -1097,8 +1099,8 @@ export class Orchestrator implements Scheduler {
               "error",
               "engine",
               !cfg
-                ? `Assigned model "${task.assignedModel}" no longer configured — reassign it`
-                : `Assigned model "${task.assignedModel}" is disabled — reassign it or enable it`,
+                ? `Assigned model "${baseModel}" no longer configured — reassign it`
+                : `Assigned model "${baseModel}" is disabled — reassign it or enable it`,
               task.id,
             );
             task.status = "backlog";
@@ -1111,7 +1113,7 @@ export class Orchestrator implements Scheduler {
         // Budget guard: refuse to dispatch new work once a cap is hit. Once
         // every ready task is budget-blocked and nothing is in flight, the loop
         // below winds the run down (dispatched === 0 && no active tasks → break).
-        const budgetMsg = this.deps.checkBudget?.(task.assignedModel) ?? null;
+        const budgetMsg = this.deps.checkBudget?.(baseModel) ?? null;
         if (budgetMsg) {
           if (!this.budgetBlockedWarned.has(task.id)) {
             this.budgetBlockedWarned.add(task.id);
@@ -1133,19 +1135,19 @@ export class Orchestrator implements Scheduler {
         // window rolls over on its own), so before just holding the task,
         // try the rest of its fallback chain for a model that's
         // dispatchable RIGHT NOW.
-        const cooldownMsg = this.deps.checkModelCooldown?.(task.assignedModel) ?? null;
-        const quotaMsg = this.deps.checkModelQuota?.(task.assignedModel) ?? null;
-        let dispatchModel = task.assignedModel;
+        const cooldownMsg = this.deps.checkModelCooldown?.(baseModel) ?? null;
+        const quotaMsg = this.deps.checkModelQuota?.(baseModel, task.milestone ? "validator" : "author") ?? null;
+        let dispatchModel = baseModel;
 
         if (cooldownMsg || quotaMsg) {
-          const fallback = this.resolveDispatchModel(task);
+          const fallback = task.milestone ? undefined : this.resolveDispatchModel(task);
           if (fallback) {
             dispatchModel = fallback;
             const reason = cooldownMsg ?? quotaMsg!;
             this.emit(
               "warn",
               "engine",
-              `Assigned model "${task.assignedModel}" blocked (${reason}) — dispatching on fallback ${fallback}`,
+              `Assigned model "${baseModel}" blocked (${reason}) — dispatching on fallback ${fallback}`,
               task.id,
             );
             this.notifyModelTrouble(
@@ -1174,7 +1176,7 @@ export class Orchestrator implements Scheduler {
                 task.id,
               );
             }
-            timeBoundedExample ??= { task, model: task.assignedModel, detail: cooldownMsg ?? quotaMsg! };
+            timeBoundedExample ??= { task, model: baseModel, detail: cooldownMsg ?? quotaMsg! };
             continue;
           }
         }
@@ -1185,8 +1187,8 @@ export class Orchestrator implements Scheduler {
         // the ORIGINAL assigned model — a fallback candidate chosen by
         // resolveDispatchModel above has already passed this same check
         // against its own maxConcurrent.
-        if (dispatchModel === task.assignedModel) {
-          const active = this.getModelActive(task.assignedModel);
+        if (dispatchModel === baseModel) {
+          const active = this.getModelActive(baseModel);
           if (active >= cfg.maxConcurrent) {
             blockedByCapacity = true;
             if (!this.capacityBlockedWarned.has(task.id)) {
@@ -1194,7 +1196,7 @@ export class Orchestrator implements Scheduler {
               this.emit(
                 "warn",
                 "engine",
-                `Model at capacity (in use by another task or project), holding: ${task.assignedModel}`,
+                `Model at capacity (in use by another task or project), holding: ${baseModel}`,
                 task.id,
               );
             }
@@ -1450,8 +1452,9 @@ export class Orchestrator implements Scheduler {
     // it here, same bookkeeping as start()'s dispatch (incModel + track which
     // model is actually running for fallback-escalation accounting), just
     // without the capacity check that start() applies before dispatching.
-    this.incModel(task.assignedModel);
-    this.runningModel.set(task.id, task.assignedModel);
+    const dispatchModel = task.milestone ? this.settings().routing.validatorByDifficulty[task.difficulty] : task.assignedModel;
+    this.incModel(dispatchModel);
+    this.runningModel.set(task.id, dispatchModel);
     const execution = this.executeTask(project, task);
     this.activeTaskPromises.set(task.id, execution);
     try {
@@ -1460,12 +1463,49 @@ export class Orchestrator implements Scheduler {
       // Mirrors start()'s per-task dispatch-finally exactly: decrement
       // whichever model the task was last running on, since fallback
       // escalation may have switched it away from task.assignedModel.
-      const ran = this.runningModel.get(task.id) ?? task.assignedModel;
+      const ran = this.runningModel.get(task.id) ?? dispatchModel;
       this.decModel(ran);
       this.runningModel.delete(task.id);
       this.clearTerminalMergeConflict(task);
       this.activeTaskIds.delete(task.id);
       this.activeTaskPromises.delete(task.id);
+    }
+  }
+
+  private async executeMilestoneTask(project: Project, task: Task): Promise<void> {
+    const controller = new AbortController();
+    this.taskAbortControllers.set(task.id, controller);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let created = false;
+    try {
+      const deadline = this.deps.beforeMilestone?.(task) ?? Date.now() + task.milestone!.maxDurationMinutes * 60_000;
+      if (deadline <= Date.now()) throw new Error("Milestone time budget is exhausted.");
+      timer = setTimeout(() => controller.abort(new Error("Milestone time budget is exhausted.")), deadline - Date.now());
+      if (!this.publishActiveStage(task, "in_progress")) return;
+      task.attempts++;
+      const workspace = await this.deps.worktrees.create(project, task, controller.signal);
+      created = true; task.branch = workspace.branch; task.worktreePath = workspace.path;
+      if (!this.publishActiveStage(task, "in_review")) return;
+      const decision = await verifyMilestone(project, task, this.deps, controller.signal);
+      this.deps.events.onMergeDecision(decision);
+      if (this.bailIfStopRequested(task)) return;
+      task.status = decision.verdict === "approve" ? "done" : "failed";
+      task.statusReason = decision.verdict === "approve" ? `Milestone verified at ${decision.milestoneProof!.headSha.slice(0, 12)}` : `Milestone needs attention: ${decision.reasons.join("; ")}`;
+      this.deps.events.onTaskUpdated(task);
+    } catch (error) {
+      if (!this.bailIfStopRequested(task)) {
+        task.status = "failed";
+        task.statusReason = `Milestone verification stopped: ${error instanceof Error ? error.message : String(error)}`;
+        this.deps.events.onTaskUpdated(task);
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+      this.taskAbortControllers.delete(task.id);
+      this.stopRequested.delete(task.id);
+      if (created && !this.deps.workspaceHeld?.(project, task)) {
+        try { await this.deps.worktrees.remove(project, task); }
+        catch (error) { this.emit("warn", "engine", `Milestone worktree cleanup failed: ${error instanceof Error ? error.message : String(error)}`, task.id); }
+      }
     }
   }
 
@@ -1480,6 +1520,7 @@ export class Orchestrator implements Scheduler {
     // caller (runTask's manual dispatch, and the normal no-block path).
     startModel: ModelId = task.assignedModel,
   ): Promise<void> {
+    if (task.milestone) return this.executeMilestoneTask(project, task);
     const taskController = new AbortController();
     this.taskAbortControllers.set(task.id, taskController);
     const signal = taskController.signal;
@@ -1528,9 +1569,15 @@ export class Orchestrator implements Scheduler {
     }
     this.switchRunningModel(task.id, currentModel);
 
+    let repairTimer: ReturnType<typeof setTimeout> | undefined;
     let preservePreflightWorkspace = true;
     let reservedInvocationId: string | undefined;
     try {
+      if (task.repairFor) {
+        const deadline = this.deps.beforeMilestone?.(task);
+        if (!deadline || deadline <= Date.now()) throw new Error("Milestone repair time budget is exhausted or unavailable.");
+        repairTimer = setTimeout(() => taskController.abort(new Error("Milestone repair time budget exhausted.")), deadline - Date.now());
+      }
       const referenceIssue = this.deps.checkTaskReferences?.(project, task);
       if (referenceIssue) {
         preservePreflightWorkspace = true;
@@ -2075,6 +2122,7 @@ export class Orchestrator implements Scheduler {
       task.statusReason = `Fatal error: ${message}`;
       this.deps.events.onTaskUpdated(task);
     } finally {
+      if (repairTimer) clearTimeout(repairTimer);
       if (this.taskAbortControllers.get(task.id) === taskController) {
         this.taskAbortControllers.delete(task.id);
       }

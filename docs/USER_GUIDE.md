@@ -1423,3 +1423,40 @@ If Docker disappears during a run, the task workspace and account capacity stay
 protected. Inspect the worker in Resources, confirm **Stop and verify**, then
 resolve the held account slot. This targets only containers with matching
 installation/invocation ownership and preserves your task files and login volume.
+
+### Verify a complete brief with milestones
+
+New deconstructed plans include a **Verification milestone** after contributing
+work. Review its criteria and task dependencies in Plan. The milestone runs
+required checks on the combined repository and requests criterion-by-criterion
+review from an independent model. It creates no code change or PR. Select a
+validator different from every contributing author; missing tests or review
+cannot be approved away. You can add or remove verification milestones in the
+editable draft before approval. Large criterion lists are split into explicit
+milestones without dropping criteria.
+
+Review and Board show accepted, pending, checking, stale, unavailable and
+needs-attention outcomes. Review includes the observed revision, original
+criteria, concrete reviewer evidence, check output and contributing tasks.
+A later code merge causes accepted verification work to rejoin the same
+scheduler. Starting a project also rechecks known stale outcomes. A dirty or
+unreadable checkout remains unaccepted. Legacy plans retain their tasks and
+history and explicitly disclose the absence of milestone acceptance.
+
+If integration fails, **Prepare repair draft** creates one repair task and one
+verification task for review in Plan. Apply it through **Review plan changes**.
+The original criteria, brief, scope, dependencies and limits are preserved;
+existing work is never replaced. Finish or clear existing planning work before
+creating this draft. If a contributing task failed, use its existing Retry
+flow first. Failed earlier repair attempts stay in history even when a later
+round succeeds.
+
+Choose limits before approval: repair rounds, total admitted model calls,
+minutes from first verification and observed USD spending. These apply across
+retries, repairs and restarts, including subscription calls. A call admitted
+without final usage still consumes allowance and shows unknown spending.
+Time expiry cancels owned work; observed spending stops new admissions but
+cannot promise a hard cap on an in-flight provider bill. Exhausted limits
+require an explicit new reviewed plan; the app never silently raises them.
+The normal run report and configured Telegram digest include milestone counts
+and outstanding acceptance reasons. No extra manager model polls your work.

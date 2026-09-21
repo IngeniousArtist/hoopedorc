@@ -230,6 +230,15 @@ export class GitServiceImpl implements GitService {
   }
 
   /** VW08: revalidate ownership on every read under the existing Git lock. */
+  async verificationRevision(project: Project, task?: Task, signal?: AbortSignal): Promise<string> {
+    const root = await inspectWorkspaceRoot(project, task);
+    const head = (await git(["rev-parse", "--verify", "HEAD"], root, signal)).trim();
+    const dirty = (await git(["status", "--porcelain", "--untracked-files=normal"], root, signal)).trim();
+    if (!/^[0-9a-f]{40,64}$/.test(head) || dirty) throw new GitOperationError("inspect", "Milestone evidence requires a clean, readable committed workspace.");
+    if (await inspectWorkspaceRoot(project, task) !== root) throw new GitOperationError("inspect", "Workspace ownership changed during milestone verification.");
+    return head;
+  }
+
   async inspectWorkspace(project: Project, task?: Task, file?: { path: string; diff?: boolean }) {
     return this.sharedRepositoryLock.run(project.localPath, async () => {
       const root = await inspectWorkspaceRoot(project, task);

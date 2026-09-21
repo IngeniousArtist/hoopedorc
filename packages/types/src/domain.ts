@@ -1,3 +1,4 @@
+import type { CriterionEvidence, MilestonePolicy, MilestoneProof, MilestoneRepair } from "./milestones";
 // Core domain model for the Hoopedorc orchestrator.
 //
 // THIS FILE IS THE SHARED CONTRACT. The engine, server, adapters, and web app
@@ -137,7 +138,7 @@ export type TaskStatus =
   | "in_review" // implementation done; gates + validator running
   | "changes_requested" // validator asked for fixes; will retry
   | "blocked" // waiting on a dependency or a human decision
-  | "done" // merged to main
+  | "done" // merged to main, or a milestone check passed at its recorded revision
   | "failed"; // exhausted retries / hard failure
 
 /** Every value of TaskStatus, in kanban column order. Single source of truth
@@ -155,6 +156,10 @@ export const TASK_STATUSES: TaskStatus[] = [
 ];
 
 export interface Task {
+  /** Verification-only scheduled work; criteria/dependencies are frozen at approval. */
+  milestone?: MilestonePolicy;
+  /** Append-only work approved for an existing milestone. */
+  repairFor?: MilestoneRepair;
   id: string;
   projectId: string;
   title: string;
@@ -183,7 +188,7 @@ export interface Task {
   branch?: string;
   worktreePath?: string;
   prNumber?: number;
-  /** Author invocations reserved in the current logical run. */
+  /** Author attempts, or milestone verification attempts, in the current logical run. */
   attempts: number;
   /** Immutable operator policy. Engine recovery never changes this value. */
   maxAttempts: number;
@@ -462,6 +467,10 @@ export interface LogEvent {
 
 /** Objective pre-merge gates. ALL must pass for an auto-merge. */
 export interface GateResult {
+  /** Actual gate runtime, not just the requested sandbox policy. */
+  environment?: string;
+  /** Commands that actually ran; absence is legacy/unproven evidence. */
+  executed?: ("typecheck" | "lint" | "build" | "tests")[];
   typecheck: boolean;
   lint: boolean;
   build: boolean;
@@ -483,6 +492,8 @@ export interface GateResult {
 export type MergeVerdict = "approve" | "request_changes" | "escalate";
 
 export interface MergeDecision {
+  criterionEvidence?: CriterionEvidence[];
+  milestoneProof?: MilestoneProof;
   id: string;
   /** Which project this decision belongs to — lets the WS hub scope
    *  merge.decision broadcasts to clients subscribed to this project (see
@@ -617,6 +628,7 @@ export interface AuditEntry {
  * Telegram end-of-run digest.
  */
 export interface RunSummaryDetail {
+  milestones?: { accepted: number; total: number; attention: string[] };
   startedAt: string;
   endedAt: string;
   durationMs: number;

@@ -1,3 +1,4 @@
+import { reserveMilestoneCall } from "./milestones";
 import { createHash } from "node:crypto";
 import { abortableDelay } from "@orc/adapters";
 import { ResourceUnavailableError, type AccountPool, type InvocationAccounting, type InvocationStage, type ModelConfig, type PoolResourceStatus, type RecoverResourceRequest, type ResourceReservation, type ResourcesResponse, type Settings } from "@orc/types";
@@ -77,6 +78,7 @@ export class ResourceManager {
       const effective = { ...settings, models: settings.models.map((item) => item.id === request.model ? model : item) };
       const reason = this.check(request.model, request.stage, effective);
       if (reason) throw new ResourceUnavailableError(reason);
+      reserveMilestoneCall(this.db, request.id, request.taskId, this.now());
       const pool = settings.accountPools?.find((item) => item.id === model.accountPoolId);
       const snapshot = accountingSnapshot(model, pool);
       if (pool) {
