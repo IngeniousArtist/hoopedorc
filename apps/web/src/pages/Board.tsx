@@ -325,7 +325,14 @@ export function Board({
     };
   }, [fetchEstimates, projectId]);
 
+  const logsTaskRef = useRef<string | null>(null);
   useEffect(() => {
+    if (logsTaskRef.current !== selectedTaskId) {
+      logsTaskRef.current = selectedTaskId ?? null;
+      logsOmittedOlderRef.current = false;
+      setLogsOmittedOlder(false);
+      setLogs([]);
+    }
     if (!selectedTaskId) {
       logsOmittedOlderRef.current = false;
       setLogsOmittedOlder(false);
@@ -338,9 +345,6 @@ export function Board({
     async function loadLogs() {
       setLogsLoading(true);
       setLogsError(null);
-      logsOmittedOlderRef.current = false;
-      setLogsOmittedOlder(false);
-      setLogs([]);
       try {
         // Every onLog emission is keyed by task_id regardless of run, so one
         // task-scoped call gets full history after a reload — the old
@@ -350,10 +354,14 @@ export function Board({
           params: { id: selectedTaskId! },
         });
         if (cancelled) return;
-        const bounded = retainNewestTaskLogs(res.logs);
-        logsOmittedOlderRef.current = bounded.omittedOlder;
-        setLogsOmittedOlder(bounded.omittedOlder);
-        setLogs(bounded.logs);
+        setLogs((current) => {
+          const combined = new Map(res.logs.map((log) => [log.id, log]));
+          for (const log of current) combined.set(log.id, log);
+          const bounded = retainNewestTaskLogs([...combined.values()].sort((a, b) => a.ts.localeCompare(b.ts)));
+          logsOmittedOlderRef.current ||= bounded.omittedOlder;
+          setLogsOmittedOlder(logsOmittedOlderRef.current);
+          return bounded.logs;
+        });
       } catch (e) {
         if (!cancelled) setLogsError(e instanceof Error ? e.message : String(e));
       } finally {

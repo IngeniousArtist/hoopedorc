@@ -150,13 +150,6 @@ export function App() {
   // display:none when inactive) so any in-flight chat or deconstruct request
   // finishes even if the user switches tabs before the reply arrives.
   const [planMounted, setPlanMounted] = useState(false);
-  // VW04: the task whose inspector is open on the Board. Owned here so it is
-  // part of the URL (deep links, browser Back closes the inspector, phone
-  // full-screen inspection is a real history entry) instead of transient
-  // Board state.
-  const [boardTaskId, setBoardTaskId] = useState<string | null>(
-    initialHashState?.page === "board" ? (initialHashState.taskId ?? null) : null,
-  );
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
   // U1: global "action required" nav badge — notifications aren't
@@ -178,6 +171,18 @@ export function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () => initialHashState?.projectId ?? localStorage.getItem(STORAGE_KEY) ?? "",
   );
+  // VW04: the task whose inspector is open on the Board. Owned here so it is
+  // part of the URL (deep links, browser Back closes the inspector, phone
+  // full-screen inspection is a real history entry) instead of transient
+  // Board state.
+  const [boardSelection, setBoardSelection] = useState(() => ({
+    projectId: selectedProjectId,
+    taskId: initialHashState?.page === "board" ? (initialHashState.taskId ?? null) : null,
+  }));
+  const boardTaskId = boardSelection.projectId === selectedProjectId ? boardSelection.taskId : null;
+  const setBoardTaskId = useCallback((taskId: string | null) => {
+    setBoardSelection({ projectId: selectedProjectId, taskId });
+  }, [selectedProjectId]);
   // F1: whether to auto-redirect to the onboarding wizard is decided once,
   // right after the first settings+projects load — re-checking on every
   // render would yank the user back to Welcome if they navigate away from it
@@ -224,7 +229,7 @@ export function App() {
       if (next !== "board") setBoardTaskId(null);
       setPage(next);
     },
-    [confirmDiscardSettings, page],
+    [confirmDiscardSettings, page, setBoardTaskId],
   );
 
   // F21: keep the URL hash in sync with (page, selectedProjectId), covering
@@ -256,12 +261,11 @@ export function App() {
 
   // A different project has different tasks: never carry an open inspector
   // across a project switch (the first render keeps a deep-linked task).
-  const inspectedProjectRef = useRef(selectedProjectId);
   useEffect(() => {
-    if (inspectedProjectRef.current === selectedProjectId) return;
-    inspectedProjectRef.current = selectedProjectId;
-    setBoardTaskId(null);
-  }, [selectedProjectId]);
+    if (boardSelection.projectId !== selectedProjectId) {
+      setBoardSelection({ projectId: selectedProjectId, taskId: null });
+    }
+  }, [boardSelection.projectId, selectedProjectId]);
 
   // F21: back/forward (and a hash typed/pasted into an already-open tab —
   // a fresh tab's initial hash is handled once by initialHashState instead)
@@ -289,7 +293,10 @@ export function App() {
       const apply = () => {
         if (parsed.projectId) setSelectedProjectId(parsed.projectId);
         setPage(parsed.page);
-        setBoardTaskId(parsed.page === "board" ? (parsed.taskId ?? null) : null);
+        setBoardSelection({
+          projectId: parsed.projectId ?? selectedProjectId,
+          taskId: parsed.page === "board" ? (parsed.taskId ?? null) : null,
+        });
       };
       if (page === "settings" && settingsDirtyRef.current) {
         history.pushState(null, "", hashFor(page, selectedProjectId));

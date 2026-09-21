@@ -55,9 +55,9 @@ vi.mock("./pages/CostView", () => ({ CostView: () => <div>Costs view</div> }));
 const apiMock = vi.mocked(api);
 const project = { ...projectFixture, id: "proj-route", status: "paused" as const };
 
-function mockApi() {
+function mockApi(projects = [project]) {
   apiMock.mockImplementation(async (key) => {
-    if (key === "listProjects") return { projects: [project] };
+    if (key === "listProjects") return { projects };
     if (key === "listNotifications") return { notifications: [] };
     if (key === "getSettings") return { settings: settingsFixture() };
     throw new Error(`Unexpected API call: ${String(key)}`);
@@ -87,6 +87,25 @@ describe("VW04 task inspector routing", () => {
 
     await user.click(screen.getByRole("button", { name: "Open t-42" }));
     await waitFor(() => expect(location.hash).toBe("#/p/proj-route/board/t-42"));
+  });
+
+  it("retains a task when a hash link changes projects and clears it on a manual switch", async () => {
+    mockApi([project, { ...project, id: "other-project", name: "Other project" }]);
+    history.replaceState(null, "", "/#/p/proj-route/board/t-7");
+    const App = await loadApp();
+    render(<App />);
+    expect(await screen.findByTestId("inspected-task")).toHaveTextContent("t-7");
+    await act(async () => {
+      history.replaceState(null, "", "/#/p/other-project/board/other-task");
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(screen.getByTestId("inspected-task")).toHaveTextContent("other-task");
+    expect(location.hash).toBe("#/p/other-project/board/other-task");
+    const pushes = vi.spyOn(history, "pushState");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Project" }), project.id);
+    expect(screen.getByTestId("inspected-task")).toHaveTextContent("none");
+    expect(pushes.mock.calls.map((call) => call[2])).toEqual(["#/p/proj-route/board"]);
+    pushes.mockRestore();
   });
 
   it("closes the inspector on browser Back and drops it when leaving the board", async () => {

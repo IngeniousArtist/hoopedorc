@@ -693,8 +693,16 @@ test.describe.serial("critical operator workflows", () => {
     expect(saveAttempts).toBe(2);
     await page.unroute(`**/api/projects/${projectId}/plan/save-draft`);
 
-    // Reload restores exactly the acknowledged draft from the server.
+    // The unsent composer is now protected too. Confirm the intentional
+    // reload, then verify the acknowledged task draft survives it.
+    let sawLeavePrompt = false;
+    page.once("dialog", async (dialog) => {
+      expect(dialog.type()).toBe("beforeunload");
+      sawLeavePrompt = true;
+      await dialog.accept();
+    });
     await page.reload();
+    expect(sawLeavePrompt).toBe(true);
     await expect(page.getByLabel("Task 1 title")).toHaveValue(
       "Implement: Add an API health endpoint (edited).",
     );

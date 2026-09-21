@@ -77,13 +77,21 @@ edits on screen with an inline error plus Retry; a stale revision offers a
 session reload instead. Unsaved edits are stashed in memory per project and
 revision when the operator switches projects (one final save is flushed) and
 restored on return only while the server still reports the same revision.
-`plan/commit` sends the exact visible draft and ignores in-flight save
-outcomes; the server's exact-content receipt remains the only commit boundary.
+Draft writes are serialized per project in the web client, including cleanup
+flushes. Generation and approval wait for previous writes; old queued saves
+are discarded, and switch-time flushes never overwrite a successful replacement.
+`plan/commit` sends the exact visible draft after earlier writes settle; a
+failed autosave does not prevent approval. The server's exact-content receipt
+remains the only commit boundary. This queue is client-local, not a cross-tab
+collaboration lock.
 A failed `plan/chat` turn is never merged into the accepted transcript: it
 stays visible with its error, the composer keeps anything typed since, and
 Retry first reads `plan/session` so a turn whose response was lost after the
 server accepted it is adopted from the server instead of being sent twice.
-A `beforeunload` guard is registered only while a turn is unsent or edits
+A failed reconciliation, changed revision, or divergent transcript preserves
+the pending turn and refuses automatic resend. Async results are scoped to
+one session visit, including A → B → A navigation; composer/failed-turn state
+is held per project in memory. A `beforeunload` guard is registered only while a turn is unsent or edits
 are unsaved.
 
 VW03 grounds planning in the repository that actually exists. Before every
@@ -109,7 +117,9 @@ merged, with per-status counts in its header. `plan/chat` and
 `plan/deconstruct` return the inspection as optional `repository`, persist it
 in nullable `projects.planning_repository` (returned by `plan/session`,
 written into the plan-session archive as `- Repository: …`, cleared in the
-final commit transaction). If the clone cannot be prepared or read, the
+final commit transaction). Once a task draft exists, its inspection remains
+the approval baseline; later chat returns its current inspection without
+replacing that baseline. Regenerating the task table refreshes the baseline. If the clone cannot be prepared or read, the
 routes answer `503` with `code: "REPOSITORY_UNAVAILABLE"` and a bounded,
 credential-redacted reason; nothing is persisted, no planner CLI runs, and
 there is no fallback to a temporary directory (the legacy `plan` route keeps
@@ -117,7 +127,10 @@ its documented stub fallback). `plan/commit` re-inspects the clone before a
 first (non-replay) commit and, when HEAD differs from the recorded
 `repository.commit`, refuses with `409` `code: "REPOSITORY_DRIFT"` and
 `details: RepositoryDriftDetails { plannedCommit, currentCommit }` unless the
-request carries `acknowledgeRepositoryDrift: true`; a successful receipt
+request carries `acknowledgeRepositoryDrift: true`. Existing pending receipts
+resume their content-bound durable operation without repeating the drift
+preflight (their own local planning commit may have advanced HEAD before a
+failed push); changed-content retries are still rejected. A successful receipt
 replays without any Git access. Inspection observes the local primary clone
 (it does not fetch), so drift means the clone moved — for example after
 Hoopedorc merged a task — not that origin has unseen commits.

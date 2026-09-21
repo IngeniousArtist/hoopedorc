@@ -848,6 +848,30 @@ describe("VW04 task inspector on the board", () => {
     expect(onSelectTask).toHaveBeenCalledExactlyOnceWith(null);
   });
 
+  it("keeps streamed rows during history loading and retry, without duplicates", async () => {
+    const ready = task("initial", "Initial task");
+    let resolveLogs!: (value: { logs: LogEvent[] }) => void;
+    apiMock.mockImplementation(async (key) => {
+      if (key === "listTasks") return { tasks: [ready] };
+      if (key === "getSettings") return { settings: settingsFixture() };
+      if (key === "costAnalytics") return { totalUsd: 1 };
+      if (key === "estimatePlan") return { tasks: [] };
+      if (key === "taskRollback") return { rollback: null };
+      if (key === "taskLogs") return new Promise<{ logs: LogEvent[] }>((resolve) => { resolveLogs = resolve; });
+      throw new Error(`Unexpected API call: ${String(key)}`);
+    });
+    renderBoard();
+    fireEvent.click(await screen.findByRole("button", { name: "Initial task" }));
+    act(() => wsState.handler?.({ type: "log", payload: inspectorLog(2, ready.id) }));
+    await act(async () => { resolveLogs({ logs: [inspectorLog(1, ready.id)] }); });
+    expect(screen.getAllByTestId("drawer-log").map((row) => row.textContent)).toEqual(["initial line 1", "initial line 2"]);
+    fireEvent.click(screen.getByRole("button", { name: "Reload logs" }));
+    expect(screen.getByText("initial line 2")).toBeVisible();
+    act(() => wsState.handler?.({ type: "log", payload: inspectorLog(3, ready.id) }));
+    await act(async () => { resolveLogs({ logs: [inspectorLog(1, ready.id), inspectorLog(2, ready.id)] }); });
+    expect(screen.getAllByTestId("drawer-log").map((row) => row.textContent)).toEqual(["initial line 1", "initial line 2", "initial line 3"]);
+  });
+
   it("reports a failed log history read in the inspector and recovers on reload", async () => {
     const ready = task("initial", "Initial task");
     let logCalls = 0;

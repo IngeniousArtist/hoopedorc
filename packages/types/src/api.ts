@@ -305,7 +305,7 @@ export interface PlanningSessionResponse {
   planCostUsd: number;
   agentsMd?: string;
   verifiedFigmaReferences?: VerifiedFigmaReference[];
-  /** VW03: the most recent inspection recorded for this session. */
+  /** VW03: generated draft's inspection; latest chat inspection when no draft exists. */
   repository?: RepositoryInspection;
 }
 

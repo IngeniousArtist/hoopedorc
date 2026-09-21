@@ -7892,3 +7892,94 @@ navigation (VW08/VW10 own code and evidence views); settings/setup (VW05).
   tests (30 files, 1 new), 22 Playwright scenarios, `git diff --check`.
 
 Publication: [PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269). Required PR CI must pass before merge; merge/main CI evidence is appended after merge.
+
+
+### VW01–VW04 — integration review and recovery fixes (implemented 2026-09-21)
+
+Review requested after Fable's first four items; includes the unmerged VW04
+inspector in PR #269. Preserve the historical evidence above.
+
+**Acceptance criteria before implementation:**
+
+- Draft writes reach the server in edit order, including project-switch
+  flushes. Generation and approval wait for prior writes; late results cannot
+  overwrite a newer draft or another project's state.
+- Chat retry reconciles the exact revision and conversation. Failed reads,
+  changed revisions, and divergent history preserve the failed message and
+  refuse a blind resend. Already accepted turns are adopted once.
+- Switching projects keeps composer/failed-turn state scoped to its project
+  and resets busy controls; old asynchronous completions cannot populate the
+  new project or a later visit to the same project.
+- Repository drift remains anchored to the generated task draft after further
+  chat. A content-identical pending commit can recover after its own Git
+  commit advances HEAD; changed-content retries remain refused.
+- Cross-project task links retain their selected task; manual project changes
+  clear the inspector without creating invalid task URLs in browser history.
+- Log-history retries retain live lines received while history was loading.
+
+**Dependencies and non-goals:** builds on VW01–VW04 only; no new background
+planner, live plan application, settings redesign, paid model calls, Telegram
+messages, or deployment changes. Live EC2/systemd/model smoke checks are not
+required for this web/planning recovery change. Regression tests, every
+repository gate, responsive browser checks, exact-head PR CI, and independent
+merged verification are required before handoff. Evidence follows below.
+
+
+**Review findings and delivered fixes:**
+
+- VW01's production/mock planning boundary and mock error/Figma paths remain
+  covered by the real route tests; no live model calls were needed.
+- VW02's edit-sequence guard only protected presentation: overlapping requests
+  could persist old edits last. A per-project write queue now orders saves,
+  cleanup flushes, chat, generation, and approval. Session reads wait for
+  outstanding writes without serializing unrelated reads. A newer successful
+  save clears an earlier save error. Replacement outcomes decide whether a
+  switch-time flush should preserve the old edits or leave the generated plan.
+- Retry used to resend after a failed reconciliation or adopt a new revision
+  for old history. It now refuses both, compares assistant content as well as
+  user content, and preserves the turn. Session-visit guards cover generation,
+  commit, attachment, archive, and chat completions; composer text is scoped
+  per project, and an accepted reply completed while away is restored once.
+- VW03's drift preflight mistook its own pending planning commit for external
+  drift after push failure. Existing content-bound receipts resume without
+  repeating that preflight; changed content still fails. Further chat cannot
+  replace the repository observation attached to an existing task draft.
+- VW04's project-change effect cleared a valid cross-project task deep link
+  and briefly generated invalid task URLs on manual changes. Inspector
+  selection now includes its owning project. History reloads merge/deduplicate
+  streamed lines and preserve the bounded buffer during retries.
+- Playwright previously waited only for Vite, causing the first Settings read
+  to receive proxy 500s before the API started. Its readiness URL now checks
+  `/api/health` through the same proxy. The unsent-composer reload scenario
+  explicitly checks and accepts the browser's leave-page prompt.
+
+**Regression evidence:** before fixes, six focused web cases failed (unsafe
+retry variants, cross-project routing/state, and out-of-order save dispatch),
+and both new real-Git route cases failed (draft baseline replacement and
+pending-receipt recovery). Additional tests cover replacement success/failure
+on project switch, adopting a reply while away, newer-save error recovery,
+and live logs arriving during history load/retry.
+
+**Verification:** Node 22.23.0; full gate results and exact-head merge evidence
+are recorded below when publication completes. Manual Chrome verification
+used an isolated in-memory mock server: planning chat → generated tasks →
+edited title → Saved; responsive widths 360, 390, 768, 1280, and 1440 without
+document overflow; visible keyboard focus and phone task controls; phone
+inspector with ‹ Back, live Logs, `/board/t1`, and browser Back returning to
+the board. Automated responsive workflows cover all five widths, confirmations,
+loading/error/success, touch targets, and viewport containment. No real
+EC2/systemd/model/Telegram action was performed or required.
+
+
+**Local gates (all passed, Node 22.23.0):** `npm run typecheck`,
+`npm run build`, `npm run lint` (330 unchanged legacy findings),
+`npm test -w @orc/engine` (234), `npm test -w @orc/adapters` (18),
+`npm test -w @orc/server` (360), `npm run test:web` (148 in 30 files),
+`npm run test:e2e` (22), and `git diff --check`. The first full browser run
+reproduced the API readiness race; all 22 scenarios passed after the health
+probe change and passed again on the final source state.
+
+**Publication:** integration fixes are included in
+[PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269), alongside
+VW04 part 2. Exact-head required CI and merged-commit evidence follow after
+GitHub completes them; no failed required check may be bypassed.

@@ -695,19 +695,26 @@ be sent — the planner CLI is unavailable, the network drops, the server
 refuses — the message stays in the transcript marked **not sent** with the
 error, your history is untouched, and anything you typed since is still in the
 composer. **Retry send** first checks the saved session, so a reply that was
-lost in transit is adopted rather than sent twice; **Edit message** moves the
-text back into the composer above whatever you were typing. Draft edits to the
+lost in transit is adopted rather than sent twice. If that check fails or the
+revision/conversation changed, Retry preserves the message and reports the
+problem without resending. **Edit message** moves the text back into the
+composer above whatever you were typing. Draft edits to the
 task table and AGENTS.md report their real state next to **Approve & Create
 Tasks**: **Unsaved changes**, **Saving…**, **Saved** (only after the server
 acknowledged your newest edit), or **Save failed** with the reason and a
 **Retry save** button. Your edits stay on screen through a failed save, and
 approving always creates tasks from exactly what you see, so a failed
-auto-save never blocks a commit. If the session went stale (another tab
+auto-save failure does not prevent a commit. Saves are sent in order;
+generation and approval wait for earlier writes to settle, and the task table
+is read-only while either operation runs. If the session went stale (another tab
 committed or re-planned), the Plan tab offers **Reload session** instead of
 retrying. Switching projects flushes a final save and keeps any still-unsaved
 edits in memory until you return, as long as the plan has not changed on the
-server; reloading or closing the tab while a message is unsent or edits are
-unsaved triggers the browser's leave-page prompt.
+server. Composer text and failed turns stay with their project; returning
+adopts a reply already saved while you were away. Reloading or closing the tab
+while the composer contains unsent text or edits are unsaved triggers the
+browser's leave-page prompt. These local drafts are held in memory, not
+persisted across browser restarts.
 
 Planning is grounded in the repository that actually exists (VW03). Before
 every planner call Hoopedorc inspects the project's clone and the Plan tab
