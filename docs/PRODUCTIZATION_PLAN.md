@@ -7388,7 +7388,7 @@ advertise pending provider/AWS acceptance as verified.
 | VW15 | Milestone acceptance and bounded replanning | Implementation merged; provider/AWS acceptance pending | PR #281; merge audit below |
 | VW16 | Portable framework/environment profiles | Merged; live acceptance pending | PR #282; evidence below |
 | VW17 | Additional harness compatibility | Merged; live acceptance pending | PR #283; evidence below |
-| VW18 | Optional Jev routing evaluation | Offline tooling implemented; measured benefit/live pilot pending | `vw18-routing-evaluation`; final-wave evidence below |
+| VW18 | Optional Jev routing evaluation | Offline tooling implemented; measured benefit/live pilot pending | [PR #284](https://github.com/IngeniousArtist/hoopedorc/pull/284); final-wave evidence below |
 
 **Release boundary:** first prove an existing-project feature from planning to
 parallel implementation, preview, visual correction, and reviewed integrated
@@ -9128,3 +9128,18 @@ Implementation completion is not production acceptance. See the concise
 [remaining commissioning matrix](specs/commissioning.md) for the real provider
 journey, isolated-worker account, framework image, milestone, Telegram and AWS
 checks. Jev remains off; the synthetic example is not evidence of real savings.
+
+
+Final VW18 diff review identified a draft-recovery edge case: downloading input
+required valid JSON, which was unhelpful when preserving an unfinished malformed
+draft after browser storage failure. Input download now preserves the exact raw
+text. The focused browser regression verifies malformed-input download alongside
+the existing report/retry/reload flow; only affected checks are repeated after
+this small fix, not the comprehensive suite.
+
+
+The comprehensive pass covered `3f65371b929dac864ef41f016a51593b4e391346`'s code.
+The final raw-draft download correction then passed its focused real-browser
+journey (including malformed text preservation), web typecheck, affected-component
+lint and whitespace checks. Required CI runs on the final head; its exact SHA,
+run link and independently verified merge are recorded in PR #284.

@@ -11,9 +11,10 @@ function initialDraft(): Draft {
   return { text: "" };
 }
 const statusLabel = (status: RoutingEvaluationRecord["report"]["status"]) => ({ insufficient_evidence: "More evidence needed", keep_static: "Keep static routing", candidate_for_pilot: "Candidate for a separate pilot" })[status];
-function download(value: unknown, filename: string) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+function downloadText(value: string, filename: string) {
+  const url = URL.createObjectURL(new Blob([value], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+function download(value: unknown, filename: string) { downloadText(JSON.stringify(value, null, 2), filename); }
 const money = (value: number) => `$${value.toFixed(4)}`;
 export function RoutingEvaluationPanel({ active }: { active: boolean }) {
   const [draft, setDraft] = useState<Draft>(initialDraft);
@@ -73,7 +74,7 @@ export function RoutingEvaluationPanel({ active }: { active: boolean }) {
     <p className="text-sm text-neutral-400">Compare recorded Jev choices with static routing, including validation, repairs and classifier overhead. This evaluation is separate from Save Settings. No provider is called and live routing stays unchanged.</p>
     <div className="flex flex-wrap gap-2"><button className={button} disabled={busy} onClick={() => replaceDraft(JSON.stringify(routingEvaluationExample(), null, 2))}>Load synthetic example</button>
       <label className={`${button} inline-flex cursor-pointer items-center focus-within:outline-2 focus-within:outline-blue-400`}>Import dataset<input aria-label="Import routing dataset" type="file" accept=".json,application/json" disabled={busy} className="sr-only" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (!file) return; void importFile(file); }} /></label>
-      <button className={button} disabled={!draft.text.trim()} onClick={() => { try { download(JSON.parse(draft.text) as unknown, "routing-dataset.json"); } catch { setError("Input must be valid JSON before downloading a dataset."); } }}>Download input</button>
+      <button className={button} disabled={!draft.text.trim()} onClick={() => downloadText(draft.text, "routing-dataset.json")}>Download input</button>
     </div>
     <label className="block space-y-2 text-sm"><span>Recorded dataset JSON</span><textarea aria-label="Recorded routing dataset" value={draft.text} disabled={busy} onChange={(e) => saveDraft({ text: e.target.value })} rows={8} maxLength={512_000} spellCheck={false} className="w-full min-w-0 rounded border border-neutral-700 bg-neutral-950 p-3 font-mono text-xs focus-visible:outline-2 focus-visible:outline-blue-400" /></label>
     <p className="text-xs text-neutral-400">Start with the example format. Use held-out tasks and independently reviewed outcomes for both allocations; null means unknown. Imported evidence is operator-supplied, not independently verified by this tool. Drafts are retained in this browser tab.</p>

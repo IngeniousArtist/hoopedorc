@@ -40,8 +40,9 @@ For each item:
 5. Start the next item from the merged result. Do not combine unrelated slices
    into a large rewrite PR.
 
-**Current handoff:** the implementation wave is complete locally. Finish the final
-required CI/PR merge and compare its tree independently. Keep live commissioning
+**Current handoff:** the implementation wave is complete locally. Its final
+[PR #284](https://github.com/IngeniousArtist/hoopedorc/pull/284) records required CI
+and the independent tested/merged-tree audit. Keep live commissioning
 and measured routing follow-up explicit; do not enable Jev from synthetic results.
 The full local suite has passed once at the end of the wave, as requested.
 

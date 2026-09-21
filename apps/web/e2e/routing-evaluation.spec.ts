@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 import type { GetSettingsResponse, RoutingEvaluationsResponse } from "@orc/types";
 import { expectFixedSurfacesInsideViewport, expectNoDocumentOverflow, expectPhoneTouchTargets, TARGET_VIEWPORTS } from "./helpers";
@@ -7,6 +8,7 @@ test("VW18: inspect a synthetic comparison, recover failures and reopen immutabl
   await page.goto("/"); await page.getByRole("button", { name: "Settings", exact: true }).click(); await page.getByRole("tab", { name: "Routing evaluation", exact: true }).click();
   await expect(page.getByRole("button", { name: "Save Settings", exact: true })).not.toBeVisible();
   const input = page.getByLabel("Recorded routing dataset"); await input.fill("invalid JSON"); await page.getByRole("button", { name: "Evaluate and save report" }).click(); await expect(page.getByRole("alert")).toContainText("valid JSON");
+  const draftDownload = page.waitForEvent("download"); await page.getByRole("button", { name: "Download input", exact: true }).click(); expect(await readFile((await (await draftDownload).path())!, "utf8")).toBe("invalid JSON");
   await page.getByRole("button", { name: "Load synthetic example" }).click(); await page.getByRole("button", { name: "Replace draft", exact: true }).focus(); await page.keyboard.press("Enter");
   let fail = true;
   await page.route("**/api/routing/evaluations", (route) => route.request().method() === "POST" && fail ? route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Evaluation temporarily unavailable" }) }) : route.continue());
