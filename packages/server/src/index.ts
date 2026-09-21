@@ -1682,11 +1682,21 @@ async function assembleServer(
     if (revisionErr) {
       return reply.code(revisionErr.status).send({ error: revisionErr.error });
     }
-    savePlanningRevision(id, body!.revisionId!, {
-      prd: body?.prdMarkdown,
-      draftTasks: body?.tasks ?? null,
-      agentsMd: body?.agentsMd,
-    });
+    try {
+      savePlanningRevision(id, body!.revisionId!, {
+        prd: body?.prdMarkdown,
+        draftTasks: body?.tasks ?? null,
+        agentsMd: body?.agentsMd,
+      });
+    } catch (err) {
+      // VW02: a revision that went stale between the guard above and the
+      // conditional UPDATE is a conflict the client can act on (reload the
+      // session), not an internal error.
+      if (err instanceof PlanningRevisionConflictError) {
+        return reply.code(409).send({ error: err.message });
+      }
+      throw err;
+    }
     return { ok: true };
   });
 

@@ -1,5 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { expectNoDocumentOverflow, presentProjectAsPaused } from "./helpers";
+import {
+  expectFixedSurfacesInsideViewport,
+  expectNoDocumentOverflow,
+  expectPhoneTouchTargets,
+  presentProjectAsPaused,
+} from "./helpers";
 
 test.describe.serial("critical operator workflows", () => {
   const projectId = "proj-hoopedorc";
@@ -487,5 +492,112 @@ test.describe.serial("critical operator workflows", () => {
 
     expect(planRequests).toContain(`POST /api/projects/${projectId}/plan/chat`);
     expect(planRequests).toContain(`POST /api/projects/${projectId}/plan/deconstruct`);
+  });
+
+  // Runs after the VW01 scenario: the seed project is already paused and the
+  // planning session already holds a transcript and a draft table.
+  test("VW02: planning input survives an injected send failure and saves report the truth", async ({
+    page,
+  }) => {
+    await page.goto(`/#/p/${projectId}/board`);
+    const pause = page.getByRole("button", { name: "⏸ Pause (finish current)" });
+    const resume = page.getByRole("button", { name: "Resume" });
+    await expect(pause.or(resume)).toBeVisible();
+    if (await pause.isVisible()) await pause.click();
+    await expect(resume).toBeVisible();
+
+    // One injected 502 on the real chat route, then the mock planner answers.
+    let chatAttempts = 0;
+    await page.route(`**/api/projects/${projectId}/plan/chat`, async (route) => {
+      chatAttempts += 1;
+      if (chatAttempts === 1) {
+        await route.fulfill({
+          status: 502,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "planner chat failed: injected outage" }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto(`/#/p/${projectId}/plan`);
+    const composer = page.getByLabel("Planning message");
+    await composer.fill("Add request logging.");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+
+    const pendingTurn = page.getByTestId("pending-turn");
+    await expect(pendingTurn).toContainText("Add request logging.");
+    await expect(pendingTurn.getByRole("alert")).toContainText("injected outage");
+    await expect(page.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
+    // The failed-turn state must stay contained and tappable at every width.
+    for (const width of [360, 768, 1440] as const) {
+      await page.setViewportSize({ width, height: width === 360 ? 800 : 900 });
+      await expect(pendingTurn.getByRole("button", { name: "Retry send" })).toBeVisible();
+      await expectNoDocumentOverflow(page);
+      await expectFixedSurfacesInsideViewport(page);
+      if (width === 360) await expectPhoneTouchTargets(page);
+    }
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await composer.fill("Also add a test.");
+    await pendingTurn.getByRole("button", { name: "Retry send" }).click();
+
+    await expect(pendingTurn).toHaveCount(0);
+    await expect(page.getByText("Brief: Add request logging.").first()).toBeVisible();
+    await expect(composer).toHaveValue("Also add a test.");
+    expect(chatAttempts).toBe(2);
+    await page.unroute(`**/api/projects/${projectId}/plan/chat`);
+
+    // One injected save failure on the real save-draft route, then retry.
+    let saveAttempts = 0;
+    await page.route(`**/api/projects/${projectId}/plan/save-draft`, async (route) => {
+      saveAttempts += 1;
+      if (saveAttempts === 1) {
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "injected save outage" }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+    await page
+      .getByRole("button", { name: /Generate task table →|Re-generate task table/ })
+      .click();
+    const firstTitle = page.getByLabel("Task 1 title");
+    await expect(firstTitle).toHaveValue("Implement: Add an API health endpoint.");
+    const status = page.getByTestId("draft-save-status");
+    await expect(status).toHaveText("Edits are saved automatically.");
+
+    await firstTitle.fill("Implement: Add an API health endpoint (edited).");
+    await expect(status).toHaveText("Save failed");
+    const saveAlert = page.getByRole("alert").filter({ hasText: "Draft save failed" });
+    await expect(saveAlert).toContainText("injected save outage");
+    await expect(firstTitle).toHaveValue("Implement: Add an API health endpoint (edited).");
+    // The save-failed state must stay contained and tappable at every width.
+    for (const width of [360, 768, 1440] as const) {
+      await page.setViewportSize({ width, height: width === 360 ? 800 : 900 });
+      await expect(saveAlert.getByRole("button", { name: "Retry save" })).toBeVisible();
+      await expectNoDocumentOverflow(page);
+      await expectFixedSurfacesInsideViewport(page);
+      if (width === 360) await expectPhoneTouchTargets(page);
+    }
+    await page.setViewportSize({ width: 1280, height: 800 });
+
+    await saveAlert.getByRole("button", { name: "Retry save" }).click();
+    await expect(status).toHaveText("Saved");
+    await expect(saveAlert).toHaveCount(0);
+    expect(saveAttempts).toBe(2);
+    await page.unroute(`**/api/projects/${projectId}/plan/save-draft`);
+
+    // Reload restores exactly the acknowledged draft from the server.
+    await page.reload();
+    await expect(page.getByLabel("Task 1 title")).toHaveValue(
+      "Implement: Add an API health endpoint (edited).",
+    );
+    await expect(page.getByTestId("draft-save-status")).toHaveText(
+      "Edits are saved automatically.",
+    );
   });
 });
