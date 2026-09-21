@@ -121,6 +121,29 @@ function parseEvent(payload: string): ServerEvent {
   return JSON.parse(payload) as ServerEvent;
 }
 
+test("VW06: planning updates reach only the subscribed project", () => {
+  const hub = new WsHub();
+  const owner = new FakeSocket();
+  const other = new FakeSocket();
+  const unselected = new FakeSocket();
+  subscribe(hub, owner, "project-1");
+  subscribe(hub, other, "project-2");
+  hub.add(unselected as unknown as WebSocket);
+  const event: ServerEvent = {
+    type: "planning.updated",
+    payload: {
+      id: "operation-1", projectId: "project-1", revisionId: "revision-1",
+      kind: "chat", state: "running", createdAt: "2026-09-21T00:00:00Z",
+      input: { revisionId: "revision-1", messages: [{ role: "user", content: "Private brief" }] },
+      invocationIds: [],
+    },
+  };
+  hub.broadcast(event);
+  assert.deepEqual(owner.sent.map(parseEvent), [event]);
+  assert.deepEqual(other.sent, []);
+  assert.deepEqual(unselected.sent, []);
+});
+
 test("O12: a slow client closes before an event is skipped while healthy clients continue", () => {
   const hub = new WsHub();
   const slow = new FakeSocket();

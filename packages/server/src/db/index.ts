@@ -80,6 +80,34 @@ const O15_TELEGRAM_INBOX_MIGRATION = `
   );
 `;
 
+// VW06: repeat idempotent DDL for existing databases as well as fresh installs.
+const VW06_PLANNING_MIGRATION = `
+-- VW06: immutable requests and atomic transcript/draft finalization.
+CREATE TABLE IF NOT EXISTS planning_operations (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  revision_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('chat', 'deconstruct')),
+  state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'cancelling', 'succeeded', 'failed', 'interrupted', 'cancelled')),
+  input_json TEXT NOT NULL,
+  retry_of TEXT UNIQUE REFERENCES planning_operations(id),
+  result_json TEXT,
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  ended_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_planning_operations_active
+  ON planning_operations(project_id) WHERE state IN ('queued', 'running', 'cancelling');
+CREATE INDEX IF NOT EXISTS idx_planning_operations_revision
+  ON planning_operations(project_id, revision_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS planning_operation_invocations (
+  operation_id TEXT NOT NULL REFERENCES planning_operations(id) ON DELETE CASCADE,
+  invocation_id TEXT NOT NULL UNIQUE REFERENCES model_invocations(id) ON DELETE CASCADE,
+  PRIMARY KEY (operation_id, invocation_id)
+);
+`;
+
 export type Db = Database.Database;
 
 export function openDb(path: string = ENV.dbPath): Db {
@@ -99,6 +127,7 @@ export function initDb(path: string = ENV.dbPath): Db {
   // Safe column migrations for existing databases (SQLite ignores IF NOT EXISTS
   // on ALTER TABLE, so we catch the "duplicate column" error instead).
   for (const col of [
+    "ALTER TABLE projects ADD COLUMN planning_version INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE projects ADD COLUMN planning_messages TEXT",
     "ALTER TABLE projects ADD COLUMN planning_prd TEXT",
     "ALTER TABLE projects ADD COLUMN planning_draft_tasks TEXT",
@@ -373,5 +402,13 @@ export function initDb(path: string = ENV.dbPath): Db {
     const normalized = normalizeSettings(JSON.parse(settingsRow.json) as unknown);
     db.prepare("UPDATE settings SET json = ? WHERE id = 1").run(JSON.stringify(normalized));
   }
+  db.exec(VW06_PLANNING_MIGRATION);
+  // No CLI can be resumed by restoring an in-memory Promise. Keep the input,
+  // settle orphaned ownership, and require an explicit, separately counted retry.
+  db.prepare(`UPDATE planning_operations SET state = 'interrupted', ended_at = ?,
+    error_json = ? WHERE state IN ('queued', 'running', 'cancelling')`).run(
+      new Date().toISOString(),
+      JSON.stringify({ message: 'Planning was interrupted by a server restart. Retry starts a new model attempt.', status: 409, code: 'PLANNING_INTERRUPTED' }),
+    );
   return db;
 }

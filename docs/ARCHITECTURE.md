@@ -126,6 +126,20 @@ pass the result into the prompts, persist it with the planning session, and
 refuse a drifted commit until the operator acknowledges it. An unreachable
 clone is a typed `503`, never a temporary-directory planner run.
 
+VW06 moves chat/deconstruction lifetime into `planning-operations.ts`. SQLite
+reserves immutable requests and one active owner per project before the
+existing background-operation manager runs `PlanningService`. HTTP requests
+only submit or observe; closing a tab does not cancel the server's controller.
+Explicit cancellation and graceful shutdown settle the existing managed CLI
+process group. Additive migrations retain drafts and mark orphaned operation
+rows interrupted on startup. Recovery is explicit retry with a new invocation,
+not CLI-session resume. Each invocation is linked transactionally to the
+operation; successful result and version-checked session update commit together.
+The engine's runtime, dispatch, and rollback entry points refuse active planning;
+planning refuses runtime activity. REST and project-scoped `planning.updated`
+snapshots expose the same state to the workbench. The legacy one-shot `/plan`
+route retains its request lifetime and cannot overlap durable planning.
+
 Gate scripts, dependency installs, and structured project setup run through
 `@orc/engine`'s Docker sandbox (`sandbox.ts`) when a daemon is reachable — a
 disposable `docker run --rm` per command, mounting only the task's worktree

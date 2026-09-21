@@ -717,7 +717,37 @@ session—it receives a reload-the-session error. After a successful commit, the
 next planning iteration receives a new revision ID, so intentionally planning
 another identical batch remains possible.
 
-Planning work also survives ordinary failures (VW02). If a chat message cannot
+The Plan workbench (VW06) places conversation beside the editable **Planning
+brief**, task outline, and project guidance on wide screens, and stacks them on
+smaller screens. Review and edit the brief directly; saves show their actual
+state. Generation saves your latest draft before asking the model to replace
+it, so cancellation preserves those edits.
+
+Accepted chat and task generation keep running when you navigate away or lose
+your browser connection. Return to Plan to see progress or the saved result.
+A connection warning means status is temporarily unavailable, not that the
+model stopped. **Cancel planning** asks for inline confirmation and remains
+cancelling until the child process group has stopped. A failed or interrupted
+operation keeps its request and previous draft; **Retry planning** starts a new
+model attempt and may incur another charge. Repeating that retry request does
+not duplicate the attempt. Changing the draft in another tab makes the old
+request stale; reload and submit a new request against the current draft.
+
+On server restart, unfinished operations become interrupted and never restart
+model spending automatically. Graceful shutdown settles managed CLIs, and the
+production systemd service uses its control group to stop child processes.
+Force-killing only a local server process is different: check for and stop any
+orphaned planner CLI before retrying. This feature does not resume a killed
+CLI session. Local fake-CLI checks cover disconnect, graceful restart, and
+process-group cancellation; a live EC2/paid-model smoke remains outstanding.
+
+Two tabs cannot silently overwrite each other's edits when using this
+workbench. A stale save offers **Reload session** and preserves the rejected
+edits in a **Recovered conflicting edits** copy, alongside the current server
+draft. Copy anything you need before leaving the browser. This recovery copy
+is held in memory, not durable browser storage.
+
+The existing send recovery remains available (VW02). If a chat message cannot
 be sent — the planner CLI is unavailable, the network drops, the server
 refuses — the message stays in the transcript marked **not sent** with the
 error, your history is untouched, and anything you typed since is still in the
@@ -726,12 +756,12 @@ lost in transit is adopted rather than sent twice. If that check fails or the
 revision/conversation changed, Retry preserves the message and reports the
 problem without resending. **Edit message** moves the text back into the
 composer above whatever you were typing. Draft edits to the
-task table and AGENTS.md report their real state next to **Approve & Create
+brief, task table, and AGENTS.md report their real state next to **Approve & Create
 Tasks**: **Unsaved changes**, **Saving…**, **Saved** (only after the server
 acknowledged your newest edit), or **Save failed** with the reason and a
 **Retry save** button. Your edits stay on screen through a failed save, and
 approving always creates tasks from exactly what you see, so a failed
-auto-save failure does not prevent a commit. Saves are sent in order;
+auto-save does not prevent a commit. Saves are sent in order;
 generation and approval wait for earlier writes to settle, and the task table
 is read-only while either operation runs. If the session went stale (another tab
 committed or re-planned), the Plan tab offers **Reload session** instead of

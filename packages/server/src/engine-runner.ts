@@ -1,3 +1,4 @@
+import { activePlanningOperation } from "./planning-operations";
 import {
   GateRunnerImpl,
   GitServiceImpl,
@@ -1126,6 +1127,7 @@ export class EngineRunner {
    * is installed before any async work begins, closing the check-then-create
    * race between Start, manual Dispatch, and Stop. */
   private createRuntime(project: Project, autonomous: boolean): ProjectRuntime {
+    if (activePlanningOperation(this.db, project.id)) throw new Error("planning is active — wait for it to settle before running tasks");
     const runtime: ProjectRuntime = {
       generation: this.nextRuntimeGeneration++,
       orchestrator: this.buildOrchestrator(project),
@@ -1326,6 +1328,7 @@ export class EngineRunner {
   /** Persist and prioritize a task through the project's one scheduler. */
   async dispatchOne(project: Project, taskId: string): Promise<Task> {
     this.assertAcceptingWork();
+    if (activePlanningOperation(this.db, project.id)) throw new Error("planning is active — wait for it to settle before dispatching");
     if (this.rollbackByProject.has(project.id)) {
       throw new Error("a rollback is active for this project");
     }
@@ -1919,6 +1922,7 @@ export class EngineRunner {
   /** Persist and start a gated rollback PR. Duplicate calls return one job. */
   async rollback(project: Project, task: Task): Promise<RollbackJob> {
     this.assertAcceptingWork();
+    if (activePlanningOperation(this.db, project.id)) throw new Error("planning is active — wait for it to settle before rollback");
     if (task.prNumber == null) {
       throw new Error("task has no merged PR to roll back");
     }

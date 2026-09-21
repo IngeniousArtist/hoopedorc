@@ -237,6 +237,9 @@ function planningSessionAssignments(opts: PlanningSessionUpdate): {
     sets.push("planning_revision_id = ?");
     vals.push(opts.revisionId ?? null);
   }
+  if (opts.messages !== undefined || opts.prd !== undefined || opts.draftTasks !== undefined || opts.agentsMd !== undefined) {
+    sets.push("planning_version = planning_version + 1");
+  }
   return { sets, vals };
 }
 
@@ -257,14 +260,16 @@ export function savePlanningSessionForRevision(
   projectId: string,
   revisionId: string,
   opts: PlanningSessionUpdate,
+  expectedVersion?: number,
 ): boolean {
   const { sets, vals } = planningSessionAssignments(opts);
   if (sets.length === 0) return false;
   vals.push(projectId, revisionId);
+  if (expectedVersion !== undefined) vals.push(expectedVersion);
   const result = db
     .prepare(
       `UPDATE projects SET ${sets.join(", ")}
-       WHERE id = ? AND planning_revision_id = ?`,
+       WHERE id = ? AND planning_revision_id = ?${expectedVersion !== undefined ? " AND planning_version = ?" : ""}`,
     )
     .run(...vals);
   return result.changes === 1;
@@ -300,6 +305,7 @@ export function getPlanningSession(
   db: Db,
   projectId: string,
 ): {
+  sessionVersion: number;
   messages: PlanChatMessage[];
   prd?: string;
   draftTasks?: DraftTask[];
@@ -311,10 +317,11 @@ export function getPlanningSession(
 } {
   const row = db
     .prepare(
-      "SELECT planning_messages, planning_prd, planning_draft_tasks, planning_agents_md, planning_figma_refs, planning_repository, planning_session_file, planning_revision_id FROM projects WHERE id = ?",
+      "SELECT planning_version, planning_messages, planning_prd, planning_draft_tasks, planning_agents_md, planning_figma_refs, planning_repository, planning_session_file, planning_revision_id FROM projects WHERE id = ?",
     )
     .get(projectId) as
     | {
+        planning_version: number;
         planning_messages: string | null;
         planning_prd: string | null;
         planning_draft_tasks: string | null;
@@ -325,8 +332,9 @@ export function getPlanningSession(
         planning_revision_id: string | null;
       }
     | undefined;
-  if (!row) return { messages: [] };
+  if (!row) return { messages: [], sessionVersion: 0 };
   return {
+    sessionVersion: row.planning_version,
     messages: row.planning_messages ? (JSON.parse(row.planning_messages) as PlanChatMessage[]) : [],
     prd: row.planning_prd ?? undefined,
     draftTasks: row.planning_draft_tasks ? (JSON.parse(row.planning_draft_tasks) as DraftTask[]) : undefined,
