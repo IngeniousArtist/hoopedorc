@@ -18,6 +18,27 @@ describe("application deep links", () => {
     expect(parseHash("#/p/proj-1")).toBeNull();
     expect(parseHash("#/welcome")).toBeNull();
     expect(parseHash("#/totally-unknown")).toBeNull();
+    expect(parseHash("#/settings/extra")).toBeNull();
+    expect(parseHash("#/p/proj-1/plan/task-1")).toBeNull();
+    expect(parseHash("#/p/proj-1/board/task-1/more")).toBeNull();
+    expect(parseHash("#/p/proj-1/board/")).toEqual({ page: "board", projectId: "proj-1" });
+  });
+
+  it("VW04: round-trips a task inspector deep link on the board only", () => {
+    expect(hashFor("board", "proj-1", "task-1")).toBe("#/p/proj-1/board/task-1");
+    expect(parseHash("#/p/proj-1/board/task-1")).toEqual({
+      page: "board",
+      projectId: "proj-1",
+      taskId: "task-1",
+    });
+    expect(parseHash(hashFor("board", "proj-1", "id with/slash"))).toEqual({
+      page: "board",
+      projectId: "proj-1",
+      taskId: "id with/slash",
+    });
+    expect(hashFor("board", "proj-1", null)).toBe("#/p/proj-1/board");
+    expect(hashFor("costs", "proj-1", "task-1")).toBe("#/p/proj-1/costs");
+    expect(parseHash("#/p/proj-1/board/%E0%A4%A")).toBeNull();
   });
 
   it("names the keyed Board independently from sibling project views", () => {

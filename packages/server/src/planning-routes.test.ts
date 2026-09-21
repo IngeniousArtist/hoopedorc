@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import type { DraftTask, RepositoryInspection, VerifiedFigmaReference } from "@orc/types";
+import type { DraftTask, PlanChatResponse, PlanDeconstructResponse, RepositoryInspection, VerifiedFigmaReference } from "@orc/types";
 import { defaultSettings, ENV } from "./config.js";
 import { initDb } from "./db/index.js";
 import * as repo from "./db/repo.js";
@@ -784,6 +784,80 @@ test("VW03: a plan drafted against an older revision is refused until acknowledg
     assert.equal(replayed.statusCode, 200, replayed.body);
     assert.deepEqual(replayed.json(), accepted.json());
     assert.equal(gitCommits, 1);
+  } finally {
+    await app.close();
+    fx.restore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test("VW03 review: further chat cannot rebase the repository observation of an existing draft", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-draft-observation-"));
+  const localPath = join(root, "clone");
+  const planned = await committedRepo(localPath, { "src/app.py": "print('hello')" });
+  const fx = fixture({ mock: false, localPath });
+  const app = await buildApp(fx.deps);
+  try {
+    const revisionId = await currentRevision(app);
+    const messages = [{ role: "user", content: "Add logging" }];
+    const generated = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/deconstruct`, payload: { revisionId, messages } });
+    assert.equal(generated.statusCode, 200, generated.body);
+    writeFileSync(join(localPath, "src/app.py"), "print('changed')");
+    await gitIn(localPath, ["add", "src/app.py"]);
+    await gitIn(localPath, ["commit", "--quiet", "-m", "external change"]);
+    const chat = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/chat`, payload: { revisionId, messages } });
+    assert.equal(chat.statusCode, 200, chat.body);
+    assert.notEqual(chat.json<PlanChatResponse>().repository?.commit, planned, "chat inspects the current repository");
+    assert.equal(repo.getPlanningSession(fx.deps.db, PROJECT_ID).repository?.commit, planned, "draft stays anchored to its original observation");
+    const committed = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/commit`, payload: { revisionId, ...generated.json<PlanDeconstructResponse>() } });
+    assert.equal(committed.statusCode, 409, committed.body);
+    assert.equal(committed.json<{ code: string }>().code, "REPOSITORY_DRIFT");
+  } finally {
+    await app.close();
+    fx.restore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("VW03 review: retry recovers a pending receipt after its own Git commit advances HEAD", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-pending-drift-"));
+  const localPath = join(root, "clone");
+  await committedRepo(localPath, { "src/app.py": "print('hello')" });
+  const fx = fixture({ mock: false, localPath });
+  let attempts = 0;
+  let planningHead = "";
+  fx.deps.planningGitPersistence = {
+    async commitFiles() {
+      attempts++;
+      if (attempts === 1) {
+        await gitIn(localPath, ["add", "-A"]);
+        await gitIn(localPath, ["commit", "--quiet", "-m", "durable planning commit"]);
+        planningHead = await gitIn(localPath, ["rev-parse", "HEAD"]);
+        throw new Error("push temporarily unavailable");
+      }
+      assert.equal(await gitIn(localPath, ["rev-parse", "HEAD"]), planningHead);
+    },
+  };
+  const app = await buildApp(fx.deps);
+  try {
+    const revisionId = await currentRevision(app);
+    const generated = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/deconstruct`, payload: { revisionId, messages: [{ role: "user", content: "Add logging" }] } });
+    assert.equal(generated.statusCode, 200, generated.body);
+    const payload = { revisionId, ...generated.json<PlanDeconstructResponse>() };
+    const first = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/commit`, payload });
+    assert.equal(first.statusCode, 502, first.body);
+    assert.equal(repo.getPlanningCommitReceipt(fx.deps.db, PROJECT_ID, revisionId)?.state, "pending");
+    const changed = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/commit`, payload: { ...payload, prdMarkdown: "Different content" } });
+    assert.equal(changed.statusCode, 409, changed.body);
+    assert.equal(attempts, 1);
+    const retried = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/commit`, payload });
+    assert.equal(retried.statusCode, 200, retried.body);
+    const replayed = await app.inject({ method: "POST", url: `/api/projects/${PROJECT_ID}/plan/commit`, payload });
+    assert.equal(replayed.statusCode, 200, replayed.body);
+    assert.deepEqual(replayed.json(), retried.json());
+    assert.equal(attempts, 2);
+    assert.equal(repo.getTasks(fx.deps.db, PROJECT_ID).length, payload.tasks.length);
   } finally {
     await app.close();
     fx.restore();

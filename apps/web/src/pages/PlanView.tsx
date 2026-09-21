@@ -29,6 +29,7 @@ import { ModelSelect } from "../components/ModelSelect";
 import { useToast } from "../hooks/useToast";
 import { useWS } from "../hooks/useWS";
 import { formatUsd } from "../lib/format";
+import { afterPlanningWrites, queuePlanningWrite } from "../lib/planningWrites";
 
 const DIFFICULTIES: Difficulty[] = ["easy", "medium", "hard"];
 
@@ -283,6 +284,27 @@ export function PlanView({
     error: string | null;
   } | null>(null);
 
+  // A switch-time flush must wait for replacement: save the old edits if it
+  // fails, but never overwrite a successfully generated/committed draft.
+  const replacementRef = useRef<{
+    projectId: string;
+    settled: Promise<boolean>;
+    finish: (replaced: boolean) => void;
+  } | null>(null);
+  function beginReplacement() {
+    let finish!: (replaced: boolean) => void;
+    const settled = new Promise<boolean>((resolve) => { finish = resolve; });
+    const replacement = { projectId, settled, finish };
+    replacementRef.current = replacement;
+    return replacement;
+  }
+
+  const chatDraftRef = useRef({ projectId, input, pendingTurn, revisionId, messages });
+  const chatDraftsRef = useRef(new Map<string, typeof chatDraftRef.current>());
+  useEffect(() => {
+    chatDraftRef.current = { projectId, input, pendingTurn, revisionId, messages };
+  }, [projectId, input, pendingTurn, revisionId, messages]);
+
   useEffect(() => {
     draftRef.current = {
       projectId,
@@ -322,6 +344,7 @@ export function PlanView({
     // The stash Map itself is stable; a local copy keeps the cleanup honest
     // about which container it consults (react-hooks/exhaustive-deps).
     const unsavedDrafts = unsavedDraftsRef.current;
+    const chatDrafts = chatDraftsRef.current;
     const loadGeneration = ++loadGenerationRef.current;
     setLoading(true);
     setCommitted(null);
@@ -343,13 +366,18 @@ export function PlanView({
     setSaveError(null);
     setDraftNotice(null);
     setPendingTurn(null);
+    setInput("");
+    setChatting(false);
+    setDeconstructing(false);
+    setCommitting(false);
+    setUploading(false);
     setRepository(null);
     setRepositoryDrift(null);
     const authorityAtRequest = projectAuthorityRef.current;
     const request = { params: { id: projectId }, signal: controller.signal };
     Promise.all([
       api<GetProjectResponse>("getProject", request),
-      api<PlanningSessionResponse>("planSession", request),
+      afterPlanningWrites(projectId, () => api<PlanningSessionResponse>("planSession", request)),
       api<GetSettingsResponse>("getSettings", { signal: controller.signal }),
       api<ListPlanAttachmentsResponse>("listPlanAttachments", request),
       api<ListPlanSessionArchivesResponse>("planSessionArchives", request),
@@ -367,13 +395,36 @@ export function PlanView({
         );
         setArchives(archivesRes.sessions);
         // Strip [PLAN_COMPLETE] tokens from restored messages and detect readiness.
+        let ready = false;
         const cleaned = sessionRes.messages.map((m) => {
           if (m.role !== "assistant") return m;
-          const { content, ready } = extractPlanComplete(m.content);
-          if (ready) setPlannerReady(true);
-          return { ...m, content };
+          const extracted = extractPlanComplete(m.content);
+          ready = extracted.ready;
+          return { ...m, content: extracted.content };
         });
         setMessages(cleaned);
+        setPlannerReady(ready);
+        const chatDraft = chatDrafts.get(projectId);
+        chatDrafts.delete(projectId);
+        if (chatDraft) {
+          setInput(chatDraft.input);
+          if (chatDraft.pendingTurn) {
+            const accepted = sessionRes.revisionId === chatDraft.revisionId &&
+              cleaned.length === chatDraft.messages.length + 2 &&
+              chatDraft.messages.every((m, i) => cleaned[i]?.role === m.role && cleaned[i]?.content === m.content) &&
+              cleaned[chatDraft.messages.length]?.role === "user" &&
+              cleaned[chatDraft.messages.length]?.content === chatDraft.pendingTurn.content &&
+              cleaned.at(-1)?.role === "assistant";
+            if (accepted) {
+              setPendingTurn(null);
+            } else if (chatDraft.revisionId === sessionRes.revisionId) {
+              setPendingTurn({ ...chatDraft.pendingTurn, error: "Check the server before retrying this interrupted turn." });
+            } else {
+              setInput([chatDraft.pendingTurn.content, chatDraft.input].filter(Boolean).join("\n\n"));
+              setDraftNotice("The planning revision changed. Your unsent message is preserved in the composer for review.");
+            }
+          }
+        }
         setRevisionId(sessionRes.revisionId);
         setPlanCost(sessionRes.planCostUsd);
         setVerifiedFigmaReferences(sessionRes.verifiedFigmaReferences ?? []);
@@ -418,6 +469,9 @@ export function PlanView({
       });
     return () => {
       controller.abort();
+      loadGenerationRef.current += 1;
+      const chatDraft = chatDraftRef.current;
+      if (chatDraft.projectId === projectId) chatDrafts.set(projectId, chatDraft);
       // VW02: leaving this project (switch, reload, unmount) must not lose
       // edits the server has not acknowledged. Invalidate in-flight results
       // for the UI, stash the draft for a return visit, and flush one final
@@ -442,14 +496,18 @@ export function PlanView({
           tasks: draft.tasks,
         };
         unsavedDrafts.set(projectId, stash);
-        api<SaveDraftResponse>("planSaveDraft", {
-          params: { id: projectId },
-          body: {
-            revisionId: stash.revisionId,
-            prdMarkdown: stash.prd ?? "",
-            tasks: draftTasksFromUi(stash.tasks),
-            agentsMd: stash.agentsMd ?? "",
-          },
+        const replacement = replacementRef.current?.projectId === projectId ? replacementRef.current : null;
+        queuePlanningWrite(projectId, async () => {
+          if (replacement && await replacement.settled) return;
+          return api<SaveDraftResponse>("planSaveDraft", {
+            params: { id: projectId },
+            body: {
+              revisionId: stash.revisionId,
+              prdMarkdown: stash.prd ?? "",
+              tasks: draftTasksFromUi(stash.tasks),
+              agentsMd: stash.agentsMd ?? "",
+            },
+          });
         })
           .then(() => {
             if (unsavedDrafts.get(projectId) === stash) {
@@ -469,6 +527,7 @@ export function PlanView({
   // shouldn't block the chat itself.
   async function handleAttachFiles(files: FileList | null) {
     if (!projectId || !files || files.length === 0) return;
+    const generation = loadGenerationRef.current;
     setUploading(true);
     try {
       for (const file of Array.from(files)) {
@@ -476,25 +535,29 @@ export function PlanView({
           "uploadPlanAttachment",
           { params: { id: projectId }, file },
         );
+        if (loadGenerationRef.current !== generation) return;
         setAttachments(res.attachments);
       }
     } catch (e) {
-      toast(String(e), "error");
+      if (loadGenerationRef.current === generation) toast(String(e), "error");
     } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      if (loadGenerationRef.current === generation) {
+        setUploading(false);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      }
     }
   }
 
   async function removeAttachment(name: string) {
     if (!projectId) return;
+    const generation = loadGenerationRef.current;
     try {
       const res = await api<ListPlanAttachmentsResponse>("deletePlanAttachment", {
         params: { id: projectId, name },
       });
-      setAttachments(res.attachments);
+      if (loadGenerationRef.current === generation) setAttachments(res.attachments);
     } catch (e) {
-      toast(String(e), "error");
+      if (loadGenerationRef.current === generation) toast(String(e), "error");
     }
   }
 
@@ -518,22 +581,27 @@ export function PlanView({
     if (!draft.projectId || !draft.revisionId || !draft.tasks || draft.committed) {
       return;
     }
+    const draftTasks = draftTasksFromUi(draft.tasks);
     const generation = saveGenerationRef.current;
     requestedSeqRef.current = Math.max(requestedSeqRef.current, seq);
     setSavesInFlight((count) => count + 1);
     setSaveError(null);
-    api<SaveDraftResponse>("planSaveDraft", {
-      params: { id: draft.projectId },
-      body: {
-        revisionId: draft.revisionId,
-        prdMarkdown: draft.prd ?? "",
-        tasks: draftTasksFromUi(draft.tasks),
-        agentsMd: draft.agentsMd ?? "",
-      },
+    queuePlanningWrite(draft.projectId, async () => {
+      if (generation !== saveGenerationRef.current) return;
+      return api<SaveDraftResponse>("planSaveDraft", {
+        params: { id: draft.projectId },
+        body: {
+          revisionId: draft.revisionId,
+          prdMarkdown: draft.prd ?? "",
+          tasks: draftTasks,
+          agentsMd: draft.agentsMd ?? "",
+        },
+      });
     })
       .then(() => {
         if (generation !== saveGenerationRef.current) return;
         setSavedSeq((prev) => Math.max(prev, seq));
+        setSaveError(null);
       })
       .catch((e: unknown) => {
         if (generation !== saveGenerationRef.current) return;
@@ -552,7 +620,7 @@ export function PlanView({
   // Debounced auto-save of operator edits only (loads and deconstruction
   // results are already persisted server-side and never mark the draft dirty).
   useEffect(() => {
-    if (committed || !tasks || !revisionId || editSeq <= savedSeq) return;
+    if (loading || deconstructing || committing || committed || !tasks || !revisionId || editSeq <= savedSeq) return;
     if (editSeq <= requestedSeqRef.current) return;
     if (saveDraftTimer.current) clearTimeout(saveDraftTimer.current);
     saveDraftTimer.current = setTimeout(() => {
@@ -565,13 +633,13 @@ export function PlanView({
         saveDraftTimer.current = null;
       }
     };
-  }, [editSeq, savedSeq, committed, tasks, revisionId, saveDebounceMs, performSave]);
+  }, [editSeq, savedSeq, committed, tasks, revisionId, saveDebounceMs, performSave, loading, deconstructing, committing]);
 
   const unsavedEdits = tasks !== null && !committed && editSeq > savedSeq;
   // A reload or tab close would discard an unsent turn or unsaved edits; the
   // browser's own prompt covers what in-app navigation (this view stays
   // mounted across tabs) does not.
-  const unsavedWork = pendingTurn !== null || savesInFlight > 0 || unsavedEdits;
+  const unsavedWork = input.trim() !== "" || pendingTurn !== null || savesInFlight > 0 || unsavedEdits;
   useEffect(() => {
     if (!unsavedWork) return;
     function onBeforeUnload(e: BeforeUnloadEvent) {
@@ -596,37 +664,38 @@ export function PlanView({
    *  error and leaves the composer untouched. */
   async function submitTurn(text: string, revision: string | null = revisionId) {
     if (!projectId || !revision) return;
+    const generation = loadGenerationRef.current;
     const next: PlanChatMessage[] = [...messages, { role: "user", content: text }];
     setPendingTurn({ content: text, error: null });
     setChatting(true);
     setError(null);
     setPlannerReady(false); // reset until the planner confirms again
     try {
-      const res = await api<PlanChatResponse>("planChat", {
+      const res = await queuePlanningWrite(projectId, () => api<PlanChatResponse>("planChat", {
         params: { id: projectId },
         body: { revisionId: revision, messages: next },
-      });
-      if (draftRef.current.projectId !== projectId) return;
+      }));
+      if (loadGenerationRef.current !== generation) return;
       const { content, ready } = extractPlanComplete(res.reply);
       if (ready) setPlannerReady(true);
       setMessages([...next, { role: "assistant", content }]);
       setPendingTurn(null);
       setPlanCost((c) => c + res.costUsd);
-      if (res.repository) setRepository(res.repository);
+      if (res.repository && !draftRef.current.tasks) setRepository(res.repository);
     } catch (e) {
-      if (draftRef.current.projectId !== projectId) return;
+      if (loadGenerationRef.current !== generation) return;
       setPendingTurn({
         content: text,
         error: e instanceof Error ? e.message : String(e),
       });
     } finally {
-      if (draftRef.current.projectId === projectId) setChatting(false);
+      if (loadGenerationRef.current === generation) setChatting(false);
     }
   }
 
   function sendChat() {
     const text = input.trim();
-    if (!projectId || !revisionId || !text || chatting || running || pendingTurn) {
+    if (!projectId || !revisionId || !text || chatting || deconstructing || committing || running || pendingTurn) {
       return;
     }
     setInput("");
@@ -637,24 +706,27 @@ export function PlanView({
    *  may mean the turn was already accepted, in which case the server's
    *  transcript is adopted instead of sending the same turn twice. */
   async function retrySend() {
-    if (!pendingTurn || !projectId || chatting || running) return;
+    if (!pendingTurn || !projectId || chatting || deconstructing || committing || running) return;
     const turn = pendingTurn.content;
-    let revision = revisionId;
+    const generation = loadGenerationRef.current;
     setPendingTurn({ content: turn, error: null });
     setChatting(true);
     try {
       const session = await api<PlanningSessionResponse>("planSession", {
         params: { id: projectId },
       });
-      if (draftRef.current.projectId !== projectId) return;
+      if (loadGenerationRef.current !== generation) return;
+      if (session.revisionId !== revisionId) {
+        throw new Error("The planning revision changed. Edit or copy this message, then reload the session before sending it.");
+      }
       const server = session.messages;
+      const sameHistory = messages.every((m, i) =>
+        server[i]?.role === m.role &&
+        (m.role === "assistant" ? extractPlanComplete(server[i]!.content).content : server[i]?.content) === m.content,
+      );
       const acceptedOnServer =
         server.length === messages.length + 2 &&
-        messages.every(
-          (m, i) =>
-            server[i]?.role === m.role &&
-            (m.role !== "user" || server[i]?.content === m.content),
-        ) &&
+        sameHistory &&
         server[messages.length]?.role === "user" &&
         server[messages.length]?.content === turn &&
         server[server.length - 1]?.role === "assistant";
@@ -663,7 +735,7 @@ export function PlanView({
         const cleaned = server.map((m) => {
           if (m.role !== "user") {
             const extracted = extractPlanComplete(m.content);
-            if (extracted.ready) ready = true;
+            ready = extracted.ready;
             return { ...m, content: extracted.content };
           }
           return m;
@@ -677,16 +749,18 @@ export function PlanView({
         setChatting(false);
         return;
       }
-      if (session.revisionId !== revisionId) {
-        setRevisionId(session.revisionId);
-        revision = session.revisionId;
+      if (!sameHistory || server.length !== messages.length) {
+        throw new Error("The conversation changed on the server. Edit or copy this message, then reload the session before sending it.");
       }
-    } catch {
-      // Reconciliation is best-effort; the send below reports its own error.
+    } catch (e) {
+      if (loadGenerationRef.current !== generation) return;
+      setPendingTurn({ content: turn, error: e instanceof Error ? e.message : String(e) });
+      setChatting(false);
+      return;
     }
-    if (draftRef.current.projectId !== projectId) return;
+    if (loadGenerationRef.current !== generation) return;
     setChatting(false);
-    await submitTurn(turn, revision);
+    await submitTurn(turn);
   }
 
   /** Move a failed turn back into the composer without clobbering anything
@@ -701,23 +775,31 @@ export function PlanView({
   async function generateTable(
     figmaVerification: "live" | "attachments" = "live",
   ) {
-    if (!projectId || !revisionId || deconstructing || running) return;
+    if (!projectId || !revisionId || deconstructing || committing || chatting || running) return;
+    const generation = loadGenerationRef.current;
+    const replacement = beginReplacement();
+    let replaced = false;
     setDeconstructing(true);
     setError(null);
     // The server persists the new draft itself; an older pending save must
     // not land afterwards and overwrite it.
     invalidateSaves();
     try {
-      const res = await api<PlanDeconstructResponse>("planDeconstruct", {
-        params: { id: projectId },
-        body: {
-          revisionId,
-          messages,
-          ...(figmaVerification === "attachments"
-            ? { figmaVerification }
-            : {}),
-        },
+      const res = await queuePlanningWrite(projectId, async () => {
+        if (loadGenerationRef.current !== generation) return;
+        return api<PlanDeconstructResponse>("planDeconstruct", {
+          params: { id: projectId },
+          body: {
+            revisionId,
+            messages,
+            ...(figmaVerification === "attachments"
+              ? { figmaVerification }
+              : {}),
+          },
+        });
       });
+      replaced = res !== undefined;
+      if (!res || loadGenerationRef.current !== generation) return;
       setPlanCost((c) => c + res.costUsd);
       setPrd(res.prdMarkdown);
       setAgentsMd(res.agentsMd ?? null);
@@ -728,6 +810,7 @@ export function PlanView({
       if (res.repository) setRepository(res.repository);
       setRepositoryDrift(null);
     } catch (e) {
+      if (loadGenerationRef.current !== generation) return;
       const details =
         e instanceof ApiRequestError &&
         e.code === "FIGMA_VERIFICATION_FAILED"
@@ -740,7 +823,12 @@ export function PlanView({
         setError(String(e));
       }
     } finally {
-      setDeconstructing(false);
+      replacement.finish(replaced);
+      if (replacementRef.current === replacement) replacementRef.current = null;
+      if (loadGenerationRef.current === generation) {
+        setDeconstructing(false);
+        if (!replaced && editSeqRef.current > savedSeqRef.current) performSave(editSeqRef.current);
+      }
     }
   }
 
@@ -797,24 +885,32 @@ export function PlanView({
   }
 
   async function commit(acknowledgeRepositoryDrift = false) {
-    if (!projectId || !revisionId || !tasks || tasks.length === 0) return;
+    if (!projectId || !revisionId || !tasks || tasks.length === 0 || committing || deconstructing || chatting || running) return;
+    const generation = loadGenerationRef.current;
+    const replacement = beginReplacement();
+    let replaced = false;
     setCommitting(true);
     setError(null);
     setRepositoryDrift(null);
     // The commit body is the exact visible draft; a save still in flight
-    // must neither be waited for nor allowed to repaint state afterwards.
+    // settles before approval and cannot repaint state afterwards.
     invalidateSaves();
     try {
-      const res = await api<PlanCommitResponse>("planCommit", {
-        params: { id: projectId },
-        body: {
-          revisionId,
-          prdMarkdown: prd ?? "",
-          tasks: draftTasksFromUi(tasks),
-          agentsMd: agentsMd ?? "",
-          ...(acknowledgeRepositoryDrift ? { acknowledgeRepositoryDrift: true } : {}),
-        },
+      const res = await queuePlanningWrite(projectId, async () => {
+        if (loadGenerationRef.current !== generation) return;
+        return api<PlanCommitResponse>("planCommit", {
+          params: { id: projectId },
+          body: {
+            revisionId,
+            prdMarkdown: prd ?? "",
+            tasks: draftTasksFromUi(tasks),
+            agentsMd: agentsMd ?? "",
+            ...(acknowledgeRepositoryDrift ? { acknowledgeRepositoryDrift: true } : {}),
+          },
+        });
       });
+      replaced = res !== undefined;
+      if (!res || loadGenerationRef.current !== generation) return;
       setCommitted(res);
       setTasks(null);
       setAgentsMd(null);
@@ -825,9 +921,12 @@ export function PlanView({
       api<ListPlanSessionArchivesResponse>("planSessionArchives", {
         params: { id: projectId },
       })
-        .then((r) => setArchives(r.sessions))
+        .then((r) => {
+          if (loadGenerationRef.current === generation) setArchives(r.sessions);
+        })
         .catch(() => {});
     } catch (e) {
+      if (loadGenerationRef.current !== generation) return;
       const drift =
         e instanceof ApiRequestError && e.code === "REPOSITORY_DRIFT"
           ? repositoryDriftDetails(e.details)
@@ -842,7 +941,9 @@ export function PlanView({
       // The draft is still on screen; resume saving it if edits were unsaved.
       if (editSeqRef.current > savedSeqRef.current) performSave(editSeqRef.current);
     } finally {
-      setCommitting(false);
+      replacement.finish(replaced);
+      if (replacementRef.current === replacement) replacementRef.current = null;
+      if (loadGenerationRef.current === generation) setCommitting(false);
     }
   }
 
@@ -925,7 +1026,7 @@ export function PlanView({
             <button
               type="button"
               onClick={() => generateTable()}
-              disabled={deconstructing || committing || running}
+              disabled={deconstructing || committing || chatting || running}
               className="min-h-10 rounded bg-amber-600 px-4 py-2 text-xs font-medium text-neutral-950 hover:bg-amber-500 focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
             >
               {deconstructing ? "Re-generating…" : "Re-generate task table"}
@@ -933,7 +1034,7 @@ export function PlanView({
             <button
               type="button"
               onClick={() => void commit(true)}
-              disabled={deconstructing || committing || running}
+              disabled={deconstructing || committing || chatting || running}
               className="min-h-10 rounded border border-amber-700 px-4 py-2 text-xs hover:bg-amber-900/40 focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
             >
               {committing ? "Creating tasks…" : "Approve anyway"}
@@ -1144,7 +1245,7 @@ export function PlanView({
                       <button
                         type="button"
                         onClick={() => void retrySend()}
-                        disabled={chatting || running}
+                        disabled={chatting || deconstructing || committing || running}
                         className="min-h-10 rounded bg-red-700 px-3 py-2 text-xs font-medium text-white hover:bg-red-600 focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-50"
                       >
                         Retry send
@@ -1244,7 +1345,7 @@ export function PlanView({
                 <button
                   type="button"
                   onClick={sendChat}
-                  disabled={!input.trim() || chatting || pendingTurn !== null}
+                  disabled={!input.trim() || chatting || deconstructing || committing || pendingTurn !== null}
                   title={
                     pendingTurn?.error
                       ? "Retry or edit the failed message first"
@@ -1276,7 +1377,7 @@ export function PlanView({
               )}
               <button
                 onClick={() => generateTable()}
-                disabled={deconstructing}
+                disabled={deconstructing || committing || chatting}
                 className={
                   "rounded px-4 py-2 text-xs font-medium text-white disabled:opacity-50 " +
                   (plannerReady && !deconstructing
@@ -1297,7 +1398,7 @@ export function PlanView({
 
       {/* ── Editable task table ── */}
       {tasks && !committed && (
-        <section className="space-y-4">
+        <fieldset disabled={deconstructing || committing || chatting || running} className="min-w-0 space-y-4">
           {prd && (
             <details className="rounded-lg border border-neutral-800 bg-neutral-900">
               <summary className="cursor-pointer px-4 py-2 text-xs font-medium text-neutral-400 hover:text-neutral-200">
@@ -1515,7 +1616,7 @@ export function PlanView({
             <div className="mt-4 flex items-center gap-3">
               <button
                 onClick={() => void commit()}
-                disabled={committing || tasks.length === 0 || running}
+                disabled={committing || chatting || tasks.length === 0 || running}
                 className="rounded bg-green-700 px-4 py-2 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
               >
                 {committing ? "Creating tasks…" : "Approve & Create Tasks"}
@@ -1578,7 +1679,7 @@ export function PlanView({
               </p>
             )}
           </div>
-        </section>
+        </fieldset>
       )}
 
       {/* ── Past planning sessions (read-only archive) ── */}

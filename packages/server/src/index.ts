@@ -1550,7 +1550,13 @@ async function assembleServer(
       // Persist the full conversation (including assistant reply) so the Plan
       // tab can restore it on reload or after a tab switch.
       const updatedMessages = [...messages, { role: "assistant" as const, content: text }];
-      savePlanningRevision(id, revisionId, { messages: updatedMessages, repository });
+      // A later chat observes current code but must not silently rebase an
+      // already generated task draft's drift guard.
+      const hasDraft = repo.getPlanningSession(db, id).draftTasks !== undefined;
+      savePlanningRevision(id, revisionId, {
+        messages: updatedMessages,
+        ...(!hasDraft ? { repository } : {}),
+      });
       recordPlanChatTurn(
         db,
         project,
@@ -1839,13 +1845,16 @@ async function assembleServer(
     // VW03: the draft was planned against an observed revision. Before
     // applying it, re-inspect the clone and refuse (409, REPOSITORY_DRIFT)
     // when HEAD moved, unless the operator explicitly acknowledged the drift.
-    // A replay of an already successful receipt never touches Git.
+    // Existing content-bound receipts have already passed this preflight.
+    // A pending receipt may have committed locally before push failed; its
+    // own HEAD advance is not external drift. commitPlanningDraft still
+    // rejects changed content and resumes the same durable operation.
     const planningSession = repo.getPlanningSession(db, id);
     const plannedCommit = planningSession.repository?.commit;
     const receipt = repo.getPlanningCommitReceipt(db, id, body.revisionId);
     if (
       plannedCommit &&
-      receipt?.state !== "successful" &&
+      !receipt &&
       body.acknowledgeRepositoryDrift !== true
     ) {
       let current: RepositoryInspection;

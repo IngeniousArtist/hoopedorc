@@ -23,7 +23,9 @@ export default defineConfig({
   webServer: {
     command: `PORT=${apiPort} DB_PATH=:memory: API_TOKEN= CORS_ORIGINS=${baseURL} HOOPEDORC_WEB_PORT=${webPort} HOOPEDORC_API_PORT=${apiPort} npm run mock`,
     cwd: rootDir,
-    url: baseURL,
+    // Vite can listen before the mock API is ready. Probe through its proxy
+    // so the first page cannot race startup and receive transient 500s.
+    url: `${baseURL}/api/health`,
     reuseExistingServer: false,
     timeout: 120_000,
   },

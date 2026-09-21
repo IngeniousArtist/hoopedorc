@@ -448,6 +448,79 @@ test.describe.serial("critical operator workflows", () => {
     }
   });
 
+  test("VW04: task inspection is a deep-linkable route with Back and truthful history states", async ({
+    page,
+  }) => {
+    // Opening a card is a history entry: the URL carries the task, browser
+    // Back closes the inspector, and a pasted link opens it directly.
+    await page.goto(`/#/p/${projectId}/board`);
+    await page.locator("article").filter({ hasText: "Kanban board UI" }).click();
+    const drawer = page.getByRole("dialog", { name: "Kanban board UI" });
+    await expect(drawer).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`#/p/${projectId}/board/t1$`));
+    await page.goBack();
+    await expect(drawer).toHaveCount(0);
+    await expect(page).toHaveURL(new RegExp(`#/p/${projectId}/board$`));
+
+    await page.goto(`/#/p/${projectId}/board/t2`);
+    await expect(page.getByRole("dialog", { name: "Orchestrator engine" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Close task drawer" })).toBeVisible();
+
+    // A phone shows the same control as Back; the inspector is full-screen.
+    await page.setViewportSize({ width: 360, height: 800 });
+    // innerText honors the CSS that hides the ✕ glyph at phone widths.
+    await expect(page.getByRole("button", { name: "Close task drawer" })).toHaveText("‹ Back", {
+      useInnerText: true,
+    });
+    await expectNoDocumentOverflow(page);
+    await expectFixedSurfacesInsideViewport(page);
+    await expectPhoneTouchTargets(page);
+    await page.setViewportSize({ width: 1280, height: 800 });
+
+    // A failed history read is reported as failed, not as "No runs yet". The
+    // outage stays on until the test lifts it (the dev server's StrictMode
+    // double-mount issues the first read twice), so Retry is what recovers.
+    let runsOutage = true;
+    let runsAttempts = 0;
+    await page.route("**/api/tasks/t2/runs", async (route) => {
+      runsAttempts += 1;
+      if (runsOutage) {
+        await route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "injected history outage" }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+    // The page is already on this task's URL, so a goto would be a same-document
+    // navigation that never re-reads history; reload to exercise the read.
+    await page.reload();
+    const inspector = page.getByRole("dialog", { name: "Orchestrator engine" });
+    await expect(inspector.getByRole("alert")).toContainText(
+      "Could not load attempts: injected history outage",
+    );
+    await expect(inspector.getByText("No runs yet.")).toHaveCount(0);
+    const failedReads = runsAttempts;
+    expect(failedReads).toBeGreaterThanOrEqual(1);
+    runsOutage = false;
+    await inspector.getByRole("button", { name: "Retry" }).click();
+    await expect(inspector.getByText("No runs yet.")).toBeVisible();
+    await expect(inspector.getByRole("alert")).toHaveCount(0);
+    expect(runsAttempts).toBe(failedReads + 1);
+    await page.unroute("**/api/tasks/t2/runs");
+
+    // A deep link to a task that is not on this board says so instead of
+    // opening nothing.
+    await page.goto(`/#/p/${projectId}/board/no-such-task`);
+    await expect(page.getByRole("status")).toContainText(
+      "Task no-such-task is not on this board",
+    );
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    await expect(page).toHaveURL(new RegExp(`#/p/${projectId}/board$`));
+  });
+
   // Runs last in this serial suite: it pauses the seed project through the
   // real pause route, and the suite's earlier scenarios rely on it running.
   test("VW01: the mock planner answers the real planning routes without any model call", async ({
@@ -620,8 +693,16 @@ test.describe.serial("critical operator workflows", () => {
     expect(saveAttempts).toBe(2);
     await page.unroute(`**/api/projects/${projectId}/plan/save-draft`);
 
-    // Reload restores exactly the acknowledged draft from the server.
+    // The unsent composer is now protected too. Confirm the intentional
+    // reload, then verify the acknowledged task draft survives it.
+    let sawLeavePrompt = false;
+    page.once("dialog", async (dialog) => {
+      expect(dialog.type()).toBe("beforeunload");
+      sawLeavePrompt = true;
+      await dialog.accept();
+    });
     await page.reload();
+    expect(sawLeavePrompt).toBe(true);
     await expect(page.getByLabel("Task 1 title")).toHaveValue(
       "Implement: Add an API health endpoint (edited).",
     );

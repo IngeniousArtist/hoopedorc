@@ -7371,7 +7371,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW01 | Deterministic mock planning; no real planner/Figma calls | Done (merged 2026-09-21) | [PR #262](https://github.com/IngeniousArtist/hoopedorc/pull/262) → main `c050b4d`; PR CI `build-and-test` passed; main CI run [35565173055](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35565173055) passed; see the VW01 acceptance record below |
 | VW02 | Preserve planning input and truthful draft-save state | Done (merged 2026-09-21) | [PR #264](https://github.com/IngeniousArtist/hoopedorc/pull/264) → main `8d00383`; PR CI `build-and-test` passed; main CI run [35567524350](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35567524350) passed; see the VW02 acceptance record below |
 | VW03 | Repository-aware planning and truthful task history | Done (merged 2026-09-21) | [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266) → main `9757a91`; PR CI `build-and-test` passed; main CI run [35570272080](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35570272080) passed; see the VW03 acceptance record below |
-| VW04 | Project navigation, compact board/list, task inspector | Part 1 implemented (PR open, awaiting CI and merge); part 2 (task inspector) not started | [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268); see the VW04 acceptance record below |
+| VW04 | Project navigation, compact board/list, task inspector | Part 1 done (merged 2026-09-21); part 2 implemented (PR open, awaiting CI and merge) | Part 1: [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268) → main `88ca12b`, PR CI passed, main CI run [35571774985](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35571774985) passed. Part 2: [PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269); see the VW04 acceptance record below |
 | VW05 | Organize existing settings and setup | Not started | — |
 | VW06 | Durable planning operations and planning workbench | Not started | — |
 | VW07 | Propose/apply plan revisions during execution | Not started | — |
@@ -7813,4 +7813,173 @@ setup reorganization (VW05); no new endpoints.
   findings, baseline unchanged), 234 engine, 18 adapter, 358 server, 127 web
   tests (29 files, 3 new), 21 Playwright scenarios, `git diff --check`.
 
-Publication: [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268). Required PR CI must pass before merge; merge/main CI evidence is appended after merge.
+**Publication and merge evidence (part 1):**
+[PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268); required PR
+check `build-and-test` passed (2m21s, run 35571532118) before the squash merge
+to main as `88ca12b` on 2026-09-21. Post-merge main CI run
+[35571774985](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35571774985)
+completed successfully. Independent post-merge check on `88ca12b`: web
+typecheck and the 19 tests in the three new part-1 test files passed locally.
+
+### VW04 part 2 — task inspector as a route with truthful history (implemented 2026-09-21)
+
+**Problems confirmed on main (`88ca12b`):** the inspector was transient
+Board state — no URL, no browser Back, no way to link a colleague to a task;
+the drawer's runs and validator-decision reads, the Board's log-history read,
+and the rollback-status read all swallowed failures (`.catch(() => {})`), so a
+failed read rendered as "No runs yet" / "No reviews yet" / "No logs yet"; and a
+phone inspector had a ✕ control although it fills the screen.
+
+**Scope delivered (existing APIs only, no contract change):**
+
+- `App.tsx`: `#/p/<projectId>/board/<taskId>` deep link (`parseHash`/
+  `hashFor` round-trip, encoded ids, trailing slash tolerated, extra segments
+  rejected); the shell owns the inspected task (`boardTaskId`), pushes it into
+  history so browser Back closes the inspector, clears it when leaving the
+  board or switching projects, and passes `selectedTaskId`/`onSelectTask` to
+  the Board.
+- `Board.tsx`: selection is controllable by the shell with the previous
+  internal behavior as fallback; a deep link to a task not on the board shows
+  a `role="status"` notice with **Dismiss**; log-history and rollback-status
+  reads keep explicit error state (`logsError`, `rollbackError`) with a reload
+  path instead of silent catches; live WebSocket log lines still append.
+- `TaskDrawer.tsx`: runs and decisions are load-state machines (loading /
+  ready / error) with **Retry**, cancelled on task or lifecycle change so a
+  slow read for one task cannot populate another; Review tab distinguishes a
+  failed history read from "No gate result yet" / "No reviews yet"; PR tab
+  reports a failed rollback-status read; the close control reads **‹ Back** on
+  phones and ✕ otherwise under one accessible name.
+- `LogPanel.tsx`: `error`/`onRetry` props render a failed history read as an
+  alert with Retry while live rows stay visible; "No logs yet" only when the
+  read succeeded and was empty.
+- Docs: USER_GUIDE.md inspector paragraph.
+
+**Non-goals:** resizable desktop panels; inspector content beyond states and
+navigation (VW08/VW10 own code and evidence views); settings/setup (VW05).
+
+**Acceptance evidence (Node 22.23.0, local):**
+
+- `App.test.ts` (+1, +4 cases): task deep link round-trips on the board only,
+  encoded ids, trailing slash tolerated, extra segments and malformed
+  encodings rejected.
+- `App.routing.test.tsx` (2, fresh module per test): a pasted deep link opens
+  the inspector and the URL keeps the task while open; closing and reopening
+  update the URL; a hashchange without a task closes it; leaving the board
+  drops it and returning does not reopen it.
+- `Board.test.tsx` (+2): a deep link to a task not on the board shows the
+  notice and Dismiss reports `null` to the shell; a failed log-history read
+  reaches the inspector as an error, not an empty log, and Reload recovers.
+- `TaskDrawer.test.tsx` (+4): loading → failed attempts read with Retry →
+  recovery, never "No runs yet" for a failure; review-history failure distinct
+  from "No gate result yet"/"No reviews yet"; a slow read for the previous
+  task cannot populate the newly opened task; the close control reads
+  "‹ Back" under the same accessible name and the Logs/PR tabs surface their
+  read failures.
+- `LogPanel.test.tsx` (+2): failed history read is an alert with Retry and
+  suppresses "No logs yet"; live lines stay visible under it.
+- Playwright "VW04: task inspection is a deep-linkable route with Back and
+  truthful history states": opening a card puts `/board/t1` in the URL and
+  browser Back closes the inspector; a pasted `/board/t2` link opens it; at
+  360px the control reads "‹ Back" with no document overflow, fixed surfaces
+  inside the viewport, and ≥40px touch targets; an injected 500 on the real
+  runs route shows "Could not load attempts: …" (not "No runs yet") until
+  Retry succeeds; a link to an unknown task shows the notice and Dismiss
+  returns to the board URL. The dev server's StrictMode double-mount was
+  observed to issue the first read twice, so the injected outage persists
+  until the test lifts it.
+- Gates: `npm run typecheck`, `npm run build`, `npm run lint` (330 legacy
+  findings, baseline unchanged), 234 engine, 18 adapter, 358 server, 138 web
+  tests (30 files, 1 new), 22 Playwright scenarios, `git diff --check`.
+
+Publication: [PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269). Required PR CI must pass before merge; merge/main CI evidence is appended after merge.
+
+
+### VW01–VW04 — integration review and recovery fixes (implemented 2026-09-21)
+
+Review requested after Fable's first four items; includes the unmerged VW04
+inspector in PR #269. Preserve the historical evidence above.
+
+**Acceptance criteria before implementation:**
+
+- Draft writes reach the server in edit order, including project-switch
+  flushes. Generation and approval wait for prior writes; late results cannot
+  overwrite a newer draft or another project's state.
+- Chat retry reconciles the exact revision and conversation. Failed reads,
+  changed revisions, and divergent history preserve the failed message and
+  refuse a blind resend. Already accepted turns are adopted once.
+- Switching projects keeps composer/failed-turn state scoped to its project
+  and resets busy controls; old asynchronous completions cannot populate the
+  new project or a later visit to the same project.
+- Repository drift remains anchored to the generated task draft after further
+  chat. A content-identical pending commit can recover after its own Git
+  commit advances HEAD; changed-content retries remain refused.
+- Cross-project task links retain their selected task; manual project changes
+  clear the inspector without creating invalid task URLs in browser history.
+- Log-history retries retain live lines received while history was loading.
+
+**Dependencies and non-goals:** builds on VW01–VW04 only; no new background
+planner, live plan application, settings redesign, paid model calls, Telegram
+messages, or deployment changes. Live EC2/systemd/model smoke checks are not
+required for this web/planning recovery change. Regression tests, every
+repository gate, responsive browser checks, exact-head PR CI, and independent
+merged verification are required before handoff. Evidence follows below.
+
+
+**Review findings and delivered fixes:**
+
+- VW01's production/mock planning boundary and mock error/Figma paths remain
+  covered by the real route tests; no live model calls were needed.
+- VW02's edit-sequence guard only protected presentation: overlapping requests
+  could persist old edits last. A per-project write queue now orders saves,
+  cleanup flushes, chat, generation, and approval. Session reads wait for
+  outstanding writes without serializing unrelated reads. A newer successful
+  save clears an earlier save error. Replacement outcomes decide whether a
+  switch-time flush should preserve the old edits or leave the generated plan.
+- Retry used to resend after a failed reconciliation or adopt a new revision
+  for old history. It now refuses both, compares assistant content as well as
+  user content, and preserves the turn. Session-visit guards cover generation,
+  commit, attachment, archive, and chat completions; composer text is scoped
+  per project, and an accepted reply completed while away is restored once.
+- VW03's drift preflight mistook its own pending planning commit for external
+  drift after push failure. Existing content-bound receipts resume without
+  repeating that preflight; changed content still fails. Further chat cannot
+  replace the repository observation attached to an existing task draft.
+- VW04's project-change effect cleared a valid cross-project task deep link
+  and briefly generated invalid task URLs on manual changes. Inspector
+  selection now includes its owning project. History reloads merge/deduplicate
+  streamed lines and preserve the bounded buffer during retries.
+- Playwright previously waited only for Vite, causing the first Settings read
+  to receive proxy 500s before the API started. Its readiness URL now checks
+  `/api/health` through the same proxy. The unsent-composer reload scenario
+  explicitly checks and accepts the browser's leave-page prompt.
+
+**Regression evidence:** before fixes, six focused web cases failed (unsafe
+retry variants, cross-project routing/state, and out-of-order save dispatch),
+and both new real-Git route cases failed (draft baseline replacement and
+pending-receipt recovery). Additional tests cover replacement success/failure
+on project switch, adopting a reply while away, newer-save error recovery,
+and live logs arriving during history load/retry.
+
+**Verification:** Node 22.23.0; full gate results and exact-head merge evidence
+are recorded below when publication completes. Manual Chrome verification
+used an isolated in-memory mock server: planning chat → generated tasks →
+edited title → Saved; responsive widths 360, 390, 768, 1280, and 1440 without
+document overflow; visible keyboard focus and phone task controls; phone
+inspector with ‹ Back, live Logs, `/board/t1`, and browser Back returning to
+the board. Automated responsive workflows cover all five widths, confirmations,
+loading/error/success, touch targets, and viewport containment. No real
+EC2/systemd/model/Telegram action was performed or required.
+
+
+**Local gates (all passed, Node 22.23.0):** `npm run typecheck`,
+`npm run build`, `npm run lint` (330 unchanged legacy findings),
+`npm test -w @orc/engine` (234), `npm test -w @orc/adapters` (18),
+`npm test -w @orc/server` (360), `npm run test:web` (148 in 30 files),
+`npm run test:e2e` (22), and `git diff --check`. The first full browser run
+reproduced the API readiness race; all 22 scenarios passed after the health
+probe change and passed again on the final source state.
+
+**Publication:** integration fixes are included in
+[PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269), alongside
+VW04 part 2. Exact-head required CI and merged-commit evidence follow after
+GitHub completes them; no failed required check may be bypassed.

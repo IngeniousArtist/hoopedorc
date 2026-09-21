@@ -88,23 +88,43 @@ const GLOBAL_HASH_PAGES: Page[] = [
  *  pages — the inverse of `hashFor` below. Returns null for anything that
  *  doesn't parse into a known, deep-linkable page (an empty hash, garbage
  *  in the URL bar, or a page like "welcome" that isn't meant to be one) —
- *  callers fall back to their own defaults in that case. */
-export function parseHash(hash: string): { page: Page; projectId?: string } | null {
+ *  callers fall back to their own defaults in that case. VW04: the board
+ *  accepts one more segment, `#/p/<projectId>/board/<taskId>`, which opens
+ *  that task's inspector; other project pages take no extra segment. */
+export function parseHash(
+  hash: string,
+): { page: Page; projectId?: string; taskId?: string } | null {
   const path = hash.replace(/^#\/?/, "");
   if (!path) return null;
   const parts = path.split("/");
   if (parts[0] === "p" && parts.length >= 3 && parts[1]) {
     const page = parts[2] as Page;
-    return PROJECT_PAGES.includes(page) ? { page, projectId: parts[1] } : null;
+    if (!PROJECT_PAGES.includes(page)) return null;
+    // A trailing slash is the same destination as no task segment.
+    if (parts.length === 3 || (parts.length === 4 && !parts[3])) {
+      return { page, projectId: parts[1] };
+    }
+    if (page === "board" && parts.length === 4 && parts[3]) {
+      try {
+        return { page, projectId: parts[1], taskId: decodeURIComponent(parts[3]) };
+      } catch {
+        return null;
+      }
+    }
+    return null;
   }
+  if (parts.length !== 1) return null;
   const page = parts[0] as Page;
   return GLOBAL_HASH_PAGES.includes(page) ? { page } : null;
 }
 
 /** The exact inverse of `parseHash` — kept as one function so the two can
  *  never drift into producing/accepting different shapes. */
-export function hashFor(page: Page, projectId: string): string {
-  if (PROJECT_PAGES.includes(page) && projectId) return `#/p/${projectId}/${page}`;
+export function hashFor(page: Page, projectId: string, taskId?: string | null): string {
+  if (PROJECT_PAGES.includes(page) && projectId) {
+    const base = `#/p/${projectId}/${page}`;
+    return page === "board" && taskId ? `${base}/${encodeURIComponent(taskId)}` : base;
+  }
   return `#/${page}`;
 }
 
@@ -151,6 +171,18 @@ export function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     () => initialHashState?.projectId ?? localStorage.getItem(STORAGE_KEY) ?? "",
   );
+  // VW04: the task whose inspector is open on the Board. Owned here so it is
+  // part of the URL (deep links, browser Back closes the inspector, phone
+  // full-screen inspection is a real history entry) instead of transient
+  // Board state.
+  const [boardSelection, setBoardSelection] = useState(() => ({
+    projectId: selectedProjectId,
+    taskId: initialHashState?.page === "board" ? (initialHashState.taskId ?? null) : null,
+  }));
+  const boardTaskId = boardSelection.projectId === selectedProjectId ? boardSelection.taskId : null;
+  const setBoardTaskId = useCallback((taskId: string | null) => {
+    setBoardSelection({ projectId: selectedProjectId, taskId });
+  }, [selectedProjectId]);
   // F1: whether to auto-redirect to the onboarding wizard is decided once,
   // right after the first settings+projects load — re-checking on every
   // render would yank the user back to Welcome if they navigate away from it
@@ -188,12 +220,16 @@ export function App() {
   const navigate = useCallback(
     (next: Page) => {
       if (page === "settings" && settingsDirtyRef.current) {
-        confirmDiscardSettings(() => setPage(next));
+        confirmDiscardSettings(() => {
+          if (next !== "board") setBoardTaskId(null);
+          setPage(next);
+        });
         return;
       }
+      if (next !== "board") setBoardTaskId(null);
       setPage(next);
     },
-    [confirmDiscardSettings, page],
+    [confirmDiscardSettings, page, setBoardTaskId],
   );
 
   // F21: keep the URL hash in sync with (page, selectedProjectId), covering
@@ -217,11 +253,19 @@ export function App() {
     // should replace" allowance before any real page gets a chance to use it.
     const isFirst = isFirstHashSyncRef.current;
     isFirstHashSyncRef.current = false;
-    const next = hashFor(page, selectedProjectId);
+    const next = hashFor(page, selectedProjectId, page === "board" ? boardTaskId : null);
     if (location.hash === next) return;
     if (isFirst) history.replaceState(null, "", next);
     else history.pushState(null, "", next);
-  }, [page, selectedProjectId]);
+  }, [page, selectedProjectId, boardTaskId]);
+
+  // A different project has different tasks: never carry an open inspector
+  // across a project switch (the first render keeps a deep-linked task).
+  useEffect(() => {
+    if (boardSelection.projectId !== selectedProjectId) {
+      setBoardSelection({ projectId: selectedProjectId, taskId: null });
+    }
+  }, [boardSelection.projectId, selectedProjectId]);
 
   // F21: back/forward (and a hash typed/pasted into an already-open tab —
   // a fresh tab's initial hash is handled once by initialHashState instead)
@@ -239,23 +283,31 @@ export function App() {
         // navigation. Snap the address bar back to the current page's own
         // canonical hash instead (replace, not push — this isn't a real
         // navigation the user should be able to "back" out of).
-        history.replaceState(null, "", hashFor(page, selectedProjectId));
+        history.replaceState(
+          null,
+          "",
+          hashFor(page, selectedProjectId, page === "board" ? boardTaskId : null),
+        );
         return;
       }
+      const apply = () => {
+        if (parsed.projectId) setSelectedProjectId(parsed.projectId);
+        setPage(parsed.page);
+        setBoardSelection({
+          projectId: parsed.projectId ?? selectedProjectId,
+          taskId: parsed.page === "board" ? (parsed.taskId ?? null) : null,
+        });
+      };
       if (page === "settings" && settingsDirtyRef.current) {
         history.pushState(null, "", hashFor(page, selectedProjectId));
-        confirmDiscardSettings(() => {
-          if (parsed.projectId) setSelectedProjectId(parsed.projectId);
-          setPage(parsed.page);
-        });
+        confirmDiscardSettings(apply);
         return;
       }
-      if (parsed.projectId) setSelectedProjectId(parsed.projectId);
-      setPage(parsed.page);
+      apply();
     }
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
-  }, [confirmDiscardSettings, page, selectedProjectId]);
+  }, [boardTaskId, confirmDiscardSettings, page, selectedProjectId]);
 
   useEffect(() => {
     setUnauthorizedHandler(
@@ -688,6 +740,8 @@ export function App() {
                 key={boardInstanceKey(selectedProjectId)}
                 projectId={selectedProjectId}
                 repoUrl={selectedProject?.repoUrl}
+                selectedTaskId={boardTaskId}
+                onSelectTask={setBoardTaskId}
                 onViewNotifications={() => setPage("notifications")}
               />
             )}

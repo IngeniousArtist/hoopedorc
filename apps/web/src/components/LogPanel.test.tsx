@@ -76,4 +76,23 @@ describe("LogPanel motion and omission", () => {
     expect(screen.queryByText("line 1")).not.toBeInTheDocument();
     expect(screen.getByText("line 2")).toBeVisible();
   });
+
+  it("VW04: reports a failed history read distinctly from an empty log and offers retry", async () => {
+    const user = userEvent.setup();
+    const onRetry = vi.fn();
+    render(<LogPanel logs={[]} loading={false} error="502 Bad Gateway" onRetry={onRetry} />);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not load log history: 502 Bad Gateway",
+    );
+    expect(screen.queryByText("No logs yet.")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("VW04: keeps live lines visible under a failed history read", () => {
+    render(<LogPanel logs={[log(7, "agent")]} loading={false} error="offline" />);
+    expect(screen.getByRole("alert")).toBeVisible();
+    expect(screen.getByText("line 7")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
 });

@@ -43,6 +43,44 @@ const VERDICT_CLS: Record<MergeDecision["verdict"], string> = {
   request_changes: "bg-red-900/40 text-red-300",
 };
 
+/** VW04: history reads are loading, ready, or failed — never silently empty. */
+type LoadState<T> =
+  | { status: "loading" }
+  | { status: "ready"; items: T[] }
+  | { status: "error"; message: string };
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function HistoryError({
+  what,
+  message,
+  onRetry,
+}: {
+  what: string;
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      role="alert"
+      className="flex flex-wrap items-center gap-2 rounded border border-red-800 bg-red-950/40 px-3 py-2 text-red-200"
+    >
+      <span className="min-w-0 flex-1">
+        Could not load {what}: {message}
+      </span>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="min-h-10 rounded border border-red-700 px-3 py-2 text-[11px] hover:bg-red-900/40 focus-visible:ring-2 focus-visible:ring-red-400"
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
 /**
  * The right-side task detail drawer (F2). Replaces the old cramped
  * selected-task strip: same fixed-shell/close-button pattern LogPanel used
@@ -58,6 +96,9 @@ export function TaskDrawer({
   logs,
   logsLoading,
   logsOmittedOlder,
+  logsError,
+  onReloadLogs,
+  rollbackError,
   diff,
   rollbackJob,
   estimate,
@@ -74,6 +115,11 @@ export function TaskDrawer({
   logs: LogEvent[];
   logsLoading: boolean;
   logsOmittedOlder?: boolean;
+  /** VW04: the log history read failed; live lines may still arrive. */
+  logsError?: string | null;
+  onReloadLogs?: () => void;
+  /** VW04: the rollback status read failed (shown on the PR tab). */
+  rollbackError?: string | null;
   diff: string | null;
   rollbackJob?: RollbackJob;
   /** VW04: F7's pre-run estimate, shown here now that cards hide it by default. */
@@ -89,27 +135,45 @@ export function TaskDrawer({
 }) {
   const titleId = useId();
   const [tab, setTab] = useState<Tab>("overview");
-  const [runs, setRuns] = useState<Run[]>([]);
-  const [decisions, setDecisions] = useState<MergeDecision[]>([]);
+  const [runsState, setRunsState] = useState<LoadState<Run>>({ status: "loading" });
+  const [decisionsState, setDecisionsState] = useState<LoadState<MergeDecision>>({
+    status: "loading",
+  });
+  const [historyReloadNonce, setHistoryReloadNonce] = useState(0);
 
   useEffect(() => {
+    // Each (task, lifecycle step, retry) owns its own reads: a slow response
+    // for a previous task can never populate this one, and a failed read is
+    // shown as failed instead of as an empty history.
     let cancelled = false;
+    setRunsState({ status: "loading" });
+    setDecisionsState({ status: "loading" });
     api<{ runs: Run[] }>("listTaskRuns", { params: { id: task.id } })
       .then((r) => {
-        if (!cancelled) setRuns(r.runs);
+        if (!cancelled) setRunsState({ status: "ready", items: r.runs });
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        if (!cancelled) setRunsState({ status: "error", message: describeError(error) });
+      });
     api<TaskDecisionsResponse>("taskDecisions", { params: { id: task.id } })
       .then((r) => {
-        if (!cancelled) setDecisions(r.decisions);
+        if (!cancelled) setDecisionsState({ status: "ready", items: r.decisions });
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setDecisionsState({ status: "error", message: describeError(error) });
+        }
+      });
     return () => {
       cancelled = true;
     };
     // Re-fetch whenever this task's lifecycle moves forward — a new run or a
     // new validator decision most reliably shows up as one of these changing.
-  }, [task.id, task.status, task.attempts]);
+  }, [task.id, task.status, task.attempts, historyReloadNonce]);
+
+  const retryHistory = () => setHistoryReloadNonce((nonce) => nonce + 1);
+  const runs = runsState.status === "ready" ? runsState.items : [];
+  const decisions = decisionsState.status === "ready" ? decisionsState.items : [];
 
   const modelName = (id: string) =>
     models.find((m) => m.id === id)?.displayName ?? id;
@@ -137,10 +201,13 @@ export function TaskDrawer({
         <button
           onClick={onClose}
           data-dialog-initial-focus
-          className="ml-2 min-h-10 min-w-10 rounded p-1 text-neutral-400 hover:text-neutral-200"
+          className="ml-2 min-h-10 min-w-10 rounded px-2 py-1 text-neutral-400 hover:text-neutral-200 focus-visible:ring-2 focus-visible:ring-blue-500"
           aria-label="Close task drawer"
         >
-          {"✕"}
+          {/* VW04: phones show the inspector full-screen as its own history
+              entry, so the control reads as Back there; wider layouts keep ✕. */}
+          <span className="text-xs sm:hidden">‹ Back</span>
+          <span className="hidden sm:inline">{"✕"}</span>
         </button>
       </div>
 
@@ -312,7 +379,11 @@ export function TaskDrawer({
               <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">
                 Attempts
               </div>
-              {runs.length === 0 ? (
+              {runsState.status === "loading" ? (
+                <p role="status" className="text-neutral-500">Loading attempts…</p>
+              ) : runsState.status === "error" ? (
+                <HistoryError what="attempts" message={runsState.message} onRetry={retryHistory} />
+              ) : runs.length === 0 ? (
                 <p className="text-neutral-500">No runs yet.</p>
               ) : (
                 <div className="divide-y divide-neutral-800 rounded border border-neutral-800">
@@ -342,6 +413,8 @@ export function TaskDrawer({
             logs={logs}
             loading={logsLoading}
             omittedOlder={logsOmittedOlder}
+            error={logsError}
+            onRetry={onReloadLogs}
           />
         )}
 
@@ -351,7 +424,15 @@ export function TaskDrawer({
               <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">
                 Latest gate result
               </div>
-              {!latestGate ? (
+              {decisionsState.status === "loading" ? (
+                <p role="status" className="text-neutral-500">Loading review history…</p>
+              ) : decisionsState.status === "error" ? (
+                <HistoryError
+                  what="review history"
+                  message={decisionsState.message}
+                  onRetry={retryHistory}
+                />
+              ) : !latestGate ? (
                 <p className="text-neutral-500">No gate result yet.</p>
               ) : (
                 <div className="flex flex-wrap gap-1.5">
@@ -385,7 +466,11 @@ export function TaskDrawer({
               <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">
                 Validator verdicts
               </div>
-              {decisions.length === 0 ? (
+              {decisionsState.status !== "ready" ? (
+                <p className="text-neutral-500">
+                  {decisionsState.status === "loading" ? "Loading…" : "Unavailable until the review history loads."}
+                </p>
+              ) : decisions.length === 0 ? (
                 <p className="text-neutral-500">No reviews yet.</p>
               ) : (
                 <div className="space-y-2">
@@ -440,6 +525,11 @@ export function TaskDrawer({
                   </a>
                 ) : (
                   <p className="text-neutral-400">PR #{task.prNumber}</p>
+                )}
+                {rollbackError && (
+                  <p role="alert" className="rounded border border-red-800 bg-red-950/40 px-3 py-2 text-red-200">
+                    Rollback status could not be loaded: {rollbackError}. Reopen the task to try again.
+                  </p>
                 )}
                 <div className="flex flex-wrap gap-2">
                   <button

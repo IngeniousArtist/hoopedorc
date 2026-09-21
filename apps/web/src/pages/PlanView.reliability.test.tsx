@@ -160,6 +160,77 @@ describe("VW02: planning chat survives send failures", () => {
     expect(chatCalls).toBe(1);
   });
 
+  it.each(["unavailable", "new revision", "changed history"])("refuses a blind retry when reconciliation reports %s", async (failure) => {
+    let reads = 0;
+    let sends = 0;
+    apiMock.mockImplementation(async (key, options) => {
+      if (key === "planSession") {
+        reads++;
+        if (reads > 1 && failure === "unavailable") throw new Error("session unavailable");
+        return {
+          revisionId: reads > 1 && failure === "new revision" ? "new-revision" : revisionId,
+          messages: reads > 1 && failure === "changed history"
+            ? [history[0], { role: "assistant", content: "A different answer" }]
+            : history,
+          planCostUsd: 0,
+        };
+      }
+      if (key === "planChat") { sends++; throw new Error("response lost"); }
+      return baseApi(key, options);
+    });
+    render(view());
+    await sendMessage("Keep this message");
+    await screen.findByRole("alert");
+    await userEvent.click(screen.getByRole("button", { name: "Retry send" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry send" })).toBeEnabled());
+    expect(sends).toBe(1);
+    expect(screen.getByTestId("pending-turn")).toHaveTextContent("Keep this message");
+    expect(screen.getByRole("alert")).not.toHaveTextContent("response lost");
+  });
+
+  it("keeps composer text scoped to its project and ignores a previous project's generation", async () => {
+    const generation = deferred<{ prdMarkdown: string; tasks: typeof draft[]; costUsd: number }>();
+    const projectB = { ...project, id: "other-project" };
+    apiMock.mockImplementation(async (key, options) => {
+      if (key === "planSession") return { revisionId, messages: history, planCostUsd: 0 };
+      if (key === "planDeconstruct") return generation.promise;
+      return baseApi(key, options, [project, projectB]);
+    });
+    const { rerender } = render(view());
+    fireEvent.change(await screen.findByLabelText("Planning message"), { target: { value: "Unsent for A" } });
+    await userEvent.click(screen.getByRole("button", { name: /Generate task table/ }));
+    rerender(view(projectB.id));
+    expect(await screen.findByLabelText("Planning message")).toHaveValue("");
+    await act(async () => { generation.resolve({ prdMarkdown: "A plan", tasks: [draft], costUsd: 1 }); });
+    expect(screen.queryByDisplayValue("Build login")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Generate task table/ })).toBeEnabled();
+    rerender(view());
+    expect(await screen.findByLabelText("Planning message")).toHaveValue("Unsent for A");
+  });
+
+  it("adopts a reply completed while away without restoring a duplicate pending turn", async () => {
+    const reply = deferred<{ reply: string; costUsd: number }>();
+    const projectB = { ...project, id: "other-project" };
+    let serverMessages = history;
+    apiMock.mockImplementation(async (key, options) => {
+      if (key === "planSession") return { revisionId, messages: serverMessages, planCostUsd: 0 };
+      if (key === "planChat") return reply.promise;
+      return baseApi(key, options, [project, projectB]);
+    });
+    const { rerender } = render(view());
+    await sendMessage("Keep this turn");
+    rerender(view(projectB.id));
+    expect(await screen.findByLabelText("Planning message")).toHaveValue("");
+    await act(async () => {
+      serverMessages = [...history, { role: "user", content: "Keep this turn" }, { role: "assistant", content: "Accepted while away" }];
+      reply.resolve({ reply: "Accepted while away", costUsd: 0 });
+    });
+    rerender(view());
+    expect(await screen.findByText("Accepted while away")).toBeVisible();
+    expect(screen.queryByTestId("pending-turn")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Keep this turn")).toHaveLength(1);
+  });
+
   it("Edit message returns the failed turn to the composer without clobbering typed text", async () => {
     apiMock.mockImplementation(async (key, options) => {
       if (key === "planSession") return { revisionId, messages: [], planCostUsd: 0 };
@@ -230,7 +301,7 @@ describe("VW02: draft saves are truthful", () => {
     expect(saveBodies[1]?.revisionId).toBe(revisionId);
   });
 
-  it("an older save acknowledgement cannot mark newer edits saved", async () => {
+  it("serializes saves so the server cannot apply an older edit after a newer one", async () => {
     const saves: Array<{ body: DraftBody; control: ReturnType<typeof deferred<{ ok: true }>> }> = [];
     apiMock.mockImplementation(async (key, options) => {
       if (key === "planSession") {
@@ -249,9 +320,9 @@ describe("VW02: draft saves are truthful", () => {
     fireEvent.change(screen.getByLabelText("Task 1 title"), { target: { value: "A" } });
     await waitFor(() => expect(saves).toHaveLength(1));
     fireEvent.change(screen.getByLabelText("Task 1 title"), { target: { value: "AB" } });
-    await waitFor(() => expect(saves).toHaveLength(2));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(saves).toHaveLength(1);
     expect(saves[0]?.body.tasks[0]?.title).toBe("A");
-    expect(saves[1]?.body.tasks[0]?.title).toBe("AB");
     expect(saveStatus()).toHaveTextContent("Saving…");
 
     await act(async () => {
@@ -260,6 +331,8 @@ describe("VW02: draft saves are truthful", () => {
     });
     expect(saveStatus()).toHaveTextContent("Saving…");
     expect(saveStatus()).not.toHaveTextContent("Saved");
+    await waitFor(() => expect(saves).toHaveLength(2));
+    expect(saves[1]?.body.tasks[0]?.title).toBe("AB");
 
     await act(async () => {
       saves[1]!.control.reject(new Error("newer save lost"));
@@ -276,6 +349,28 @@ describe("VW02: draft saves are truthful", () => {
       await saves[2]!.control.promise;
     });
     await waitFor(() => expect(saveStatus()).toHaveTextContent("Saved"));
+  });
+
+  it("clears an older save error when the queued newer draft is acknowledged", async () => {
+    const first = deferred<{ ok: true }>();
+    let saveCalls = 0;
+    apiMock.mockImplementation(async (key, options) => {
+      if (key === "planSession") return { revisionId, messages: [], prd: "# Plan", draftTasks: [draft], planCostUsd: 0 };
+      if (key === "planSaveDraft") {
+        saveCalls++;
+        return saveCalls === 1 ? first.promise : { ok: true };
+      }
+      return baseApi(key, options);
+    });
+    render(view());
+    fireEvent.change(await screen.findByLabelText("Task 1 title"), { target: { value: "First" } });
+    await waitFor(() => expect(saveCalls).toBe(1));
+    fireEvent.change(screen.getByLabelText("Task 1 title"), { target: { value: "Newest" } });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    await act(async () => { first.reject(new Error("First save failed")); });
+    await waitFor(() => expect(saveStatus()).toHaveTextContent("Saved"));
+    expect(saveCalls).toBe(2);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("a stale revision offers a reload that restores the server's acknowledged draft", async () => {
@@ -354,14 +449,10 @@ describe("VW02: draft saves are truthful", () => {
     const flushed = saves.length;
     expect(flushed).toBeGreaterThanOrEqual(1);
 
-    // Every outstanding A save fails: the stash must survive for A's return
-    // while B stays untouched by A's outcome.
-    await act(async () => {
-      for (const save of saves) {
-        save.control.reject(new Error("A save failed"));
-        await save.control.promise.catch(() => {});
-      }
-    });
+    // The cleanup flush is serialized behind the in-flight write.
+    await act(async () => { saves[0]!.control.reject(new Error("A save failed")); });
+    await waitFor(() => expect(saves).toHaveLength(2));
+    await act(async () => { saves[1]!.control.reject(new Error("A flush failed")); });
     expect(saveStatus()).toHaveTextContent("Edits are saved automatically.");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
@@ -377,7 +468,7 @@ describe("VW02: draft saves are truthful", () => {
     await waitFor(() => expect(saveStatus()).toHaveTextContent("Saved"));
   });
 
-  it("commit sends the exact visible draft and ignores a late save result", async () => {
+  it("commit waits for the previous save to settle and sends the exact visible draft", async () => {
     const pendingSave = deferred<{ ok: true }>();
     let commitBody: DraftBody | undefined;
     apiMock.mockImplementation(async (key, options) => {
@@ -406,16 +497,50 @@ describe("VW02: draft saves are truthful", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "Approve & Create Tasks" }),
     );
-    expect(await screen.findByText("1 tasks created")).toBeVisible();
-    expect(commitBody?.revisionId).toBe(revisionId);
-    expect(commitBody?.tasks[0]?.title).toBe("Final");
-
+    expect(commitBody).toBeUndefined();
+    expect(screen.getByLabelText("Task 1 title")).toBeDisabled();
     await act(async () => {
       pendingSave.reject(new Error("late save failed"));
       await pendingSave.promise.catch(() => {});
     });
+    expect(await screen.findByText("1 tasks created")).toBeVisible();
+    expect(commitBody?.revisionId).toBe(revisionId);
+    expect(commitBody?.tasks[0]?.title).toBe("Final");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.queryByText(/late save failed/)).not.toBeInTheDocument();
+  });
+
+  it.each([true, false])("switch-time flush preserves the right draft when generation success is %s", async (succeeds) => {
+    const generation = deferred<{ prdMarkdown: string; tasks: typeof draft[]; costUsd: number }>();
+    const projectB = { ...project, id: "other-project" };
+    let serverTitle = draft.title;
+    const writes: string[] = [];
+    apiMock.mockImplementation(async (key, options) => {
+      if (key === "planSession") return { revisionId, messages: history, prd: "# Plan", draftTasks: [{ ...draft, title: serverTitle }], planCostUsd: 0 };
+      if (key === "planDeconstruct") return generation.promise;
+      if (key === "planSaveDraft") {
+        serverTitle = (options?.body as DraftBody).tasks[0]!.title;
+        writes.push(serverTitle);
+        return { ok: true };
+      }
+      return baseApi(key, options, [project, projectB]);
+    });
+    const slowView = (id: string) => <ToastProvider><PlanView projectId={id} onDone={vi.fn()} saveDebounceMs={60_000} /></ToastProvider>;
+    const { rerender } = render(slowView(project.id));
+    fireEvent.change(await screen.findByLabelText("Task 1 title"), { target: { value: "Unsaved edit" } });
+    await userEvent.click(screen.getByRole("button", { name: /Re-generate task table/ }));
+    expect(screen.getByLabelText("Task 1 title")).toBeDisabled();
+    rerender(slowView(projectB.id));
+    await screen.findByLabelText("Task 1 title");
+    await act(async () => {
+      if (succeeds) {
+        serverTitle = "Generated replacement";
+        generation.resolve({ prdMarkdown: "# New", tasks: [{ ...draft, title: serverTitle }], costUsd: 0 });
+      } else generation.reject(new Error("generation failed"));
+    });
+    rerender(slowView(project.id));
+    expect(await screen.findByLabelText("Task 1 title")).toHaveValue(succeeds ? "Generated replacement" : "Unsaved edit");
+    expect(writes).toEqual(succeeds ? [] : ["Unsaved edit"]);
   });
 
   it("guards reload/close only while work is unsaved", async () => {
