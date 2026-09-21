@@ -130,6 +130,23 @@ for (const viewport of TARGET_VIEWPORTS) {
         if (route.heading) {
           await expect(page.getByRole("heading", { name: route.heading }).first()).toBeVisible();
         } else {
+          // VW04: phones open a status-filtered list (the seed's active task sits
+          // in Working, the most urgent non-empty group); wider viewports show
+          // the five Kanban groups.
+          if (viewport.width < 640) {
+            await expect(page.getByRole("tablist", { name: "Task groups" })).toBeVisible();
+            await expect(page.getByRole("tab", { name: /Working/ })).toHaveAttribute(
+              "aria-selected",
+              "true",
+            );
+          } else {
+            await expect(page.getByRole("region", { name: /^Working \(/ })).toBeVisible();
+            // The seed has nothing blocked or failed, so this group is the
+            // collapsed strip rather than a populated column.
+            await expect(
+              page.getByTitle("Needs attention — empty, click to expand"),
+            ).toBeVisible();
+          }
           await expect(page.locator("article").filter({ hasText: "Kanban board UI" })).toBeVisible();
         }
         await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
@@ -165,6 +182,11 @@ for (const viewport of TARGET_VIEWPORTS) {
       await page.getByRole("button", { name: "Stop task" }).click();
       await expect(page.getByText("Stopped — task moved to Blocked.")).toBeVisible();
 
+      // VW04: the stopped card now lives in "Needs attention" with its reason.
+      if (viewport.width < 640) {
+        await page.getByRole("tab", { name: /Needs attention/ }).click();
+      }
+      await expect(activeTask.getByText(/^Blocked/)).toBeVisible();
       await activeTask.click();
       await page.getByRole("button", { name: /Retry/ }).click();
       await expect(page.getByText("Retry queued with priority.")).toBeVisible();

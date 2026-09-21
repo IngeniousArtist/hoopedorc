@@ -113,12 +113,28 @@ going on a always-on box.
 4. **Review the table.** Every field is editable before you commit —
    reassign a task to a different model, tighten its scope paths, add or
    remove acceptance criteria, reorder dependencies. Nothing runs yet.
-5. **Start.** The Board fills with cards moving through
-   Backlog → Ready → In Progress → In Review → Done (or Blocked/Failed).
-   Click any card for the full detail drawer: logs, gate results, the
-   validator's verdict and reasons, the PR link. The mission-control strip
-   above the board shows every currently-active agent, budget burn, and any
-   pending approvals at a glance.
+5. **Start.** The Board shows work as five outcome groups — **Planned**
+   (ready to run, or waiting on dependencies), **Working** (an agent is
+   implementing, or repairing after review feedback), **Review** (gates and
+   the independent validator), **Done** (merged), and **Needs attention**
+   (blocked or failed, with the exact reason on the card). These are a view
+   over the same task statuses the engine uses; a card only moves on the
+   engine's evidence. Each card leads with its title, what is happening right
+   now, what it is waiting on, and whether there is review evidence to open.
+   The **Engineering details** toggle adds model, difficulty, attempt, and
+   cost-estimate chips to the cards; otherwise those live in the task
+   drawer. On phones the Board opens as a status-filtered list with one tab
+   per group (Kanban is one tap away); on larger screens it is the five
+   Kanban columns. Dragging a card onto **Planned** means "run this next"
+   (it becomes ready); nothing else is a drop target, and the same actions
+   are available from each card's **⋯ Actions** menu — **Run next**, **Move
+   back to queue**, **Retry task**, **Open details** — so no drag is
+   required. The compact line above the board shows progress, what is
+   moving, a **Needs attention · N** shortcut, and spend against budget;
+   active agents and pending approvals sit right below it. Click any card
+   for the full detail drawer: logs, gate results, the validator's verdict
+   and reasons, the PR link. Budget, gate scripts, retries, merge policy, and
+   schedule are under the project header's **Project settings** disclosure.
 6. **Approvals**, if any come up (a risky change, or the merge policy is set
    to always ask), show up as `action_required` in Notifications, and — if
    you've set up Telegram (Settings → Telegram, needs a bot token from
@@ -136,9 +152,11 @@ going on a always-on box.
    running. Hard Stop also cancels any approval that task is waiting on; its
    old web or Telegram buttons expire and cannot resume the merge. Graceful
    **Pause** keeps active approval prompts live while it drains current work.
-   A task card labels consumed author invocations as `Attempt N`, the
-   configured `policy M`, and any separately granted `+ R recovery`
-   allowance. Rate-limit waits and fallback recovery never inflate the policy.
+   With **Engineering details** on, a task card labels consumed author
+   invocations as `Attempt N`, the configured `policy M`, and any separately
+   granted `+ R recovery` allowance (the task drawer's Attempts list always
+   shows them). Rate-limit waits and fallback recovery never inflate the
+   policy.
    Retry atomically starts one new logical run, clears only that run's
    accounting and stale branch/PR coordinates, and keeps the task's policy,
    assignment, description, dependencies, and acceptance criteria.

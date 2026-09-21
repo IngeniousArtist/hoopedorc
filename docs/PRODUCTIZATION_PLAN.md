@@ -7371,7 +7371,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW01 | Deterministic mock planning; no real planner/Figma calls | Done (merged 2026-09-21) | [PR #262](https://github.com/IngeniousArtist/hoopedorc/pull/262) → main `c050b4d`; PR CI `build-and-test` passed; main CI run [35565173055](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35565173055) passed; see the VW01 acceptance record below |
 | VW02 | Preserve planning input and truthful draft-save state | Done (merged 2026-09-21) | [PR #264](https://github.com/IngeniousArtist/hoopedorc/pull/264) → main `8d00383`; PR CI `build-and-test` passed; main CI run [35567524350](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35567524350) passed; see the VW02 acceptance record below |
 | VW03 | Repository-aware planning and truthful task history | Done (merged 2026-09-21) | [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266) → main `9757a91`; PR CI `build-and-test` passed; main CI run [35570272080](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35570272080) passed; see the VW03 acceptance record below |
-| VW04 | Project navigation, compact board/list, task inspector | Not started | — |
+| VW04 | Project navigation, compact board/list, task inspector | Part 1 implemented (PR open, awaiting CI and merge); part 2 (task inspector) not started | [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268); see the VW04 acceptance record below |
 | VW05 | Organize existing settings and setup | Not started | — |
 | VW06 | Durable planning operations and planning workbench | Not started | — |
 | VW07 | Propose/apply plan revisions during execution | Not started | — |
@@ -7712,3 +7712,105 @@ completed successfully. Independent post-merge check on `9757a91`: server
 typecheck and the 68 tests in the four VW03 server test files passed locally.
 Next: VW04 (part 1: navigation groups, compact header, outcome groups and
 phone list; part 2: task inspector), starting from the merged result.
+
+### VW04 part 1 — navigation, compact header, outcome groups (implemented 2026-09-21)
+
+VW04 is delivered in two backward-compatible UI PRs, as the plan allows for
+P1. Part 1 (this record) is the project navigation, the compact board header,
+and the board itself. Part 2 (separate PR) is the task inspector: a
+deep-linkable full-screen route on phones with Back, and truthful
+loading/unavailable/error states for the drawer's runs, decisions, logs, and
+rollback reads (today those catches are silent — the drawer shows "No runs
+yet" for a failed read).
+
+**Problems confirmed on main (`a6546fd`):** nine flat nav tabs mixed project
+work with installation administration; the Board stacked the full project
+editor (budget + Advanced accordion), a summary strip, and a mission-control
+strip before the first column; eight status columns exposed engine states
+("Changes Req.") rather than outcomes, phone layouts required swiping eight
+columns, cards led with model/difficulty/attempt chips, dropping a card onto
+any column PATCHed that exact status (so a drop could ask the server to
+manufacture progress and only the server's 409 stopped it), and there was no
+keyboard or menu equivalent to a drag.
+
+**Scope delivered (existing APIs only, no contract change):**
+
+- `apps/web/src/lib/boardGroups.ts`: five outcome groups as a pure mapping
+  over every `TaskStatus` (Planned = backlog/ready, Working = in_progress/
+  changes_requested, Review = in_review, Done, Needs attention = blocked/
+  failed), per-card activity lines (waiting on N tasks, repairing after
+  review, exact blocked/failed reason, merged PR), review availability, the
+  phone list's opening group by urgency, and `allowedActions` (run next from
+  backlog, move back to queue from ready, stop when active, retry when
+  failed/blocked/changes_requested) — exactly the server rules.
+- `Board.tsx`: five columns from the groups; only Planned accepts a drop and
+  it means "run next" (`status: ready`) through the same optimistic path as
+  the card menu; other groups do not prevent dragover, so the browser refuses
+  the drop; `Kanban`/`List` toggle (phone default = list, persisted in
+  `localStorage["hoop.board.view"]`) with a tab strip per group and the
+  `Needs attention · N` summary control switching/scrolling to that group;
+  `Engineering details` checkbox (persisted) shows model/difficulty/attempt/
+  estimate chips; toolbar with `+ Add task` unchanged.
+- `TaskCard.tsx`: title, activity line, heartbeat + Stop for active tasks,
+  `Review available`/`queued` tags, `waiting on <dep>` chips, and a `⋯
+  Actions` menu (`role="menu"`, Escape closes, only allowed actions listed);
+  the card is keyboard-focusable and opens with Enter/Space.
+- `BoardSummary.tsx`: one line — progress bar, working/review/planned counts,
+  attention control, spend of budget with a budget bar (moved here from
+  MissionControl so the dashboard is not duplicated); last terminal event kept
+  as a second truncated line. `MissionControl.tsx`: active agents and pending
+  approvals only.
+- `ProjectHeader.tsx`: identity row and Pause/Stop/Start unchanged; budget
+  editor and Advanced settings folded into a collapsed `Project settings`
+  disclosure that shows the budget and an "unsaved" marker in its summary.
+- `App.tsx`: nav rendered as two labeled groups (`Project`: Board, Plan,
+  Costs, Audit, Notifications; `Workspace`: Projects, Setup, Model Slugs,
+  Settings) with `role="group"`, `aria-current="page"`, identical labels and
+  URLs — no redirects needed.
+- `TaskDrawer.tsx`: Status, Difficulty, and Estimated cost rows in Overview
+  (the details cards no longer show by default).
+- Docs: USER_GUIDE.md board walkthrough and card-label paragraph.
+
+**Preserved semantics (VW04/VW05 acceptance additions):** every run/approval/
+retry/stop/rollback action calls the same routes with the same bodies; drop
+and menu both use `PATCH /api/tasks/:id` with `status` only; existing hash
+URLs unchanged; e2e labels for Board/Plan/Model Slugs/Setup unchanged.
+
+**Non-goals for part 1:** task inspector route/states (part 2); settings and
+setup reorganization (VW05); no new endpoints.
+
+**Acceptance evidence (Node 22.23.0, local):**
+
+- `apps/web/src/lib/boardGroups.test.ts` (4): every status maps to exactly one
+  group and only Planned is a drop target; counts/filters/urgency default;
+  truthful activity lines (waiting on N, repairing, exact blocked/failed
+  reason, merged PR); allowed actions per status match the server rules.
+- `apps/web/src/components/TaskCard.test.tsx` (8): attempts accounting in the
+  engineering view; Stop confirmation success/failure unchanged; outcome-first
+  content with chips off by default; exact reason + review tag; menu offers
+  only allowed actions and runs them, Escape closes; keyboard open; memo
+  equality includes the new props.
+- `apps/web/src/pages/Board.groups.test.tsx` (6, real cards and summary):
+  five columns with counts, compact summary (progress/budget bars, attention
+  control); drop on Done is ignored while drop on Planned PATCHes
+  `status: ready`; card menu Run next / Move back to queue PATCH the same
+  statuses; phone list opens on Needs attention, tabs switch, the summary
+  control switches tabs, Kanban toggle persists; phone-width viewport
+  defaults to the list; engineering toggle shows chips and persists.
+- Existing suites unchanged and passing: Board.test (15), Board.o22.test,
+  MissionControl.test, TaskDrawer.test, App.integration.test.
+- Playwright: the responsive sweep asserts the list with the Working tab
+  selected at 360/390 and the Working column plus the collapsed Needs
+  attention strip at 768/1280/1440, then no document overflow, fixed surfaces
+  inside the viewport, and ≥40px phone touch targets on every route; the
+  interaction flow (add task, drawer, Stop → card now under Needs attention
+  with its reason, Retry, approvals, plan editing, settings, deletion) passes
+  at all five widths; the critical-workflow suite passes with only two
+  selector tightenings (`getByLabel("Project", { exact: true })` because the
+  nav group is labeled "Project pages"; the empty attention group is a
+  collapsed strip, not a region).
+- Gates: `npm run typecheck`, `npm run build`, `npm run lint` (330 legacy
+  findings, baseline unchanged), 234 engine, 18 adapter, 358 server, 127 web
+  tests (29 files, 3 new), 21 Playwright scenarios, `git diff --check`.
+
+Publication: [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268). Required PR CI must pass before merge; merge/main CI evidence is appended after merge.

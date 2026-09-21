@@ -419,7 +419,7 @@ test.describe.serial("critical operator workflows", () => {
   test("phone navigation is usable without accidental document overflow", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/#/p/proj-hoopedorc/board");
-    await expect(page.getByLabel("Project")).toBeVisible();
+    await expect(page.getByLabel("Project", { exact: true })).toBeVisible();
     await expectNoDocumentOverflow(page);
 
     const setup = page.getByRole("button", { name: "Setup", exact: true });
