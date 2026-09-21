@@ -1039,6 +1039,9 @@ export const ROUTES = {
   setupModels: "GET /api/setup/models",
   modelCatalog: "GET /api/setup/model-catalog",
   harnessCompatibility: "GET /api/setup/harnesses",
+  routingEvaluations: "GET /api/routing/evaluations",
+  routingEvaluation: "GET /api/routing/evaluations/:id",
+  evaluateRouting: "POST /api/routing/evaluations",
   modelHealth: "GET /api/setup/model-health",
   testModels: "POST /api/setup/test-models",
   stopAll: "POST /api/engine/stop-all",
@@ -1049,3 +1052,12 @@ export type RouteKey = keyof typeof ROUTES;
 export interface MilestonesResponse { taskGeneration: number; milestones: MilestoneOutcome[]; repositoryError?: string }
 export interface MilestoneRepairDraftRequest { revisionId: string; sessionVersion: number; taskGeneration: number }
 export interface MilestoneRepairDraftResponse { revisionId: string; sessionVersion: number; tasks: PlanChangeTask[]; prdMarkdown: string }
+
+
+/** VW18: offline recorded-data evaluation; creates no model invocations. */
+export interface EvaluateRoutingRequest {
+  requestId: string;
+  dataset: import("./routing-evaluation").RoutingBenchmark;
+}
+export interface EvaluateRoutingResponse { evaluation: import("./routing-evaluation").RoutingEvaluationRecord }
+export interface RoutingEvaluationsResponse { evaluations: import("./routing-evaluation").RoutingEvaluationSummary[] }

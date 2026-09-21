@@ -545,6 +545,19 @@ export function initDb(path: string = ENV.dbPath): Db {
   db.exec(VW12_ACTIVATION_MIGRATION);
   db.exec(VW13_RESOURCE_MIGRATION);
   db.exec(`
+-- VW18: immutable offline benchmark evidence, separate from live billing.
+CREATE TABLE IF NOT EXISTS routing_evaluations (
+  id TEXT PRIMARY KEY,
+  dataset_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  name TEXT NOT NULL,
+  provenance TEXT NOT NULL CHECK(provenance IN ('synthetic', 'observed')),
+  status TEXT NOT NULL CHECK(status IN ('insufficient_evidence', 'keep_static', 'candidate_for_pilot')),
+  json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_routing_evaluations_created ON routing_evaluations(created_at);
+`);
+  db.exec(`
 CREATE TABLE IF NOT EXISTS milestone_budgets (
   task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
   started_at TEXT NOT NULL

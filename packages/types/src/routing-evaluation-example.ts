@@ -1,0 +1,10 @@
+import type { RoutingBenchmark } from "./routing-evaluation";
+/** Educational fixture, never a claim about Jev or any real model/account. */
+export function routingEvaluationExample(): RoutingBenchmark {
+  const briefs = ["Adjust a component's spacing", "Add accessible form errors", "Replace an application shell", "Fix an API validation bug", "Add a pagination endpoint", "Recover interrupted background jobs", "Correct installation instructions", "Document a configuration migration", "Audit an authentication guide", "Fix a health-check command", "Configure a test environment", "Repair a failed deployment rollback"];
+  return { version: 1, name: "Synthetic routing example", provenance: "synthetic", methodology: "Fabricated held-out examples for exercising the evaluator. Replace with independently reviewed, matched runs before drawing conclusions.", policy: { minConfidence: 0.8, maxClassifierCostUsd: 0.01, maxClassifierLatencyMs: 2000 }, cases: briefs.map((brief, index) => ({
+    id: `example-${index + 1}`, brief, category: (["frontend", "backend", "docs", "operations"] as const)[Math.floor(index / 3)]!, difficulty: (["easy", "medium", "hard"] as const)[index % 3]!, split: "held_out", candidates: [{ id: "economy", eligible: true }, { id: "strong", eligible: true }], staticModel: "strong",
+    classification: { status: "ok", response: { model: "jev-example", answers: { route: { type: "choice", choice: "economy", confidence: index % 3 === 2 ? 0.4 : 0.9, probabilities: { economy: 0.95, strong: 0.05 } } }, usage: { input_tokens: 100, output_tokens: 10 } }, costUsd: 0.001, durationMs: 200, tokens: 110, evidence: "Synthetic response; no provider call" },
+    outcomes: { strong: { initialCostUsd: 0.4, validationCostUsd: 0.1, repairCostUsd: 0, tokens: 8000, calls: 2, durationMs: 60000, acceptable: true, evidence: "Synthetic strong outcome" }, economy: { initialCostUsd: 0.1, validationCostUsd: 0.1, repairCostUsd: index % 3 === 1 ? 0.6 : 0, tokens: 6000, calls: index % 3 === 1 ? 4 : 2, durationMs: 40000, acceptable: true, evidence: "Synthetic economy outcome" } },
+  })) };
+}

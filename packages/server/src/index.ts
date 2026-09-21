@@ -1,3 +1,4 @@
+import { registerRoutingEvaluationRoutes } from "./routing-evaluation-routes";
 import { harnessCompatibility } from "./harnesses";
 import { MilestoneError, createMilestoneRepairDraft, milestoneOutcomes, withMilestoneDraft } from "./milestones";
 import type { MilestoneRepairDraftRequest } from "@orc/types";
@@ -657,6 +658,7 @@ async function assembleServer(
   registerReviewRoutes(app, db, reviews);
   registerLibraryRoutes(app, db, env.mock);
   registerActivationRoutes(app, db);
+  registerRoutingEvaluationRoutes(app, db);
   registerResourceRoutes(app, engine.resources, env.mock ? undefined : (id) => engine.execution.stopInvocation(id));
   registerExecutionRoutes(app, engine.execution, env.mock, (request, reply) => plannerRequestCancellation(request.raw, reply.raw, requestControllers));
   const unresolvedWorkers = env.mock ? [] : await engine.execution.recover();
