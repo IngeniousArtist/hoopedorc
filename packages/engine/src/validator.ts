@@ -51,6 +51,7 @@ export class ValidatorImpl implements Validator {
     private readonly settingsSource: Settings | (() => Settings),
     /** Optional for embedders/tests; production persists every lifecycle. */
     private readonly onInvocation?: ValidatorInvocationSink,
+    private readonly referenceContext?: (project: Project, task: Task) => string,
   ) {}
 
   private settings(): Settings {
@@ -95,7 +96,7 @@ export class ValidatorImpl implements Validator {
     const cwd = task.worktreePath ?? project.localPath;
     const diff = await this.getDiff(project, cwd, signal);
     const adapter = this.adapterFactory(validatorModel);
-    const prompt = this.buildReviewPrompt(task, gate, diff, attemptSettings);
+    const prompt = this.buildReviewPrompt(task, gate, diff, attemptSettings) + (this.referenceContext?.(project, task) ?? "");
     const invocationId = `validator-${task.id}-${randomUUID()}`;
     const startedAt = new Date().toISOString();
     const baseInvocation = {

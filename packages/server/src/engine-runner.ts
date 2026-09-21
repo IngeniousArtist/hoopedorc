@@ -1,5 +1,6 @@
 import { pendingPlanChange } from "./plan-changes";
 import { planningBlocksExecution } from "./planning-operations";
+import { LibraryStore } from "./library";
 import {
   GateRunnerImpl,
   GitServiceImpl,
@@ -563,6 +564,7 @@ export class EngineRunner {
       adapterFor,
       liveSettings,
       (event) => this.recordInvocation(event),
+      (owner, task) => new LibraryStore(this.db).context(owner.id, task.description),
     );
 
     const deps: SchedulerDeps = {
@@ -575,6 +577,8 @@ export class EngineRunner {
       adapterFor,
       opencodeBaseUrl: ENV.opencodeBaseUrl,
       getTasks: () => repo.getTasks(this.db, project.id),
+      checkTaskReferences: (owner, task) => new LibraryStore(this.db).checkTask(owner.id, task.description),
+      taskReferenceContext: (owner, task) => new LibraryStore(this.db).context(owner.id, task.description),
       taskChanges: {
         currentGeneration: () =>
           repo.getTaskGeneration(this.db, project.id),
@@ -597,7 +601,7 @@ export class EngineRunner {
       },
       preflightFigma: async ({ task, model, signal }) => {
         const intake = extractFigmaReferencesFromText(
-          [task.description, ...task.acceptanceCriteria].join("\n"),
+          [task.description, new LibraryStore(this.db).context(project.id, task.description), ...task.acceptanceCriteria].join("\n"),
         );
         if (intake.nodes.length === 0) return { required: false };
 
@@ -1019,6 +1023,7 @@ export class EngineRunner {
         adapterFor,
         liveSettings,
         (event) => this.recordInvocation(event),
+        (owner, task) => new LibraryStore(this.db).context(owner.id, task.description),
       ),
     };
   }

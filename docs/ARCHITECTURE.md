@@ -360,3 +360,21 @@ The full Review route reuses preview controls, read-only file inspection and the
 existing planning composer. Code checks are displayed from existing validator
 decisions; design evidence cannot bypass their policy. Agent/MCP browser-tool
 delivery remains an explicit VW12 capability, separate from operator capture.
+
+### VW11 reference library
+
+The server's `LibraryStore` owns immutable SQLite `library_versions` and
+transactional `library_writes` receipts. Routes expose bounded metadata, details,
+edits, explicit imports and selected handoff. Legacy imports reuse safe Git
+inspection and preserve repository files/tasks. Imported text has a content hash;
+binary attachments and external URLs are pointers with disclosed verification
+limits. No new scheduler, context auto-loader or capability installer is created.
+
+Pinned `hoop-reference:<id>@<revision>` tokens remain in the existing task Markdown
+contract. The server supplies the engine's optional pure reference refusal/context
+callbacks. Refusal occurs before worktree creation/author attempts and retains
+existing work; immutable resolution means later Library edits do not change an
+active attempt. The same server resolver feeds author and validator (including
+the existing recovery construction). Figma preflight also sees selected reference
+text, preserving its existing exact-node capability guard. Unselected Library
+entries are absent; native harness discovery remains VW12's separate boundary.

@@ -30,12 +30,14 @@ import { SetupView } from "./pages/SetupView";
 import { Welcome } from "./pages/Welcome";
 import { WorkspacesView } from "./pages/WorkspacesView";
 import { ReviewView } from "./pages/ReviewView";
+import { LibraryView } from "./pages/LibraryView";
 
 export type Page =
   | "board"
   | "plan"
   | "workspaces"
   | "review"
+  | "library"
   | "costs"
   | "audit"
   | "notifications"
@@ -58,6 +60,7 @@ const NAV_GROUPS: { label: string; items: { page: Page; label: string }[] }[] = 
       { page: "plan", label: "Plan" },
       { page: "workspaces", label: "Workspaces" },
       { page: "review", label: "Review" },
+      { page: "library", label: "Library" },
       { page: "costs", label: "Costs" },
       { page: "audit", label: "Audit" },
       { page: "notifications", label: "Notifications" },
@@ -75,7 +78,7 @@ const NAV_GROUPS: { label: string; items: { page: Page; label: string }[] }[] = 
 ];
 
 /** Pages that need a selected project to render anything useful. */
-const PROJECT_PAGES: Page[] = ["board", "plan", "workspaces", "review", "costs", "audit", "notifications"];
+const PROJECT_PAGES: Page[] = ["board", "plan", "workspaces", "review", "library", "costs", "audit", "notifications"];
 const TASK_DETAIL_PAGES: Page[] = ["board", "review"];
 
 const STORAGE_KEY = "hoop.projectId";
@@ -776,6 +779,10 @@ export function App() {
               setPlanMounted(true); setPage("plan");
             }} />}
             {page === "audit" && <AuditView projectId={selectedProjectId} />}
+            {page === "library" && <LibraryView key={selectedProjectId} projectId={selectedProjectId} onAddToPlan={(text) => {
+              setPlanningReference({ id: crypto.randomUUID(), projectId: selectedProjectId, text });
+              setPlanMounted(true); setPage("plan");
+            }} />}
             {page === "notifications" && (
               <Notifications projectId={selectedProjectId} />
             )}

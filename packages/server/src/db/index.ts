@@ -153,6 +153,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_preview_port_owner ON workspace_previews(p
   WHERE state IN ('starting', 'ready', 'stopping');
 `;
 
+const VW11_LIBRARY_MIGRATION = `
+CREATE TABLE IF NOT EXISTS library_versions (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  reference_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  json TEXT NOT NULL,
+  PRIMARY KEY (project_id, reference_id, revision)
+);
+CREATE TABLE IF NOT EXISTS library_writes (
+  request_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  reference_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  request_hash TEXT NOT NULL,
+  FOREIGN KEY (project_id, reference_id, revision) REFERENCES library_versions(project_id, reference_id, revision) ON DELETE CASCADE
+);
+`;
+
 const VW10_REVIEW_MIGRATION = `
 CREATE TABLE IF NOT EXISTS review_evidence (
   id TEXT PRIMARY KEY,
@@ -473,6 +491,7 @@ export function initDb(path: string = ENV.dbPath): Db {
   db.exec(VW07_PLAN_CHANGES_MIGRATION);
   db.exec(VW09_PREVIEW_MIGRATION);
   db.exec(VW10_REVIEW_MIGRATION);
+  db.exec(VW11_LIBRARY_MIGRATION);
   // No CLI can be resumed by restoring an in-memory Promise. Keep the input,
   // settle orphaned ownership, and require an explicit, separately counted retry.
   db.prepare(`UPDATE planning_operations SET state = 'interrupted', ended_at = ?,

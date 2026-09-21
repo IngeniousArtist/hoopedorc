@@ -678,6 +678,11 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `openWorkspacePreview` | `POST /api/projects/:id/workspaces/:workspaceId/preview/open` | → `PreviewLaunchResponse` |
 | `setPreviewProfile` | `PUT /api/projects/:id/preview-profile` | `SetPreviewProfileRequest` → `WorkspacePreviewResponse` (primary context) |
 | `taskReview` | `GET /api/projects/:id/tasks/:taskId/review` | → `TaskReviewResponse` |
+| `projectLibrary` | `GET /api/projects/:id/library` | → `LibraryResponse` metadata and known task marker usage |
+| `libraryReference` | `GET /api/projects/:id/library/:referenceId` | → `LibraryDetailResponse` current and historical snapshots |
+| `saveLibraryReference` | `PUT /api/projects/:id/library/:referenceId` | `SaveLibraryReferenceRequest` → `SaveLibraryReferenceResponse` |
+| `importProjectLibrary` | `POST /api/projects/:id/library/import` | → `ImportLibraryResponse` counts and per-source issues; no source writes |
+| `libraryHandoff` | `POST /api/projects/:id/library/handoff` | `LibraryHandoffRequest` → `LibraryHandoffResponse` bounded selected Markdown |
 | `captureReview` | `POST /api/projects/:id/tasks/:taskId/review/capture` | `CaptureReviewRequest` → `202 ReviewEvidenceResponse` (200 for a settled idempotent retry) |
 | `uploadReviewEvidence` | `POST /api/projects/:id/tasks/:taskId/review/evidence` | `UploadReviewEvidenceRequest` → `ReviewEvidenceResponse` |
 | `cancelReviewCapture` | `POST /api/projects/:id/tasks/:taskId/review/evidence/:evidenceId/cancel` | → `ReviewEvidenceResponse` |
@@ -840,6 +845,37 @@ in-flight request rather than a debounce timer.
   planning routes answer through the deterministic mock planner described
   above, so mock planning never spawns a planner CLI, contacts a Figma MCP, or
   clones a repository; that isolation is bounded to planning.
+
+### VW11 project reference library
+
+Library metadata lists omit content; detail returns the current immutable
+`LibraryReference` and its history. A save supplies a UUID-v4 `requestId`,
+`expectedRevision` (0 for a new ID), and complete `ReferenceInput`. The revision
+and write receipt commit atomically; an exact replay returns the original
+revision, a reused ID with different input or stale revision returns 409.
+Project ownership applies to every route. Archive creates a revision; it never
+deletes snapshots already referenced by tasks. No arbitrary source is fetched or
+executed on save. URL sources allow only HTTP(S) without embedded credentials.
+
+References are bounded at 32 KiB content, 200 entries/project, 50 revisions/entry,
+and 10 MiB serialized history/project. Selection is 1–20 pinned revisions and
+at most 64 KiB content. `libraryHandoff` rejects archived entries and conflicting
+alternatives, and returns Markdown for the existing unsent Plan composer.
+`hoop-reference:<id>@<revision>` markers stay in Task.description. The scheduler
+refuses missing/malformed/conflicting pinned references before an author attempt;
+author and validator resolve only those immutable revisions. Later edits/archive
+do not change an existing task's snapshot. Task usage means a marker is present,
+not evidence the model inspected or complied. Conflict detection covers explicit
+groups and multiple revisions of one ID; it does not claim semantic analysis.
+
+Import reads at most 50 repository guidance/text attachment sources through the
+existing bounded Git inspection, indexes up to 50 legacy Markdown task handoffs
+and existing verified Figma references, and never writes source files/tasks.
+Binary attachments are unverified pointers, not content snapshots. Per-source
+issues and truncation are explicit. Repeated unchanged imports create no revision;
+changed imports preserve old revisions. Operator-edited or archived imported
+entries are not overwritten by later imports. Mock import uses inert fixture text
+and database history; no host filesystem, Figma or model is accessed.
 
 ### VW08 workspace inspection
 

@@ -2411,6 +2411,27 @@ test("F29: a docs-role task's author prompt includes the docs guidelines; a fron
   assert.doesNotMatch(frontendPrompt!, /### Docs/);
 });
 
+test("VW11: unresolved references block before worktree or author attempt and preserve existing work", async () => {
+  const candidate = task("reference-blocked", [], { worktreePath: "/tmp/operator-work", branch: "orc/reference-blocked" });
+  let creates = 0; let removals = 0; let authors = 0;
+  await new Orchestrator(fakeDeps({
+    checkTaskReferences: () => "Choose one conflicting design source.",
+    worktrees: { create() { creates++; return Promise.reject(new Error("must not create")); }, remove() { removals++; return Promise.resolve(); } },
+    adapterFor: () => ({ runner: "opencode", run() { authors++; return Promise.reject(new Error("must not invoke")); } }),
+  }, [])).start(PROJECT, [candidate]);
+  assert.equal(candidate.status, "blocked"); assert.equal(candidate.attempts, 0);
+  assert.match(candidate.statusReason!, /conflicting design source/);
+  assert.equal(creates, 0); assert.equal(removals, 0); assert.equal(authors, 0);
+  assert.equal(candidate.worktreePath, "/tmp/operator-work");
+});
+
+test("VW11: only selected immutable reference context reaches the author", async () => {
+  const prompts: string[] = [];
+  const adapter: AgentAdapter = { runner: "opencode", run(options) { prompts.push(options.prompt); return Promise.resolve({ ok: true, exitReason: "completed", costUsd: 0, tokensIn: 0, tokensOut: 0, summary: "Done" }); } };
+  await new Orchestrator(fakeDeps({ adapterFor: () => adapter, taskReferenceContext: (_project, candidate) => candidate.description.includes("hoop-reference:design@1") ? "\nSelected immutable design: use the saved button." : "" }, [])).start(PROJECT, [task("selected", [], { description: "hoop-reference:design@1" })]);
+  assert.match(prompts[0]!, /Selected immutable design: use the saved button/);
+});
+
 test("F34: skillHints appear in the author prompt when configured, absent when unset", async () => {
   const capturedPrompts: string[] = [];
   const capturingAdapter: AgentAdapter = {

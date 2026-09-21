@@ -5,6 +5,7 @@ import { previewSlots } from "./preview-policy";
 import { PreviewManager } from "./previews";
 import { ReviewManager } from "./reviews";
 import { registerReviewRoutes } from "./review-routes";
+import { registerLibraryRoutes } from "./library-routes";
 import type { ApplyPlanChangesRequest } from "@orc/types";
 import "dotenv/config";
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -647,6 +648,7 @@ async function assembleServer(
   app.addHook("onClose", () => previews.close());
   const reviews = new ReviewManager(db, previews, env.mock);
   registerReviewRoutes(app, db, reviews);
+  registerLibraryRoutes(app, db, env.mock);
   app.addHook("onClose", () => reviews.close());
 
   type ApprovalResolutionState =
