@@ -2,7 +2,7 @@
 
 Implementation handoff · 21 September 2026 · audited baseline: 75c146e
 
-This document records the requested product direction and implementation sequence after inspecting the running UI, source, tests, and historical roadmap. It is the focused specification for Part 14 of [PRODUCTIZATION_PLAN.md](PRODUCTIZATION_PLAN.md#part-14--visual-development-workspace), whose status table records each VW item's current state and evidence (VW01 implemented 2026-09-21; later items not started at that date). This document itself does not approve unresolved authentication, isolation, or compatibility choices.
+This document records the requested product direction and implementation sequence after inspecting the running UI, source, tests, and historical roadmap. It is the focused specification for Part 14 of [PRODUCTIZATION_PLAN.md](PRODUCTIZATION_PLAN.md#part-14--visual-development-workspace), whose status table records each VW item's current state, PR, and evidence. This document itself does not approve unresolved authentication, isolation, or compatibility choices.
 
 [Open the clickable layout concept](design/visual-workspace-concept.html). This is a self-contained HTML file with sample data and no external dependencies. Its script syntax and view/label targets were checked statically. The browser tool blocked opening the local file, so rendered layout and interaction verification of the concept remain outstanding.
 

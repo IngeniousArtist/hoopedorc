@@ -10,6 +10,7 @@ import type {
   PlanChatMessage,
   Project,
   ProjectConfig,
+  RepositoryInspection,
   RollbackJob,
   Run,
   Settings,
@@ -184,6 +185,8 @@ export interface PlanningSessionUpdate {
   agentsMd?: string | null;
   /** F52: small verified exact-node list, retained on failed retries. */
   verifiedFigmaReferences?: VerifiedFigmaReference[] | null;
+  /** VW03: the repository inspection this session last planned against. */
+  repository?: RepositoryInspection | null;
   /** F28: the archived markdown session file this session is being
    *  written to. `null` clears it (done at /plan/commit, so the next
    *  chat turn mints a fresh file for the next session). */
@@ -221,6 +224,10 @@ function planningSessionAssignments(opts: PlanningSessionUpdate): {
         ? JSON.stringify(opts.verifiedFigmaReferences)
         : null,
     );
+  }
+  if (opts.repository !== undefined) {
+    sets.push("planning_repository = ?");
+    vals.push(opts.repository ? JSON.stringify(opts.repository) : null);
   }
   if (opts.sessionFile !== undefined) {
     sets.push("planning_session_file = ?");
@@ -298,12 +305,13 @@ export function getPlanningSession(
   draftTasks?: DraftTask[];
   agentsMd?: string;
   verifiedFigmaReferences?: VerifiedFigmaReference[];
+  repository?: RepositoryInspection;
   sessionFile?: string;
   revisionId?: string;
 } {
   const row = db
     .prepare(
-      "SELECT planning_messages, planning_prd, planning_draft_tasks, planning_agents_md, planning_figma_refs, planning_session_file, planning_revision_id FROM projects WHERE id = ?",
+      "SELECT planning_messages, planning_prd, planning_draft_tasks, planning_agents_md, planning_figma_refs, planning_repository, planning_session_file, planning_revision_id FROM projects WHERE id = ?",
     )
     .get(projectId) as
     | {
@@ -312,6 +320,7 @@ export function getPlanningSession(
         planning_draft_tasks: string | null;
         planning_agents_md: string | null;
         planning_figma_refs: string | null;
+        planning_repository: string | null;
         planning_session_file: string | null;
         planning_revision_id: string | null;
       }
@@ -324,6 +333,9 @@ export function getPlanningSession(
     agentsMd: row.planning_agents_md ?? undefined,
     verifiedFigmaReferences: row.planning_figma_refs
       ? (JSON.parse(row.planning_figma_refs) as VerifiedFigmaReference[])
+      : undefined,
+    repository: row.planning_repository
+      ? (JSON.parse(row.planning_repository) as RepositoryInspection)
       : undefined,
     sessionFile: row.planning_session_file ?? undefined,
     revisionId: row.planning_revision_id ?? undefined,

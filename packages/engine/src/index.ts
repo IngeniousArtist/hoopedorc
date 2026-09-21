@@ -58,6 +58,7 @@ export {
 export type {
   GitServiceRuntime,
   GitOperationStage,
+  RepositoryDescription,
   RepositoryFileWrite,
 } from "./git-service.js";
 export { GateRunnerImpl } from "./gate-runner.js";

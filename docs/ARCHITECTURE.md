@@ -118,7 +118,13 @@ planner in production, or the deterministic `mock-planner.ts` under `MOCK=1`,
 which never spawns a planner CLI, contacts a Figma MCP, or clones/reads a
 repository. Routes keep every guard and persistence step; only the model
 behind them changes. Tests inject either side through
-`BuildAppDependencies.planning`.
+`BuildAppDependencies.planning`. VW03: the same service exposes `inspect`,
+which reads the primary clone through `GitServiceImpl.describeRepository`
+(read-only, under the shared repository lock) and classifies it in
+`repository-inspection.ts`; the routes inspect before every planner call,
+pass the result into the prompts, persist it with the planning session, and
+refuse a drifted commit until the operator acknowledges it. An unreachable
+clone is a typed `503`, never a temporary-directory planner run.
 
 Gate scripts, dependency installs, and structured project setup run through
 `@orc/engine`'s Docker sandbox (`sandbox.ts`) when a daemon is reachable — a

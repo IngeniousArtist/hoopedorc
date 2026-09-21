@@ -1,8 +1,15 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { DraftTask, PlanChatMessage, PlanSessionArchive, Project } from "@orc/types";
+import type {
+  DraftTask,
+  PlanChatMessage,
+  PlanSessionArchive,
+  Project,
+  RepositoryInspection,
+} from "@orc/types";
 import type { Db } from "./db/index";
 import * as repo from "./db/repo";
+import { summarizeRepository } from "./repository-inspection";
 import { contextDir } from "./context-dir";
 
 /**
@@ -85,6 +92,8 @@ function describeSessionStart(filename: string): string {
 interface RenderInput {
   projectName: string;
   plannerModel?: string;
+  /** VW03: the repository revision this session planned against. */
+  repository?: RepositoryInspection;
   sessionFile: string;
   messages: PlanChatMessage[];
   deconstructed?: { prdMarkdown: string; tasks: DraftTask[] };
@@ -102,6 +111,7 @@ function renderSessionMarkdown(input: RenderInput): string {
     `- Started: ${describeSessionStart(input.sessionFile)}`,
   ];
   if (input.plannerModel) lines.push(`- Planner model: ${input.plannerModel}`);
+  if (input.repository) lines.push(`- Repository: ${summarizeRepository(input.repository)}`);
   lines.push("");
 
   for (const m of input.messages) {
@@ -173,6 +183,7 @@ export function recordPlanChatTurn(
   messages: PlanChatMessage[],
   plannerModel: string | undefined,
   warn: (msg: string) => void,
+  repository?: RepositoryInspection,
 ): void {
   const dir = sessionsDir(project, mock);
   const session = repo.getPlanningSession(db, project.id);
@@ -180,6 +191,7 @@ export function recordPlanChatTurn(
   const markdown = renderSessionMarkdown({
     projectName: project.name,
     plannerModel,
+    repository: repository ?? session.repository,
     sessionFile: filename,
     messages,
   });
@@ -197,6 +209,7 @@ export function recordPlanDeconstruct(
   tasks: DraftTask[],
   plannerModel: string | undefined,
   warn: (msg: string) => void,
+  repository?: RepositoryInspection,
 ): void {
   const dir = sessionsDir(project, mock);
   const session = repo.getPlanningSession(db, project.id);
@@ -204,6 +217,7 @@ export function recordPlanDeconstruct(
   const markdown = renderSessionMarkdown({
     projectName: project.name,
     plannerModel,
+    repository: repository ?? session.repository,
     sessionFile: filename,
     messages,
     deconstructed: { prdMarkdown, tasks },
@@ -230,6 +244,7 @@ export function recordPlanCommit(
   const markdown = renderSessionMarkdown({
     projectName: project.name,
     plannerModel,
+    repository: session.repository,
     sessionFile: session.sessionFile,
     messages: session.messages,
     deconstructed:

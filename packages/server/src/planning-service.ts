@@ -1,5 +1,12 @@
-import { tmpdir } from "node:os";
-import type { PlanChatMessage, Project, VerifiedFigmaReference } from "@orc/types";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import type { RepositoryDescription } from "@orc/engine";
+import type {
+  PlanChatMessage,
+  Project,
+  RepositoryInspection,
+  VerifiedFigmaReference,
+} from "@orc/types";
 import {
   runPlanner,
   runPlannerChat,
@@ -8,6 +15,7 @@ import {
   type PlannerModel,
   type PlanOutput,
 } from "./planner";
+import { classifyRepository } from "./repository-inspection";
 
 /**
  * VW01: the planning routes talk to one `PlanningService` chosen at the
@@ -17,10 +25,18 @@ import {
  * routes keep owning contract validation, revision guards, persistence,
  * plan-session archives, and response envelopes, so both services see the
  * same request handling.
+ *
+ * VW03: every planner call is preceded by `inspect`, which either yields the
+ * repository facts the prompt is built on (existing codebase vs. empty
+ * repository, branch, commit, stack) or fails with `RepositoryUnavailableError`.
+ * There is no silent fallback to a temporary directory any more: the routes
+ * report the failure and the operator retries.
  */
 export interface PlanningOperationContext {
   project: Project;
   plannerModel: PlannerModel;
+  /** The inspection the routes obtained from `inspect` for this call. */
+  repository: RepositoryInspection;
   signal?: AbortSignal;
   onInvocation?: PlannerInvocationSink;
   onWarn?: (message: string) => void;
@@ -57,6 +73,8 @@ export type PlanningServiceKind = "production" | "mock";
 
 export interface PlanningService {
   readonly kind: PlanningServiceKind;
+  /** Observe the repository a planner call would run against. */
+  inspect(project: Project, signal?: AbortSignal): Promise<RepositoryInspection>;
   /** One conversational planning turn (`POST /plan/chat`). */
   chat(input: PlanningChatInput): Promise<PlanningChatResult>;
   /** Deconstruct an agreed conversation into a draft DAG (`POST /plan/deconstruct`). */
@@ -65,9 +83,14 @@ export interface PlanningService {
   planGoal(input: PlanningGoalInput): Promise<PlanOutput>;
 }
 
-/** The only Git capability production planning needs: a readable clone. */
+/** The Git capabilities production planning needs: a readable clone and its description. */
 export interface PlanningRepositoryAccess {
-  ensureClone(project: Project): Promise<void>;
+  ensureClone(project: Project, signal?: AbortSignal): Promise<void>;
+  describeRepository(
+    project: Project,
+    options?: { maxFiles?: number },
+    signal?: AbortSignal,
+  ): Promise<RepositoryDescription>;
 }
 
 /** The real CLI-backed planner functions; injectable so tests can prove the
@@ -81,30 +104,51 @@ export interface ProductionPlannerRunners {
 export interface ProductionPlanningOptions {
   git: PlanningRepositoryAccess;
   runners?: ProductionPlannerRunners;
-  /** Working directory when the clone cannot be reached (default: tmpdir). */
-  fallbackCwd?: () => string;
+  /** Reads the root package.json; injectable for tests. */
+  readPackageJson?: (localPath: string) => Promise<unknown>;
+  now?: () => Date;
+}
+
+const MAX_ERROR_DETAIL_CHARS = 300;
+
+/** Bound and redact a Git/OS failure so it is safe to show in the UI. */
+export function describeRepositoryFailure(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const firstLine = raw.split("\n").find((line) => line.trim().length > 0) ?? "unknown error";
+  const redacted = firstLine.replace(/(\w+:\/\/)[^/@\s]+@/gu, "$1***@");
+  return redacted.length > MAX_ERROR_DETAIL_CHARS
+    ? `${redacted.slice(0, MAX_ERROR_DETAIL_CHARS - 1)}…`
+    : redacted;
 }
 
 /**
- * Resolve the working directory for a production planning call. Clones the
- * project's repo on first use (it already exists on GitHub by the time
- * planning runs — see createGithubRepo at project creation) so the planner
- * CLI runs inside the real codebase and can read existing files with its
- * built-in tools instead of planning blind in an empty tmp dir. Falls back
- * to `fallbackCwd()` so planning never hard-fails if the clone can't be
- * reached (e.g. offline). VW03 owns making that fallback visible instead of
- * silent; this module only moves the existing behavior behind the boundary.
+ * The project's repository could not be cloned or read. Routes answer `503`
+ * with `code: "REPOSITORY_UNAVAILABLE"`; the draft, transcript, and
+ * attachments are untouched and the same request can simply be retried.
  */
-export async function resolvePlannerCwd(
-  project: Project,
-  git: PlanningRepositoryAccess,
-  fallbackCwd: () => string = tmpdir,
-): Promise<string> {
+export class RepositoryUnavailableError extends Error {
+  override name = "RepositoryUnavailableError";
+  readonly code = "REPOSITORY_UNAVAILABLE" as const;
+
+  constructor(
+    readonly projectId: string,
+    detail: string,
+    options?: { cause?: unknown },
+  ) {
+    super(
+      `the project repository could not be reached or read (${detail}); ` +
+        "planning did not run — fix access to the repository and retry",
+      options,
+    );
+  }
+}
+
+async function readRootPackageJson(localPath: string): Promise<unknown> {
   try {
-    await git.ensureClone(project);
-    return project.localPath;
+    return JSON.parse(await readFile(join(localPath, "package.json"), "utf8")) as unknown;
   } catch {
-    return fallbackCwd();
+    // Missing or unparseable: not a Node manifest we can describe.
+    return undefined;
   }
 }
 
@@ -116,30 +160,46 @@ export function productionPlanningService(
     deconstruct: runPlannerDeconstruct,
     plan: runPlanner,
   };
-  const cwdFor = (project: Project) =>
-    resolvePlannerCwd(project, options.git, options.fallbackCwd);
+  const readPackageJson = options.readPackageJson ?? readRootPackageJson;
+  const now = options.now ?? (() => new Date());
 
   return {
     kind: "production",
-    async chat(input) {
-      const cwd = await cwdFor(input.project);
+    async inspect(project, signal) {
+      let description: RepositoryDescription;
+      try {
+        await options.git.ensureClone(project, signal);
+        description = await options.git.describeRepository(project, undefined, signal);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new RepositoryUnavailableError(project.id, describeRepositoryFailure(err), {
+          cause: err,
+        });
+      }
+      const packageJson = await readPackageJson(project.localPath);
+      return classifyRepository(
+        { ...description, packageJson, prdPath: project.prdPath },
+        now().toISOString(),
+      );
+    },
+    chat(input) {
       return runners.chat(
         input.messages,
         input.project.name,
-        cwd,
+        input.project.localPath,
         input.plannerModel,
         input.priorContext,
         input.attachmentNames,
         input.signal,
         input.onInvocation,
+        input.repository,
       );
     },
-    async deconstruct(input) {
-      const cwd = await cwdFor(input.project);
+    deconstruct(input) {
       return runners.deconstruct(
         input.messages,
         input.project.name,
-        cwd,
+        input.project.localPath,
         input.plannerModel,
         input.priorContext,
         input.attachmentNames,
@@ -149,18 +209,19 @@ export function productionPlanningService(
         input.cachedVerifiedFigmaReferences,
         input.onVerifiedFigmaReferences,
         input.figmaVerification,
+        input.repository,
       );
     },
-    async planGoal(input) {
-      const cwd = await cwdFor(input.project);
+    planGoal(input) {
       return runners.plan(
         input.goal,
         input.project.name,
-        cwd,
+        input.project.localPath,
         input.plannerModel,
         input.onWarn,
         input.signal,
         input.onInvocation,
+        input.repository,
       );
     },
   };

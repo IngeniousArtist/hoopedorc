@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -13,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import type { DraftTask, VerifiedFigmaReference } from "@orc/types";
+import type { DraftTask, RepositoryInspection, VerifiedFigmaReference } from "@orc/types";
 import { defaultSettings, ENV } from "./config.js";
 import { initDb } from "./db/index.js";
 import * as repo from "./db/repo.js";
@@ -22,6 +23,7 @@ import { buildApp, type BuildAppDependencies } from "./index.js";
 import {
   MOCK_PLANNER_FAILURE_TOKEN,
   MOCK_PLANNER_REPLY_PREFIX,
+  MOCK_REPOSITORY_COMMIT,
 } from "./mock-planner.js";
 import { SelfUpdater } from "./self-update.js";
 import { WsHub } from "./ws-hub.js";
@@ -32,19 +34,42 @@ const FAKE_REPLY = "FAKE PRODUCTION PLANNER REPLY";
 
 /**
  * A stand-in for every planner CLI. It records that it ran (a file beside
- * itself, since the planner's sanitized env drops custom variables) and
- * answers in the `claude -p --output-format json` envelope.
+ * itself, since the planner's sanitized env drops custom variables), saves
+ * the prompt it received (VW03 asserts on repository-aware prompt text), and
+ * answers in the `claude -p --output-format json` envelope — a canned reply
+ * for chat prompts, a minimal valid plan for deconstruction prompts.
  */
+const FAKE_PLAN = {
+  prd: "# Fake PRD",
+  agentsMd: "# Fake AGENTS",
+  tasks: [
+    {
+      title: "Fake task",
+      description: "From the fake CLI.",
+      difficulty: "medium",
+      role: null,
+      acceptanceCriteria: ["It works"],
+      dependsOn: [],
+      scopePaths: ["src/**"],
+    },
+  ],
+};
 const FAKE_CLI = `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
 const name = path.basename(process.argv[1]);
-fs.writeFileSync(path.join(path.dirname(process.argv[1]), "invoked-" + name), "1");
+const dir = path.dirname(process.argv[1]);
+fs.writeFileSync(path.join(dir, "invoked-" + name), "1");
 let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => { input += chunk; });
 process.stdin.on("end", () => {
-  process.stdout.write(JSON.stringify({ result: ${JSON.stringify(FAKE_REPLY)}, total_cost_usd: 0.01 }));
+  const seq = fs.readdirSync(dir).filter((f) => f.startsWith("prompt-")).length + 1;
+  fs.writeFileSync(path.join(dir, "prompt-" + String(seq).padStart(3, "0") + ".txt"), input);
+  const result = input.includes("Respond with ONLY a JSON object")
+    ? JSON.stringify(${JSON.stringify(FAKE_PLAN)})
+    : ${JSON.stringify(FAKE_REPLY)};
+  process.stdout.write(JSON.stringify({ result, total_cost_usd: 0.01 }));
 });
 `;
 
@@ -53,10 +78,12 @@ interface Fixture {
   bin: string;
   deps: BuildAppDependencies;
   invokedClis(): string[];
+  /** Prompts the fake CLI received, oldest first. */
+  prompts(): string[];
   restore(): void;
 }
 
-function fixture(options: { mock: boolean; localPath: string }): Fixture {
+function fixture(options: { mock: boolean; localPath: string; repoUrl?: string }): Fixture {
   const root = mkdtempSync(join(tmpdir(), "hoopedorc-planning-routes-"));
   const bin = join(root, "bin");
   mkdirSync(bin);
@@ -73,10 +100,11 @@ function fixture(options: { mock: boolean; localPath: string }): Fixture {
   repo.createProject(db, {
     id: PROJECT_ID,
     name: "Planning routes",
-    repoUrl: "https://github.com/example/planning-routes",
+    repoUrl: options.repoUrl ?? "https://github.com/example/planning-routes",
     defaultBranch: "main",
     localPath: options.localPath,
     status: "paused",
+    prdPath: "docs/PRD.md",
   });
   const hub = new WsHub();
   const deps: BuildAppDependencies = {
@@ -111,6 +139,11 @@ function fixture(options: { mock: boolean; localPath: string }): Fixture {
         .filter((name) => name.startsWith("invoked-"))
         .map((name) => name.slice("invoked-".length))
         .sort(),
+    prompts: () =>
+      readdirSync(bin)
+        .filter((name) => name.startsWith("prompt-"))
+        .sort()
+        .map((name) => readFileSync(join(bin, name), "utf8")),
     restore: () => {
       process.env.PATH = savedPath;
       db.close();
@@ -167,6 +200,7 @@ test("VW01: mock planning chat and deconstruction never reach a CLI, a clone, or
       costUsd: number;
       agentsMd?: string;
       verifiedFigmaReferences?: VerifiedFigmaReference[];
+      repository?: RepositoryInspection;
     }>();
     assert.equal(plan.costUsd, 0);
     assert.match(plan.prdMarkdown, /^# PRD: Planning routes/);
@@ -191,13 +225,20 @@ test("VW01: mock planning chat and deconstruction never reach a CLI, a clone, or
     assert.equal(persisted.draftTasks?.length, 3);
     assert.equal(persisted.prd, plan.prdMarkdown);
 
-    // Deterministic: the same transcript yields the same plan.
+    // Deterministic: the same transcript yields the same plan (the mock
+    // inspection is identical apart from its timestamp).
     const again = await app.inject({
       method: "POST",
       url: `/api/projects/${PROJECT_ID}/plan/deconstruct`,
       payload: { revisionId, messages: transcript },
     });
-    assert.deepEqual(again.json(), plan);
+    const stripInspectedAt = (value: typeof plan & { repository?: RepositoryInspection }) => ({
+      ...value,
+      repository: value.repository ? { ...value.repository, inspectedAt: "x" } : undefined,
+    });
+    assert.deepEqual(stripInspectedAt(again.json()), stripInspectedAt(plan));
+    assert.equal(plan.repository?.commit, MOCK_REPOSITORY_COMMIT);
+    assert.equal(repo.getPlanningSession(fx.deps.db, PROJECT_ID).repository?.commit, MOCK_REPOSITORY_COMMIT);
 
     assert.deepEqual(fx.invokedClis(), [], "mock planning must not spawn a planner CLI");
     assert.equal(existsSync(localPath), false, "mock planning must not clone the project");
@@ -469,12 +510,280 @@ test("VW01: real mode selects the production planner and reaches the CLI boundar
       },
     });
     assert.equal(chat.statusCode, 200, chat.body);
-    const body = chat.json<{ reply: string; costUsd: number }>();
+    const body = chat.json<{ reply: string; costUsd: number; repository?: RepositoryInspection }>();
     assert.equal(body.reply, FAKE_REPLY);
     assert.equal(body.costUsd, 0.01);
+    assert.equal(body.repository?.state, "empty", "an unborn clone is an empty repository");
+    assert.equal(body.repository?.commit, undefined);
     assert.doesNotMatch(body.reply, new RegExp(MOCK_PLANNER_REPLY_PREFIX.slice(0, 12)));
     assert.deepEqual(fx.invokedClis(), ["claude"], "real mode must route to the routed planner CLI");
     assert.equal(repo.getPlanningSession(fx.deps.db, PROJECT_ID).messages.length, 2);
+  } finally {
+    await app.close();
+    fx.restore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+async function gitIn(cwd: string, args: string[]): Promise<string> {
+  const { stdout } = await pexecFile(
+    "git",
+    ["-c", "user.name=Test", "-c", "user.email=test@example.com", ...args],
+    { cwd, encoding: "utf8" },
+  );
+  return stdout.trim();
+}
+
+/** A local clone with an origin remote and one commit of the given files. */
+async function committedRepo(path: string, files: Record<string, string>): Promise<string> {
+  mkdirSync(path, { recursive: true });
+  await gitIn(path, ["init", "--quiet", "-b", "main"]);
+  await gitIn(path, ["remote", "add", "origin", "https://github.com/example/planning-routes"]);
+  for (const [file, content] of Object.entries(files)) {
+    mkdirSync(join(path, file, ".."), { recursive: true });
+    writeFileSync(join(path, file), content);
+  }
+  await gitIn(path, ["add", "-A"]);
+  await gitIn(path, ["commit", "--quiet", "-m", "init"]);
+  return gitIn(path, ["rev-parse", "HEAD"]);
+}
+
+test("VW03: an unreachable repository is a typed 503 that keeps the session and spawns nothing; the retry succeeds once the clone exists", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-planning-unavailable-"));
+  const localPath = join(root, "clone");
+  const fx = fixture({
+    mock: false,
+    localPath,
+    repoUrl: join(root, "missing-origin.git"),
+  });
+  const app = await buildApp(fx.deps);
+  try {
+    const revisionId = await currentRevision(app);
+    const messages = [{ role: "user", content: "Add an API health endpoint." }];
+    const failed = await app.inject({
+      method: "POST",
+      url: `/api/projects/${PROJECT_ID}/plan/chat`,
+      payload: { revisionId, messages },
+    });
+    assert.equal(failed.statusCode, 503, failed.body);
+    const failure = failed.json<{ error: string; code: string }>();
+    assert.equal(failure.code, "REPOSITORY_UNAVAILABLE");
+    assert.match(failure.error, /could not be reached or read/);
+    assert.match(failure.error, /planning did not run/);
+    assert.deepEqual(fx.invokedClis(), [], "no planner CLI may run without an inspected clone");
+    assert.equal(repo.getPlanningSession(fx.deps.db, PROJECT_ID).messages.length, 0);
+    assert.equal(repo.getPlanningSession(fx.deps.db, PROJECT_ID).repository, undefined);
+
+    const deconstructFailed = await app.inject({
+      method: "POST",
+      url: `/api/projects/${PROJECT_ID}/plan/deconstruct`,
+      payload: { revisionId, messages },
+    });
+    assert.equal(deconstructFailed.statusCode, 503);
+    assert.equal(deconstructFailed.json<{ code: string }>().code, "REPOSITORY_UNAVAILABLE");
+
+    const head = await committedRepo(localPath, {
+      "README.md": "# Seed\n",
+      "package.json": JSON.stringify({ name: "seed", private: true, version: "0.0.0" }),
+    });
+    const retried = await app.inject({
+      method: "POST",
+      url: `/api/projects/${PROJECT_ID}/plan/chat`,
+      payload: { revisionId, messages },
+    });
+    assert.equal(retried.statusCode, 200, retried.body);
+    const body = retried.json<{ reply: string; repository?: RepositoryInspection }>();
+    assert.equal(body.reply, FAKE_REPLY);
+    assert.equal(body.repository?.state, "empty");
+    assert.equal(body.repository?.commit, head);
+    assert.equal(body.repository?.branch, "main");
+    assert.deepEqual(fx.invokedClis(), ["claude"]);
+    const session = repo.getPlanningSession(fx.deps.db, PROJECT_ID);
+    assert.equal(session.messages.length, 2);
+    assert.equal(session.repository?.commit, head);
+    assert.equal(session.repository?.state, "empty");
+    const sessionResponse = await app.inject({
+      method: "GET",
+      url: `/api/projects/${PROJECT_ID}/plan/session`,
+    });
+    assert.equal(
+      sessionResponse.json<{ repository?: RepositoryInspection }>().repository?.commit,
+      head,
+    );
+  } finally {
+    await app.close();
+    fx.restore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("VW03: prompts describe an existing non-Node codebase without scaffolding and scaffold only a seed-only repository", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-planning-prompts-"));
+  const existingPath = join(root, "existing");
+  await committedRepo(existingPath, {
+    "README.md": "# App\n",
+    "package.json": JSON.stringify({ name: "seed", private: true, version: "0.0.0" }),
+    "pyproject.toml": "[project]\nname = 'app'\n",
+    "src/app/__init__.py": "VERSION = '1'\n",
+    "tests/test_app.py": "def test_ok():\n    assert True\n",
+  });
+  const fx = fixture({ mock: false, localPath: existingPath });
+  const app = await buildApp(fx.deps);
+  try {
+    const revisionId = await currentRevision(app);
+    const messages = [{ role: "user", content: "Add a /health endpoint." }];
+    const chat = await app.inject({
+      method: "POST",
+      url: `/api/projects/${PROJECT_ID}/plan/chat`,
+      payload: { revisionId, messages },
+    });
+    assert.equal(chat.statusCode, 200, chat.body);
+    const inspection = chat.json<{ repository?: RepositoryInspection }>().repository;
+    assert.equal(inspection?.state, "existing");
+    assert.deepEqual(inspection?.stack, ["python"]);
+    assert.equal(inspection?.trackedFileCount, 3);
+    const chatPrompt = fx.prompts().at(-1) ?? "";
+    assert.match(chatPrompt, /This is an EXISTING codebase, not a new project/);
+    assert.match(chatPrompt, /Detected stack: python/);
+    assert.match(chatPrompt, /not a Node project \(python\)/);
+    assert.doesNotMatch(chatPrompt, /brand-new project with no existing code/);
+
+    const deconstruct = await app.inject({
+      method: "POST",
+      url: `/api/projects/${PROJECT_ID}/plan/deconstruct`,
+      payload: {
+        revisionId,
+        messages: [...messages, { role: "assistant", content: "Ready. [PLAN_COMPLETE]" }],
+      },
+    });
+    assert.equal(deconstruct.statusCode, 200, deconstruct.body);
+    const deconstructPrompt = fx.prompts().at(-1) ?? "";
+    assert.match(deconstructPrompt, /This is an EXISTING codebase, not a new project/);
+    assert.doesNotMatch(deconstructPrompt, /Make the FIRST task in your task list a\s+scaffold task/);
+    assert.doesNotMatch(deconstructPrompt, /npm test runs real tests and passes/);
+    const tasks = deconstruct.json<{ tasks: DraftTask[] }>().tasks;
+    assert.equal(tasks[0]?.title, "Fake task");
+  } finally {
+    await app.close();
+    fx.restore();
+  }
+
+  const seedPath = join(root, "seed-only");
+  await committedRepo(seedPath, {
+    "README.md": "# Seed\n",
+    "package.json": JSON.stringify({ name: "seed", private: true, version: "0.0.0" }),
+    "docs/PRD.md": "# PRD\n",
+  });
+  const seedFx = fixture({ mock: false, localPath: seedPath });
+  const seedApp = await buildApp(seedFx.deps);
+  try {
+    const revisionId = await currentRevision(seedApp);
+    const deconstruct = await seedApp.inject({
+      method: "POST",
+      url: `/api/projects/${PROJECT_ID}/plan/deconstruct`,
+      payload: {
+        revisionId,
+        messages: [
+          { role: "user", content: "Build a CLI in Go." },
+          { role: "assistant", content: "Ready. [PLAN_COMPLETE]" },
+        ],
+      },
+    });
+    assert.equal(deconstruct.statusCode, 200, deconstruct.body);
+    assert.equal(deconstruct.json<{ repository?: RepositoryInspection }>().repository?.state, "empty");
+    const prompt = seedFx.prompts().at(-1) ?? "";
+    assert.match(prompt, /The repository has NO application code yet/);
+    assert.match(prompt, /Make the FIRST task in your task list a scaffold task/);
+    assert.doesNotMatch(prompt, /EXISTING codebase/);
+  } finally {
+    await seedApp.close();
+    seedFx.restore();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("VW03: a plan drafted against an older revision is refused until acknowledged, and replay never re-inspects", async () => {
+  const root = mkdtempSync(join(tmpdir(), "hoopedorc-planning-drift-"));
+  const localPath = join(root, "clone");
+  const planned = await committedRepo(localPath, {
+    "README.md": "# App\n",
+    "package.json": JSON.stringify({ name: "app", private: true, scripts: { test: "node --test" } }),
+    "src/index.js": "export const ok = true;\n",
+  });
+  const fx = fixture({ mock: false, localPath });
+  let gitCommits = 0;
+  fx.deps.planningGitPersistence = {
+    commitFiles() {
+      gitCommits += 1;
+      return Promise.resolve();
+    },
+  };
+  const app = await buildApp(fx.deps);
+  try {
+    const revisionId = await currentRevision(app);
+    const chat = await app.inject({
+      method: "POST",
+      url: `/api/projects/${PROJECT_ID}/plan/chat`,
+      payload: { revisionId, messages: [{ role: "user", content: "Add logging." }] },
+    });
+    assert.equal(chat.statusCode, 200, chat.body);
+    assert.equal(repo.getPlanningSession(fx.deps.db, PROJECT_ID).repository?.commit, planned);
+
+    writeFileSync(join(localPath, "src", "other.js"), "export const moved = true;\n");
+    await gitIn(localPath, ["add", "-A"]);
+    await gitIn(localPath, ["commit", "--quiet", "-m", "someone else merged"]);
+    const current = await gitIn(localPath, ["rev-parse", "HEAD"]);
+    assert.notEqual(current, planned);
+
+    const payload = {
+      revisionId,
+      prdMarkdown: "# Drift plan",
+      tasks: [
+        {
+          title: "Add logging",
+          description: "Log requests",
+          difficulty: "medium",
+          acceptanceCriteria: ["Requests are logged"],
+          dependsOn: [],
+          scopePaths: ["src/**"],
+          assignedModel: "deepseek-flash",
+        },
+      ],
+    };
+    const refused = await app.inject({
+      method: "POST",
+      url: `/api/projects/${PROJECT_ID}/plan/commit`,
+      payload,
+    });
+    assert.equal(refused.statusCode, 409, refused.body);
+    const refusal = refused.json<{ code: string; error: string; details: { plannedCommit: string; currentCommit: string } }>();
+    assert.equal(refusal.code, "REPOSITORY_DRIFT");
+    assert.deepEqual(refusal.details, { plannedCommit: planned, currentCommit: current });
+    assert.match(refusal.error, new RegExp(`moved from ${planned.slice(0, 7)} to ${current.slice(0, 7)}`));
+    assert.equal(gitCommits, 0, "nothing was committed");
+    assert.equal(repo.getTasks(fx.deps.db, PROJECT_ID).length, 0);
+    assert.equal(repo.getProject(fx.deps.db, PROJECT_ID)?.status, "paused");
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/projects/${PROJECT_ID}/plan/commit`,
+      payload: { ...payload, acknowledgeRepositoryDrift: true },
+    });
+    assert.equal(accepted.statusCode, 200, accepted.body);
+    assert.equal(accepted.json<{ tasks: unknown[] }>().tasks.length, 1);
+    assert.equal(gitCommits, 1);
+    assert.equal(repo.getPlanningSession(fx.deps.db, PROJECT_ID).repository, undefined, "cleared with the scratch");
+
+    // Replaying the same content without the acknowledgement returns the
+    // stored receipt: a successful commit is never re-inspected or re-run.
+    const replayed = await app.inject({
+      method: "POST",
+      url: `/api/projects/${PROJECT_ID}/plan/commit`,
+      payload,
+    });
+    assert.equal(replayed.statusCode, 200, replayed.body);
+    assert.deepEqual(replayed.json(), accepted.json());
+    assert.equal(gitCommits, 1);
   } finally {
     await app.close();
     fx.restore();

@@ -16,6 +16,7 @@ import type {
   ModelId,
   ModelInvocation,
   PlanChatMessage,
+  RepositoryInspection,
   Role,
   Settings,
   VerifiedFigmaReference,
@@ -27,6 +28,7 @@ import {
   normalizeVerifiedFigmaReferences,
   type FigmaNodeReferenceInput,
 } from "./figma-references.js";
+import { shortCommit } from "./repository-inspection.js";
 
 // Planning runs headless, through whichever CLI `routing.planner`'s model
 // resolves to (F37, extended by F45):
@@ -303,8 +305,9 @@ book — and cover, in order:
 - The stack and target platform (e.g. "Next.js 15 App Router, TypeScript, deployed to Vercel").
 - The intended directory structure: a brief tree or bullet list of the main folders/files and
   what lives in each.
-- The real dev/test/build/lint commands — these MUST match the scaffold task's actual
-  package.json scripts exactly (the ones that task creates), never invented ones.
+- The real dev/test/build/lint commands — these MUST match the repository's actual scripts or
+  commands exactly (for an existing codebase, the ones already there; for a scaffold, the ones
+  that task creates), never invented ones.
 - Coding conventions and best practices specific to this stack (naming, file organization,
   patterns to prefer or avoid) — tailor these to whatever is actually being built, not generic
   advice.
@@ -379,12 +382,81 @@ the objective safety gates every later task's changes are checked against; a sca
 scripts means nothing is ever actually verified before auto-merge. Its acceptanceCriteria must
 include a criterion equivalent to "npm test runs real tests and passes".`;
 
-function buildPrompt(goal: string, projectName: string): string {
+/**
+ * VW03: what the planner is told about the repository it is planning
+ * against, derived from a real inspection of the clone instead of from
+ * whether the board already has tasks. An existing codebase is never given
+ * the scaffold instruction; an empty repository gets a stack-neutral version
+ * of it; unknown (legacy callers without an inspection) keeps the historic
+ * behavior selected by the caller.
+ */
+function repositoryGateGuidance(repository: RepositoryInspection): string {
+  if (repository.stack.includes("node")) {
+    const scripts = repository.packageScripts?.length
+      ? `the existing package.json scripts (${repository.packageScripts.join(", ")})`
+      : "the package.json scripts the repository actually defines";
+    return `Hoopedorc's objective gates run \`npm run <script>\` for test/build/lint/typecheck, so
+acceptance criteria must reference ${scripts}; add a real script only where the repository lacks one.`;
+  }
+  if (repository.stack.length > 0) {
+    return `This is not a Node project (${repository.stack.join(", ")}). Acceptance criteria must name the
+stack's real verification commands (for example pytest, go test ./..., cargo test) and never npm
+scripts the repository does not have. Hoopedorc's default gates are npm scripts, so state in the PRD
+and agentsMd that the operator must configure per-project gate commands to run those checks.`;
+  }
+  return `No stack manifest was detected. Determine the real verification commands from the files
+themselves; never assume npm scripts that the repository does not have.`;
+}
+
+export function repositoryBlock(repository?: RepositoryInspection): string {
+  if (!repository || repository.state === "unavailable") return "";
+  const where = `Branch ${repository.branch ?? "unknown"} at commit ${shortCommit(repository.commit)} (inspected ${repository.inspectedAt}).`;
+  if (repository.state === "empty") {
+    return `
+
+## Repository inspection
+${where}
+The repository has NO application code yet — only Hoopedorc's seed files (README, a minimal
+package.json, planning context). Make the FIRST task in your task list a scaffold task that sets
+up the project skeleton AND real verification commands for the stack you choose. If the stack is
+Node, define real \`package.json\` scripts — \`test\`, \`build\`, \`lint\`, \`typecheck\` — because
+those are the objective safety gates every later task's changes are checked against; a scaffold
+with no scripts means nothing is ever actually verified before auto-merge, so its acceptanceCriteria
+must include a criterion equivalent to "npm test runs real tests and passes". For any other stack,
+define the equivalent real commands, state them in acceptanceCriteria and agentsMd, and say
+explicitly that Hoopedorc's per-project gate commands must be configured to run them.
+`;
+  }
+  const stack =
+    repository.stack.length > 0
+      ? repository.stack.join(", ")
+      : "not detected from manifests — determine it from the files";
+  const scripts = repository.packageScripts?.length
+    ? `\n- package.json scripts: ${repository.packageScripts.join(", ")}`
+    : "";
+  return `
+
+## Repository inspection
+This is an EXISTING codebase, not a new project. Hoopedorc inspected the clone before this call:
+- ${where}
+- Tracked files: ${repository.trackedFileCount ?? "unknown"}
+- Detected stack: ${stack}${scripts}
+Read the real files with your tools before proposing tasks or scopePaths, reuse the existing
+structure, conventions, and commands, and do NOT propose a scaffold or re-initialization task.
+${repositoryGateGuidance(repository)}
+`;
+}
+
+function buildPrompt(
+  goal: string,
+  projectName: string,
+  repository?: RepositoryInspection,
+): string {
   return `You are the planning agent for an autonomous multi-model coding team.
 Plan the project "${projectName}" for this goal:
 
 ${goal}
-${SCAFFOLD_INSTRUCTION}
+${repository ? repositoryBlock(repository) : SCAFFOLD_INSTRUCTION}
 
 Produce a short PRD and break the work into a dependency-ordered task DAG.
 ${DECONSTRUCT_SHAPE}`;
@@ -418,13 +490,17 @@ function priorContextBlock(priorContext?: string): string {
   if (!priorContext) return "";
   return `
 
-## EXISTING PROJECT — this is a follow-up iteration
-This project has already shipped earlier work. Below is its prior PRD, the
-tasks already completed, and a recent activity log. Treat all of this as DONE
-and present in the codebase. Your job now is to plan ONLY the NEW work the user
-is asking for in this conversation — do NOT recreate or re-scaffold existing
-functionality. Build on what's there, reuse existing files/conventions, and
-only propose tasks for the incremental changes.
+## Prior planning history — this is a follow-up iteration
+Tasks already exist on this project's board from earlier iterations. Below are the prior PRD,
+the tasks with their CURRENT statuses, and a recent activity log. Statuses are authoritative
+evidence of what exists in the codebase:
+- done: implemented and merged — build on it and do not recreate it.
+- failed, blocked, or cancelled: NOT implemented; a task title here is not proof the work exists.
+  Re-plan it only if this conversation asks for it.
+- backlog, ready, in_progress, or in_review: planned or underway but not merged; do not duplicate
+  it and do not assume it exists yet.
+Plan ONLY the NEW work the user asks for in this conversation, reusing existing files and
+conventions. Where the repository inspection disagrees with this history, trust the repository.
 
 ${priorContext}
 `;
@@ -565,11 +641,12 @@ ${files || "- No attachment is available; do not add visual fidelity acceptance.
 `;
 }
 
-function buildChatPrompt(
+export function buildChatPrompt(
   messages: PlanChatMessage[],
   projectName: string,
   priorContext?: string,
   attachments?: string[],
+  repository?: RepositoryInspection,
 ): string {
   const transcript = messages
     .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
@@ -577,7 +654,7 @@ function buildChatPrompt(
   return `${CHAT_SYSTEM}
 
 Project: "${projectName}"
-${priorContextBlock(priorContext)}${attachmentsBlock(attachments)}${figmaChatBlock(messages)}
+${repositoryBlock(repository)}${priorContextBlock(priorContext)}${attachmentsBlock(attachments)}${figmaChatBlock(messages)}
 Conversation so far:
 ${transcript}
 
@@ -591,6 +668,7 @@ export function buildDeconstructPrompt(
   attachments?: string[],
   verifiedFigmaReferences?: VerifiedFigmaReference[],
   useFigmaAttachmentFallback = false,
+  repository?: RepositoryInspection,
 ): string {
   const transcript = messages
     .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
@@ -603,7 +681,7 @@ Your working directory is the project's actual cloned repository. If it already 
 use your file tools to check real file paths and existing structure before writing scopePaths —
 each task's scopePaths must match files/globs that actually make sense for this repo, not
 invented paths. For a brand-new/empty project, plan from the conversation alone.
-${priorContext ? "" : SCAFFOLD_INSTRUCTION}
+${repository ? repositoryBlock(repository) : priorContext ? "" : SCAFFOLD_INSTRUCTION}
 ${priorContextBlock(priorContext)}${attachmentsBlock(attachments)}${figmaDiscoveryDeconstructBlock(messages)}${figmaAttachmentFallbackBlock(messages, attachments, useFigmaAttachmentFallback)}${verifiedFigmaBlock(verifiedFigmaReferences)}
 ## Planning conversation
 ${transcript}
@@ -1698,9 +1776,10 @@ export async function runPlanner(
   onWarn: (msg: string) => void = () => {},
   signal?: AbortSignal,
   onInvocation?: PlannerInvocationSink,
+  repository?: RepositoryInspection,
 ): Promise<PlanOutput> {
   const schema = plannerModel.runner === "codex" ? DECONSTRUCT_JSON_SCHEMA : undefined;
-  const prompt = buildPrompt(goal, projectName);
+  const prompt = buildPrompt(goal, projectName, repository);
   const { text } = await runPlannerJson(
     prompt,
     cwd,
@@ -1742,9 +1821,10 @@ export async function runPlannerChat(
   attachments?: string[],
   signal?: AbortSignal,
   onInvocation?: PlannerInvocationSink,
+  repository?: RepositoryInspection,
 ): Promise<{ reply: string; costUsd: number }> {
   const { text, costUsd } = await runPlannerJson(
-    buildChatPrompt(messages, projectName, priorContext, attachments),
+    buildChatPrompt(messages, projectName, priorContext, attachments, repository),
     cwd,
     plannerModel,
     undefined,
@@ -1772,6 +1852,7 @@ export async function runPlannerDeconstruct(
   cachedVerifiedFigmaReferences?: VerifiedFigmaReference[],
   onVerifiedFigmaReferences?: (references: VerifiedFigmaReference[]) => void,
   figmaVerification: "live" | "attachments" = "live",
+  repository?: RepositoryInspection,
 ): Promise<{
   output: PlanOutput;
   costUsd: number;
@@ -1823,6 +1904,7 @@ export async function runPlannerDeconstruct(
     attachments,
     verifiedFigmaReferences,
     useFigmaAttachmentFallback,
+    repository,
   );
   const { text, costUsd } = await runPlannerJson(
     prompt,

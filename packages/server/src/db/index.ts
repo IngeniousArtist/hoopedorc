@@ -130,6 +130,9 @@ export function initDb(path: string = ENV.dbPath): Db {
     "ALTER TABLE projects ADD COLUMN planning_agents_md TEXT",
     // F52: verified exact-node metadata only — no raw Figma payload/cache.
     "ALTER TABLE projects ADD COLUMN planning_figma_refs TEXT",
+    // VW03: the repository inspection the current planning session observed
+    // (branch/commit/stack); session scratch cleared at /plan/commit.
+    "ALTER TABLE projects ADD COLUMN planning_repository TEXT",
     // O3: immutable id for the active editable planning revision. Successful
     // commit receipts keep old ids replayable after this column is cleared.
     "ALTER TABLE projects ADD COLUMN planning_revision_id TEXT",

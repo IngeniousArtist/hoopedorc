@@ -478,6 +478,10 @@ test.describe.serial("critical operator workflows", () => {
     ).toBeVisible();
     await expect(page.getByText(/is done planning/)).toBeVisible();
     await expect(page.getByText("planning cost $0.00")).toBeVisible();
+    // VW03: the Plan tab says what the planner actually planned against.
+    await expect(page.getByTestId("repository-inspection")).toHaveText(
+      "Planning against the existing codebase · main @ 0000000 · node, typescript · npm scripts: build, lint, test, typecheck",
+    );
 
     await page.getByRole("button", { name: "Generate task table →" }).click();
     await expect(page.getByLabel("Task 1 title")).toHaveValue(

@@ -401,6 +401,7 @@ async function commitPlanningDraftOwned(
         draftTasks: null,
         agentsMd: null,
         verifiedFigmaReferences: null,
+        repository: null,
         sessionFile: null,
         revisionId: null,
       })) {

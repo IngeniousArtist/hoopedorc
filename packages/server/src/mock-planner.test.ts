@@ -3,13 +3,19 @@ import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { PlanChatMessage, Project, VerifiedFigmaReference } from "@orc/types";
+import type {
+  PlanChatMessage,
+  Project,
+  RepositoryInspection,
+  VerifiedFigmaReference,
+} from "@orc/types";
 import { FigmaVerificationError, type PlannerModel } from "./planner.js";
 import {
   MOCK_FIGMA_FRAME_HEIGHT,
   MOCK_FIGMA_FRAME_WIDTH,
   MOCK_PLANNER_FAILURE_TOKEN,
   MOCK_PLANNER_REPLY_PREFIX,
+  MOCK_REPOSITORY_COMMIT,
   MockPlannerUnavailableError,
   mockPlanningService,
 } from "./mock-planner.js";
@@ -17,6 +23,15 @@ import type { PlanningDeconstructInput } from "./planning-service.js";
 
 const PLANNER: PlannerModel = { id: "claude", runner: "claude-code", model: "sonnet" };
 const FIXED_NOW = new Date("2026-09-21T10:00:00.000Z");
+const REPOSITORY: RepositoryInspection = {
+  state: "existing",
+  inspectedAt: FIXED_NOW.toISOString(),
+  branch: "main",
+  commit: "abcdef0123456789abcdef0123456789abcdef01",
+  trackedFileCount: 12,
+  stack: ["node", "typescript"],
+  packageScripts: ["build", "test"],
+};
 
 function project(localPath = "/nonexistent/mock-planner-project"): Project {
   return {
@@ -37,6 +52,7 @@ function deconstructInput(
 ): PlanningDeconstructInput {
   return {
     project: project(),
+      repository: REPOSITORY,
     plannerModel: PLANNER,
     messages,
     attachmentNames: [],
@@ -49,6 +65,7 @@ test("VW01: mock chat is deterministic, labeled, free, and ends ready to deconst
   const service = mockPlanningService({ now: () => FIXED_NOW });
   const input = {
     project: project(),
+      repository: REPOSITORY,
     plannerModel: PLANNER,
     messages: [{ role: "user" as const, content: "Add a health endpoint\nwith tests" }],
     attachmentNames: ["brief.pdf", "mock.png"],
@@ -70,6 +87,7 @@ test("VW01: an empty brief asks for one instead of claiming readiness", async ()
   const service = mockPlanningService();
   const result = await service.chat({
     project: project(),
+      repository: REPOSITORY,
     plannerModel: PLANNER,
     messages: [{ role: "user", content: "   \n " }],
     attachmentNames: [],
@@ -84,7 +102,8 @@ test("VW01: the failure token makes every operation fail explicitly", async () =
     { role: "user", content: `Break the planner ${MOCK_PLANNER_FAILURE_TOKEN}` },
   ];
   await assert.rejects(
-    service.chat({ project: project(), plannerModel: PLANNER, messages, attachmentNames: [] }),
+    service.chat({ project: project(),
+      repository: REPOSITORY, plannerModel: PLANNER, messages, attachmentNames: [] }),
     (err: unknown) =>
       err instanceof MockPlannerUnavailableError &&
       err.operation === "chat" &&
@@ -98,6 +117,7 @@ test("VW01: the failure token makes every operation fail explicitly", async () =
   await assert.rejects(
     service.planGoal({
       project: project(),
+      repository: REPOSITORY,
       plannerModel: PLANNER,
       goal: `ship it ${MOCK_PLANNER_FAILURE_TOKEN}`,
     }),
@@ -300,17 +320,20 @@ process.stdout.write(JSON.stringify({ result: "REAL CLI REACHED", total_cost_usd
     ]) {
       const chat = await service.chat({
         project: project(localPath),
+      repository: REPOSITORY,
         plannerModel,
         messages,
         attachmentNames: [],
       });
       assert.doesNotMatch(chat.reply, /REAL CLI REACHED/);
       const deconstructed = await service.deconstruct(
-        deconstructInput(messages, { project: project(localPath), plannerModel }),
+        deconstructInput(messages, { project: project(localPath),
+      repository: REPOSITORY, plannerModel }),
       );
       assert.equal(deconstructed.costUsd, 0);
       const planned = await service.planGoal({
         project: project(localPath),
+      repository: REPOSITORY,
         plannerModel,
         goal: "Build login",
       });
@@ -327,4 +350,24 @@ process.stdout.write(JSON.stringify({ result: "REAL CLI REACHED", total_cost_usd
     rmSync(bin, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("VW03: mock inspection is deterministic, Git-free, and surfaced in the reply", async () => {
+  const service = mockPlanningService({ now: () => FIXED_NOW });
+  const first = await service.inspect(project("/nonexistent/never-read"));
+  const second = await service.inspect(project("/nonexistent/never-read"));
+  assert.deepEqual(first, second);
+  assert.equal(first.state, "existing");
+  assert.equal(first.branch, "main");
+  assert.equal(first.commit, MOCK_REPOSITORY_COMMIT);
+  assert.deepEqual(first.stack, ["node", "typescript"]);
+  assert.equal(first.inspectedAt, FIXED_NOW.toISOString());
+  const chat = await service.chat({
+    project: project(),
+    plannerModel: PLANNER,
+    repository: first,
+    messages: [{ role: "user", content: "Add a health endpoint" }],
+    attachmentNames: [],
+  });
+  assert.match(chat.reply, /Repository: main @ 0000000 — existing codebase \(node, typescript\)\./);
 });

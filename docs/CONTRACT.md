@@ -86,6 +86,42 @@ server accepted it is adopted from the server instead of being sent twice.
 A `beforeunload` guard is registered only while a turn is unsent or edits
 are unsaved.
 
+VW03 grounds planning in the repository that actually exists. Before every
+planner call, `PlanningService.inspect` reads the primary clone (production:
+`ensureClone` then `GitServiceImpl.describeRepository`, a read-only branch/HEAD/
+`git ls-files` description under the shared repository lock, plus the root
+`package.json`; mock: a fixed inspection with commit `0000000…`) and classifies it
+as `RepositoryInspection` (`packages/server/src/repository-inspection.ts`):
+`existing` when any tracked file is not a Hoopedorc seed/context file
+(README, minimal `package.json`, `CLAUDE.md`, `AGENTS.md`, `CHANGELOG.md`,
+`docs/PRD.md`/`prdPath`, `context/**`) or the `package.json` has scripts or
+dependencies; otherwise `empty`. The stack is detected from root-level (depth
+≤ 2) manifests; `node` requires a substantive `package.json`, so a seeded
+Python repository is reported as `python`, not Node. The inspection is passed
+to the prompt builders: an existing codebase receives a `## Repository
+inspection` block (branch, commit, file count, stack, scripts) with
+stack-aware gate guidance and never the scaffold instruction; an empty
+repository receives a stack-neutral scaffold instruction; callers without an
+inspection keep the historic scaffold-by-task-history behavior. The prior
+planning history block now states that `done` means merged, `failed`/
+`blocked`/`cancelled` means NOT implemented, and pending states mean not
+merged, with per-status counts in its header. `plan/chat` and
+`plan/deconstruct` return the inspection as optional `repository`, persist it
+in nullable `projects.planning_repository` (returned by `plan/session`,
+written into the plan-session archive as `- Repository: …`, cleared in the
+final commit transaction). If the clone cannot be prepared or read, the
+routes answer `503` with `code: "REPOSITORY_UNAVAILABLE"` and a bounded,
+credential-redacted reason; nothing is persisted, no planner CLI runs, and
+there is no fallback to a temporary directory (the legacy `plan` route keeps
+its documented stub fallback). `plan/commit` re-inspects the clone before a
+first (non-replay) commit and, when HEAD differs from the recorded
+`repository.commit`, refuses with `409` `code: "REPOSITORY_DRIFT"` and
+`details: RepositoryDriftDetails { plannedCommit, currentCommit }` unless the
+request carries `acknowledgeRepositoryDrift: true`; a successful receipt
+replays without any Git access. Inspection observes the local primary clone
+(it does not fetch), so drift means the clone moved — for example after
+Hoopedorc merged a task — not that origin has unseen commits.
+
 `GitOperationError.stage` identifies `inspect`, `fetch`, `checkout`, `merge`,
 `write`, `stage`, `commit`, `push`, or `cleanup`. `commitAll()` treats only a
 confirmed empty porcelain status as a no-op; other failures propagate.
@@ -540,10 +576,10 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `updateProject` | `PATCH /api/projects/:id` | `UpdateProjectRequest` → `UpdateProjectResponse` |
 | `deleteProject` | `DELETE /api/projects/:id` | → `DeleteProjectResponse` |
 | `planProject` | `POST /api/projects/:id/plan` | `PlanProjectRequest` → `PlanProjectResponse` |
-| `planChat` | `POST /api/projects/:id/plan/chat` | `PlanChatRequest` (incl. O3 `revisionId`) → `PlanChatResponse` |
-| `planDeconstruct` | `POST /api/projects/:id/plan/deconstruct` | `PlanDeconstructRequest` (incl. O3 `revisionId`) → `PlanDeconstructResponse` (incl. F38's `agentsMd`; F52 optionally returns `verifiedFigmaReferences`, or typed 409 capability details) |
-| `planCommit` | `POST /api/projects/:id/plan/commit` | `PlanCommitRequest` (incl. O3 `revisionId`) → replayable `PlanCommitResponse` |
-| `planSession` | `GET /api/projects/:id/plan/session` | → `PlanningSessionResponse` (incl. O3 `revisionId`, F38's `agentsMd`, and F52's optional verified Figma list) |
+| `planChat` | `POST /api/projects/:id/plan/chat` | `PlanChatRequest` (incl. O3 `revisionId`) → `PlanChatResponse` (VW03: optional `repository`; `503 REPOSITORY_UNAVAILABLE`) |
+| `planDeconstruct` | `POST /api/projects/:id/plan/deconstruct` | `PlanDeconstructRequest` (incl. O3 `revisionId`) → `PlanDeconstructResponse` (incl. F38's `agentsMd`; F52 optionally returns `verifiedFigmaReferences`, or typed 409 capability details; VW03: optional `repository`, `503 REPOSITORY_UNAVAILABLE`) |
+| `planCommit` | `POST /api/projects/:id/plan/commit` | `PlanCommitRequest` (incl. O3 `revisionId`; VW03 optional `acknowledgeRepositoryDrift`) → replayable `PlanCommitResponse`, or `409 REPOSITORY_DRIFT` with `RepositoryDriftDetails` |
+| `planSession` | `GET /api/projects/:id/plan/session` | → `PlanningSessionResponse` (incl. O3 `revisionId`, F38's `agentsMd`, F52's optional verified Figma list, and VW03's optional `repository`) |
 | `planSessionArchives` | `GET /api/projects/:id/plan/sessions` | → `ListPlanSessionArchivesResponse` |
 | `planSaveDraft` | `POST /api/projects/:id/plan/save-draft` | `SaveDraftRequest` (incl. O3 `revisionId`) → `SaveDraftResponse` |
 | `listPlanAttachments` | `GET /api/projects/:id/plan/attachments` | (F27) → `ListPlanAttachmentsResponse` |

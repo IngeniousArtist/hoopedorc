@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { InvocationLedgerError, type ModelInvocation } from "@orc/types";
 import { ENV, defaultSettings } from "./config.js";
 import {
+  buildChatPrompt,
   buildDeconstructPrompt,
   buildFigmaVerificationPrompt,
   ensureVerifiedFigmaTaskHandoff,
@@ -16,6 +17,7 @@ import {
   PLANNER_MAX_OUTPUT_BYTES,
   PlannerOutputLimitError,
   plannerModelLabel,
+  repositoryBlock,
   resolvePlannerModel,
   runPlannerChat,
   runPlannerDeconstruct,
@@ -1548,4 +1550,96 @@ test("plannerModelLabel: labels each runner distinctly", () => {
     plannerModelLabel({ runner: "opencode", model: "deepseek/deepseek-v4-pro" }),
     "opencode:deepseek/deepseek-v4-pro [effort: CLI default]",
   );
+});
+
+test("VW03: an inspected existing codebase is never given the scaffold instruction", () => {
+  const repository = {
+    state: "existing" as const,
+    inspectedAt: "2026-09-21T10:00:00.000Z",
+    branch: "main",
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    trackedFileCount: 40,
+    stack: ["python"],
+  };
+  const messages = [{ role: "user" as const, content: "Add a /health endpoint." }];
+  const deconstruct = buildDeconstructPrompt(
+    messages,
+    "Flask app",
+    undefined,
+    undefined,
+    undefined,
+    false,
+    repository,
+  );
+  assert.match(deconstruct, /This is an EXISTING codebase, not a new project/);
+  assert.match(deconstruct, /Branch main at commit 0123456 \(inspected 2026-09-21T10:00:00\.000Z\)/);
+  assert.match(deconstruct, /Tracked files: 40/);
+  assert.match(deconstruct, /Detected stack: python/);
+  assert.match(deconstruct, /not a Node project \(python\)/);
+  assert.match(deconstruct, /never npm\s+scripts the repository does not have/);
+  assert.doesNotMatch(deconstruct, /Make the FIRST task in your task list a\s+scaffold task/);
+  assert.doesNotMatch(deconstruct, /brand-new project with no existing code/);
+
+  const nodeRepository = {
+    ...repository,
+    stack: ["node", "typescript"],
+    packageScripts: ["build", "test"],
+  };
+  const chat = buildChatPrompt(messages, "Web app", undefined, undefined, nodeRepository);
+  assert.match(chat, /## Repository inspection/);
+  assert.match(chat, /package\.json scripts: build, test/);
+  assert.match(chat, /the existing package\.json scripts \(build, test\)/);
+});
+
+test("VW03: an inspected empty repository gets a stack-neutral scaffold instruction", () => {
+  const repository = {
+    state: "empty" as const,
+    inspectedAt: "2026-09-21T10:00:00.000Z",
+    branch: "main",
+    commit: "0123456789abcdef0123456789abcdef01234567",
+    trackedFileCount: 0,
+    stack: [],
+  };
+  const prompt = buildDeconstructPrompt(
+    [{ role: "user", content: "Build a CLI in Go." }],
+    "Go CLI",
+    undefined,
+    undefined,
+    undefined,
+    false,
+    repository,
+  );
+  assert.match(prompt, /The repository has NO application code yet/);
+  assert.match(prompt, /Make the FIRST task in your task list a scaffold task/);
+  assert.match(prompt, /For any other stack,\s+define the equivalent real commands/);
+  assert.doesNotMatch(prompt, /EXISTING codebase/);
+  assert.match(repositoryBlock(repository), /Branch main at commit 0123456/);
+  assert.equal(repositoryBlock(undefined), "");
+  assert.equal(
+    repositoryBlock({ state: "unavailable", inspectedAt: "x", stack: [] }),
+    "",
+    "an unavailable repository never reaches a prompt",
+  );
+});
+
+test("VW03: without an inspection the legacy scaffold-by-history behavior is unchanged", () => {
+  const messages = [{ role: "user" as const, content: "Anything" }];
+  const firstPlan = buildDeconstructPrompt(messages, "Legacy");
+  assert.match(firstPlan, /brand-new project with no existing code/);
+  const followUp = buildDeconstructPrompt(messages, "Legacy", "### Prior PRD\nold");
+  assert.doesNotMatch(followUp, /brand-new project with no existing code/);
+});
+
+test("VW03: prior planning history keeps task statuses distinct instead of treating everything as done", () => {
+  const prompt = buildDeconstructPrompt(
+    [{ role: "user", content: "Continue." }],
+    "Follow-up",
+    "### Tasks already on the board (3: 1 done, 1 failed, 1 backlog)\n- [done] Login\n- [failed] Billing\n- [backlog] Reports",
+  );
+  assert.match(prompt, /## Prior planning history — this is a follow-up iteration/);
+  assert.match(prompt, /done: implemented and merged/);
+  assert.match(prompt, /failed, blocked, or cancelled: NOT implemented; a task title here is not proof the work exists/);
+  assert.match(prompt, /backlog, ready, in_progress, or in_review: planned or underway but not merged/);
+  assert.doesNotMatch(prompt, /Treat all of this as DONE/);
+  assert.match(prompt, /\[failed\] Billing/);
 });
