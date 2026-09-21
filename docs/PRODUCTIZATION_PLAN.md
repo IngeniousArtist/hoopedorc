@@ -7362,8 +7362,8 @@ existing Figma integration, gates/validation, accounting, and Telegram. Improve
 the user journey and failure handling, then extend capabilities incrementally.
 Small tasks and large briefs share the same execution system.
 
-**Next:** VW08 (workspace inventory and read-only code inspection), starting from
-the reviewed VW01–VW07 result. Consult the focused plan's dependency table for
+**Next after VW10 merge:** VW11 (project design/reference library), starting from
+the reviewed VW01–VW10 result. Consult the focused plan's dependency table for
 subsequent items. Do not start by replacing the scheduler or adding
 all future schemas. Use one scoped branch/PR per coherent change; split larger
 work packages into backward-compatible contract/backend/UI steps as needed.
@@ -7379,7 +7379,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW07 | Propose/apply plan revisions during execution | Implemented | [PR #273](https://github.com/IngeniousArtist/hoopedorc/pull/273); see VW07 acceptance record below and PR checks for CI/merge evidence |
 | VW08 | Workspace inventory and read-only code inspection | Implemented | [PR #274](https://github.com/IngeniousArtist/hoopedorc/pull/274); see VW08 acceptance record below; PR records required CI/merge evidence |
 | VW09 | Managed environments and preview lifecycle | Implemented; AWS validation deferred | [#275](https://github.com/IngeniousArtist/hoopedorc/pull/275): native task preview ownership and separate-origin authenticated proxy |
-| VW10 | Full review workbench and browser evidence | Not started | — |
+| VW10 | Full review workbench and browser evidence | Implemented; required CI/merge pending | Full review workspace, supervised Chromium evidence, authenticated retained artifacts; acceptance evidence below |
 | VW11 | Project design/reference library | Not started | — |
 | VW12 | Selective skills, plugins, and MCP activation | Not started | — |
 | VW13 | Shared account pools and resource allocation | Not started | — |
@@ -8339,3 +8339,65 @@ warnings/errors. Screenshots were reviewed. Full local regression remains
 scheduled after the implementation plan, while required CI must pass before
 merge. AWS is owner-deferred as recorded above; native previews are not a
 container/agent sandbox. PR/CI evidence follows on the reviewed head.
+
+VW09 merged as **ff6145a9b5b16bda4b84b737d43be65649fefdc0**, PR **#275**.
+Required CI **35594881097** passed on final head
+**0f0a4d01ff0d7e8a832838f138faa45d4285147b**. The merged tree independently
+matched that tested head; local main matched origin/main with no tracked
+changes. Existing untracked operator dependencies were preserved.
+
+### VW10 — review workbench and durable browser evidence (2026-09-21)
+
+**Acceptance criteria before implementation:** introduce a full task review
+route with Preview, Changes, Checks and Activity, linked from the board/task
+inspector and workspaces. Reuse existing attempts, decisions, gates, logs and
+planning handoff; preserve loading/error/empty states and reject stale task
+responses. A focused repair enters the existing planning composer without
+sending it or changing task/gate/merge state.
+
+Evidence records bind project/task, run/attempt/generation, observed commit and
+working-copy state, environment/preview generation, tested path, viewport and
+check result. Disclose stale, unavailable, expired and unverified dirty-worktree
+captures. Historical decisions without commit metadata remain explicitly
+historical. Failed browser checks preserve available screenshots/traces and
+error detail. Authenticated artifact retrieval cannot read arbitrary paths or
+execute uploaded content. Retain payloads for 30 days with documented size and
+project-storage limits; expired payloads keep their metadata.
+
+A bounded Playwright browser check runs only against a server-owned ready
+preview, with a separate context, typed path/viewport/actions, explicit start
+and cancel, idempotency and restart interruption. Missing browser/runtime is
+unavailable, never a pass. A supervisor owns browser cleanup on cancellation
+and parent disappearance. Browser evidence never overrides required code
+checks. Non-web projects can review code, recorded checks/activity and supplied
+artifacts without a running iframe. UI/browser verification covers the five
+required widths and important action states.
+
+**Dependencies/non-goals:** VW08 inspection, VW09 preview ownership, existing
+scheduler/approval policy. No IDE writes, extra task scheduler, paid model call,
+live Figma invocation or AWS change. Optional harness browser-tool activation
+remains VW12; an operator browser check must not be advertised as an agent's
+verified MCP capability. AWS verification remains owner-deferred. Focused local
+checks and required CI apply; comprehensive local regression follows the plan.
+
+**Implementation and focused verification:** shared review/capture/upload/cancel/
+artifact routes, additive SQLite evidence/payload storage, Preview/Changes/Checks/
+Activity UI, and draft-preserving repair handoff are implemented. Captures bind
+the canonical run generation, observed HEAD, preview profile/URL and viewport;
+uploaded artifacts remain unverified. A supervised installed Chromium captures
+PNG/trace/diagnostics and settles owned processes on cancel or parent death.
+Required sandbox policy refuses native checks; agent capability delivery remains
+VW12. Preview links now support concurrent human/browser opens without replacing
+one another, and project-root changes invalidate preview/review ownership.
+
+Local evidence: 13 focused server tests (`reviews`, `previews`, `route-contract`),
+18 focused web tests (`ReviewView`, API client, App/deep-link routing), affected
+types/builds and ESLint, and `git diff --check` passed. Two Playwright scenarios
+passed: a real native Git worktree/HTTP preview/Chromium capture with success,
+failure artifacts, cancellation and killed-parent cleanup; and the full mock UI
+journey including code, diagnostics, supplied evidence and repair handoff at
+360/390/768/1280/1440px. Screenshots at 390 and 1440px were inspected; a compressed
+phone interaction input was fixed and protected by a width assertion. The final
+browser run passed both scenarios in 14.7s. Required remote CI and merged-tree
+verification are recorded with the merge audit; no paid model, Telegram or AWS
+call was made. Comprehensive local regression remains deferred until plan end.

@@ -3,6 +3,8 @@ import { registerWorkspaceRoutes } from "./workspaces";
 import { registerPreviewRoutes } from "./preview-routes";
 import { previewSlots } from "./preview-policy";
 import { PreviewManager } from "./previews";
+import { ReviewManager } from "./reviews";
+import { registerReviewRoutes } from "./review-routes";
 import type { ApplyPlanChangesRequest } from "@orc/types";
 import "dotenv/config";
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -643,6 +645,9 @@ async function assembleServer(
   const previews = new PreviewManager(db, slots, env.mock);
   registerPreviewRoutes(app, db, previews, env.mock, (project) => broadcast({ type: "project.updated", payload: project }));
   app.addHook("onClose", () => previews.close());
+  const reviews = new ReviewManager(db, previews, env.mock);
+  registerReviewRoutes(app, db, reviews);
+  app.addHook("onClose", () => reviews.close());
 
   type ApprovalResolutionState =
     | "applied"
@@ -1075,12 +1080,13 @@ async function assembleServer(
       for (const controller of requestControllers) controller.abort();
       requestControllers.clear();
       engineShutdown ??= engine.shutdown(repo.getProjects(db));
-      previewShutdown ??= Promise.allSettled([previews.close()]);
+      previewShutdown ??= Promise.allSettled([reviews.close(), previews.close()]);
     },
     stopEngine: async () => {
       const result = await (engineShutdown ?? engine.shutdown(repo.getProjects(db)));
       const previewResults = await previewShutdown;
-      if (previewResults?.[0]?.status === "rejected") throw previewResults[0].reason;
+      const previewFailures = previewResults?.filter((item) => item.status === "rejected").map((item) => item.reason as unknown) ?? [];
+      if (previewFailures.length) throw new AggregateError(previewFailures, "Preview/review shutdown did not settle.");
       return result;
     },
     stopTelegram: () => {
@@ -1320,6 +1326,7 @@ async function assembleServer(
     const project = repo.getProject(db, id);
     if (!project) return reply.code(404).send({ error: "project not found" });
     if (previews.hasActivity(id)) return reply.code(409).send({ error: "Stop this project's previews before deleting it." });
+    if (reviews.hasActivity(id)) return reply.code(409).send({ error: "Cancel this project's browser checks before deleting it." });
     if (pendingPlanChange(db, id)) return reply.code(409).send({ error: "Plan application is pending; retry it before changing this project." });
     if (activePlanningOperation(db, id) || pendingPlanChange(db, id)) return reply.code(409).send({ error: "planning or its application is active — wait for it to settle first" });
     if (engine.hasActivity(id)) {

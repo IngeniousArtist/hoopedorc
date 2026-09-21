@@ -336,3 +336,27 @@ still present; it never kills an unverified reused PID. A new start must wait
 for recovery to settle. Shutdown stops previews alongside the existing engine,
 then flushes/checkpoints state. The bundled server ships the supervisor as a
 separate adjacent file. Previews create no second task scheduler or model calls.
+
+### Review workbench and evidence (VW10)
+
+`ReviewManager` composes existing task/run/decision reads, Git inspection and
+preview ownership. `ReviewStore` uses additive evidence/SQLite BLOB tables with
+transactional request identity, artifact hash/size, retention and project quota.
+No artifact path supplied by a browser is read from the host. Uploaded content
+is labelled unverified; browser capture metadata records the observed workspace
+and compares it on later reads rather than claiming a frozen build.
+
+`review-worker.mjs` launches the existing Playwright runtime in a sanitized
+supervisor process, uses a separate context and allowlisted preview origin, and
+returns bounded screenshots/traces/diagnostics through IPC. The browser server's
+public process/close/kill APIs give the supervisor process ownership and bounded
+cleanup. Parent disconnect closes Chromium. Restart interrupts records, retains
+partial evidence, and conservatively waits for a recorded browser group rather
+than killing a reused PID. Shutdown settles capture and preview work before DB
+checkpointing. Browsers are native host processes; required sandbox policy
+refuses them. A browser context is not host filesystem/network isolation.
+
+The full Review route reuses preview controls, read-only file inspection and the
+existing planning composer. Code checks are displayed from existing validator
+decisions; design evidence cannot bypass their policy. Agent/MCP browser-tool
+delivery remains an explicit VW12 capability, separate from operator capture.

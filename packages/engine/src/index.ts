@@ -64,6 +64,7 @@ export type {
 export { GateRunnerImpl } from "./gate-runner.js";
 export { WorkspaceInspectionError } from "./workspace-inspection.js";
 export { retainWorkspace, workspaceRetained } from "./workspace-leases.js";
+export { taskRunId } from "./task-run.js";
 export { ValidatorImpl, SelfReviewError } from "./validator.js";
 export type { ValidatorInvocationSink } from "./validator.js";
 export { Orchestrator } from "./orchestrator.js";

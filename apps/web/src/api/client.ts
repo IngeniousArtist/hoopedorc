@@ -119,10 +119,10 @@ function doFetch(
   });
 }
 
-export async function api<T>(
+async function apiResponse(
   key: RouteKey,
   opts: ApiCallOptions = {},
-): Promise<T> {
+): Promise<Response> {
   let token = getStoredApiToken();
   let res = await doFetch(key, opts, token);
 
@@ -148,8 +148,18 @@ export async function api<T>(
   if (!res.ok) {
     throw await requestError(res);
   }
-  if (res.status === 204) return undefined as T;
-  return res.json();
+  return res;
+}
+
+export async function api<T>(key: RouteKey, opts: ApiCallOptions = {}): Promise<T> {
+  const response = await apiResponse(key, opts);
+  if (response.status === 204) return undefined as T;
+  return response.json();
+}
+
+/** Authenticated artifact reads share the same token prompt/retry as JSON. */
+export async function apiBlob(key: RouteKey, opts: ApiCallOptions = {}): Promise<Blob> {
+  return (await apiResponse(key, opts)).blob();
 }
 
 export interface ApiUploadOptions {

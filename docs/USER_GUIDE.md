@@ -1274,3 +1274,44 @@ HttpOnly, so apps requiring JavaScript-readable cookies need a different local
 verification path. Service workers are disabled; external authentication
 redirects are refused. These previews are for trusted development code and do
 not provide host filesystem or network isolation.
+
+### Review the product and its evidence
+
+Open **Review** or **Open full review** from a task/workspace. Its four sections
+show Preview, Changes, Checks and Activity. Code remains read-only. Required code
+checks still come from the existing validator/merge workflow; a visual review
+cannot approve failed code checks. Older check records without a commit hash are
+labelled historical.
+
+For web work, start the task preview and use **Run browser check**. Choose the
+application path and viewport, optionally add exact-text clicks, labelled-field
+fills or expected text, then confirm. A fresh Chromium context captures the
+screen and trace, including available failure evidence. Confirm only interactions
+you intend to perform against the preview app's data. A check stays server-owned
+when you leave the page; **Cancel browser check** settles it explicitly.
+
+The server user needs Chromium installed for the installed Playwright version
+(`npx playwright install chromium`; Linux also needs Playwright's OS dependencies).
+Missing browsers show an actionable unavailable state. Native checks are disabled
+when sandboxing is required. These are operator checks; they do not imply an
+agent has been granted a browser MCP. Outside-preview resources are blocked;
+apps relying on remote APIs/fonts/auth may need local fixtures to pass this check.
+
+Evidence shows the observed commit, attempt, environment, viewport and route.
+It becomes stale after an attempt, commit or preview changes. Dirty working
+files and previews started before a new commit are unverified; rebuild/restart
+before using them as current evidence. “Current” describes the observed workspace
+identity, not an immutable build or proof of every acceptance criterion.
+
+For native/batch work, use Changes, Checks and Activity and **Attach an artifact**:
+PNG screenshots up to 5 MiB/4096×4096, ZIP traces up to 20 MiB, or UTF-8 diagnostics
+up to 256 KiB. Supplied artifacts are always labelled unverified. Downloads require
+normal app authentication. Open traces with a local Playwright Trace Viewer;
+they may contain preview data. Payloads, including failures, expire after 30 days;
+metadata remains. Each project can retain 200 MiB and the view shows its task's
+latest 100 evidence records. Reaching the limit refuses new bytes and preserves
+existing evidence until expiry. Expired/missing evidence is never treated as a pass.
+
+Use **Reference in repair**, describe the correction and **Add repair to plan**.
+Your unsent planning message is preserved. Review/send the follow-up there; this
+handoff does not start a model, change a task or approve a merge.

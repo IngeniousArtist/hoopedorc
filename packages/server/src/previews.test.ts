@@ -61,9 +61,11 @@ test("VW09: real preview owns its process, authenticates HTTP/WS, strips secrets
     assert.equal((await fetch(f.slots[0]!.origin)).status, 401);
     assert.throws(() => f.manager.open("p", "t", f.slots[0]!.origin), /differ/);
     const launch = f.manager.open("p", "t", "http://127.0.0.1:4317");
+    const browserLaunch = f.manager.open("p", "t", "http://127.0.0.1:4317");
     const exchange = await fetch(launch.url, { redirect: "manual" }); assert.equal(exchange.status, 303);
     const session = exchange.headers.get("set-cookie")!.split(";")[0]!;
     assert.equal((await fetch(launch.url, { redirect: "manual" })).status, 401, "tickets are one-use");
+    assert.equal((await fetch(browserLaunch.url, { redirect: "manual" })).status, 303, "browser capture and operator links do not revoke each other");
     const response = await fetch(f.slots[0]!.origin, { headers: { cookie: `${session}; control=session-secret`, authorization: "Bearer control-secret" } });
     assert.equal(response.status, 200);
     const body = await response.json() as Record<string, unknown>;

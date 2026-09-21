@@ -144,6 +144,74 @@ export interface SetPreviewProfileRequest { profile: PreviewProfile | null; proj
 export interface StartWorkspacePreviewRequest { projectUpdatedAt: string }
 export interface PreviewLaunchResponse { url: string; expiresAt: string }
 
+export interface BrowserReviewStep {
+  action: "clickText" | "fillLabel" | "expectText";
+  target: string;
+  value?: string;
+}
+export interface CaptureReviewRequest {
+  requestId: string;
+  taskUpdatedAt: string;
+  previewId: string;
+  path: string;
+  viewport: { width: number; height: number };
+  steps: BrowserReviewStep[];
+}
+export interface UploadReviewEvidenceRequest {
+  requestId: string;
+  taskUpdatedAt: string;
+  kind: "screenshot" | "trace" | "text";
+  name: string;
+  description: string;
+  contentBase64: string;
+}
+export interface ReviewArtifact {
+  id: string;
+  kind: "screenshot" | "trace" | "text";
+  name: string;
+  mime: string;
+  bytes: number;
+  sha256: string;
+  expiresAt: string;
+  available: boolean;
+}
+export interface ReviewEvidence {
+  id: string;
+  projectId: string;
+  taskId: string;
+  runId?: string;
+  attempt: number;
+  runGeneration: number;
+  headSha?: string;
+  dirty: boolean;
+  previewId?: string;
+  previewProfile?: PreviewProfile;
+  environment: string;
+  testedPath?: string;
+  testedUrl?: string;
+  viewport?: { width: number; height: number };
+  steps?: BrowserReviewStep[];
+  source: "browser" | "upload";
+  state: "running" | "passed" | "failed" | "cancelled" | "interrupted" | "supplied";
+  detail: string;
+  startedAt: string;
+  endedAt?: string;
+  freshness: "current" | "stale" | "unverified" | "unavailable";
+  freshnessReason?: string;
+  artifacts: ReviewArtifact[];
+}
+export interface TaskReviewResponse {
+  task: Task;
+  runs: Run[];
+  decisions: MergeDecision[];
+  evidence: ReviewEvidence[];
+  evidenceTruncated: boolean;
+  workspace: WorkspaceSummary;
+  preview: WorkspacePreview | null;
+  browser: { available: boolean; reason?: string };
+}
+export interface ReviewEvidenceResponse { evidence: ReviewEvidence }
+
 export interface DeleteProjectResponse {
   ok: true;
 }
@@ -840,6 +908,11 @@ export const ROUTES = {
   stopWorkspacePreview: "POST /api/projects/:id/workspaces/:workspaceId/preview/stop",
   openWorkspacePreview: "POST /api/projects/:id/workspaces/:workspaceId/preview/open",
   setPreviewProfile: "PUT /api/projects/:id/preview-profile",
+  taskReview: "GET /api/projects/:id/tasks/:taskId/review",
+  captureReview: "POST /api/projects/:id/tasks/:taskId/review/capture",
+  uploadReviewEvidence: "POST /api/projects/:id/tasks/:taskId/review/evidence",
+  cancelReviewCapture: "POST /api/projects/:id/tasks/:taskId/review/evidence/:evidenceId/cancel",
+  reviewArtifact: "GET /api/projects/:id/tasks/:taskId/review/artifacts/:artifactId",
   updateProject: "PATCH /api/projects/:id",
   deleteProject: "DELETE /api/projects/:id",
   planProject: "POST /api/projects/:id/plan",

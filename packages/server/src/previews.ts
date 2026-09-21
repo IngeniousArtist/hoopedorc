@@ -24,7 +24,7 @@ interface LivePreview {
 }
 const activeStates = new Set(["starting", "ready", "stopping"]);
 const asError = (error: unknown) => error instanceof Error ? error : new Error(String(error));
-function processGroupExists(pid: number): boolean {
+export function processGroupExists(pid: number): boolean {
   try { process.kill(-pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
@@ -123,7 +123,7 @@ export class PreviewManager {
       const snapshot = await new GitServiceImpl().inspectWorkspace(project, task);
       run.controller.signal.throwIfAborted();
       const current = repo.getTask(this.db, task.id);
-      if (!current || current.projectId !== project.id || current.worktreePath !== task.worktreePath || current.branch !== task.branch) throw new PreviewError("Task workspace changed before preview launch.");
+      if (!current || repo.getProject(this.db, project.id)?.localPath !== project.localPath || current.projectId !== project.id || current.worktreePath !== task.worktreePath || current.branch !== task.branch) throw new PreviewError("Task workspace changed before preview launch.");
       run.value.headSha = snapshot.headSha; run.value.dirty = snapshot.dirty; this.persist(run.value);
       const workspaceIdentity = lstatSync(task.worktreePath!);
       const targetPort = await unusedPort();
@@ -134,7 +134,7 @@ export class PreviewManager {
           try {
             const owner = repo.getTask(this.db, task.id);
             const identity = lstatSync(task.worktreePath!);
-            if (!owner || owner.worktreePath !== task.worktreePath || owner.branch !== task.branch || !identity.isDirectory()
+            if (!owner || repo.getProject(this.db, project.id)?.localPath !== project.localPath || owner.worktreePath !== task.worktreePath || owner.branch !== task.branch || !identity.isDirectory()
               || identity.ino !== workspaceIdentity.ino || identity.dev !== workspaceIdentity.dev
               || !run.childPid || !await previewOwnsPort(targetPort, run.childPid)) throw new Error("Preview process or workspace is no longer owned by this session.");
             return true;
@@ -226,8 +226,11 @@ export class PreviewManager {
   async close(): Promise<void> {
     this.closing = true; clearInterval(this.recoveryTimer);
     const results = await Promise.allSettled([...this.live.values()].map((run) => this.stop(run.value.projectId, run.value.taskId)));
+    this.reconcile();
+    const unsettled = this.recovering.size;
     for (const orphan of this.recovering.values()) orphan.release(); this.recovering.clear();
     const failures = results.filter((result) => result.status === "rejected").map((result) => result.reason as unknown);
+    if (unsettled) failures.push(new Error(`${unsettled} interrupted preview process groups remain unverified; their records are preserved.`));
     if (failures.length) throw new AggregateError(failures, "Not every preview process settled during shutdown.");
   }
 }
