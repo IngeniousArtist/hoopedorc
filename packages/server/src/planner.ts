@@ -1148,7 +1148,9 @@ function issueMessage(code: FigmaCapabilityIssueCode): string {
   }
 }
 
-function makeFigmaIssue(
+/** Build the secret-free, actionable capability issue for one failure code.
+ *  Exported so the VW01 mock planner reports the exact production shape. */
+export function makeFigmaIssue(
   code: FigmaCapabilityIssueCode,
   plannerModel: PlannerModel,
   reference?: FigmaNodeReferenceInput,

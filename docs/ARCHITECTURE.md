@@ -111,7 +111,14 @@ later queued live notification then confirms the same terminal state.
 
 Mock mode emits synthetic logs from one server-owned maintenance timer through
 `WsHub.broadcast`, so project isolation and backpressure are identical to live
-events; shutdown clears that timer with the other maintenance work.
+events; shutdown clears that timer with the other maintenance work. VW01: the
+planning routes depend on one `PlanningService` (`planning-service.ts`) that
+`assembleServer` selects from the injected environment — the real CLI-backed
+planner in production, or the deterministic `mock-planner.ts` under `MOCK=1`,
+which never spawns a planner CLI, contacts a Figma MCP, or clones/reads a
+repository. Routes keep every guard and persistence step; only the model
+behind them changes. Tests inject either side through
+`BuildAppDependencies.planning`.
 
 Gate scripts, dependency installs, and structured project setup run through
 `@orc/engine`'s Docker sandbox (`sandbox.ts`) when a daemon is reachable — a

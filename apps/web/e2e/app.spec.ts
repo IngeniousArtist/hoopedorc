@@ -437,4 +437,55 @@ test.describe.serial("critical operator workflows", () => {
       await page.getByRole("button", { name: "Close task drawer" }).click();
     }
   });
+
+  // Runs last in this serial suite: it pauses the seed project through the
+  // real pause route, and the suite's earlier scenarios rely on it running.
+  test("VW01: the mock planner answers the real planning routes without any model call", async ({
+    page,
+  }) => {
+    // Nothing under /plan/* is intercepted: the deterministic mock service
+    // behind the real routes must produce a usable plan on its own. The
+    // planning lock is real behavior worth keeping, so the running seed
+    // project is paused first. On a Playwright retry it is already paused.
+    const planRequests: string[] = [];
+    page.on("request", (request) => {
+      if (/\/api\/projects\/[^/]+\/plan(\/|$)/.test(request.url())) {
+        planRequests.push(`${request.method()} ${new URL(request.url()).pathname}`);
+      }
+    });
+    await page.goto(`/#/p/${projectId}/board`);
+    const pause = page.getByRole("button", { name: "⏸ Pause (finish current)" });
+    const resume = page.getByRole("button", { name: "Resume" });
+    await expect(pause.or(resume)).toBeVisible();
+    if (await pause.isVisible()) {
+      await pause.click();
+    }
+    await expect(resume).toBeVisible();
+
+    await page.goto(`/#/p/${projectId}/plan`);
+    const message = page.getByLabel("Planning message");
+    await expect(message).toBeVisible();
+    await message.fill("Add an API health endpoint.");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+
+    await expect(
+      page.getByText("Mock planner (no model, CLI, MCP, or repository was used).").first(),
+    ).toBeVisible();
+    await expect(page.getByText(/is done planning/)).toBeVisible();
+    await expect(page.getByText("planning cost $0.00")).toBeVisible();
+
+    await page.getByRole("button", { name: "Generate task table →" }).click();
+    await expect(page.getByLabel("Task 1 title")).toHaveValue(
+      "Implement: Add an API health endpoint.",
+    );
+    await expect(page.getByLabel("Task 2 title")).toHaveValue(
+      "Add regression coverage: Add an API health endpoint.",
+    );
+    await expect(page.getByLabel("Task 3 title")).toHaveValue("Project documentation");
+    await expect(page.locator('input[value="Visual fidelity QA"]')).toHaveCount(0);
+    await expect(page.getByText("planning cost $0.00")).toBeVisible();
+
+    expect(planRequests).toContain(`POST /api/projects/${projectId}/plan/chat`);
+    expect(planRequests).toContain(`POST /api/projects/${projectId}/plan/deconstruct`);
+  });
 });
