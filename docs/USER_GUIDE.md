@@ -1381,3 +1381,23 @@ Failed saves retain the editor and its request identity. Unsaved edits survive
 navigation in the same browser session; a storage failure is shown inline.
 A stale-save refusal requires inspecting the latest source and reconciling the
 draft explicitly. Stored reference revisions are backed up with SQLite.
+
+### Share one account across model profiles
+
+In **Settings → Resources**, add an account pool and assign the profiles whose
+CLI uses that login. Choose subscription or metered billing, shared concurrent
+calls, and slots to leave available for validators. Optional call and observed
+cost limits apply over a rolling window. Save Settings applies all memberships
+and limits together. This does not sign into or switch any provider account.
+
+Usage shows this installation's calls, tokens and incremental cost, including
+zero-cost subscription activity. Provider allowances and usage outside the app
+are unknown. Running calls may exceed an observed cost threshold. Review slots
+protect concurrency; give the call limit enough room for reviews and repairs.
+
+After an interrupted server run, **Workers needing attention** holds potentially
+live capacity. Check and stop the old worker on its host before selecting
+**Resolve worker** and confirming release. The button does not kill a process.
+Recovery preserves the interrupted usage record and is safe to retry after a
+lost response. Unresolved workers also prevent deleting the affected project or
+account pool. See [resource limits and recovery](specs/resources.md).

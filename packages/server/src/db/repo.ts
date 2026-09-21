@@ -19,7 +19,7 @@ import type {
 } from "@orc/types";
 import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "./index";
-import { normalizeSettings } from "../config";
+import { normalizeSettings, SettingsValidationError } from "../config";
 import { TaskChangeBus, type TaskChangeWaitResult } from "../task-change-bus";
 
 const taskChangeBuses = new WeakMap<Db, TaskChangeBus>();
@@ -152,6 +152,7 @@ export function updateProject(
  */
 export function deleteProject(db: Db, id: string): void {
   const run = db.transaction((projectId: string) => {
+    if (db.prepare("SELECT 1 FROM resource_reservations WHERE project_id = ? AND state != 'released' LIMIT 1").get(projectId)) throw new Error("Cannot delete a project with occupied or unresolved account capacity.");
     const taskIds = (
       db.prepare("SELECT id FROM tasks WHERE project_id = ?").all(projectId) as { id: string }[]
     ).map((r) => r.id);
@@ -162,6 +163,9 @@ export function deleteProject(db: Db, id: string): void {
       db.prepare("DELETE FROM runs WHERE task_id = ?").run(taskId);
     }
     db.prepare("DELETE FROM costs WHERE project_id = ?").run(projectId);
+    // Shared quotas are installation-wide. Project cleanup must not reset an
+    // account's window; retain only detached usage, without project/task IDs.
+    db.prepare("UPDATE model_invocations SET project_id = NULL, task_id = NULL, run_id = NULL WHERE project_id = ? AND json_extract(accounting_json, '$.poolId') IS NOT NULL").run(projectId);
     db.prepare("DELETE FROM model_invocations WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM notifications WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM budget_alerts WHERE scope = ?").run(`project:${projectId}`);
@@ -1023,6 +1027,8 @@ export function getRecoverableRollbackJobs(db: Db): RollbackJob[] {
 
 function mapInvocation(row: Record<string, unknown>): ModelInvocation {
   return {
+    accounting: row.accounting_json ? JSON.parse(asStr(row.accounting_json)) as ModelInvocation["accounting"] : undefined,
+    reportedCostUsd: row.reported_cost_usd == null ? undefined : Number(row.reported_cost_usd),
     id: asStr(row.id),
     projectId: row.project_id ? asStr(row.project_id) : undefined,
     taskId: row.task_id ? asStr(row.task_id) : undefined,
@@ -1083,8 +1089,8 @@ export function createInvocation(db: Db, invocation: ModelInvocation): ModelInvo
     `INSERT OR IGNORE INTO model_invocations (
        id, project_id, task_id, run_id, stage, model, runner, effort,
        started_at, ended_at, outcome, exit_reason, cost_usd,
-       tokens_in, tokens_out, tokens_cached
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       tokens_in, tokens_out, tokens_cached, accounting_json, reported_cost_usd
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     invocation.id,
     invocation.projectId ?? null,
@@ -1102,6 +1108,8 @@ export function createInvocation(db: Db, invocation: ModelInvocation): ModelInvo
     invocation.tokensIn,
     invocation.tokensOut,
     invocation.tokensCached,
+    invocation.accounting ? JSON.stringify(invocation.accounting) : null,
+    invocation.reportedCostUsd ?? null,
   );
   return getInvocation(db, invocation.id)!;
 }
@@ -1129,6 +1137,7 @@ export function terminalizeInvocation(
     | "tokensIn"
     | "tokensOut"
     | "tokensCached"
+    | "reportedCostUsd"
   >,
 ): InvocationTerminalResult | null {
   if (terminal.outcome === "running") {
@@ -1138,7 +1147,7 @@ export function terminalizeInvocation(
     const changed = db.prepare(
       `UPDATE model_invocations
        SET ended_at = ?, outcome = ?, exit_reason = ?, cost_usd = ?,
-           tokens_in = ?, tokens_out = ?, tokens_cached = ?
+           tokens_in = ?, tokens_out = ?, tokens_cached = ?, reported_cost_usd = ?
        WHERE id = ? AND outcome = 'running'`,
     ).run(
       terminal.endedAt ?? new Date().toISOString(),
@@ -1148,6 +1157,7 @@ export function terminalizeInvocation(
       terminal.tokensIn,
       terminal.tokensOut,
       terminal.tokensCached,
+      terminal.reportedCostUsd ?? terminal.costUsd,
       id,
     );
     const invocation = getInvocation(db, id);
@@ -2470,9 +2480,11 @@ export function getSettings(db: Db): Settings | null {
 
 export function upsertSettings(db: Db, s: unknown): Settings {
   const normalized = normalizeSettings(s);
-  db.prepare(
-    `INSERT INTO settings (id, json) VALUES (1, ?)
-     ON CONFLICT(id) DO UPDATE SET json = excluded.json`,
-  ).run(JSON.stringify(normalized));
-  return getSettings(db)!;
+  return db.transaction(() => {
+    const poolIds = new Set((normalized.accountPools ?? []).map((pool) => pool.id));
+    const busy = db.prepare("SELECT DISTINCT pool_id FROM resource_reservations WHERE state != 'released'").all() as { pool_id: string }[];
+    if (busy.some((row) => !poolIds.has(row.pool_id))) throw new SettingsValidationError("accountPools", "cannot remove a pool with reserved, active or unresolved workers; settle or recover its capacity first");
+    db.prepare(`INSERT INTO settings (id, json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json`).run(JSON.stringify(normalized));
+    return getSettings(db)!;
+  })();
 }

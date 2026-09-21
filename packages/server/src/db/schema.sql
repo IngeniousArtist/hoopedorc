@@ -121,6 +121,8 @@ CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id);
 -- this includes planning, deconstruction, validation, docs, and health calls.
 -- project/task are nullable because a setup health probe is installation-wide.
 CREATE TABLE IF NOT EXISTS model_invocations (
+  accounting_json TEXT,
+  reported_cost_usd REAL,
   id            TEXT PRIMARY KEY,
   project_id    TEXT,
   task_id       TEXT,
@@ -461,3 +463,25 @@ CREATE TABLE IF NOT EXISTS activation_manifests (
   json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_activation_manifests_project ON activation_manifests(project_id);
+
+-- VW13: shared account admission, immutable pricing snapshots and explicit recovery.
+CREATE TABLE IF NOT EXISTS resource_reservations (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  task_id TEXT,
+  model TEXT NOT NULL,
+  stage TEXT NOT NULL,
+  pool_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('reserved', 'active', 'unresolved', 'released')),
+  accounting_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_resource_reservations_pool ON resource_reservations(pool_id, state, created_at);
+CREATE TABLE IF NOT EXISTS resource_cooldowns (pool_id TEXT PRIMARY KEY, until_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS resource_recoveries (
+  request_id TEXT PRIMARY KEY,
+  reservation_id TEXT NOT NULL REFERENCES resource_reservations(id),
+  request_hash TEXT NOT NULL,
+  result_json TEXT NOT NULL
+);

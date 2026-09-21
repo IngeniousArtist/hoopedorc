@@ -1,8 +1,10 @@
+import { invocationCost } from "./resources";
 import { randomUUID } from "node:crypto";
 import { readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  classifyFailure,
   execManagedProcess,
   ManagedProcessError,
   modelEffortArgs,
@@ -10,7 +12,7 @@ import {
   type SelectiveLaunch,
   sanitizedEnv,
 } from "@orc/adapters";
-import { InvocationLedgerError } from "@orc/types";
+import { InvocationLedgerError, ResourceUnavailableError } from "@orc/types";
 import type {
   Difficulty,
   FigmaCapabilityIssue,
@@ -719,7 +721,7 @@ function emitPlannerInvocation(
   try {
     onInvocation(event);
   } catch (error) {
-    if (error instanceof InvocationLedgerError) throw error;
+    if (error instanceof InvocationLedgerError || error instanceof ResourceUnavailableError) throw error;
     throw new InvocationLedgerError(
       `failed to persist ${event.stage} invocation ${event.id} (${event.outcome})`,
       { cause: error },
@@ -1007,11 +1009,13 @@ async function runPlannerJson(
     "id" | "stage" | "model" | "runner" | "effort" | "startedAt"
   >;
   const prepared = await plannerModel.prepareActivation?.(base.id, stage, cwd, signal);
+  base.startedAt = new Date().toISOString();
   try {
     if (prepared?.launch && plannerModel.runner !== "claude-code") throw new Error("Selective activation is not verified for this planner harness.");
     prompt += prepared?.instructions ?? "";
     emitPlannerInvocation(onInvocation, {
       ...base,
+      accounting: prepared?.accounting,
       outcome: "running",
       costUsd: 0,
       tokensIn: 0,
@@ -1072,7 +1076,7 @@ async function runPlannerJson(
         ...base,
         endedAt: new Date().toISOString(),
         outcome: signal?.aborted ? "stopped" : "failed",
-        exitReason: signal?.aborted ? "killed" : "error",
+        exitReason: signal?.aborted ? "killed" : classifyFailure(err instanceof Error ? err.message + (err instanceof ManagedProcessError ? err.stdout : "") : String(err)),
         costUsd: 0,
         tokensIn: 0,
         tokensOut: 0,
@@ -1080,8 +1084,11 @@ async function runPlannerJson(
       });
       throw failure;
     }
+    const reportedCostUsd = result.costUsd;
+    if (prepared?.accounting) result = { ...result, costUsd: invocationCost(prepared.accounting, reportedCostUsd, result.tokensIn, result.tokensCached, result.tokensOut) };
     emitPlannerInvocation(onInvocation, {
       ...base,
+      reportedCostUsd,
       endedAt: new Date().toISOString(),
       outcome: "completed",
       exitReason: "completed",
@@ -1377,7 +1384,7 @@ export async function verifyFigmaReferences(
     // B46: a ledger/accounting failure (thrown by the onInvocation sink
     // above) is not a Figma verification result — let it propagate through
     // its own owning error path instead of mislabeling it as unavailable.
-    if (err instanceof InvocationLedgerError) throw err;
+    if (err instanceof InvocationLedgerError || err instanceof ResourceUnavailableError) throw err;
     throw new FigmaVerificationError(
       makeFigmaIssue(
         classifyFigmaFailure(err),

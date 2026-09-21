@@ -5307,3 +5307,26 @@ test("VW12: unsupported activation block before worktree or author attempt and p
   assert.equal(creates, 0); assert.equal(removals, 0); assert.equal(authors, 0);
   assert.equal(candidate.worktreePath, "/tmp/operator-work");
 });
+
+test("VW13: account reservation refusal preserves work and consumes no author attempt", async () => {
+  const candidate = task("pooled", [], { worktreePath: "/tmp/operator-work", branch: "orc/pooled" });
+  let removals = 0; let authors = 0;
+  await new Orchestrator(fakeDeps({
+    reserveAuthor: () => "Shared login has no free worker slot",
+    worktrees: { create: () => Promise.resolve({ path: "/tmp/operator-work", branch: "orc/pooled" }), remove() { removals++; return Promise.resolve(); } },
+    adapterFor: () => ({ runner: "opencode", run() { authors++; return Promise.reject(new Error("must not invoke")); } }),
+  }, [])).runTask(PROJECT, candidate);
+  assert.equal(candidate.status, "backlog"); assert.equal(candidate.attempts, 0);
+  assert.match(candidate.statusReason!, /account capacity/);
+  assert.equal(removals, 0); assert.equal(authors, 0); assert.equal(candidate.worktreePath, "/tmp/operator-work");
+});
+
+test("VW13: docs admission refusal has no invocation and preserves the validated merge", async () => {
+  const merged: number[] = []; const runs: Run[] = []; let docs = 0;
+  const cfg = settings(); cfg.routing.byRole.docs = "deepseek-flash";
+  await new Orchestrator(fakeDeps({ settings: cfg,
+    beforeDocsInvocation: () => { docs++; return Promise.reject(new Error("Account unavailable")); },
+    events: { onLog() {}, onTaskUpdated() {}, onRunUpdated(run) { runs.push(run); }, onMergeDecision() {}, requestApproval() { return Promise.resolve("approve"); } },
+  }, merged)).start(PROJECT, [task("docs-admission")]);
+  assert.equal(docs, 1); assert.equal(merged.length, 1); assert.ok(runs.every((run) => !run.id.endsWith("-docs")));
+});

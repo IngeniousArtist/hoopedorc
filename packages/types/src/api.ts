@@ -933,6 +933,8 @@ export interface ApiError {
  * The server registers exactly these; the web client builds URLs from them.
  */
 export const ROUTES = {
+  resources: "GET /api/resources",
+  recoverResource: "POST /api/resources/:reservationId/recover",
   projectActivation: "GET /api/projects/:id/activation",
   saveProjectActivation: "PUT /api/projects/:id/activation",
   health: "GET /api/health",

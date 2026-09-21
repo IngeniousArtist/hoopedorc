@@ -1,3 +1,5 @@
+import { prepareProjectInvocation } from "./invocation-preparation";
+import { ResourceManager } from "./resources";
 import { ActivationService } from "./activation";
 import { pendingPlanChange } from "./plan-changes";
 import { planningBlocksExecution } from "./planning-operations";
@@ -16,10 +18,11 @@ import {
   type WorktreeManager,
 } from "@orc/engine";
 import { makeAdapter, type AgentAdapter } from "@orc/adapters";
-import { InvocationLedgerError } from "@orc/types";
+import { InvocationLedgerError, ResourceUnavailableError } from "@orc/types";
 import type {
   FigmaCapabilityIssue,
   ModelId,
+  ModelConfig,
   ModelInvocation,
   Notification,
   Project,
@@ -196,12 +199,14 @@ export class EngineRunner {
   private static readonly MAX_PENDING_LOGS = 1_000;
 
   readonly activation: ActivationService;
+  readonly resources: ResourceManager;
+  private readonly pendingAdmissions = new Map<string, { accounting: import("@orc/types").InvocationAccounting; runner: ModelConfig["runner"] }>();
 
   constructor(
     private readonly db: Db,
     private readonly hub: WsHub,
     private readonly options: EngineRunnerOptions = {},
-  ) { this.activation = new ActivationService(db); }
+  ) { this.activation = new ActivationService(db); this.resources = new ResourceManager(db); }
 
   private enqueueLog(e: Parameters<typeof repo.createLog>[1]): void {
     this.logQueue.push(e);
@@ -349,26 +354,18 @@ export class EngineRunner {
   /** Returns a reason string while `modelId` is cooling down, else null —
    *  wired into every Orchestrator as SchedulerDeps.checkModelCooldown. */
   checkModelCooldown(modelId: ModelId): string | null {
-    const cooldown = repo.getModelCooldown(this.db, modelId);
-    if (!cooldown) return null;
-    const until = new Date(cooldown.until).getTime();
-    if (!Number.isFinite(until) || until <= Date.now()) {
-      repo.clearModelCooldown(this.db, modelId);
-      return null;
-    }
-    return `rate-limited, cooling down for ~${Math.ceil((until - Date.now()) / 60_000)}m more`;
+    const until = this.getCoolingDownUntil(modelId);
+    return until ? `rate-limited, cooling down for ~${Math.ceil((until - Date.now()) / 60_000)}m more` : null;
   }
 
-  /** For the model-health panel (F6) — current cooldown expiry, if any. */
+  /** Shared-account cooldowns apply to every member profile. */
   getCoolingDownUntil(modelId: ModelId): number | undefined {
-    const cooldown = repo.getModelCooldown(this.db, modelId);
-    if (!cooldown) return undefined;
-    const until = new Date(cooldown.until).getTime();
-    if (!Number.isFinite(until) || until <= Date.now()) {
-      repo.clearModelCooldown(this.db, modelId);
-      return undefined;
-    }
-    return until;
+    const own = repo.getModelCooldown(this.db, modelId);
+    const ownUntil = own ? new Date(own.until).getTime() : 0;
+    if (own && (!Number.isFinite(ownUntil) || ownUntil <= Date.now())) repo.clearModelCooldown(this.db, modelId);
+    const poolUntil = this.resources.coolingDownUntil(modelId) ?? 0;
+    const until = Math.max(Number.isFinite(ownUntil) ? ownUntil : 0, poolUntil);
+    return until > Date.now() ? until : undefined;
   }
 
   /** Persist one B40 lifecycle event and fan out only the first accepted
@@ -413,7 +410,7 @@ export class EngineRunner {
    * it was initiated by Start or a manual-priority request. Deletion and
    * replacement operations must use this stronger predicate. */
   hasActivity(projectId: string): boolean {
-    return this.runtimes.has(projectId) || this.rollbackByProject.has(projectId);
+    return this.runtimes.has(projectId) || this.rollbackByProject.has(projectId) || this.resources.hasActivity(projectId);
   }
 
   getActivityState(projectId: string): ProjectRuntimeState | undefined {
@@ -551,8 +548,8 @@ export class EngineRunner {
     const now = this.options.now ?? Date.now;
     const figmaVerifier = this.options.figmaVerifier ?? verifyFigmaReferences;
 
-    const adapterFor = (modelId: ModelId): AgentAdapter => {
-      const cfg = liveSettings().models.find((m) => m.id === modelId);
+    const adapterFor = (modelId: ModelId, snapshot?: ModelConfig): AgentAdapter => {
+      const cfg = snapshot ?? liveSettings().models.find((m) => m.id === modelId);
       if (!cfg) throw new Error(`no ModelConfig for ${modelId}`);
       if (!cfg.enabled) throw new Error(`model ${modelId} is disabled`);
       return this.activation.wrap(project, makeAdapter(cfg, ENV.opencodeBaseUrl));
@@ -568,6 +565,7 @@ export class EngineRunner {
       liveSettings,
       (event) => this.recordInvocation(event),
       (owner, task) => new LibraryStore(this.db).context(owner.id, task.description),
+      (id, owner, task, model, signal, onLog) => this.resources.guard({ id, projectId: owner.id, taskId: task.id, model: model.id, modelConfig: model, stage: "validator" }, signal, true, (reason) => onLog(`Waiting for shared account capacity: ${reason}\n`)),
     );
 
     const deps: SchedulerDeps = {
@@ -580,6 +578,12 @@ export class EngineRunner {
       adapterFor,
       opencodeBaseUrl: ENV.opencodeBaseUrl,
       getTasks: () => repo.getTasks(this.db, project.id),
+      reserveAuthor: (owner, task, model, id) => {
+        try { this.pendingAdmissions.set(id, { accounting: this.resources.reserve({ id, projectId: owner.id, taskId: task.id, model, stage: "author" }), runner: liveSettings().models.find((item) => item.id === model)!.runner }); return null; }
+        catch (error) { if (error instanceof ResourceUnavailableError) return error.message; throw error; }
+      },
+      releaseUnstartedInvocation: (id) => { this.resources.releaseUnstarted(id); this.pendingAdmissions.delete(id); },
+      beforeDocsInvocation: async (owner, task, model, id, signal) => { this.pendingAdmissions.set(id, { accounting: await this.resources.acquire({ id, projectId: owner.id, taskId: task.id, model: model.id, modelConfig: model, stage: "docs" }, signal), runner: model.runner }); },
       checkActivation: async (owner, task, model, signal) => {
         const config = liveSettings().models.find((candidate) => candidate.id === model);
         if (!config) return "Author model is unavailable.";
@@ -660,7 +664,7 @@ export class EngineRunner {
 
         const activationRevision = this.activation.store.resolve(project.id, task.description);
         const plannerModel: PlannerModel = {
-          prepareActivation: (id, stage, cwd, signal) => this.activation.prepare({ id, project, task, stage, cwd, signal, runner: config.runner }, activationRevision),
+          prepareActivation: (id, stage, cwd, signal) => prepareProjectInvocation(this.resources, this.activation, { id, project, task, stage, cwd, signal, runner: config.runner }, config, activationRevision),
           id: model,
           runner: config.runner,
           model: configuredRunnerModel,
@@ -694,7 +698,7 @@ export class EngineRunner {
           // (via the onInvocation sink below) is not a Figma capability
           // result — let it fail closed through its own owning error path
           // instead of reporting a false "Figma unavailable" block.
-          if (error instanceof InvocationLedgerError) throw error;
+          if (error instanceof InvocationLedgerError || error instanceof ResourceUnavailableError) throw error;
           if (error instanceof FigmaVerificationError) {
             return { required: true, context, issue: error.issue };
           }
@@ -714,7 +718,7 @@ export class EngineRunner {
       checkBudget: (modelId) =>
         checkBudget(this.db, project.id, modelId, liveSettings()),
       checkModelCooldown: (modelId) => this.checkModelCooldown(modelId),
-      checkModelQuota: (modelId) => checkModelQuota(this.db, modelId, liveSettings()),
+      checkModelQuota: (modelId) => checkModelQuota(this.db, modelId, liveSettings()) ?? this.resources.check(modelId),
       getModelActive: (modelId) => this.modelActiveCount.get(modelId) ?? 0,
       incModelActive: (modelId) =>
         this.modelActiveCount.set(modelId, (this.modelActiveCount.get(modelId) ?? 0) + 1),
@@ -801,6 +805,7 @@ export class EngineRunner {
           // Manual per-model pricing (Settings) overrides the CLI-reported
           // cost — recompute from tokens before anything persists or alerts
           // on it (see pricing.ts).
+          const reportedCostUsd = r.costUsd;
           const settingsSnapshot = liveSettings();
           const cfg = settingsSnapshot.models.find((m) => m.id === r.model);
           const manual = manualCostUsd(cfg, r.tokensIn, r.tokensOut, r.tokensCached ?? 0);
@@ -808,12 +813,14 @@ export class EngineRunner {
 
           const invocation: ModelInvocation = {
             id: r.id,
+            reportedCostUsd,
+            accounting: this.pendingAdmissions.get(r.id)?.accounting,
             projectId: project.id,
             taskId: r.taskId,
             runId: r.id,
             stage: r.id.endsWith("-docs") ? "docs" : "author",
             model: r.model,
-            runner: cfg?.runner ?? "unknown",
+            runner: this.pendingAdmissions.get(r.id)?.runner ?? cfg?.runner ?? "unknown",
             effort: r.effort ?? "default",
             startedAt: r.startedAt,
             endedAt: r.endedAt,
@@ -831,7 +838,12 @@ export class EngineRunner {
             tokensOut: r.tokensOut,
             tokensCached: r.tokensCached ?? 0,
           };
-          this.recordInvocation(invocation, settingsSnapshot);
+          const recorded = this.recordInvocation(invocation, settingsSnapshot);
+          this.pendingAdmissions.delete(r.id);
+          // Legacy stopped-run projections may receive late counters after
+          // their old ledger row was finalized. Preserve that compatibility;
+          // new invocation snapshots own canonical billing.
+          if (recorded.accounting) r = { ...r, costUsd: recorded.costUsd };
 
           const existingRun = repo.getRun(this.db, r.id);
           if (existingRun?.status === "stopped" && r.status !== "running") {
@@ -1022,8 +1034,8 @@ export class EngineRunner {
       if (!current) throw new Error("settings not found");
       return current;
     };
-    const adapterFor = (modelId: ModelId): AgentAdapter => {
-      const config = liveSettings().models.find((model) => model.id === modelId);
+    const adapterFor = (modelId: ModelId, snapshot?: ModelConfig): AgentAdapter => {
+      const config = snapshot ?? liveSettings().models.find((model) => model.id === modelId);
       if (!config) throw new Error(`no ModelConfig for ${modelId}`);
       if (!config.enabled) throw new Error(`model ${modelId} is disabled`);
       return this.activation.wrap(project, makeAdapter(config, ENV.opencodeBaseUrl));
@@ -1040,6 +1052,7 @@ export class EngineRunner {
         liveSettings,
         (event) => this.recordInvocation(event),
         (owner, task) => new LibraryStore(this.db).context(owner.id, task.description),
+        (id, owner, task, model, signal, onLog) => this.resources.guard({ id, projectId: owner.id, taskId: task.id, model: model.id, modelConfig: model, stage: "validator" }, signal, true, (reason) => onLog(`Waiting for shared account capacity: ${reason}\n`)),
       ),
     };
   }

@@ -7346,9 +7346,9 @@ owner later supplies Figma input.
 
 ## Part 14 — Visual development workspace
 
-**Status (2026-09-21):** VW01–VW11 are merged, including the planning workbench,
+**Status (2026-09-21):** VW01–VW12 are merged, including the planning workbench,
 reviewed plan changes, workspaces, previews, browser evidence and source Library.
-VW12 is implemented with CI/merge pending; VW13 is the next unstarted item. The
+VW12 adds explicit capability activation; VW13 shared account resources are in progress. The
 detailed scope, inspected source, research, acceptance criteria, non-goals,
 dependencies, and verification requirements are
 in [VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
@@ -7362,7 +7362,7 @@ existing Figma integration, gates/validation, accounting, and Telegram. Improve
 the user journey and failure handling, then extend capabilities incrementally.
 Small tasks and large briefs share the same execution system.
 
-**Next after VW12 merge:** VW13 (shared account pools/resource allocation), starting from
+**Current:** VW13 (shared account pools/resource allocation), starting from
 the reviewed VW01–VW12 result. Consult the focused plan's dependency table for
 subsequent items. Do not start by replacing the scheduler or adding
 all future schemas. Use one scoped branch/PR per coherent change; split larger
@@ -7381,8 +7381,8 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW09 | Managed environments and preview lifecycle | Implemented; AWS validation deferred | [#275](https://github.com/IngeniousArtist/hoopedorc/pull/275): native task preview ownership and separate-origin authenticated proxy |
 | VW10 | Full review workbench and browser evidence | Done; merged and verified | [PR #276](https://github.com/IngeniousArtist/hoopedorc/pull/276), CI `35599020994`, merge `629cb7d`; acceptance evidence below |
 | VW11 | Project design/reference library | Done; merged and verified | [PR #277](https://github.com/IngeniousArtist/hoopedorc/pull/277), CI `35601341252`, merge `31a853d`; focused evidence below |
-| VW12 | Selective skills, plugins, and MCP activation | Implemented; CI/merge pending | Claude selective instructions/MCPs and scoped browser; unsupported combinations explicit; evidence below |
-| VW13 | Shared account pools and resource allocation | Not started | — |
+| VW12 | Selective skills, plugins, and MCP activation | Done; merged and verified | [PR #278](https://github.com/IngeniousArtist/hoopedorc/pull/278), CI `35606696922`, merge `4d40803`; compatibility limits explicit |
+| VW13 | Shared account pools and resource allocation | In progress | `vw13-shared-account-resources` |
 | VW14 | Verified isolated agent execution profiles | Not started | — |
 | VW15 | Milestone acceptance and bounded replanning | Not started | — |
 | VW16 | Portable framework/environment profiles | Not started | — |
@@ -8546,3 +8546,100 @@ paid invocation, Telegram send or deployment occurred. Affected package builds/
 typechecks and focused lint passed (new files warning-free, existing baseline
 warnings unchanged); `git diff --check` passed. Full required CI/merge audit
 follows. Authenticated model execution remains untested; AWS is owner-deferred.
+
+
+**VW12 merge audit:** PR #278 passed required `build-and-test` in CI run
+[35606696922](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35606696922)
+on tested head `a54c01f7ce824b6ffca8cd0eda0f66b21d4bdce6` (3m34s). Earlier CI
+found the two activation routes missing from the machine-checked contract table;
+the rows were added and both focused route-contract tests passed before rerun.
+Merge `4d408031553dd18c48e601a80e4548de2242010a` has an identical tree to the
+tested head. Independent verification found tracked-clean main and zero origin
+main divergence. The unrelated untracked dependency directory remains preserved.
+
+### VW13 — shared accounts and resource admission (implementation acceptance)
+
+Depends on VW05 and VW12. Add account-pool definitions to normalized Settings
+and optional pool membership to model profiles; retain legacy behavior when no
+pool is selected. Grouping profiles expresses the operator's existing CLI login
+relationships, not a new authentication/account switching mechanism.
+
+Acceptance:
+
+- Pool settings distinguish subscription activity from metered billing, share
+  concurrency and rolling call/cost limits across every assigned model/project,
+  and can reserve capacity for review. Validate IDs, references, limits and
+  removal without silently detaching profiles or erasing usage history.
+- Revalidate and reserve author capacity in one SQLite transaction before
+  spending an author attempt. Planning, deconstruction, Figma/model health,
+  independent review and docs must acquire capacity before sending a model
+  prompt through their existing invocation path. Temporary contention waits
+  or leaves work schedulable; cancellation settles the wait without a model call.
+- Reservation/invocation IDs are unique and retries idempotent. Pending
+  reservations and calls cannot double-count the same activity. Shared provider
+  cooldown prevents a switch to another profile on the same exhausted account.
+  Keep one project scheduler; the new component is resource admission only.
+- Snapshot pool ownership and pricing/billing per invocation. Later settings
+  edits do not change an active call's accounting or reassign old usage. Zero
+  incremental subscription cost still records calls/tokens exactly once. Existing
+  unpooled history remains intact. Cost thresholds govern admission against
+  observed spend, not an invented hard maximum for already-running calls.
+- Restart releases never-started reservations only when no invocation could
+  have started. Potentially live interrupted calls retain unresolved capacity;
+  do not assume a server crash killed its children. An explicit, persisted,
+  idempotent recovery action confirms the old worker is stopped before release.
+  Surface unknown final spend and provider remaining allowance honestly.
+- Settings show membership, limits, observed usage, active/reserved/unresolved
+  capacity and shared cooldown. Recovery has inline confirmation and actionable
+  errors; drafts survive failed saves. Check the five supported viewport widths.
+- Focused tests cover competing reservations across projects/profiles, stage
+  coverage, no double accounting, subscription/metered snapshots, cooldown,
+  cancellation, stale/repeated recovery and restart. Required full CI gates merge;
+  the comprehensive local regression remains deferred until all items finish.
+
+Non-goals: switching CLI accounts/credentials, claiming exact subscription
+percentages, adding provider-specific paid fallbacks or introducing a second
+scheduler. Full worker isolation and verified process ownership are VW14. AWS
+remains owner-deferred; no replacement installation exists.
+
+
+VW13 implementation evidence (2026-09-21; PR/required CI pending):
+
+- Shared Settings contracts and additive SQLite migrations cover reservations,
+  immutable invocation accounting, shared cooldowns and versioned recovery.
+  Existing unpooled profiles/history remain intact. The same admission owner is
+  wired before author attempts, planner/deconstructor/Figma calls, health checks,
+  docs and independent reviews. Refusal preserves work and consumes no author
+  attempt; queued cancellation starts no model call. Pricing/runner snapshots
+  survive live settings changes and queued calls use their actual start time.
+- Resources settings support pool creation, billing, membership, shared limits,
+  reserved review slots, observed usage and inline stopped-worker confirmation.
+  Failed actions preserve drafts and recovery retries reuse the receipt ID.
+- Focused backend/engine verification: **11 VW13 tests passed** across resource
+  policy, SQLite restart/recovery/routes, author/docs/validator admission and
+  planner/Figma refusal/rate limits. **7 existing ledger/route-contract tests
+  passed**. No live model requests: the rate-limit case used a local fake CLI.
+- Focused web verification: **7 tests passed** (ResourcesPanel and Settings).
+  **1 real Playwright flow passed** at 360, 390, 768, 1280 and 1440px, checking
+  overflow, fixed surfaces, phone touch targets, keyboard save, cross-section
+  draft retention, persistence and saved usage. All widths were captured;
+  390/1440 screenshots were visually inspected.
+- Affected types/adapter/engine builds and server/web typechecks passed. Changed
+  files lint passed with existing warnings only; new files have no warnings.
+  `git diff --check` passed. Comprehensive local regression remains deferred
+  until the plan finishes; full required CI still gates merge.
+- AWS is owner-deferred (previous host shut down; no new installation).
+  Account pools do not switch CLI logins, infer provider allowance, guarantee a
+  maximum in-flight cost or claim host CLI isolation. VW14 owns verified worker
+  isolation; no deployment, paid provider call or Telegram send was performed.
+
+
+VW13 CI follow-up: initial CI [35611373010](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35611373010)
+passed build, typecheck and lint, then caught the B34 legacy stopped-run late-cost
+projection regression. Preserve that old projection when no accounting snapshot
+exists; new pooled calls continue to use immutable ledger billing. Added pooled
+stop/duplicate-settlement coverage. Project cleanup also now retains detached
+pooled usage so deletion cannot reset an account quota; a regression verifies it.
+The focused follow-up passed **8 tests** (B34 plus VW13 resource/engine cases),
+server typecheck and affected lint. Required CI is being rerun; no failed check
+was bypassed.

@@ -551,3 +551,13 @@ test("B48: confidence is still clamped into [0, 1] on valid JSON (regression)", 
     cleanup();
   }
 });
+
+test("VW13: validator admission precedes its ledger and CLI, preserves accounting and settles refusal", async () => {
+  const prompts: string[] = []; const events: ModelInvocation[] = []; let released = 0;
+  const review = new ValidatorImpl(capturingAdapterFactory(prompts), baseSettings(), (event) => events.push(event), undefined, () => Promise.resolve({ accounting: { billing: "subscription", poolId: "shared" }, release: () => { released++; } }));
+  await review.review(PROJECT, task(), GATE, "deepseek-flash");
+  assert.equal(prompts.length, 1); assert.equal(events.length, 2); assert.equal(events[0]!.accounting?.poolId, "shared"); assert.equal(released, 1);
+  const refused = new ValidatorImpl(capturingAdapterFactory(prompts), baseSettings(), (event) => events.push(event), undefined, () => Promise.reject(new Error("Account blocked")));
+  await assert.rejects(refused.review(PROJECT, task(), GATE, "deepseek-flash"), /Account blocked/);
+  assert.equal(prompts.length, 1); assert.equal(events.length, 2);
+});
