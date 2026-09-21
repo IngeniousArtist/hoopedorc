@@ -53,9 +53,11 @@ import {
 import { mockPlanningService } from "./mock-planner";
 import {
   productionPlanningService,
+  RepositoryUnavailableError,
   selectPlanningService,
   type PlanningService,
 } from "./planning-service";
+import { shortCommit } from "./repository-inspection";
 import { createGithubRepo, getPrDiff, slugifyRepoName } from "./github";
 import { checkBudget } from "./budget";
 import {
@@ -134,6 +136,7 @@ import type {
   PlanChatRequest,
   PlanCommitRequest,
   PlanDeconstructRequest,
+  RepositoryInspection,
   SaveDraftRequest,
   VerifiedFigmaReference,
   Settings as SettingsType,
@@ -338,11 +341,13 @@ const planningGitPersistence = ENV.mock
   : gitForPlanning;
 
 /**
- * For a follow-up planning iteration: summarize what the project already
- * shipped — prior PRD, completed/failed tasks, and recent audit activity — so
- * the planner builds on it instead of re-planning from scratch. Returns
- * undefined for a first-time plan (no committed tasks yet), which leaves the
- * planning prompts unchanged.
+ * For a follow-up planning iteration: summarize the project's planning
+ * history — prior PRD, every board task with its CURRENT status, and recent
+ * audit activity — so the planner builds on what actually merged. VW03: task
+ * statuses are reported per task and in the header so a failed or pending
+ * title is never read as shipped work; whether the repository has code is a
+ * separate question answered by the repository inspection, not by task
+ * history. Returns undefined when the board has no tasks yet.
  */
 function buildPriorContext(db: Db, project: Project): string | undefined {
   const tasks = repo.getTasks(db, project.id);
@@ -358,10 +363,15 @@ function buildPriorContext(db: Db, project: Project): string | undefined {
   const MAX_PRIOR_TASKS = 50;
   const recentTasks = tasks.slice(-MAX_PRIOR_TASKS);
   const taskList = recentTasks.map(fmtTask).join("\n");
+  const statusCounts = new Map<string, number>();
+  for (const t of tasks) statusCounts.set(t.status, (statusCounts.get(t.status) ?? 0) + 1);
+  const statusSummary = [...statusCounts.entries()]
+    .map(([status, count]) => `${count} ${status}`)
+    .join(", ");
   const taskListHeader =
     tasks.length > MAX_PRIOR_TASKS
-      ? `### Tasks already on the board (${tasks.length}, showing most recent ${MAX_PRIOR_TASKS})`
-      : `### Tasks already on the board (${tasks.length})`;
+      ? `### Tasks already on the board (${tasks.length}: ${statusSummary}; showing most recent ${MAX_PRIOR_TASKS})`
+      : `### Tasks already on the board (${tasks.length}: ${statusSummary})`;
 
   // Recent terminal/notable audit entries, newest first, capped so the prompt
   // stays bounded on long-running projects.
@@ -1363,10 +1373,14 @@ async function assembleServer(
       // rather than a special-cased error — this legacy single-shot endpoint
       // never hard-fails, by design.
       const plannerModel = resolvePlannerModel(settings, "deconstruct");
+      // VW03: no planning against a temporary directory — an unreachable
+      // repository lands in this route's documented stub fallback below.
+      const repository = await planning.inspect(project, cancellation.signal);
       const plan = await planning.planGoal({
         project,
         goal,
         plannerModel,
+        repository,
         onWarn: (msg) => app.log.warn(msg),
         signal: cancellation.signal,
         onInvocation: (event) => recordModelInvocation(event, id),
@@ -1520,10 +1534,14 @@ async function assembleServer(
       const attachmentNames = listAttachments(attachmentsDir(project, env.mock)).map(
         (a) => a.name,
       );
+      // VW03: inspect the real clone first; failure is reported, not papered
+      // over with a temporary directory, and the transcript is untouched.
+      const repository = await planning.inspect(project, cancellation.signal);
       const { reply: text, costUsd } = await planning.chat({
         project,
         messages,
         plannerModel,
+        repository,
         priorContext: buildPriorContext(db, project),
         attachmentNames,
         signal: cancellation.signal,
@@ -1532,7 +1550,7 @@ async function assembleServer(
       // Persist the full conversation (including assistant reply) so the Plan
       // tab can restore it on reload or after a tab switch.
       const updatedMessages = [...messages, { role: "assistant" as const, content: text }];
-      savePlanningRevision(id, revisionId, { messages: updatedMessages });
+      savePlanningRevision(id, revisionId, { messages: updatedMessages, repository });
       recordPlanChatTurn(
         db,
         project,
@@ -1540,11 +1558,15 @@ async function assembleServer(
         updatedMessages,
         plannerModelLabel(plannerModel),
         (msg) => app.log.warn(msg),
+        repository,
       );
-      return { reply: text, costUsd };
+      return { reply: text, costUsd, repository };
     } catch (err) {
       if (err instanceof PlanningRevisionConflictError) {
         return reply.code(409).send({ error: err.message });
+      }
+      if (err instanceof RepositoryUnavailableError) {
+        return reply.code(503).send({ error: err.message, code: err.code });
       }
       return reply.code(502).send({
         error: `planner chat failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -1607,10 +1629,12 @@ async function assembleServer(
         });
       }
       const planningSession = repo.getPlanningSession(db, id);
+      const repository = await planning.inspect(project, cancellation.signal);
       const { output, costUsd, verifiedFigmaReferences } = await planning.deconstruct({
         project,
         messages,
         plannerModel,
+        repository,
         priorContext: buildPriorContext(db, project),
         attachmentNames,
         onWarn: (msg) => app.log.warn(msg),
@@ -1636,6 +1660,7 @@ async function assembleServer(
         draftTasks: tasks,
         agentsMd: output.agentsMd,
         verifiedFigmaReferences: verifiedFigmaReferences ?? null,
+        repository,
       });
       recordPlanDeconstruct(
         db,
@@ -1646,6 +1671,7 @@ async function assembleServer(
         tasks,
         plannerModelLabel(plannerModel),
         (msg) => app.log.warn(msg),
+        repository,
       );
       return {
         prdMarkdown: output.prdMarkdown,
@@ -1653,10 +1679,14 @@ async function assembleServer(
         costUsd,
         agentsMd: output.agentsMd,
         verifiedFigmaReferences,
+        repository,
       };
     } catch (err) {
       if (err instanceof PlanningRevisionConflictError) {
         return reply.code(409).send({ error: err.message });
+      }
+      if (err instanceof RepositoryUnavailableError) {
+        return reply.code(503).send({ error: err.message, code: err.code });
       }
       if (err instanceof FigmaVerificationError) {
         return reply.code(409).send({
@@ -1805,6 +1835,38 @@ async function assembleServer(
       committedPlannerLabel = plannerModelLabel(resolvePlannerModel(settings, "chat"));
     } catch {
       /* leave the generic fallback */
+    }
+    // VW03: the draft was planned against an observed revision. Before
+    // applying it, re-inspect the clone and refuse (409, REPOSITORY_DRIFT)
+    // when HEAD moved, unless the operator explicitly acknowledged the drift.
+    // A replay of an already successful receipt never touches Git.
+    const planningSession = repo.getPlanningSession(db, id);
+    const plannedCommit = planningSession.repository?.commit;
+    const receipt = repo.getPlanningCommitReceipt(db, id, body.revisionId);
+    if (
+      plannedCommit &&
+      receipt?.state !== "successful" &&
+      body.acknowledgeRepositoryDrift !== true
+    ) {
+      let current: RepositoryInspection;
+      try {
+        current = await planning.inspect(project);
+      } catch (err) {
+        if (err instanceof RepositoryUnavailableError) {
+          return reply.code(503).send({ error: err.message, code: err.code });
+        }
+        throw err;
+      }
+      if (current.commit && current.commit !== plannedCommit) {
+        return reply.code(409).send({
+          error:
+            `the repository moved from ${shortCommit(plannedCommit)} to ${shortCommit(current.commit)} ` +
+            "since this plan was drafted — re-generate the task table against the current code, " +
+            "or approve anyway to apply the plan as drafted",
+          code: "REPOSITORY_DRIFT",
+          details: { plannedCommit, currentCommit: current.commit },
+        });
+      }
     }
     let committed;
     try {

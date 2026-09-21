@@ -32,10 +32,32 @@ export async function overflowDetails(page: Page) {
   });
 }
 
-/** Present a running mock project as paused without mutating server state.
- *  PlanView now prefers `projects.snapshot` over a later `getProject`, so a
- *  REST-only status override is not enough to unlock planning. */
-export async function presentProjectAsPaused(page: Page, id: string) {
+/** Present a mock project with a chosen status without mutating server
+ *  state — REST detail, REST list, and the WebSocket snapshot/deltas all
+ *  agree, so App-level derivations (running projects, Stop all) and
+ *  PlanView's `projects.snapshot` preference see the same status. Tests
+ *  in the serial suite must not depend on the seed's real status: a CI
+ *  retry replays the whole group against the same server, after later
+ *  scenarios may have paused the seed project for real. */
+export async function presentProjectStatus(page: Page, id: string, status: string) {
+  await page.route(`**/api/projects`, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const body = (await response.json()) as {
+      projects: Array<Record<string, unknown> & { id: string }>;
+    };
+    await route.fulfill({
+      response,
+      json: {
+        projects: body.projects.map((project) =>
+          project.id === id ? { ...project, status } : project,
+        ),
+      },
+    });
+  });
   await page.route(`**/api/projects/${id}`, async (route) => {
     if (route.request().method() !== "GET") {
       await route.continue();
@@ -45,7 +67,7 @@ export async function presentProjectAsPaused(page: Page, id: string) {
     const body = (await response.json()) as { project: Record<string, unknown> };
     await route.fulfill({
       response,
-      json: { project: { ...body.project, status: "paused" } },
+      json: { project: { ...body.project, status } },
     });
   });
   await page.routeWebSocket(/\/ws(?:\?|$)/, (ws) => {
@@ -74,7 +96,7 @@ export async function presentProjectAsPaused(page: Page, id: string) {
               payload: {
                 ...event.payload,
                 projects: event.payload.projects.map((project) =>
-                  project.id === id ? { ...project, status: "paused" } : project,
+                  project.id === id ? { ...project, status } : project,
                 ),
               },
             }),
@@ -85,7 +107,7 @@ export async function presentProjectAsPaused(page: Page, id: string) {
           ws.send(
             JSON.stringify({
               ...event,
-              payload: { ...event.payload, status: "paused" },
+              payload: { ...event.payload, status },
             }),
           );
           return;
@@ -96,6 +118,17 @@ export async function presentProjectAsPaused(page: Page, id: string) {
       ws.send(message);
     });
   });
+}
+
+/** Present a running mock project as paused (planning unlock in the UI). */
+export async function presentProjectAsPaused(page: Page, id: string) {
+  await presentProjectStatus(page, id, "paused");
+}
+
+/** Present a mock project as running (Stop/Stop-all controls) regardless of
+ *  what earlier scenarios did to the shared server state. */
+export async function presentProjectAsRunning(page: Page, id: string) {
+  await presentProjectStatus(page, id, "running");
 }
 
 export async function expectNoDocumentOverflow(page: Page) {

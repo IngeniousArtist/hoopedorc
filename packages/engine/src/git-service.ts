@@ -156,6 +156,18 @@ export class PullRequestStateError extends GitOperationError {
   }
 }
 
+/** VW03: read-only facts about a clone, for planning inspection. */
+export interface RepositoryDescription {
+  /** Checked-out branch, or null on a detached/unborn HEAD. */
+  branch: string | null;
+  /** Full HEAD SHA, or null when the repository has no commits yet. */
+  headSha: string | null;
+  /** Repository-relative tracked paths, bounded by the caller's `maxFiles`. */
+  trackedFiles: string[];
+  /** Total tracked paths before bounding. */
+  trackedFileCount: number;
+}
+
 export interface RepositoryFileWrite {
   path: string;
   content: string;
@@ -231,6 +243,53 @@ export class GitServiceImpl implements GitService {
       allowMissingRepository: true,
       useCanonicalTargetPath: true,
     });
+  }
+
+  /**
+   * VW03: read-only description of the primary clone for planning — the
+   * checked-out branch, HEAD, and tracked paths — taken under the shared
+   * repository lock so a concurrent sync cannot interleave. Never mutates the
+   * clone and never clones; callers run `ensureClone` first. An unborn branch
+   * (no commits yet) yields `headSha: null`.
+   */
+  async describeRepository(
+    project: Project,
+    options: { maxFiles?: number } = {},
+    signal?: AbortSignal,
+  ): Promise<RepositoryDescription> {
+    const maxFiles = options.maxFiles ?? 5_000;
+    return this.sharedRepositoryLock.run(project.localPath, async () => {
+      let headSha: string | null;
+      try {
+        headSha = (await git(["rev-parse", "--verify", "HEAD"], project.localPath, signal)).trim() || null;
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        headSha = null;
+      }
+      let branch: string | null;
+      try {
+        branch =
+          (await git(["symbolic-ref", "--short", "-q", "HEAD"], project.localPath, signal)).trim() ||
+          null;
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        branch = null;
+      }
+      let listing: string;
+      try {
+        listing = await git(["ls-files", "-z"], project.localPath, signal);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        throw new GitOperationError("inspect", "could not list the repository's tracked files", err);
+      }
+      const tracked = listing.split("\0").filter((path) => path.length > 0);
+      return {
+        branch,
+        headSha,
+        trackedFiles: tracked.slice(0, maxFiles),
+        trackedFileCount: tracked.length,
+      };
+    }, signal);
   }
 
   async commitAll(worktreePath: string, message: string, signal?: AbortSignal): Promise<void> {

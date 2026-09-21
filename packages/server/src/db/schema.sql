@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS projects (
   planning_draft_tasks  TEXT,   -- JSON DraftTask[] from last deconstruct (user-editable)
   planning_agents_md    TEXT,   -- AGENTS.md draft from last deconstruct (F38, user-editable)
   planning_figma_refs   TEXT,   -- JSON VerifiedFigmaReference[] (F52, small session scratch)
+  planning_repository   TEXT,   -- JSON RepositoryInspection (VW03, session scratch; cleared at commit)
   planning_revision_id  TEXT,   -- O3: immutable id for the current editable planning revision
   config                TEXT,   -- JSON ProjectConfig (F9): gate/retry/merge-policy overrides
   task_generation       INTEGER NOT NULL DEFAULT 0, -- O35: monotonic scheduler reconciliation version

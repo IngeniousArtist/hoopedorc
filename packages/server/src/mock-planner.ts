@@ -1,6 +1,8 @@
 import type {
   FigmaCapabilityIssueCode,
   PlanChatMessage,
+  Project,
+  RepositoryInspection,
   VerifiedFigmaReference,
 } from "@orc/types";
 import {
@@ -52,6 +54,25 @@ export const MOCK_PLANNER_REPLY_PREFIX =
   "Mock planner (no model, CLI, MCP, or repository was used).";
 export const MOCK_FIGMA_FRAME_WIDTH = 1440;
 export const MOCK_FIGMA_FRAME_HEIGHT = 900;
+/** VW03: the fixed inspection mock planning reports; no Git is consulted. */
+export const MOCK_REPOSITORY_COMMIT = "0000000000000000000000000000000000000000";
+export const MOCK_REPOSITORY_STACK = ["node", "typescript"] as const;
+export const MOCK_REPOSITORY_SCRIPTS = ["build", "lint", "test", "typecheck"] as const;
+
+export function mockRepositoryInspection(
+  project: Project,
+  inspectedAt: string,
+): RepositoryInspection {
+  return {
+    state: "existing",
+    inspectedAt,
+    branch: project.defaultBranch,
+    commit: MOCK_REPOSITORY_COMMIT,
+    trackedFileCount: 42,
+    stack: [...MOCK_REPOSITORY_STACK],
+    packageScripts: [...MOCK_REPOSITORY_SCRIPTS],
+  };
+}
 
 const PLAN_COMPLETE_TOKEN = "[PLAN_COMPLETE]";
 const MAX_BRIEF_CHARS = 160;
@@ -283,6 +304,13 @@ export function buildMockChatReply(input: PlanningChatInput): string {
       "Prior project context was supplied; this is planned as a follow-up iteration.",
     );
   }
+  lines.push(
+    "",
+    `Repository: ${input.repository.branch ?? "unknown branch"} @ ${(input.repository.commit ?? "unknown").slice(0, 7)} — ` +
+      (input.repository.state === "empty"
+        ? "empty repository; the first task will scaffold it."
+        : `existing codebase (${input.repository.stack.join(", ") || "stack not detected"}).`),
+  );
   if (intake.nodes.length > 0) {
     lines.push(
       "",
@@ -385,6 +413,9 @@ export function mockPlanningService(
   const now = options.now ?? (() => new Date());
   return {
     kind: "mock",
+    inspect(project) {
+      return Promise.resolve(mockRepositoryInspection(project, now().toISOString()));
+    },
     chat(input) {
       return settle(() => mockChat(input));
     },

@@ -17,6 +17,8 @@ import type {
   PlanningSessionResponse,
   PlanSessionArchive,
   Project,
+  RepositoryDriftDetails,
+  RepositoryInspection,
   Role,
   SaveDraftResponse,
   VerifiedFigmaReference,
@@ -72,6 +74,35 @@ function figmaFailureDetails(value: unknown): FigmaVerificationFailureDetails | 
     issue: details.issue as FigmaCapabilityIssue,
     costUsd: typeof details.costUsd === "number" ? details.costUsd : 0,
   };
+}
+
+function repositoryDriftDetails(value: unknown): RepositoryDriftDetails | null {
+  if (!value || typeof value !== "object") return null;
+  const details = value as Partial<RepositoryDriftDetails>;
+  return typeof details.plannedCommit === "string" &&
+    typeof details.currentCommit === "string"
+    ? { plannedCommit: details.plannedCommit, currentCommit: details.currentCommit }
+    : null;
+}
+
+function describeRepository(repository: RepositoryInspection): string {
+  const parts = [
+    repository.state === "empty"
+      ? "Empty repository — the first task will scaffold it"
+      : "Planning against the existing codebase",
+  ];
+  const where = [
+    repository.branch ?? null,
+    repository.commit ? `@ ${repository.commit.slice(0, 7)}` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  if (where) parts.push(where);
+  if (repository.stack.length > 0) parts.push(repository.stack.join(", "));
+  if (repository.packageScripts && repository.packageScripts.length > 0) {
+    parts.push(`npm scripts: ${repository.packageScripts.join(", ")}`);
+  }
+  return parts.join(" · ");
 }
 
 function uiTasksFromDraft(drafts: DraftTask[]): UiTask[] {
@@ -181,6 +212,10 @@ export function PlanView({
     VerifiedFigmaReference[]
   >([]);
   const [figmaIssue, setFigmaIssue] = useState<FigmaCapabilityIssue | null>(null);
+  // VW03: what the planner actually planned against, and a commit refused
+  // because the repository moved since then (operator decides how to proceed).
+  const [repository, setRepository] = useState<RepositoryInspection | null>(null);
+  const [repositoryDrift, setRepositoryDrift] = useState<RepositoryDriftDetails | null>(null);
   const [deconstructing, setDeconstructing] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [committed, setCommitted] = useState<PlanCommitResponse | null>(null);
@@ -308,6 +343,8 @@ export function PlanView({
     setSaveError(null);
     setDraftNotice(null);
     setPendingTurn(null);
+    setRepository(null);
+    setRepositoryDrift(null);
     const authorityAtRequest = projectAuthorityRef.current;
     const request = { params: { id: projectId }, signal: controller.signal };
     Promise.all([
@@ -340,6 +377,7 @@ export function PlanView({
         setRevisionId(sessionRes.revisionId);
         setPlanCost(sessionRes.planCostUsd);
         setVerifiedFigmaReferences(sessionRes.verifiedFigmaReferences ?? []);
+        setRepository(sessionRes.repository ?? null);
         // VW02: edits stashed when this project was left mid-save win over
         // the server copy only while the revision is unchanged; they are
         // marked unsaved so the auto-save resumes immediately.
@@ -574,6 +612,7 @@ export function PlanView({
       setMessages([...next, { role: "assistant", content }]);
       setPendingTurn(null);
       setPlanCost((c) => c + res.costUsd);
+      if (res.repository) setRepository(res.repository);
     } catch (e) {
       if (draftRef.current.projectId !== projectId) return;
       setPendingTurn({
@@ -633,6 +672,7 @@ export function PlanView({
         setPlannerReady(ready);
         setRevisionId(session.revisionId);
         setPlanCost(session.planCostUsd);
+        if (session.repository) setRepository(session.repository);
         setPendingTurn(null);
         setChatting(false);
         return;
@@ -685,6 +725,8 @@ export function PlanView({
       setSavedSeq((prev) => Math.max(prev, editSeqRef.current));
       setVerifiedFigmaReferences(res.verifiedFigmaReferences ?? []);
       setFigmaIssue(null);
+      if (res.repository) setRepository(res.repository);
+      setRepositoryDrift(null);
     } catch (e) {
       const details =
         e instanceof ApiRequestError &&
@@ -754,10 +796,11 @@ export function PlanView({
     });
   }
 
-  async function commit() {
+  async function commit(acknowledgeRepositoryDrift = false) {
     if (!projectId || !revisionId || !tasks || tasks.length === 0) return;
     setCommitting(true);
     setError(null);
+    setRepositoryDrift(null);
     // The commit body is the exact visible draft; a save still in flight
     // must neither be waited for nor allowed to repaint state afterwards.
     invalidateSaves();
@@ -769,6 +812,7 @@ export function PlanView({
           prdMarkdown: prd ?? "",
           tasks: draftTasksFromUi(tasks),
           agentsMd: agentsMd ?? "",
+          ...(acknowledgeRepositoryDrift ? { acknowledgeRepositoryDrift: true } : {}),
         },
       });
       setCommitted(res);
@@ -784,7 +828,17 @@ export function PlanView({
         .then((r) => setArchives(r.sessions))
         .catch(() => {});
     } catch (e) {
-      setError(String(e));
+      const drift =
+        e instanceof ApiRequestError && e.code === "REPOSITORY_DRIFT"
+          ? repositoryDriftDetails(e.details)
+          : null;
+      if (drift) {
+        // Refused, not failed: the operator decides between re-planning
+        // against the current code and applying the draft as written.
+        setRepositoryDrift(drift);
+      } else {
+        setError(String(e));
+      }
       // The draft is still on screen; resume saving it if edits were unsaved.
       if (editSeqRef.current > savedSeqRef.current) performSave(editSeqRef.current);
     } finally {
@@ -842,6 +896,51 @@ export function PlanView({
           planning cost {formatUsd(planCost)}
         </span>
       </div>
+
+      {repository && !committed && (
+        <p
+          data-testid="repository-inspection"
+          className="text-[11px] text-neutral-400"
+          title={`Inspected ${repository.inspectedAt}`}
+        >
+          {describeRepository(repository)}
+        </p>
+      )}
+
+      {repositoryDrift && (
+        <div
+          role="alert"
+          className="space-y-3 rounded-lg border border-amber-700/70 bg-amber-950/30 p-4 text-sm text-amber-100"
+        >
+          <div>
+            <p className="font-medium">The repository changed since this plan was drafted</p>
+            <p className="mt-1 text-xs text-amber-200">
+              Planned against {repositoryDrift.plannedCommit.slice(0, 7)}; the clone is now at{" "}
+              {repositoryDrift.currentCommit.slice(0, 7)}. Nothing was committed. Re-generate the
+              task table against the current code, or approve anyway to apply the draft exactly as
+              shown.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => generateTable()}
+              disabled={deconstructing || committing || running}
+              className="min-h-10 rounded bg-amber-600 px-4 py-2 text-xs font-medium text-neutral-950 hover:bg-amber-500 focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
+            >
+              {deconstructing ? "Re-generating…" : "Re-generate task table"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void commit(true)}
+              disabled={deconstructing || committing || running}
+              className="min-h-10 rounded border border-amber-700 px-4 py-2 text-xs hover:bg-amber-900/40 focus-visible:ring-2 focus-visible:ring-amber-300 disabled:opacity-50"
+            >
+              {committing ? "Creating tasks…" : "Approve anyway"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="rounded border border-red-800 bg-red-950/50 px-4 py-2 text-sm text-red-400">
@@ -1415,7 +1514,7 @@ export function PlanView({
 
             <div className="mt-4 flex items-center gap-3">
               <button
-                onClick={commit}
+                onClick={() => void commit()}
                 disabled={committing || tasks.length === 0 || running}
                 className="rounded bg-green-700 px-4 py-2 text-xs font-medium text-white hover:bg-green-600 disabled:opacity-50"
               >

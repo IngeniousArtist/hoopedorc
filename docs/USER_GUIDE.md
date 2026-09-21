@@ -683,6 +683,25 @@ edits in memory until you return, as long as the plan has not changed on the
 server; reloading or closing the tab while a message is unsent or edits are
 unsaved triggers the browser's leave-page prompt.
 
+Planning is grounded in the repository that actually exists (VW03). Before
+every planner call Hoopedorc inspects the project's clone and the Plan tab
+shows what it found under the title — for example **Planning against the
+existing codebase · main @ 3f2a9c1 · node, typescript · npm scripts: build,
+test**, or **Empty repository — the first task will scaffold it**. An existing
+codebase is never given the "brand-new project, scaffold it" instruction, even
+when the board has no Hoopedorc tasks yet; a non-Node project is told to use
+its own real test/build commands rather than npm scripts it does not have
+(configure the per-project gate commands for such a stack). Task history is
+reported truthfully: only **done** tasks count as shipped; failed, blocked, or
+pending tasks are named as not implemented. If the clone cannot be reached or
+read, planning does not run somewhere else — the message stays in the
+transcript marked **not sent** with the reason, and **Retry send** works once
+access is restored. At approval time Hoopedorc re-checks the clone: if its
+commit moved since the draft was planned (for example a task merged in
+between), the Plan tab shows **The repository changed since this plan was
+drafted** with the two commits and nothing is committed until you either
+**Re-generate task table** against the current code or **Approve anyway**.
+
 ## Backups & data
 
 Everything lives in two places: the SQLite DB (`DB_PATH`, default

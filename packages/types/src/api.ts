@@ -126,11 +126,48 @@ export interface PlanChatRequest {
   revisionId: string;
   messages: PlanChatMessage[];
 }
+
+/**
+ * VW03: what planning observed about the project's repository right before a
+ * planner call. Recorded with the planning session so the Plan tab, the
+ * follow-up prompts, the session archive, and the commit boundary can tell an
+ * existing codebase from an empty repository and notice a moved revision.
+ * `unavailable` is never persisted; it is the typed failure the routes return
+ * (`503`, `code: "REPOSITORY_UNAVAILABLE"`) instead of planning elsewhere.
+ */
+export type RepositoryInspectionState = "existing" | "empty" | "unavailable";
+
+export interface RepositoryInspection {
+  state: RepositoryInspectionState;
+  /** ISO timestamp of the inspection. */
+  inspectedAt: string;
+  /** Checked-out branch, when the clone was readable. */
+  branch?: string;
+  /** Full HEAD commit SHA, when the clone has at least one commit. */
+  commit?: string;
+  /** Tracked files, excluding Hoopedorc-owned planning context and seeds. */
+  trackedFileCount?: number;
+  /** Stacks detected from manifests, e.g. ["node", "typescript"]; empty when unknown. */
+  stack: string[];
+  /** `package.json` script names — Node projects only. */
+  packageScripts?: string[];
+  /** Secret-free reason; `unavailable` only. */
+  error?: string;
+}
+
+/** `ApiError.details` for `code: "REPOSITORY_DRIFT"` on `plan/commit`. */
+export interface RepositoryDriftDetails {
+  plannedCommit: string;
+  currentCommit: string;
+}
+
 export interface PlanChatResponse {
   /** The planner's conversational reply to the latest user turn. */
   reply: string;
   /** USD spent on this single turn (also recorded against the project). */
   costUsd: number;
+  /** VW03: the inspection this turn was planned against. */
+  repository?: RepositoryInspection;
 }
 
 /**
@@ -232,6 +269,8 @@ export interface PlanDeconstructResponse {
   agentsMd?: string;
   /** Present only when exact Figma selection URLs were supplied and verified. */
   verifiedFigmaReferences?: VerifiedFigmaReference[];
+  /** VW03: the inspection this deconstruction was planned against. */
+  repository?: RepositoryInspection;
 }
 
 export interface PlanCommitRequest {
@@ -240,6 +279,12 @@ export interface PlanCommitRequest {
   prdMarkdown: string;
   tasks: DraftTask[];
   agentsMd?: string;
+  /**
+   * VW03: the repository moved since the draft was planned and the operator
+   * has seen the `REPOSITORY_DRIFT` disclosure. Without it, a drifted commit
+   * is refused with `409` so stale evidence is never applied silently.
+   */
+  acknowledgeRepositoryDrift?: boolean;
 }
 export interface PlanCommitResponse {
   /** The committed/replayed revision. */
@@ -260,6 +305,8 @@ export interface PlanningSessionResponse {
   planCostUsd: number;
   agentsMd?: string;
   verifiedFigmaReferences?: VerifiedFigmaReference[];
+  /** VW03: the most recent inspection recorded for this session. */
+  repository?: RepositoryInspection;
 }
 
 /**

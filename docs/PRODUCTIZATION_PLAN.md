@@ -7370,7 +7370,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 |---|---|---|---|
 | VW01 | Deterministic mock planning; no real planner/Figma calls | Done (merged 2026-09-21) | [PR #262](https://github.com/IngeniousArtist/hoopedorc/pull/262) → main `c050b4d`; PR CI `build-and-test` passed; main CI run [35565173055](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35565173055) passed; see the VW01 acceptance record below |
 | VW02 | Preserve planning input and truthful draft-save state | Done (merged 2026-09-21) | [PR #264](https://github.com/IngeniousArtist/hoopedorc/pull/264) → main `8d00383`; PR CI `build-and-test` passed; main CI run [35567524350](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35567524350) passed; see the VW02 acceptance record below |
-| VW03 | Repository-aware planning and truthful task history | Not started | — |
+| VW03 | Repository-aware planning and truthful task history | Implemented; PR open, awaiting required CI and merge | [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266); see the VW03 acceptance record below |
 | VW04 | Project navigation, compact board/list, task inspector | Not started | — |
 | VW05 | Organize existing settings and setup | Not started | — |
 | VW06 | Durable planning operations and planning workbench | Not started | — |
@@ -7596,3 +7596,109 @@ merge to main as `8d00383` on 2026-09-21. Post-merge main CI run
 completed successfully. Independent post-merge check on `8d00383`: web
 typecheck and the 20 Plan view tests (9 VW02 + 11 existing) passed locally.
 Next: VW03, starting from the merged result.
+
+### VW03 — plan from the repository that actually exists (implemented 2026-09-21)
+
+**Problems confirmed on main (`09ae941`):** `buildPriorContext` returned
+`undefined` whenever the board had no tasks, and the deconstruct/legacy
+prompts keyed the "brand-new project, scaffold it" instruction on that, so an
+existing codebase with zero Hoopedorc tasks was told to scaffold; the
+follow-up prompt said to treat every listed task as DONE although the list
+included failed/blocked/pending states; the production planning working
+directory silently fell back to `tmpdir()` when the clone could not be
+prepared; nothing recorded which repository revision a plan was drafted
+against; and the scaffold/agentsMd wording assumed npm scripts.
+
+**Scope delivered:**
+
+- `packages/engine/src/git-service.ts`: `GitServiceImpl.describeRepository`
+  (branch, HEAD, bounded `git ls-files`) — read-only, under the shared lock,
+  exported `RepositoryDescription`; no `GitService` interface change.
+- `packages/server/src/repository-inspection.ts`: pure classifier
+  (seed/context files never count as code; substantive `package.json` does;
+  root-level manifest stack detection; `node` only with a substantive
+  package.json) and one-line summaries.
+- `packages/server/src/planning-service.ts`: `inspect` on the service,
+  `RepositoryUnavailableError` (`REPOSITORY_UNAVAILABLE`, bounded and
+  credential-redacted detail), production planning always runs in the
+  inspected clone — the tmpdir fallback is gone; mock `inspect` is fixed and
+  Git-free.
+- `packages/server/src/planner.ts`: `repositoryBlock` (existing → inspection
+  facts + stack-aware gate guidance, never scaffold; empty → stack-neutral
+  scaffold; no inspection → historic behavior), truthful
+  `priorContextBlock`, stack-neutral agentsMd command wording, `repository`
+  forwarded through `runPlanner*`/prompt builders.
+- `packages/server/src/index.ts`: routes inspect before chat/deconstruct/plan,
+  return and persist `repository`, map unavailability to `503`; commit
+  re-inspects (skipped for successful replays) and refuses drift with `409
+  REPOSITORY_DRIFT` unless `acknowledgeRepositoryDrift`; prior-context header
+  carries per-status counts.
+- Contract/persistence: `RepositoryInspection`, `RepositoryDriftDetails`,
+  optional `repository` on chat/deconstruct/session responses,
+  `PlanCommitRequest.acknowledgeRepositoryDrift`; additive
+  `projects.planning_repository` column (schema + idempotent migration),
+  cleared in the final commit transaction; archive line `- Repository: …`.
+- `apps/web/src/pages/PlanView.tsx`: repository line under the title, drift
+  disclosure (`role="alert"`) with **Re-generate task table** / **Approve
+  anyway**; unavailable repositories surface through the VW02 failed-turn path.
+- Docs: CONTRACT.md (VW03 paragraph + route rows), USER_GUIDE.md,
+  ARCHITECTURE.md.
+
+**Non-goals honored:** no generic framework installation or environment
+profiles (VW16); no brief-only planning mode; inspection reads the local
+primary clone and does not fetch.
+
+**Acceptance evidence (Node 22.23.0, local):**
+
+- `repository-inspection.test.ts` (5): seeds/context never count as code;
+  seed-only → `empty`; code or a substantive package.json → `existing`;
+  Python repo detected as `python` with no npm scripts; Go/Rust/Swift
+  manifests; vendored manifests ignored; unborn branch and bounded listings;
+  package.json helpers and summaries.
+- `planning-service.test.ts` (5): selection; existing classification from an
+  injected clone description; seed-only → empty; unreachable clone →
+  `RepositoryUnavailableError` with the token redacted, bounded detail, and
+  no runner call; runners receive the clone path and the inspection.
+- `planner.test.ts` (+4): existing codebase prompt has the inspection block
+  and non-Node guidance and no scaffold text; empty repository gets the
+  stack-neutral scaffold; unavailable never reaches a prompt; legacy
+  behavior unchanged without an inspection; prior history states that
+  failed/blocked are NOT implemented and no longer says "treat all as DONE".
+- `mock-planner.test.ts` (+1): deterministic Git-free inspection surfaced in
+  the reply.
+- `planning-routes.test.ts` (+3, real Git repositories on disk): unreachable
+  origin → `503 REPOSITORY_UNAVAILABLE` for chat and deconstruct with no CLI
+  spawned and no session change, then the same request succeeds once the
+  clone exists and records commit/branch/state in the response and session;
+  an existing Python repository's chat and deconstruct prompts (captured from
+  the fake CLI) contain the inspection block and no scaffold or npm-test text
+  while a seed-only repository's prompt contains the scaffold block; a commit
+  after HEAD moved is refused with `409 REPOSITORY_DRIFT` and exact commits,
+  nothing committed, then accepted with the acknowledgement, and the
+  identical replay returns the receipt without Git.
+- `PlanView.repository.test.tsx` (4): restored inspection line and update
+  from a chat turn; no line before inspection; `503` unavailable shows as the
+  failed turn with retry; drift refusal shows the disclosure, keeps the draft,
+  and **Approve anyway** resends with the acknowledgement.
+- Existing suites unchanged and passing: PlanView.test (11),
+  PlanView.reliability.test (9), VW01 route/mock tests.
+- `apps/web/e2e/app.spec.ts` VW01 scenario now also asserts the mock
+  repository line in the real Plan tab.
+
+**Gates (all passed, Node 22.23.0):** `npm run typecheck`, `npm run build`,
+`npm run lint` (330 legacy findings, baseline unchanged after removing two
+new `no-useless-assignment` findings the first run caught), 234 engine, 18
+adapter, 358 server (15 new), 113 web tests (27 files, 4 new), 21 Playwright
+scenarios, `git diff --check`. The first PR CI run failed in Playwright for two
+test-design reasons found and fixed in the same PR: the VW02 scenario edited a
+title before its re-generation round-trip had landed (the old and new titles
+were identical, so the value check passed early and the response replaced the
+input mid-edit), and a serial-group retry replayed against the same mock
+server after the VW01 scenario had really paused the seed project, so the
+older Stop-all scenario found no running project. Fixes: both planning
+scenarios wait for the deconstruct response and accept either button label;
+the Stop-all scenario presents the project as running through a shared
+`presentProjectStatus` helper (REST list/detail + WebSocket) instead of
+relying on seed state. Verified by replaying `app.spec.ts` twice in one
+Playwright process (22/22) plus the full suite (21/21).
+Publication: [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266). Required PR CI must pass before merge; merge/main CI evidence is appended after merge.
