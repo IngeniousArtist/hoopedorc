@@ -144,6 +144,7 @@ export class GateRunnerImpl implements GateRunner {
       inScope,
       vacuous,
       environment: environment ?? (ctx.sandboxed ? `Docker ${ctx.image}` : `Host ${process.platform}/${process.arch}`),
+      executed: (["typecheck", "lint", "build", "tests"] as const).filter((name) => ({ typecheck, lint, build, tests })[name].ran),
       details: {
         typecheck: typecheck.output,
         lint: lint.output,

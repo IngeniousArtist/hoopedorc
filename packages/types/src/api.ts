@@ -1,3 +1,4 @@
+import type { MilestoneOutcome, MilestonePolicy, MilestoneRepair } from "./milestones";
 // REST contract. Request/response DTOs + the canonical route manifest.
 // The server implements these; the web app calls them. Keep them in sync here.
 
@@ -359,6 +360,10 @@ export interface PlanChatResponse {
  * the UI's task table; `dependsOn` are indices into this same array.
  */
 export interface DraftTask {
+  /** Saved proposal dependencies; applied only through Review plan changes. */
+  existingDependsOn?: string[];
+  milestone?: MilestonePolicy;
+  repairFor?: MilestoneRepair;
   title: string;
   /**
    * Self-contained implementation handoff. F51 may include optional
@@ -935,6 +940,8 @@ export interface ApiError {
  * The server registers exactly these; the web client builds URLs from them.
  */
 export const ROUTES = {
+  milestones: "GET /api/projects/:id/milestones",
+  milestoneRepairDraft: "POST /api/projects/:id/milestones/:taskId/repair-draft",
   resources: "GET /api/resources",
   executionStatus: "GET /api/execution",
   verifyExecutionProfile: "POST /api/execution/profiles/:profileId/verify",
@@ -1019,3 +1026,7 @@ export const ROUTES = {
 } as const;
 
 export type RouteKey = keyof typeof ROUTES;
+
+export interface MilestonesResponse { taskGeneration: number; milestones: MilestoneOutcome[]; repositoryError?: string }
+export interface MilestoneRepairDraftRequest { revisionId: string; sessionVersion: number; taskGeneration: number }
+export interface MilestoneRepairDraftResponse { revisionId: string; sessionVersion: number; tasks: PlanChangeTask[]; prdMarkdown: string }

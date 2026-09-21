@@ -75,6 +75,7 @@ function RunReportCard({ entry }: { entry: AuditEntry }) {
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-neutral-400">
         <span className="text-green-400">{s.tasksDone} done</span>
+        {s.milestones && s.milestones.total > 0 && <span className="text-neutral-300">{s.milestones.accepted}/{s.milestones.total} milestones accepted</span>}
         {s.tasksFailed > 0 && <span className="text-red-400">{s.tasksFailed} failed</span>}
         <span>${s.totalCostUsd.toFixed(4)} spent</span>
         {s.approvalsRequired > 0 && (

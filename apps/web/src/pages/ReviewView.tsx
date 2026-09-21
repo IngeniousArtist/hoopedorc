@@ -1,3 +1,4 @@
+import { MilestonesPanel } from "../components/MilestonesPanel";
 import { useEffect, useRef, useState } from "react";
 import type { BrowserReviewStep, CaptureReviewRequest, ReviewArtifact, ReviewEvidenceResponse, Task, TaskLogsResponse, TaskReviewResponse } from "@orc/types";
 import { api, apiBlob, isAbortError } from "../api/client";
@@ -22,6 +23,8 @@ export function ReviewView({ projectId, taskId, onSelectTask, onAddToPlan }: { p
   return <section className="mx-auto max-w-7xl space-y-4" aria-label="Review workbench">
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-xl font-semibold">Review</h1><p className="mt-1 text-sm text-neutral-400">Inspect the product, its changes, and the evidence behind them.</p></div>
       <a className={`${control} inline-flex items-center`} href={`#/p/${projectId}/board${taskId ? `/${encodeURIComponent(taskId)}` : ""}`}>Back to board</a></div>
+    {tasks?.some((task) => task.milestone) && <MilestonesPanel key={projectId} projectId={projectId} />}
+    {tasks && !tasks.some((task) => task.milestone) && <p className="text-sm text-neutral-400">No milestone criteria were approved for this plan. Task completion alone does not verify the full brief.</p>}
     {error && <div role="alert" className="text-sm text-red-300">{error} <button className={control} onClick={() => setRefresh((value) => value + 1)}>Retry task list</button></div>}
     {!tasks && !error && <p role="status">Loading tasks…</p>}
     {tasks && <label className="block space-y-1 text-sm">Task to review<select className={`${control} block w-full max-w-xl`} value={taskId ?? ""} onChange={(event) => onSelectTask(event.target.value || null)}>

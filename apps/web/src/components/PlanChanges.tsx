@@ -3,11 +3,12 @@ import type { PlanChangeContextResponse, PlanChangeReview, PlanChangeReviewRespo
 import { api } from "../api/client";
 
 type Draft = Omit<ReviewPlanChangesRequest, "taskGeneration" | "tasks"> & { tasks: ReviewPlanChangesRequest["tasks"] };
-const editable = (task: Task) => ["ready", "backlog", "blocked"].includes(task.status) && task.attempts === 0 && task.runGeneration === 0 && !task.branch && !task.worktreePath && task.prNumber === undefined;
+const editable = (task: Task) => !task.milestone && !task.repairFor && ["ready", "backlog", "blocked"].includes(task.status) && task.attempts === 0 && task.runGeneration === 0 && !task.branch && !task.worktreePath && task.prNumber === undefined;
 const control = "min-h-10 rounded border border-neutral-600 px-3 py-2 text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-neutral-300 disabled:opacity-50";
 
 /** The reviewed payload lives on the server. A click never applies a new, unseen diff. */
-export function PlanChanges({ projectId, draftTitles, prepareDraft, onApplied, onApplying, disabled }: {
+export function PlanChanges({ projectId, draftTitles, prepareDraft, onApplied, onApplying, disabled, fixedDependencies = [] }: {
+  fixedDependencies?: (string[] | undefined)[];
   projectId: string; draftTitles: string[]; prepareDraft: () => Promise<Draft>;
   onApplying: (active: boolean) => void;
   onApplied: (response: PlanCommitResponse) => void; disabled: boolean;
@@ -47,7 +48,7 @@ export function PlanChanges({ projectId, draftTitles, prepareDraft, onApplied, o
       if (visit.current !== generation) return;
       const result = await api<PlanChangeReviewResponse>("reviewPlanChanges", { params: { id: projectId }, body: {
         ...draft, taskGeneration: context.taskGeneration,
-        tasks: draft.tasks.map((task, index) => ({ ...task, existingTaskId: targets[index] || undefined, existingDependsOn: dependencies[index] ?? [] })),
+        tasks: draft.tasks.map((task, index) => ({ ...task, existingTaskId: task.repairFor ? undefined : targets[index] || undefined, existingDependsOn: task.repairFor ? task.existingDependsOn : dependencies[index] ?? task.existingDependsOn ?? [] })),
       } });
       if (visit.current !== generation) return;
       setReview(result.review);
@@ -96,7 +97,7 @@ export function PlanChanges({ projectId, draftTitles, prepareDraft, onApplied, o
           {draftTitles.map((title, index) => <div key={index} className="min-w-0 space-y-2 rounded bg-neutral-900 p-3">
             <p className="break-words text-sm">{index + 1}. {title}</p>
             <label className="block text-xs text-neutral-400">Apply task {index + 1} as
-              <select aria-label={`Apply task ${index + 1} as`} value={targets[index] ?? ""} onChange={(event) => {
+              <select disabled={fixedDependencies[index] !== undefined} aria-label={`Apply task ${index + 1} as`} value={targets[index] ?? ""} onChange={(event) => {
                 const id = event.target.value; setTargets((s) => ({ ...s, [index]: id }));
                 setDependencies((s) => ({ ...s, [index]: context.tasks.find((t) => t.id === id)?.dependsOn ?? [] })); setReview(null);
               }} className={`${control} mt-1 w-full min-w-0 bg-neutral-950`}>
@@ -104,9 +105,9 @@ export function PlanChanges({ projectId, draftTitles, prepareDraft, onApplied, o
                 {context.tasks.filter(editable).map((task) => <option key={task.id} value={task.id}>Revise: {task.title}</option>)}
               </select>
             </label>
-            <details><summary className="min-h-10 cursor-pointer py-3 text-xs">Dependencies on existing tasks ({(dependencies[index] ?? []).length})</summary>
+            <details><summary className="min-h-10 cursor-pointer py-3 text-xs">Dependencies on existing tasks ({(fixedDependencies[index] ?? dependencies[index] ?? []).length})</summary>
               <div className="max-h-48 overflow-y-auto">{context.tasks.filter((t) => t.id !== targets[index]).map((task) => <label key={task.id} className="flex min-h-10 items-center gap-2 text-xs">
-                <input type="checkbox" checked={(dependencies[index] ?? []).includes(task.id)} onChange={(event) => {
+                <input type="checkbox" disabled={fixedDependencies[index] !== undefined} checked={(fixedDependencies[index] ?? dependencies[index] ?? []).includes(task.id)} onChange={(event) => {
                   const checked = event.target.checked; setDependencies((s) => ({ ...s, [index]: checked ? [...(s[index] ?? []), task.id] : (s[index] ?? []).filter((id) => id !== task.id) })); setReview(null);
                 }} /><span className="break-words">{task.title} · {task.status}</span>
               </label>)}</div>

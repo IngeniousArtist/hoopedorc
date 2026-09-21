@@ -104,7 +104,7 @@ test("B39: a delayed repository commit immediately blocks Start and finalizes on
   assert.match(planningPersistenceError(pending) ?? "", /not durable yet/i);
   assert.equal(repo.getTasks(db, project.id).length, 0);
   assert.equal(repo.getPlanningSession(db, project.id).prd, "# Edited PRD");
-  assert.deepEqual(files.map((file) => file.path), ["docs/PRD.md", "AGENTS.md", "CLAUDE.md"]);
+  assert.deepEqual(files.map((file) => file.path), [`docs/plans/${revisionId}.json`, "docs/PRD.md", "AGENTS.md", "CLAUDE.md"]);
 
   release();
   const committed = await running;

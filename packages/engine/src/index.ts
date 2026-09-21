@@ -215,6 +215,8 @@ export interface WorktreeManager {
 
 /** Thin wrapper over git + the `gh` CLI. */
 export interface GitService {
+  /** Owned, clean workspace HEAD; throws on missing/dirty/unreadable evidence. */
+  verificationRevision?(project: Project, task?: Task, signal?: AbortSignal): Promise<string>;
   ensureClone(project: Project, signal?: AbortSignal): Promise<void>;
   commitAll(
     worktreePath: string,
@@ -331,6 +333,8 @@ export interface Validator {
 }
 
 export interface SchedulerDeps {
+  /** Durable milestone limits. Called before worktree setup; returns the fixed deadline. */
+  beforeMilestone?: (task: Task) => number;
   worktrees: WorktreeManager;
   git: GitService;
   gates: GateRunner;
@@ -438,7 +442,7 @@ export interface SchedulerDeps {
    * checkBudget itself is handled there). Optional; if omitted, no quota
    * enforcement is applied.
    */
-  checkModelQuota?: (modelId: ModelId) => string | null;
+  checkModelQuota?: (modelId: ModelId, stage?: "author" | "validator") => string | null;
   /**
    * F32: overrides `RATE_LIMIT_WAIT_MS` (the default 5-minute wait-and-retry
    * delay for a rate-limited author run). Production leaves this unset;

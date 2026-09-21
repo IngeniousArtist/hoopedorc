@@ -356,10 +356,10 @@ export function TaskDrawer({
 
             <div>
               <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-500">
-                Model
+                {task.milestone ? "Repair author model" : "Model"}
               </div>
               <ModelSelect
-                ariaLabel="Assigned model"
+                ariaLabel={task.milestone ? "Repair author model" : "Assigned model"}
                 value={task.assignedModel}
                 models={models}
                 onChange={(m) => {

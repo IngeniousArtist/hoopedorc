@@ -1,3 +1,4 @@
+import { milestoneOutcomes, requeueMilestoneChecks, startMilestoneBudget } from "./milestones";
 import { ExecutionService } from "./execution";
 import { prepareProjectInvocation } from "./invocation-preparation";
 import { ResourceManager } from "./resources";
@@ -77,6 +78,8 @@ export function formatRunSummaryMessage(
     `${icon} ${projectName} ${s.finalStatus} — ${fmtDurationMs(s.durationMs)}`,
     `✅ ${s.tasksDone} done · ❌ ${s.tasksFailed} failed · $${s.totalCostUsd.toFixed(4)} spent`,
   ];
+
+  if (s.milestones?.total) lines.push(`Milestones: ${s.milestones.accepted}/${s.milestones.total} accepted`, ...s.milestones.attention.slice(0, 5).map((reason) => `- ${reason}`));
 
   if (s.prLinks.length > 0) {
     lines.push("", "PRs merged:");
@@ -571,6 +574,7 @@ export class EngineRunner {
     );
 
     const deps: SchedulerDeps = {
+      beforeMilestone: (task) => startMilestoneBudget(this.db, task),
       worktrees,
       git,
       gates,
@@ -728,7 +732,7 @@ export class EngineRunner {
       checkBudget: (modelId) =>
         checkBudget(this.db, project.id, modelId, liveSettings()),
       checkModelCooldown: (modelId) => this.checkModelCooldown(modelId),
-      checkModelQuota: (modelId) => checkModelQuota(this.db, modelId, liveSettings()) ?? this.resources.check(modelId),
+      checkModelQuota: (modelId, stage) => checkModelQuota(this.db, modelId, liveSettings()) ?? this.resources.check(modelId, stage),
       getModelActive: (modelId) => this.modelActiveCount.get(modelId) ?? 0,
       incModelActive: (modelId) =>
         this.modelActiveCount.set(modelId, (this.modelActiveCount.get(modelId) ?? 0) + 1),
@@ -759,6 +763,9 @@ export class EngineRunner {
             type: "task.updated",
             payload: repo.getTask(this.db, t.id) ?? t,
           });
+          if (t.status === "done" && prev?.status !== "done" && !t.milestone) {
+            for (const check of requeueMilestoneChecks(this.db, project.id)) this.hub.broadcast({ type: "task.updated", payload: check });
+          }
           // F5: settings.telegram.digest controls how much of this reaches
           // Telegram. "terminal" (default/unset) = done/failed only (the
           // original behavior); "all" also pushes every intermediate status
@@ -1195,13 +1202,25 @@ export class EngineRunner {
       // A hard Stop that arrived while clone/setup was starting owns the
       // outcome. Do not reset Orchestrator.paused by entering start().
       if (runtime.state === "stopping") return;
+      const outcomes = await milestoneOutcomes(this.db, project, new GitServiceImpl(), ENV.mock);
+      const staleIds = outcomes.milestones.filter((item) => item.state === "stale").map((item) => item.verificationTask.id);
+      for (const check of requeueMilestoneChecks(this.db, project.id, staleIds)) this.hub.broadcast({ type: "task.updated", payload: check });
+      if ((runtime.state as ProjectRuntimeState) === "stopping") return;
       runtime.state = "running";
-      const tasks = repo.getTasks(this.db, project.id);
-      await runtime.orchestrator.start(project, tasks, {
-        shouldDispatch: (task) =>
-          runtime.autonomousStartedAt !== undefined ||
-          task.dispatchRequestedAt !== undefined,
-      });
+      for (;;) {
+        const tasks = repo.getTasks(this.db, project.id);
+        await runtime.orchestrator.start(project, tasks, {
+          shouldDispatch: (task) => runtime.autonomousStartedAt !== undefined || task.dispatchRequestedAt !== undefined,
+        });
+        if (!runtime.autonomousStartedAt || runtime.state !== "running") break;
+        // A sibling merge can race the end of verification. Rejoin the same
+        // scheduler within the original limits; never report stale completion.
+        const latest = await milestoneOutcomes(this.db, project, new GitServiceImpl(), ENV.mock);
+        if ((runtime.state as ProjectRuntimeState) !== "running") break;
+        const rechecks = requeueMilestoneChecks(this.db, project.id, latest.milestones.filter((item) => item.state === "stale").map((item) => item.verificationTask.id));
+        if (!rechecks.length) break;
+        for (const check of rechecks) this.hub.broadcast({ type: "task.updated", payload: check });
+      }
     } catch (err) {
       this.logError(
         project.id,
@@ -1211,13 +1230,12 @@ export class EngineRunner {
       // Identity check is essential: an old generation must never unregister
       // or finalize over a newer runtime created after it settled.
       const ownsProject = this.runtimes.get(project.id) === runtime;
-      if (ownsProject) {
-        this.runtimes.delete(project.id);
-      }
+      // Hold ownership through asynchronous outcome inspection.
+      runtime.state = "draining";
       this.flushLogs();
       if (ownsProject && runtime.autonomousStartedAt) {
         try {
-          this.finishAutonomousRun(project, runtime.autonomousStartedAt);
+          await this.finishAutonomousRun(project, runtime.autonomousStartedAt);
         } catch (err) {
           this.logError(
             project.id,
@@ -1225,6 +1243,7 @@ export class EngineRunner {
           );
         }
       }
+      if (this.runtimes.get(project.id) === runtime) this.runtimes.delete(project.id);
     }
   }
 
@@ -1253,15 +1272,17 @@ export class EngineRunner {
     this.createRuntime(project, true);
   }
 
-  private finishAutonomousRun(
+  private async finishAutonomousRun(
     project: Project,
     runStartedAt: string,
-  ): void {
+  ): Promise<void> {
+    const { milestones, taskGeneration } = await milestoneOutcomes(this.db, project, new GitServiceImpl(), ENV.mock);
     // Reflect what actually happened, not "completed" by default. The
     // orchestrator can exit with resumable work after a budget/dependency
     // block or a hard pause.
     const finalTasks = repo.getTasks(this.db, project.id);
-    const allDone = finalTasks.every((t) => t.status === "done");
+    const ordinary = finalTasks.filter((t) => !t.milestone);
+    const allDone = taskGeneration === repo.getTaskGeneration(this.db, project.id) && ordinary.every((t) => t.status === "done" || t.repairFor && milestones.some((item) => item.task.id === t.repairFor!.milestoneId && item.state === "accepted" && (item.verificationTask.repairFor?.round ?? 0) > t.repairFor!.round)) && milestones.every((item) => item.state === "accepted");
     const stillPending = finalTasks.some(
       (t) =>
         t.status === "backlog" ||
@@ -1271,9 +1292,10 @@ export class EngineRunner {
         t.status === "blocked",
     );
     const anyFailed = finalTasks.some((t) => t.status === "failed");
+    const outcomeAttention = taskGeneration !== repo.getTaskGeneration(this.db, project.id) || milestones.some((item) => item.state !== "accepted");
     const finalStatus = allDone
       ? "completed"
-      : stillPending
+      : stillPending || outcomeAttention
         ? "paused"
         : anyFailed
           ? "failed"
@@ -1284,7 +1306,7 @@ export class EngineRunner {
       const blocked = finalTasks.filter((t) => t.status !== "done");
       const message =
         `Run ended (${finalStatus}) with ${blocked.length} task(s) not done: ` +
-        blocked.map((t) => `${t.title} [${t.status}]`).join(", ");
+        blocked.map((t) => `${t.title} [${t.status}]`).join(", ") + (outcomeAttention ? `; milestone acceptance: ${milestones.filter((item) => item.state !== "accepted").map((item) => item.reason).join("; ")}` : "");
       this.logError(project.id, message);
       const notif = repo.createNotification(this.db, {
         projectId: project.id,
@@ -1298,7 +1320,7 @@ export class EngineRunner {
 
     const fresh = repo.getProject(this.db, project.id);
     if (fresh) this.hub.broadcast({ type: "project.updated", payload: fresh });
-    this.pushRunSummary(project, runStartedAt, finalStatus);
+    this.pushRunSummary(project, runStartedAt, finalStatus, { accepted: milestones.filter((item) => item.state === "accepted").length, total: milestones.length, attention: milestones.filter((item) => item.state !== "accepted").map((item) => `${item.task.title}: ${item.reason}`) });
   }
 
   /** Builds and persists this run's report card (F8), then pushes it to
@@ -1307,6 +1329,7 @@ export class EngineRunner {
     project: Project,
     runStartedAt: string,
     finalStatus: string,
+    milestones?: RunSummaryDetail["milestones"],
   ): void {
     const endedAt = new Date().toISOString();
     const durationMs = new Date(endedAt).getTime() - new Date(runStartedAt).getTime();
@@ -1350,6 +1373,7 @@ export class EngineRunner {
     });
 
     const summary: RunSummaryDetail = {
+      milestones,
       startedAt: runStartedAt,
       endedAt,
       durationMs,

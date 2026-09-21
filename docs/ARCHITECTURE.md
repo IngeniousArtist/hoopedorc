@@ -416,3 +416,34 @@ CLI-owned volume. Host execution remains the backward-compatible default;
 Docker agent execution and gate sandboxing are distinct settings. Runtime,
 provider-auth/model, and AWS evidence are tracked separately in
 [worker operations](../deploy/worker/README.md).
+
+### VW15 milestone acceptance
+
+A milestone is verification-only `Task` work in the existing `Orchestrator`.
+Its approved criterion list and dependency mapping remain immutable. The
+scheduler owns its worktree, gate commands, independent validator, deadline
+and cancellation; verification uses no author invocation and creates no PR.
+`milestone-verification.ts` binds passing non-vacuous gates with an executed
+test command and complete criterion evidence to the unchanged combined HEAD.
+`GitServiceImpl.verificationRevision` validates workspace ownership, committed
+HEAD and cleanliness before/after verification. No UI-generated result can
+stand in for this proof.
+
+Server `milestones.ts` owns derived freshness, bounded repair proposals and
+SQLite admission/round receipts. ResourceManager checks milestone call/spend
+budgets in its existing admission transaction, including unpooled and zero-cost
+subscription calls. Deadlines are persisted from first verification and used
+by scheduler-owned cancellation. VW07 plan comparison and planning-commit own
+repair approval and exactly-once materialization; a unique repair round adds
+two tasks without replacing original criteria or active work. The exact task
+payload is committed in `docs/plans/<revisionId>.json` with PRD/guidance.
+
+Ordinary merge events requeue accepted verification tasks with a new logical
+generation; startup inspects stale accepted proofs in the local primary checkout.
+Proof history remains in merge decisions. Project finalization retains runtime
+ownership while asynchronously inspecting milestone evidence. It requires
+current accepted outcomes, not merely done task rows; superseded failed repair
+work remains historical when a later round proves the original outcome.
+Review/Board and the existing run-summary notification path consume these
+shared contracts. No second scheduler, model polling loop or Telegram sender
+was introduced.

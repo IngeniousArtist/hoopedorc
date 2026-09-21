@@ -7348,7 +7348,8 @@ owner later supplies Figma input.
 
 **Status (2026-09-21):** VW01–VW13 are merged, including the planning workbench,
 reviewed plan changes, workspaces, previews, browser evidence and source Library.
-VW13 adds shared account resource controls; VW14 isolated execution is in progress. The
+VW13 adds shared account resource controls; VW14 isolated execution is implemented
+with provider/AWS acceptance pending. VW15 milestone acceptance is in progress. The
 detailed scope, inspected source, research, acceptance criteria, non-goals,
 dependencies, and verification requirements are
 in [VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
@@ -7362,8 +7363,9 @@ existing Figma integration, gates/validation, accounting, and Telegram. Improve
 the user journey and failure handling, then extend capabilities incrementally.
 Small tasks and large briefs share the same execution system.
 
-**Current:** VW14 (verified isolated execution), starting from
-the reviewed VW01–VW13 result. Consult the focused plan's dependency table for
+**Current:** VW15 (milestone acceptance and bounded replanning), starting from
+the reviewed VW01–VW14 implementation result. VW14 provider-auth/model and AWS
+acceptance remain pending; do not advertise those as verified. Consult the focused plan's dependency table for
 subsequent items. Do not start by replacing the scheduler or adding
 all future schemas. Use one scoped branch/PR per coherent change; split larger
 work packages into backward-compatible contract/backend/UI steps as needed.
@@ -7383,8 +7385,8 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW11 | Project design/reference library | Done; merged and verified | [PR #277](https://github.com/IngeniousArtist/hoopedorc/pull/277), CI `35601341252`, merge `31a853d`; focused evidence below |
 | VW12 | Selective skills, plugins, and MCP activation | Done; merged and verified | [PR #278](https://github.com/IngeniousArtist/hoopedorc/pull/278), CI `35606696922`, merge `4d40803`; compatibility limits explicit |
 | VW13 | Shared account pools and resource allocation | Done (merged 2026-09-21) | [PR #279](https://github.com/IngeniousArtist/hoopedorc/pull/279) → main `e96d6d0`; CI `35611869922` passed; see acceptance and audit below |
-| VW14 | Verified isolated agent execution profiles | In progress | `vw14-execution-isolation`; local runtime/auth and AWS evidence tracked separately |
-| VW15 | Milestone acceptance and bounded replanning | Not started | — |
+| VW14 | Verified isolated agent execution profiles | Implementation merged; provider/AWS checks pending | [PR #280](https://github.com/IngeniousArtist/hoopedorc/pull/280) → `f8aa175`; final CI `35619841075`; no-model Linux Docker boundary passed |
+| VW15 | Milestone acceptance and bounded replanning | In progress | `vw15-milestone-acceptance`; acceptance below |
 | VW16 | Portable framework/environment profiles | Not started | — |
 | VW17 | Additional harness compatibility | Not started | — |
 | VW18 | Optional Jev routing evaluation | Not started | — |
@@ -8764,6 +8766,129 @@ The same review wires explicit worker-verification requests into the existing
 request-cancellation/shutdown registry, so they settle through the standard
 HTTP lifecycle before SQLite closes. Native health/planning cancellation keeps
 its existing owner; no second shutdown manager is introduced.
+
+
+VW14 merge audit: PR #280 exact tested head
+`bbc0670401ae53813ef1b34da9b67d1187798462` passed full required CI
+[35619841075](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35619841075)
+and merged as `f8aa175b033b1256f4d67cf62f4be221a6dc0ab6`. Independently fetched
+main, verified identical tested/merged trees, tracked-clean checkout and 0/0
+origin divergence. The disposable Lima VM had no remaining containers and was
+stopped; no AWS resources or provider credentials were used.
+
+### VW15 — milestone acceptance and bounded replanning (implementation acceptance)
+
+Depends on VW07/VW10/VW13. Preserve Task as the unit of scheduled work and Run as
+one invocation attempt. Reuse existing plan revision/approval, worktree, gate,
+review, resource/accounting and notification boundaries.
+
+- Introduce durable milestones with immutable, user-reviewed brief criteria,
+  task mappings and explicit integration verification. Show the mapping in the
+  planning draft before approval. Any generated integration work must be part
+  of that reviewed draft and exact Git-persisted planning content, not silently
+  appended after approval. Legacy projects retain IDs/history and disclose
+  missing outcome evidence rather than receiving retroactive acceptance.
+- Milestone acceptance requires evidence for the combined revision, matching
+  original criteria and an independent review with non-vacuous required gates.
+  All task rows marked done is insufficient. Missing, failed, superseded or
+  stale evidence remains visible and prevents a false completion claim. A
+  changed/retried/rolled-back task cannot keep an invalid acceptance receipt.
+- Use integration work inside the existing task scheduler; no second scheduler
+  or permanent expensive manager loop. Keep independent progress after one
+  branch/provider fails, preserve work on interruption, and surface recovered
+  work and total observed costs.
+- Bound repair/replanning by explicit rounds, generated-task scope/count,
+  invocation/time limits and observed spending policy. Produce reviewed,
+  append-only repair work through the existing proposal/approval boundary;
+  never weaken or delete original milestone criteria to claim success or
+  overwrite an active task. Repeated submission/restart cannot duplicate tasks,
+  planning invocations or budget receipts. Disclose any in-flight spending
+  uncertainty rather than pretending a measured cutoff is a hard provider cap.
+- Expose milestone status, evidence, missing criteria, repair limits and useful
+  next actions in Plan/Review and the existing board/run summary. Use the
+  established durable notification/Telegram integration for milestone and
+  attention events; do not send external messages during implementation tests.
+- Focused policy/server/UI tests cover stale/restart/retry and refusal behavior.
+  A local multi-task Git/process fixture exercises interruption/provider failure,
+  failed integration, preserved criteria and bounded recovery without live model
+  calls. Verify important UI interactions at all five required widths. Real
+  provider and AWS journeys remain separately pending when unavailable.
+
+Non-goals: replacing the scheduler, weakening merge gates, silently changing
+CLI authentication, enabling Jev before its benchmark, or treating generated
+model assertions without revision-bound validation as outcome evidence.
+
+### VW15 implementation and verification record (2026-09-21)
+
+Implemented on `vw15-milestone-acceptance`. Verification milestones are explicit
+reviewed draft tasks, appended after contributing implementation/docs work;
+large criterion sets are split without dropping criteria. The exact draft now
+has a Git-persisted `docs/plans/<revisionId>.json` artifact in the existing
+planning durability boundary. Approved criteria, scope and limits are immutable.
+Legacy task/history rows remain intact and have no retroactive acceptance.
+
+The existing scheduler owns verification-only worktrees, required gates and an
+independent reviewer. No author or PR is needed for a verification job. All
+original criteria need concrete evidence, actual test execution and an unchanged
+clean combined HEAD. Gate runtime, revision and dependency generations are
+persisted with the decision. A failed review/provider or changed revision cannot
+be accepted via merge approval. Later merges/restarts requeue stale verification
+within the original policy; finalization retains runtime ownership while reading
+outcomes and cannot report completion from task statuses alone.
+
+Repair uses a deterministic proposal containing one author task and one verifier.
+It reuses VW07's reviewed comparison, exact Git push and atomic task creation.
+A unique root/round/revision receipt prevents duplicate application. Original
+criteria, scope, dependencies and limits remain fixed; the UI locks these fields.
+An explicit planning-session reset can discard an unapplied proposal while
+preserving its audit record. Failed earlier repair work remains history when a
+later round proves the original outcome. No expensive manager model polls work.
+
+SQLite stores fixed deadlines and unique admitted invocation IDs for metered and
+subscription activity. Resource admission enforces call and observed-spend limits;
+scheduler cancellation enforces the shared deadline through process settlement.
+Unreported/in-flight usage is disclosed rather than presented as a hard dollar
+cap. Review, Board, planning drafts and run reports show criteria/evidence,
+freshness, limits and the existing Telegram digest's acceptance/attention summary.
+No Telegram messages were sent during implementation.
+
+Focused local evidence (Node 22.23.0):
+
+- Six milestone policy/persistence tests plus thirteen affected planning
+  durability/revision tests: 19 passed. Includes failed/unknown proof,
+  stale dependencies/HEAD, immutable repair, restart, duplicate apply,
+  reviewed JSON artifacts, original draft preservation, subscription counting,
+  observed cost/call/deadline refusal and discarded-proposal audit history.
+- Two focused scheduler regressions plus one real local Git/worktree/process
+  fixture: 3 passed. The fixture combines two contributions, fails an actual
+  integration command, reopens SQLite, cancels a real child process during
+  reviewer work, preserves both contributions, verifies the repaired combined
+  revision and checks completion/refusal from current evidence. No live model
+  was called.
+- Eight affected runtime ownership/finalization regressions and two affected
+  mock-deconstruction contract regressions passed.
+- Four affected web files: 27 interaction tests passed.
+- Two real Playwright journeys (milestones and affected plan comparison):
+  review/confirmation and repair-planning controls at 360, 390, 768,
+  1280 and 1440px, keyboard activation, fixed surfaces, phone controls and
+  overflow; repair draft → comparison → exact apply. Browser requests use
+  real Fastify routes and SQLite; only planning Git persistence is mocked.
+  Separate process fixture above covers real Git. Phone/desktop captures
+  were inspected locally.
+- Affected types/engine builds and server/web/engine typechecks passed.
+  Route registration/documentation checks passed. Lint remains at exactly
+  330 legacy findings with no baseline increase. `git diff --check` passed.
+
+Full required GitHub CI and merge audit will be recorded with the PR. The
+comprehensive local suite remains deferred until VW18, per the owner's testing
+policy. Real provider-powered integrated acceptance is still pending; AWS checks
+remain explicitly owner-deferred because no installation is set up and the old
+server is shut down. These local fixtures are not AWS/provider acceptance.
+
+VW15 final review also covers reviewer routing changing during a check: a
+contributing author can never supply accepted independent evidence. Direct
+verification dispatch accounts capacity against its reviewer, not its configured
+future repair author. The focused scheduler regression covers both cases.
 
 ### VW16 — portable environment profiles (implementation acceptance)
 

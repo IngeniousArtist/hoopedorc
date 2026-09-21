@@ -6,4 +6,7 @@ export * from "./activation";
 export * from "./resources";
 
 export * from "./execution";
+
+export * from "./milestones";
+
 export * from "./environment";

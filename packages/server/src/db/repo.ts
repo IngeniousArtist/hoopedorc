@@ -440,6 +440,8 @@ export function completePlanningCommit(
 
 function mapTask(row: Record<string, unknown>): Task {
   return {
+    milestone: row.milestone ? json<Task["milestone"]>(row.milestone) : undefined,
+    repairFor: row.repair_for ? json<Task["repairFor"]>(row.repair_for) : undefined,
     id: asStr(row.id),
     projectId: asStr(row.project_id),
     title: asStr(row.title),
@@ -566,9 +568,9 @@ export function createTask(
        acceptance_criteria, assigned_model, role, scope_paths, attempts,
        max_attempts, run_generation, run_extra_attempts, run_model,
        run_exhausted_models, run_rate_limit_retries, dispatch_requested_at,
-       created_at, updated_at
+       created_at, updated_at, milestone, repair_for
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     t.id,
     t.projectId,
@@ -591,6 +593,8 @@ export function createTask(
     t.dispatchRequestedAt ?? null,
     now,
     now,
+    t.milestone ? JSON.stringify(t.milestone) : null,
+    t.repairFor ? JSON.stringify(t.repairFor) : null,
   );
   const created = getTask(db, t.id)!;
   publishTaskChange(db, t.projectId);
@@ -1483,6 +1487,8 @@ function mapMergeDecision(row: Record<string, unknown>): MergeDecision {
     reasons: json<string[]>(row.reasons),
     confidence: Number(row.confidence),
     gate: json<MergeDecision["gate"]>(row.gate),
+    criterionEvidence: row.criterion_evidence ? json<MergeDecision["criterionEvidence"]>(row.criterion_evidence) : undefined,
+    milestoneProof: row.milestone_proof ? json<MergeDecision["milestoneProof"]>(row.milestone_proof) : undefined,
     ts: asStr(row.ts),
   };
 }
@@ -1499,8 +1505,8 @@ export function createMergeDecision(
   d: MergeDecision,
 ): MergeDecision {
   db.prepare(
-    `INSERT INTO merge_decisions (id, project_id, task_id, run_id, validator_model, verdict, reasons, confidence, gate, ts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO merge_decisions (id, project_id, task_id, run_id, validator_model, verdict, reasons, confidence, gate, ts, criterion_evidence, milestone_proof)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     d.id,
     d.projectId,
@@ -1512,6 +1518,8 @@ export function createMergeDecision(
     d.confidence,
     JSON.stringify(d.gate),
     d.ts,
+    d.criterionEvidence ? JSON.stringify(d.criterionEvidence) : null,
+    d.milestoneProof ? JSON.stringify(d.milestoneProof) : null,
   );
   return d;
 }
