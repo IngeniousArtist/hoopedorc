@@ -7373,7 +7373,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW02 | Preserve planning input and truthful draft-save state | Done (merged 2026-09-21) | [PR #264](https://github.com/IngeniousArtist/hoopedorc/pull/264) → main `8d00383`; PR CI `build-and-test` passed; main CI run [35567524350](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35567524350) passed; see the VW02 acceptance record below |
 | VW03 | Repository-aware planning and truthful task history | Done (merged 2026-09-21) | [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266) → main `9757a91`; PR CI `build-and-test` passed; main CI run [35570272080](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35570272080) passed; see the VW03 acceptance record below |
 | VW04 | Project navigation, compact board/list, task inspector | Done (merged and reviewed 2026-09-21) | Part 1: [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268) → main `88ca12b`, PR CI passed, main CI run [35571774985](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35571774985) passed. Part 2 and VW01–VW04 recovery review: [PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269) → main `9d2e270`; required exact-head CI passed; see the review/merge record below |
-| VW05 | Organize existing settings and setup | Implemented | Branch `vw05-settings-setup-ux`; see VW05 acceptance record below and its PR for required CI/merge evidence |
+| VW05 | Organize existing settings and setup | Implemented | [PR #271](https://github.com/IngeniousArtist/hoopedorc/pull/271); see VW05 acceptance record below and PR checks for required CI/merge evidence |
 | VW06 | Durable planning operations and planning workbench | Not started | — |
 | VW07 | Propose/apply plan revisions during execution | Not started | — |
 | VW08 | Workspace inventory and read-only code inspection | Not started | — |
@@ -8057,7 +8057,7 @@ persistence, and server action semantics are unchanged.
   phone controls, document overflow, and fixed/sticky containment. Repeated
   only after the visual review improved phone tab-label wrapping.
 - `npm run typecheck -w @orc/web`, `npm run build -w @orc/web`, ESLint on the
-  seven changed/new TypeScript files, and `git diff --check` passed.
+  changed/new TypeScript files, and `git diff --check` passed.
 - Chrome visual review on an isolated in-memory instance: desktop Settings,
   phone Settings at 390px (whole-label wrapping), and phone Setup Models with
   recorded health separate from the live-test action. No live model test,
@@ -8065,5 +8065,14 @@ persistence, and server action semantics are unchanged.
 
 The owner-requested reduced local testing policy is recorded in AGENTS.md and
 the focused plan. Comprehensive local regression remains deferred until the
-implementation plan is finished. The `vw05-settings-setup-ux` PR carries the
+implementation plan is finished. [PR #271](https://github.com/IngeniousArtist/hoopedorc/pull/271) carries the
 required remote CI and merge evidence; no required check is waived. Next: VW06.
+
+**CI integration correction:** initial CI run `35578477431` exposed one older
+browser workflow that tried to edit model effort without first opening the new
+Models & routing section. Updated that navigation step; no product behavior or
+assertion was weakened. The other browser cases and unit/integration checks
+that ran passed; the failed check was held for correction before merge.
+`npm run test:e2e -- app.spec.ts --grep 'destructive dialogs preserve settings'`
+then passed locally (one scenario); only that newly affected scenario was
+rerun, plus lint for its file and `git diff --check`.
