@@ -94,6 +94,13 @@ parts were appended after the original ten:
   adds one automatic visual-QA task through the existing DAG/gate/validator
   pipeline. Full design: `docs/HOOPEDORC_CONTEXT_INTAKE_UPGRADE.md`.
 
+- **Part 14 — Visual development workspace** (implementation handoff recorded
+  2026-09-21): preserves the existing orchestration core and defines VW01–VW18
+  for planning reliability, a designer-oriented workspace, previews/review,
+  selective context, resources, isolation, and bounded large-brief delivery.
+  Start with VW01. Full spec: [Visual workspace implementation plan](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
+  All implementation items remain not started.
+
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
   `npm test -w @orc/engine`, `npm test -w @orc/server`, and
@@ -7334,3 +7341,79 @@ other genuinely available check (deploy, health, independent re-run of the
 affected test suites, and for B45/B48 a full live-data/live-behavior
 confirmation) is complete. Revisit B46/B47's live acceptance only if the
 owner later supplies Figma input.
+
+---
+
+## Part 14 — Visual development workspace
+
+**Status (2026-09-21):** implementation plan recorded at the owner's request;
+all implementation items are not started. This documentation change does not
+alter application behavior. The detailed scope, inspected source, research,
+acceptance criteria, non-goals, dependencies, and verification requirements are
+in [VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
+The [clickable layout concept](design/visual-workspace-concept.html) is sample
+UI only, not a shipped implementation or a final visual specification.
+
+**Product direction:** a visual development workspace for a designer who also
+writes code, usable locally and on a personal AWS installation. Keep the
+single-owner engine, task worktrees, Git protections, durable planning approval,
+existing Figma integration, gates/validation, accounting, and Telegram. Improve
+the user journey and failure handling, then extend capabilities incrementally.
+Small tasks and large briefs share the same execution system.
+
+**Start here:** VW01 → VW02/VW03 → VW04. Consult the focused plan's dependency
+table for subsequent items. Do not start by replacing the scheduler or adding
+all future schemas. Use one scoped branch/PR per coherent change; split larger
+work packages into backward-compatible contract/backend/UI steps as needed.
+
+| ID | Work item | Status | PR / acceptance evidence |
+|---|---|---|---|
+| VW01 | Deterministic mock planning; no real planner/Figma calls | Not started | — |
+| VW02 | Preserve planning input and truthful draft-save state | Not started | — |
+| VW03 | Repository-aware planning and truthful task history | Not started | — |
+| VW04 | Project navigation, compact board/list, task inspector | Not started | — |
+| VW05 | Organize existing settings and setup | Not started | — |
+| VW06 | Durable planning operations and planning workbench | Not started | — |
+| VW07 | Propose/apply plan revisions during execution | Not started | — |
+| VW08 | Workspace inventory and read-only code inspection | Not started | — |
+| VW09 | Managed environments and preview lifecycle | Not started | — |
+| VW10 | Full review workbench and browser evidence | Not started | — |
+| VW11 | Project design/reference library | Not started | — |
+| VW12 | Selective skills, plugins, and MCP activation | Not started | — |
+| VW13 | Shared account pools and resource allocation | Not started | — |
+| VW14 | Verified isolated agent execution profiles | Not started | — |
+| VW15 | Milestone acceptance and bounded replanning | Not started | — |
+| VW16 | Portable framework/environment profiles | Not started | — |
+| VW17 | Additional harness compatibility | Not started | — |
+| VW18 | Optional Jev routing evaluation | Not started | — |
+
+**Release boundary:** first prove an existing-project feature from planning to
+parallel implementation, preview, visual correction, and reviewed integrated
+result. Initial redesigned release: VW01–VW06 and VW08–VW10, reusing current
+references/Figma/routing. Later items extend it. Current gate containers do not
+isolate author CLIs; advertise full agent isolation only after VW14 passes.
+
+**Preserved decisions:** no second scheduler, no data-destructive migration, no
+assumption that every harness supports identical capabilities, no silent
+subscription-to-paid-API switch, and no mandatory Figma/skill/MCP loading.
+Multi-host scheduling and multi-tenant hosted SaaS are outside the first release.
+Part 12's exclusions applied to that wave and remain in its historical record.
+Part 13's owner-deferred Figma live acceptance remains deferred; this plan does
+not retroactively claim those checks passed.
+
+**Audit evidence:** baseline 75c146e; 100 web tests and 102 focused server tests
+passed during the preceding audit. Board layout was sampled at five viewport
+widths. One mock chat unexpectedly invoked the real planner and reported $0.15;
+VW01 addresses that boundary. The concept's HTML/script received static checks;
+rendered browser verification of the concept was blocked by the local-file URL
+policy and remains outstanding. Detailed limitations are in the focused plan.
+
+**Documentation publication verification (2026-09-21):** all local repository
+checks passed on Node 22.23.0: typecheck, build, lint, 234 engine tests, 18 adapter
+tests, 327 server tests, 100 web tests, 19 Playwright scenarios, and
+`git diff --check`. The server suite initially encountered three sandbox
+localhost-listen refusals; it passed in full with the required localhost
+permission. New document links, all 18 backlog/table entries, concept ID/view
+references, and concept JavaScript syntax were checked. No runtime code changed.
+Publication: [PR #261](https://github.com/IngeniousArtist/hoopedorc/pull/261).
+Required PR CI must also pass before merge; the PR records its final result.
