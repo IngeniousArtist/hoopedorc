@@ -4,6 +4,7 @@ import {
   expectNoDocumentOverflow,
   expectPhoneTouchTargets,
   presentProjectAsPaused,
+  presentProjectAsRunning,
 } from "./helpers";
 
 test.describe.serial("critical operator workflows", () => {
@@ -262,6 +263,10 @@ test.describe.serial("critical operator workflows", () => {
   test("destructive dialogs preserve settings and recover stop-all and rollback failures", async ({
     page,
   }) => {
+    // Stop all only renders while a project is running. Present that state
+    // instead of relying on the seed: a CI retry replays this serial group
+    // against a server where the VW01 scenario already paused the project.
+    await presentProjectAsRunning(page, projectId);
     await page.goto("/#/settings");
     const effort = page.getByLabel("Claude (planner / reviewer) reasoning effort");
     const nextEffort = (await effort.inputValue()) === "high" ? "medium" : "high";
@@ -483,7 +488,17 @@ test.describe.serial("critical operator workflows", () => {
       "Planning against the existing codebase · main @ 0000000 · node, typescript · npm scripts: build, lint, test, typecheck",
     );
 
-    await page.getByRole("button", { name: "Generate task table →" }).click();
+    // A replayed serial group already holds a draft table, so the control may
+    // read "Re-generate"; wait for this round-trip either way.
+    const deconstructed = page.waitForResponse(
+      (response) =>
+        response.url().includes(`/api/projects/${projectId}/plan/deconstruct`) &&
+        response.request().method() === "POST",
+    );
+    await page
+      .getByRole("button", { name: /Generate task table →|Re-generate task table/ })
+      .click();
+    expect((await deconstructed).status()).toBe(200);
     await expect(page.getByLabel("Task 1 title")).toHaveValue(
       "Implement: Add an API health endpoint.",
     );
@@ -566,9 +581,19 @@ test.describe.serial("critical operator workflows", () => {
       }
       await route.continue();
     });
+    // The previous scenario left an identical draft on the server, so wait
+    // for this re-generation's round-trip and re-enabled control before
+    // editing; otherwise the response can replace the input mid-edit.
+    const deconstructed = page.waitForResponse(
+      (response) =>
+        response.url().includes(`/api/projects/${projectId}/plan/deconstruct`) &&
+        response.request().method() === "POST",
+    );
     await page
       .getByRole("button", { name: /Generate task table →|Re-generate task table/ })
       .click();
+    expect((await deconstructed).status()).toBe(200);
+    await expect(page.getByRole("button", { name: "Re-generate task table" })).toBeEnabled();
     const firstTitle = page.getByLabel("Task 1 title");
     await expect(firstTitle).toHaveValue("Implement: Add an API health endpoint.");
     const status = page.getByTestId("draft-save-status");

@@ -7689,4 +7689,16 @@ primary clone and does not fetch.
 `npm run lint` (330 legacy findings, baseline unchanged after removing two
 new `no-useless-assignment` findings the first run caught), 234 engine, 18
 adapter, 358 server (15 new), 113 web tests (27 files, 4 new), 21 Playwright
-scenarios, `git diff --check`. Publication: [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266). Required PR CI must pass before merge; merge/main CI evidence is appended after merge.
+scenarios, `git diff --check`. The first PR CI run failed in Playwright for two
+test-design reasons found and fixed in the same PR: the VW02 scenario edited a
+title before its re-generation round-trip had landed (the old and new titles
+were identical, so the value check passed early and the response replaced the
+input mid-edit), and a serial-group retry replayed against the same mock
+server after the VW01 scenario had really paused the seed project, so the
+older Stop-all scenario found no running project. Fixes: both planning
+scenarios wait for the deconstruct response and accept either button label;
+the Stop-all scenario presents the project as running through a shared
+`presentProjectStatus` helper (REST list/detail + WebSocket) instead of
+relying on seed state. Verified by replaying `app.spec.ts` twice in one
+Playwright process (22/22) plus the full suite (21/21).
+Publication: [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266). Required PR CI must pass before merge; merge/main CI evidence is appended after merge.
