@@ -7415,4 +7415,5 @@ tests, 327 server tests, 100 web tests, 19 Playwright scenarios, and
 localhost-listen refusals; it passed in full with the required localhost
 permission. New document links, all 18 backlog/table entries, concept ID/view
 references, and concept JavaScript syntax were checked. No runtime code changed.
-Required PR CI must also pass before merge; the publication PR records it.
+Publication: [PR #261](https://github.com/IngeniousArtist/hoopedorc/pull/261).
+Required PR CI must also pass before merge; the PR records its final result.
