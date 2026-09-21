@@ -50,7 +50,7 @@ moving.
 - `opencode` authenticated for the non-Claude providers you want to use.
 - Optional: `codex` authenticated when you want ChatGPT-subscription-backed
   agents in the pool.
-- Optional: Docker for sandboxed project setup and gate execution.
+- Optional: Docker for sandboxed setup/gates and separately configured Codex workers.
 
 ### Install and run
 
@@ -149,10 +149,13 @@ full ownership model and lifecycle invariants.
 - Repository setup, dependency installation, and gate commands run in a
   disposable Docker container by default when Docker is reachable. Only the
   task worktree is mounted.
-- Agent CLIs run on the host so they can use the current OS user's existing CLI
+- Agent CLIs run on the host by default so they can use the current OS user's existing CLI
   authentication. They receive a sanitized environment allowlist, but they
   retain that user's filesystem and network access. This is credential hygiene,
   not process isolation; do not run untrusted repositories.
+- Optional [Docker/Codex worker profiles](deploy/worker/README.md) use a separate
+  ChatGPT CLI login volume, an assigned workspace and restricted network access.
+  Required profiles fail closed; live provider/AWS checks are tracked separately.
 - Gates fail closed, destructive changes cannot silently pass, cancellation
   owns the complete child process group, and unrelated operator changes in the
   primary clone are never stashed, reset, or auto-committed.

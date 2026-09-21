@@ -7346,9 +7346,9 @@ owner later supplies Figma input.
 
 ## Part 14 — Visual development workspace
 
-**Status (2026-09-21):** VW01–VW12 are merged, including the planning workbench,
+**Status (2026-09-21):** VW01–VW13 are merged, including the planning workbench,
 reviewed plan changes, workspaces, previews, browser evidence and source Library.
-VW12 adds explicit capability activation; VW13 shared account resources are in progress. The
+VW13 adds shared account resource controls; VW14 isolated execution is in progress. The
 detailed scope, inspected source, research, acceptance criteria, non-goals,
 dependencies, and verification requirements are
 in [VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
@@ -7362,8 +7362,8 @@ existing Figma integration, gates/validation, accounting, and Telegram. Improve
 the user journey and failure handling, then extend capabilities incrementally.
 Small tasks and large briefs share the same execution system.
 
-**Current:** VW13 (shared account pools/resource allocation), starting from
-the reviewed VW01–VW12 result. Consult the focused plan's dependency table for
+**Current:** VW14 (verified isolated execution), starting from
+the reviewed VW01–VW13 result. Consult the focused plan's dependency table for
 subsequent items. Do not start by replacing the scheduler or adding
 all future schemas. Use one scoped branch/PR per coherent change; split larger
 work packages into backward-compatible contract/backend/UI steps as needed.
@@ -7382,8 +7382,8 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW10 | Full review workbench and browser evidence | Done; merged and verified | [PR #276](https://github.com/IngeniousArtist/hoopedorc/pull/276), CI `35599020994`, merge `629cb7d`; acceptance evidence below |
 | VW11 | Project design/reference library | Done; merged and verified | [PR #277](https://github.com/IngeniousArtist/hoopedorc/pull/277), CI `35601341252`, merge `31a853d`; focused evidence below |
 | VW12 | Selective skills, plugins, and MCP activation | Done; merged and verified | [PR #278](https://github.com/IngeniousArtist/hoopedorc/pull/278), CI `35606696922`, merge `4d40803`; compatibility limits explicit |
-| VW13 | Shared account pools and resource allocation | In progress | `vw13-shared-account-resources` |
-| VW14 | Verified isolated agent execution profiles | Not started | — |
+| VW13 | Shared account pools and resource allocation | Done (merged 2026-09-21) | [PR #279](https://github.com/IngeniousArtist/hoopedorc/pull/279) → main `e96d6d0`; CI `35611869922` passed; see acceptance and audit below |
+| VW14 | Verified isolated agent execution profiles | In progress | `vw14-execution-isolation`; local runtime/auth and AWS evidence tracked separately |
 | VW15 | Milestone acceptance and bounded replanning | Not started | — |
 | VW16 | Portable framework/environment profiles | Not started | — |
 | VW17 | Additional harness compatibility | Not started | — |
@@ -8643,3 +8643,124 @@ pooled usage so deletion cannot reset an account quota; a regression verifies it
 The focused follow-up passed **8 tests** (B34 plus VW13 resource/engine cases),
 server typecheck and affected lint. Required CI is being rerun; no failed check
 was bypassed.
+
+
+**VW13 merge audit:** PR #279 passed required full CI
+[35611869922](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35611869922)
+on tested head `67a2fd99e71470ce4e1c3cda09de16ecb3f5fea7` (3m47s).
+Merged main `e96d6d06847def849b0a930c45160126334d60b4` independently matches that
+tree, with tracked-clean main and zero origin divergence. The unrelated
+untracked dependency directory remains preserved.
+
+### VW14 — isolated worker execution (implementation acceptance)
+
+Depends on VW12/VW13. Keep native CLI operation backward compatible and explicit.
+Gate/setup Docker isolation is a separate capability from agent isolation.
+Supported isolation profiles must carry runtime/version/auth evidence; an
+unsupported or failed required profile refuses before an author attempt or
+model prompt, never falls back to a host process or another billing method.
+
+- Add normalized execution profiles and per-model selection, environment
+  capability/verification status and per-invocation execution provenance.
+  Unsupported combinations show actionable reasons in Settings/Setup.
+- Reuse one invocation boundary for planning, Figma/model health, authoring,
+  validation and docs. Snapshot execution configuration and preserve the
+  resource reservation/accounting boundary. Inactive capabilities cannot leak
+  into an isolated worker through host config or MCP discovery.
+- Confine workers to their assigned workspace and explicitly owned state;
+  refuse unrelated workspace/host-secret/control-plane/metadata access. Scope
+  network egress, filesystem mounts and CPU/memory/process limits. Host-owned
+  Git integration remains outside the worker; preserve primary clone data and
+  dirty task files. No host HOME, Docker socket or control-plane state mount.
+- Keep authentication in the explicitly chosen CLI/runtime owner. Never import
+  all host credentials or switch a subscription to provider-key billing.
+  Check actual installed CLI versions and auth status without model requests;
+  unavailable auth remains unavailable rather than guessed from config.
+- Persist execution identity before launch; cancellation and restart must
+  settle only the owned worker before capacity/worktree cleanup. Unknown or
+  failed termination holds unresolved capacity and preserves the workspace.
+  Recovery, retries and cleanup must be bounded, idempotent and auditable.
+- Validate the real filesystem/network/process boundary in a disposable local
+  runtime and/or required CI container tests, plus focused refusal, auth,
+  cancellation/restart and UI tests. Record provider-auth/live-model checks
+  separately from no-model fixtures. AWS remains owner-deferred until a new
+  installation exists. A mock or Docker-version probe does not prove isolation.
+
+Initial inspection: no local Docker/Podman/Lima runtime is installed; only
+macOS sandbox-exec is present. A task-local disposable Lima VM is being evaluated
+for boundary testing, without changing CLI logins. Docker Sandboxes/sbx is an
+alternative researched from current primary docs, but requires separate login
+and KVM/nested virtualization on Linux; do not assume it runs on any EC2 host.
+Scope may be split into small backward-compatible PRs; retain incomplete live
+acceptance explicitly and do not label full agent isolation verified early.
+
+### VW14 implementation and verification record (2026-09-21)
+
+Branch `vw14-execution-isolation`; PR/merge evidence follows after required CI.
+Implementation is complete for the initial Docker/Codex transport, with live
+provider-auth/model and AWS acceptance still pending. It is not labelled a fully
+verified AWS or all-harness isolation solution.
+
+- Optional normalized immutable-image profiles select the same subscription
+  account pool as each Codex model. Native operation remains explicit/default.
+  CLI login stays in a separately owned, labelled volume. Unsupported selections
+  refuse; automatic author fallback cannot downgrade isolation to a host profile.
+- All model stages use the existing invocation/accounting paths through one
+  transport. Workers persist profile/image/admission evidence and identities
+  before launch. Host Git metadata is masked, planning/review workspaces are
+  read-only, and Git/gates remain engine-owned. Canonical path checks account
+  for symlink aliases before excluding control-plane state and other projects.
+- A non-root network-none worker uses a separate CONNECT sidecar with no account,
+  workspace or control mounts. Memory/PID/CPU limits, dropped capabilities and
+  no-new-privileges apply. TLS is opaque and allowed-CDN destinations are not
+  equivalent to content inspection; limitations are documented.
+- Cancellation, restart, docs/rollback cleanup and resource recovery respect
+  durable ownership. Unknown termination preserves worktrees and capacity.
+  Observed usage survives failed cleanup exactly once. Concurrent profile checks
+  share a probe; worker termination serializes by immutable identity.
+- Settings exposes drafts, unavailable reasons, verification status and confirmed
+  unresolved-worker recovery. Running tasks are cancelled through their existing
+  project controls. Mock verification never starts Docker or model calls.
+
+Focused local evidence (Node 22.23.0): 6 execution policy/accounting/recovery tests,
+3 proxy tests, 3 scheduler regressions, 2 shared route-contract checks, 6 web
+interaction tests (execution + affected resources), and one real Playwright
+scenario at 360/390/768/1280/1440px. Browser evidence includes keyboard save,
+confirmation/refusal, preserved drafts, touch targets, fixed surfaces and overflow;
+390/1440 screenshots were visually inspected. Affected types/engine/server builds,
+server/web typechecks and repository lint ratchet pass (330 legacy findings,
+no increase). Comprehensive local regression stays deferred until the plan's end.
+
+Real boundary evidence: disposable Lima 2.2.0 Ubuntu24.04 ARM64 VM, Docker server
+29.8.1 and direct macOS Docker CLI29.6.1 Unix-socket client; worker Codex0.154.0
+and Node22.23.0. The no-credentials fixture passed assigned-file writes, hidden
+host/Git canaries, sanitized environment, metadata/direct-network refusal,
+read-only workspaces, privilege/memory/PID limits, process-tree cancellation,
+owned orphan cleanup and missing-ChatGPT-login refusal. Required CI includes
+this Docker fixture on Ubuntu. An initial test-only SSH-forwarded Docker client
+stalled process settlement; it was replaced with the real local-socket Docker
+CLI and its owned fixture containers were removed. No provider credentials were
+copied, no model prompt was sent, and no AWS action was taken.
+
+Still pending: operator-created worker ChatGPT login, OAuth renewal/provider model
+access through the restricted proxy, and live AWS deployment. These are separate
+from the passing no-model boundary fixture. The user explicitly deferred AWS
+because the previous server is shut down and the replacement is not set up.
+
+VW14 review follow-up: persist the actual Docker engine ID with every worker
+and refuse cleanup when the configured daemon changes. This prevents a copied
+database/new host from treating absent local containers as evidence that workers
+on the old host stopped. The focused ownership test covers changed-daemon refusal.
+
+Initial VW14 PR [#280](https://github.com/IngeniousArtist/hoopedorc/pull/280)
+head `7256d53` passed full required CI
+[35618751782](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35618751782)
+including the real Ubuntu Docker boundary (3m54s). The reviewed runtime-identity
+follow-up requires a fresh green head before merge; initial CI is not merge
+evidence for that follow-up. Its targeted real Docker/ownership tests (7),
+server/web typechecks, changed-file lint and five-width browser flow pass.
+
+The same review wires explicit worker-verification requests into the existing
+request-cancellation/shutdown registry, so they settle through the standard
+HTTP lifecycle before SQLite closes. Native health/planning cancellation keeps
+its existing owner; no second shutdown manager is introduced.

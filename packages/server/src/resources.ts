@@ -111,8 +111,10 @@ export class ResourceManager {
     return JSON.parse(row.accounting_json) as InvocationAccounting;
   }
   /** Only the terminal ledger transaction may release a started invocation. */
-  release(id: string) { this.db.prepare("UPDATE resource_reservations SET state = 'released', updated_at = ? WHERE id = ? AND state IN ('reserved', 'active')").run(new Date(this.now()).toISOString(), id); }
+  private workerUnsettled(id: string): boolean { return Boolean(this.db.prepare("SELECT 1 FROM execution_workers WHERE invocation_id = ? AND state != 'stopped'").get(id)); }
+  release(id: string) { if (this.workerUnsettled(id)) { this.db.prepare("UPDATE resource_reservations SET state = 'unresolved', updated_at = ? WHERE id = ?").run(new Date(this.now()).toISOString(), id); return; } this.db.prepare("UPDATE resource_reservations SET state = 'released', updated_at = ? WHERE id = ? AND (state IN ('reserved', 'active') OR state = 'unresolved' AND EXISTS (SELECT 1 FROM execution_workers w WHERE w.invocation_id = resource_reservations.id AND w.state = 'stopped'))").run(new Date(this.now()).toISOString(), id); }
   releaseUnstarted(id: string) {
+    if (this.workerUnsettled(id)) { this.db.prepare("UPDATE resource_reservations SET state = 'unresolved', updated_at = ? WHERE id = ?").run(new Date(this.now()).toISOString(), id); return; }
     this.db.prepare("UPDATE resource_reservations SET state = 'released', updated_at = ? WHERE id = ? AND state = 'reserved' AND NOT EXISTS (SELECT 1 FROM model_invocations WHERE id = ?)").run(new Date(this.now()).toISOString(), id, id);
   }
   cooldown(poolId: string) {
@@ -137,6 +139,7 @@ export class ResourceManager {
     return this.db.transaction(() => {
       const receipt = this.db.prepare("SELECT request_hash, result_json FROM resource_recoveries WHERE request_id = ?").get(request.requestId) as { request_hash: string; result_json: string } | undefined;
       if (receipt) { if (receipt.request_hash !== hash) throw new ResourceUnavailableError("Recovery request ID belongs to another action.", false); return JSON.parse(receipt.result_json) as ResourceReservation; }
+      if (this.workerUnsettled(id)) throw new ResourceUnavailableError("The isolated worker must be stopped and verified before releasing its account slot.", false);
       const row = this.row(id);
       if (!row || row.state !== "unresolved" || row.updated_at !== request.expectedUpdatedAt) throw new ResourceUnavailableError("Reservation changed or is not awaiting recovery. Refresh resource status.", false);
       this.db.prepare("UPDATE resource_reservations SET state = 'released', updated_at = ? WHERE id = ? AND state = 'unresolved'").run(new Date(this.now()).toISOString(), id);

@@ -5330,3 +5330,32 @@ test("VW13: docs admission refusal has no invocation and preserves the validated
   }, merged)).start(PROJECT, [task("docs-admission")]);
   assert.equal(docs, 1); assert.equal(merged.length, 1); assert.ok(runs.every((run) => !run.id.endsWith("-docs")));
 });
+
+test("VW14: cancellation with unresolved external ownership preserves worktree and branch", async () => {
+  const candidate = task("isolated-stop"); let held = false; let removed = 0; let cleaned = 0;
+  const orchestrator = new Orchestrator(fakeDeps({
+    workspaceHeld: () => held,
+    worktrees: { remove: () => { removed++; return Promise.resolve(); } },
+    git: { cleanupTaskBranch: () => { cleaned++; return Promise.resolve(); } },
+    adapterFor: () => ({ runner: "opencode", run: () => { held = true; orchestrator.stopTask(candidate.id); return Promise.reject(new Error("worker termination is unresolved")); } }),
+  }, []));
+  await orchestrator.runTask(PROJECT, candidate);
+  assert.equal(candidate.status, "blocked"); assert.equal(removed, 0); assert.equal(cleaned, 0); assert.ok(candidate.worktreePath);
+});
+
+test("VW14: an unresolved docs worker prevents merge and worktree cleanup", async () => {
+  const merged: number[] = []; let held = false; let removed = 0; const cfg = settings(); cfg.routing.byRole.docs = "deepseek-flash";
+  const candidate = task("isolated-docs");
+  await new Orchestrator(fakeDeps({ settings: cfg, workspaceHeld: () => held,
+    adapterFor: () => ({ runner: "opencode", run: (options) => { if (options.invocation?.stage === "docs") { held = true; return Promise.reject(new Error("worker termination is unresolved")); } return approveAdapter.run(options); } }),
+    worktrees: { remove: () => { removed++; return Promise.resolve(); } },
+  }, merged)).runTask(PROJECT, candidate);
+  assert.equal(merged.length, 0); assert.equal(removed, 0); assert.ok(candidate.worktreePath);
+});
+
+test("VW14: automatic fallback never downgrades an isolated author to host execution", async () => {
+  const cfg = settings(); cfg.models = cfg.models.map((model) => model.id === "deepseek-flash" ? { ...model, executionProfileId: "isolated" } : model);
+  const invoked: string[] = [];
+  await new Orchestrator(fakeDeps({ settings: cfg, adapterFor: () => ({ runner: "opencode", run: (options) => { invoked.push(options.model); return Promise.resolve({ ok: false, exitReason: "error", costUsd: 0, tokensIn: 0, tokensOut: 0 }); } }) }, [])).runTask(PROJECT, task("isolated-fallback", [], { maxAttempts: 1 }));
+  assert.deepEqual(invoked, ["deepseek-flash"]);
+});

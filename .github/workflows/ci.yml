@@ -43,6 +43,13 @@ jobs:
       - run: npm run lint
       - run: npm test
 
+      - name: Verify isolated worker boundary without provider credentials
+        timeout-minutes: 8
+        run: |
+          docker build -t hoopedorc-ci-worker -f deploy/worker/Dockerfile deploy/worker
+          worker_image="$(docker image inspect hoopedorc-ci-worker --format '{{.Id}}')"
+          HOOPEDORC_DOCKER_BOUNDARY=1 HOOPEDORC_WORKER_IMAGE="$worker_image" HOOPEDORC_WORKER_TEST_ROOT=/tmp node --import tsx --test packages/server/src/execution-boundary.test.ts
+
       - name: Resolve installed Playwright version
         id: playwright-version
         run: |

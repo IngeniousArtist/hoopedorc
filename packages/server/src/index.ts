@@ -1,3 +1,4 @@
+import { registerExecutionRoutes } from "./execution-routes";
 import { prepareProjectInvocation } from "./invocation-preparation";
 import { registerResourceRoutes } from "./resource-routes";
 import { registerActivationRoutes } from "./activation-routes";
@@ -653,7 +654,10 @@ async function assembleServer(
   registerReviewRoutes(app, db, reviews);
   registerLibraryRoutes(app, db, env.mock);
   registerActivationRoutes(app, db);
-  registerResourceRoutes(app, engine.resources);
+  registerResourceRoutes(app, engine.resources, env.mock ? undefined : (id) => engine.execution.stopInvocation(id));
+  registerExecutionRoutes(app, engine.execution, env.mock, (request, reply) => plannerRequestCancellation(request.raw, reply.raw, requestControllers));
+  const unresolvedWorkers = env.mock ? [] : await engine.execution.recover();
+  if (unresolvedWorkers.length) app.log.warn({ workerIds: unresolvedWorkers }, "Isolated workers remain unresolved; their workspaces and capacity are protected.");
   engine.activation.setBrowser(previews, reviews);
   app.addHook("onClose", () => reviews.close());
 
@@ -1433,7 +1437,7 @@ async function assembleServer(
       // never hard-fails, by design.
       const plannerModel = resolvePlannerModel(settings, "deconstruct");
       const activationRevision = engine.activation.store.resolve(project.id);
-      plannerModel.prepareActivation = (invocationId, stage, cwd, signal) => prepareProjectInvocation(engine.resources, engine.activation, { id: invocationId, project, stage, cwd, signal, runner: plannerModel.runner }, settings.models.find((model) => model.id === plannerModel.id)!, activationRevision);
+      plannerModel.prepareActivation = (invocationId, stage, cwd, signal) => prepareProjectInvocation(engine.resources, engine.activation, { id: invocationId, project, stage, cwd, signal, runner: plannerModel.runner }, settings.models.find((model) => model.id === plannerModel.id)!, activationRevision, engine.execution);
       // VW03: no planning against a temporary directory — an unreachable
       // repository lands in this route's documented stub fallback below.
       const repository = await planning.inspect(project, cancellation.signal);
@@ -1581,7 +1585,7 @@ async function assembleServer(
       const settings = repo.getSettings(db) ?? defaultSettings();
       const plannerModel = resolvePlannerModel(settings, operation.kind);
       const activationRevision = engine.activation.store.resolve(project.id);
-      plannerModel.prepareActivation = (invocationId, stage, cwd, signal) => prepareProjectInvocation(engine.resources, engine.activation, { id: invocationId, project, stage, cwd, signal, runner: plannerModel.runner }, settings.models.find((model) => model.id === plannerModel.id)!, activationRevision);
+      plannerModel.prepareActivation = (invocationId, stage, cwd, signal) => prepareProjectInvocation(engine.resources, engine.activation, { id: invocationId, project, stage, cwd, signal, runner: plannerModel.runner }, settings.models.find((model) => model.id === plannerModel.id)!, activationRevision, engine.execution);
       const messages = operation.input.messages;
       const attachmentNames = listAttachments(attachmentsDir(project, env.mock)).map((a) => a.name);
       const repository = await planning.inspect(project, signal);
@@ -2650,6 +2654,7 @@ async function assembleServer(
         (event) => recordModelInvocation(event),
         cancellation.signal,
         async (model, id, signal) => ({ accounting: await engine.resources.acquire({ id, model: model.id, modelConfig: model, stage: "health" }, signal, false), release: () => engine.resources.releaseUnstarted(id) }),
+        (model, adapter) => engine.execution.wrap(undefined, model, adapter),
       );
     } finally {
       cancellation.cleanup();

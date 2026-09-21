@@ -11,6 +11,8 @@
 //
 // Depend ONLY on @orc/types.
 
+import type { AgentExecution } from "./execution.js";
+export * from "./execution.js";
 import { randomUUID } from "node:crypto";
 import { readFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -40,9 +42,10 @@ export type {
 } from "./managed-process.js";
 
 export interface AgentRunOptions {
+  execution?: AgentExecution;
   /** Server-owned activation; never supplied by generated task prose. */
   activation?: SelectiveLaunch;
-  invocation?: { id: string; taskId: string; stage: import("@orc/types").ModelInvocation["stage"] };
+  invocation?: { id: string; taskId?: string; stage: import("@orc/types").ModelInvocation["stage"] };
   model: ModelId;
   /** The full task instructions: description + acceptance criteria + scope. */
   prompt: string;
@@ -121,6 +124,7 @@ export class ClaudeAdapter implements AgentAdapter {
   ) {}
 
   async run(opts: AgentRunOptions): Promise<AgentRunResult> {
+    if (opts.execution) throw new Error("Isolated execution is not verified for Claude Code.");
     return new Promise((resolve) => {
       // Prompt goes on stdin, not argv: a task's full instructions (description
       // + acceptance criteria + fix instructions from a prior failed attempt)
@@ -293,6 +297,7 @@ export class OpenCodeAdapter implements AgentAdapter {
   ) {}
 
   async run(opts: AgentRunOptions): Promise<AgentRunResult> {
+    if (opts.execution) throw new Error("Isolated execution is not verified for OpenCode.");
     if (opts.activation) throw new Error("Selective activation is not verified for this harness.");
     // Retry transient STARTUP races (cost===0 means it died before doing any
     // billable work, so a retry can't double-charge). Anything that already
@@ -514,7 +519,7 @@ export class CodexAdapter implements AgentAdapter {
 
   async run(opts: AgentRunOptions): Promise<AgentRunResult> {
     if (opts.activation) throw new Error("Selective activation is not verified for this harness.");
-    const outputFile = join(tmpdir(), `codex-summary-${randomUUID()}.txt`);
+    const outputFile = join(opts.execution?.outputDirectory ?? tmpdir(), `codex-summary-${randomUUID()}.txt`);
     try {
       return await this.runOnce(opts, outputFile);
     } finally {
@@ -546,7 +551,7 @@ export class CodexAdapter implements AgentAdapter {
     args.push(...modelEffortArgs(this.runner, this.effort));
 
     return new Promise((resolve) => {
-      const managed = spawnManagedProcess("codex", args, {
+      const managed = (opts.execution?.spawn ?? spawnManagedProcess)("codex", args, {
         cwd: opts.cwd,
         // Same $PWD lesson as the other two adapters — belt and suspenders
         // alongside the explicit -C flag above.

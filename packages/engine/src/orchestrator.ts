@@ -537,7 +537,7 @@ export class Orchestrator implements Scheduler {
     for (const model of chain) {
       if (
         !excluded.has(model) &&
-        settings.models.some((candidate) => candidate.id === model && candidate.enabled)
+        settings.models.some((candidate) => candidate.id === model && candidate.enabled && (!settings.models.find((item) => item.id === task.assignedModel)?.executionProfileId || candidate.executionProfileId))
       ) {
         return model;
       }
@@ -793,6 +793,7 @@ export class Orchestrator implements Scheduler {
       if (model === task.assignedModel) continue; // already known blocked
       const cfg = settings.models.find((m) => m.id === model);
       if (!cfg?.enabled) continue;
+      if (settings.models.find((item) => item.id === task.assignedModel)?.executionProfileId && !cfg.executionProfileId) continue;
       if (this.deps.checkBudget?.(model)) continue;
       if (this.deps.checkModelCooldown?.(model)) continue;
       if (this.deps.checkModelQuota?.(model)) continue;
@@ -2082,7 +2083,7 @@ export class Orchestrator implements Scheduler {
       this.noFigmaReferenceTasks.delete(task.id);
       if (reservedInvocationId) this.deps.releaseUnstartedInvocation?.(reservedInvocationId);
       try {
-        if (!preservePreflightWorkspace) await this.deps.worktrees.remove(project, task);
+        if (!preservePreflightWorkspace && !this.deps.workspaceHeld?.(project, task)) await this.deps.worktrees.remove(project, task);
       } catch (err) {
         this.emit(
           "warn",
@@ -2094,7 +2095,7 @@ export class Orchestrator implements Scheduler {
       // A terminal failure, or a B42 block after an earlier attempt already
       // pushed, must not leave a remote branch that makes Retry fail with a
       // non-fast-forward. Initial preflight blocks never reach this call.
-      if (task.status === "failed" || this.figmaBlockedTasks.has(task.id)) {
+      if (!this.deps.workspaceHeld?.(project, task) && (task.status === "failed" || this.figmaBlockedTasks.has(task.id))) {
         try {
           await this.deps.git.cleanupTaskBranch(project, task);
         } catch (err) {
@@ -2444,7 +2445,7 @@ export class Orchestrator implements Scheduler {
       }
       this.stopRequested.delete(task.id);
       try {
-        await this.deps.worktrees.remove(project, task);
+        if (!this.deps.workspaceHeld?.(project, task)) await this.deps.worktrees.remove(project, task);
       } catch (err) {
         this.emit(
           "warn",
@@ -2454,7 +2455,7 @@ export class Orchestrator implements Scheduler {
         );
       }
       // Same failed-branch cleanup as executeTask's finally.
-      if (task.status === "failed") {
+      if (task.status === "failed" && !this.deps.workspaceHeld?.(project, task)) {
         try {
           await this.deps.git.cleanupTaskBranch(project, task);
         } catch (err) {
@@ -2587,6 +2588,7 @@ export class Orchestrator implements Scheduler {
       );
       return normalizedResult;
     } catch (err: unknown) {
+      if (err instanceof ResourceUnavailableError || this.deps.workspaceHeld?.(project, task)) { this.emitRunEvent(task, null, "failed", model, startedAt, undefined, effort); throw err; }
       if (
         (err as Error).name === "AbortError" ||
         controller.signal.aborted
@@ -2686,6 +2688,7 @@ export class Orchestrator implements Scheduler {
           }),
       });
     } catch (err: unknown) {
+      if (this.deps.workspaceHeld?.(project, task)) { if (started) this.emitRunEvent(task, null, "failed", docsModel, startedAt, runId, effort); throw err; }
       if (taskSignal?.aborted) {
         if (started) this.emitRunEvent(task, null, "stopped", docsModel, startedAt, runId, effort);
         return;

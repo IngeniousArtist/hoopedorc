@@ -6,6 +6,8 @@ import { join } from "node:path";
 import {
   classifyFailure,
   execManagedProcess,
+  execInvocationProcess,
+  type AgentExecution,
   ManagedProcessError,
   modelEffortArgs,
   selectiveClaudeArgs,
@@ -800,10 +802,11 @@ async function runCodexJson(
   signal?: AbortSignal,
   timeoutMs = PLAN_TIMEOUT_MS,
   maxOutputBytes?: number,
+  execution?: AgentExecution,
 ): Promise<ClaudeJsonResult> {
-    const outputFile = join(tmpdir(), `codex-plan-${randomUUID()}.txt`);
+    const outputFile = join(execution?.outputDirectory ?? tmpdir(), `codex-plan-${randomUUID()}.txt`);
     const schemaFile = outputSchema
-      ? join(tmpdir(), `codex-plan-schema-${randomUUID()}.json`)
+      ? join(execution?.outputDirectory ?? tmpdir(), `codex-plan-schema-${randomUUID()}.json`)
       : undefined;
     if (schemaFile) writeFileSync(schemaFile, JSON.stringify(outputSchema));
     const cleanup = () => {
@@ -845,14 +848,14 @@ async function runCodexJson(
     if (schemaFile) args.push("--output-schema", schemaFile);
 
     try {
-      const { stdout } = await execManagedProcess("codex", args, {
+      const { stdout } = await execInvocationProcess("codex", args, {
         cwd,
         env: sanitizedEnv({ PWD: cwd }),
         input: prompt,
         signal,
         timeoutMs,
         maxOutputBytes: managedOutputThreshold(maxOutputBytes),
-      });
+      }, execution);
       // --output-last-message is only written on a successful turn (verified
       // live, F36) — an empty/missing file alongside a nonzero exit means the
       // turn failed before producing a message.
@@ -1034,6 +1037,7 @@ async function runPlannerJson(
           signal,
           limits?.timeoutMs,
           limits?.maxOutputBytes,
+          prepared?.execution,
         );
       } else if (plannerModel.runner === "opencode") {
         if (!plannerModel.model) {

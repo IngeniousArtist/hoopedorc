@@ -779,6 +779,9 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `costAnalytics` | `GET /api/projects/:id/analytics` | → `CostAnalyticsResponse` |
 | `estimatePlan` | `GET /api/projects/:id/estimate` | → `EstimateResponse` |
 | `getSettings` | `GET /api/settings` | → `GetSettingsResponse` |
+| `executionStatus` | `GET /api/execution` | → `ExecutionStatusResponse`; host limitations, saved verification and owned workers |
+| `verifyExecutionProfile` | `POST /api/execution/profiles/:profileId/verify` | → `ExecutionCapability`; no-model runtime/CLI/login probe; 409 in mock mode |
+| `stopExecutionWorker` | `POST /api/execution/workers/:workerId/stop` | → `ExecutionStatusResponse`; stop/verify only this immutable owned worker; 409 if unresolved or mock |
 | `resources` | `GET /api/resources` | → `ResourcesResponse` saved pool usage and unresolved workers |
 | `recoverResource` | `POST /api/resources/:reservationId/recover` | `RecoverResourceRequest` → `RecoverResourceResponse`; confirmed, versioned, idempotent capacity release |
 | `updateSettings` | `PUT /api/settings` | `UpdateSettingsRequest` → `UpdateSettingsResponse` |
@@ -1031,3 +1034,27 @@ code-check decisions, task success, approvals or merge policy.
 VW13 project deletion retains detached pooled invocation usage so cleanup cannot
 reset a shared rolling quota. Project/task/run identifiers are removed from those
 ledger rows; deleting occupied or unresolved workers remains refused.
+
+## VW14 execution profiles
+
+Settings include `executionProfiles` (normalized to `[]`) and optional
+`ModelConfig.executionProfileId`. The initial profile is Docker/Codex with an
+immutable local image, labelled CLI account volume and matching subscription
+pool. Unsupported runner/billing/membership, mutable images and out-of-range
+limits are validation errors; no host fallback occurs. Removing a profile with
+an unsettled worker is refused. Existing native models are unchanged.
+
+`ExecutionCapability.state=verified` records runtime, exact CLI version and
+ChatGPT login status, not a successful model request or AWS smoke test. A profile
+edit invalidates its saved verification fingerprint. Launch rechecks actual
+runtime/login and pins the inspected image and Docker engine ID. Recovery refuses
+a different daemon; absence on a new host cannot release an old worker. Mock verification/stop return 409
+without Docker I/O. Status excludes host paths and account contents.
+
+SQLite `execution_installation`, `execution_workers` and `execution_capabilities`
+are created idempotently for existing/fresh databases. Worker identity is persisted
+before launch; restart marks potentially live workers unresolved and then tries
+owned termination. Uncertain workers retain account capacity even after terminal
+usage is recorded. Recovery of a Docker reservation first verifies container
+termination; the existing native process-stop assertion remains operator-owned.
+Execution records outlive projects. See [worker operations](../deploy/worker/README.md).

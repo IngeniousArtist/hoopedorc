@@ -1,3 +1,4 @@
+import { ExecutionService } from "./execution";
 import { prepareProjectInvocation } from "./invocation-preparation";
 import { ResourceManager } from "./resources";
 import { ActivationService } from "./activation";
@@ -200,13 +201,14 @@ export class EngineRunner {
 
   readonly activation: ActivationService;
   readonly resources: ResourceManager;
+  readonly execution: ExecutionService;
   private readonly pendingAdmissions = new Map<string, { accounting: import("@orc/types").InvocationAccounting; runner: ModelConfig["runner"] }>();
 
   constructor(
     private readonly db: Db,
     private readonly hub: WsHub,
     private readonly options: EngineRunnerOptions = {},
-  ) { this.activation = new ActivationService(db); this.resources = new ResourceManager(db); }
+  ) { this.activation = new ActivationService(db); this.resources = new ResourceManager(db); this.execution = new ExecutionService(db); }
 
   private enqueueLog(e: Parameters<typeof repo.createLog>[1]): void {
     this.logQueue.push(e);
@@ -410,7 +412,7 @@ export class EngineRunner {
    * it was initiated by Start or a manual-priority request. Deletion and
    * replacement operations must use this stronger predicate. */
   hasActivity(projectId: string): boolean {
-    return this.runtimes.has(projectId) || this.rollbackByProject.has(projectId) || this.resources.hasActivity(projectId);
+    return this.runtimes.has(projectId) || this.rollbackByProject.has(projectId) || this.resources.hasActivity(projectId) || this.execution.workspaceHeld(projectId);
   }
 
   getActivityState(projectId: string): ProjectRuntimeState | undefined {
@@ -552,7 +554,7 @@ export class EngineRunner {
       const cfg = snapshot ?? liveSettings().models.find((m) => m.id === modelId);
       if (!cfg) throw new Error(`no ModelConfig for ${modelId}`);
       if (!cfg.enabled) throw new Error(`model ${modelId} is disabled`);
-      return this.activation.wrap(project, makeAdapter(cfg, ENV.opencodeBaseUrl));
+      return this.execution.wrap(project, cfg, this.activation.wrap(project, makeAdapter(cfg, ENV.opencodeBaseUrl)));
     };
 
     const worktrees = new WorktreeManagerImpl(settings);
@@ -582,11 +584,15 @@ export class EngineRunner {
         try { this.pendingAdmissions.set(id, { accounting: this.resources.reserve({ id, projectId: owner.id, taskId: task.id, model, stage: "author" }), runner: liveSettings().models.find((item) => item.id === model)!.runner }); return null; }
         catch (error) { if (error instanceof ResourceUnavailableError) return error.message; throw error; }
       },
+      workspaceHeld: (owner, task) => this.execution.workspaceHeld(owner.id, task.id),
       releaseUnstartedInvocation: (id) => { this.resources.releaseUnstarted(id); this.pendingAdmissions.delete(id); },
       beforeDocsInvocation: async (owner, task, model, id, signal) => { this.pendingAdmissions.set(id, { accounting: await this.resources.acquire({ id, projectId: owner.id, taskId: task.id, model: model.id, modelConfig: model, stage: "docs" }, signal), runner: model.runner }); },
       checkActivation: async (owner, task, model, signal) => {
         const config = liveSettings().models.find((candidate) => candidate.id === model);
         if (!config) return "Author model is unavailable.";
+        if (this.execution.workspaceHeld(owner.id, task.id)) return "An isolated worker still owns this task workspace. Resolve it in Settings → Resources.";
+        const executionIssue = await this.execution.check(config, signal);
+        if (executionIssue) return executionIssue;
         const issue = await this.activation.check(owner, task, config.runner, signal);
         if (issue) return issue;
         const settings = liveSettings();
@@ -664,7 +670,7 @@ export class EngineRunner {
 
         const activationRevision = this.activation.store.resolve(project.id, task.description);
         const plannerModel: PlannerModel = {
-          prepareActivation: (id, stage, cwd, signal) => prepareProjectInvocation(this.resources, this.activation, { id, project, task, stage, cwd, signal, runner: config.runner }, config, activationRevision),
+          prepareActivation: (id, stage, cwd, signal) => prepareProjectInvocation(this.resources, this.activation, { id, project, task, stage, cwd, signal, runner: config.runner }, config, activationRevision, this.execution),
           id: model,
           runner: config.runner,
           model: configuredRunnerModel,
@@ -1038,7 +1044,7 @@ export class EngineRunner {
       const config = snapshot ?? liveSettings().models.find((model) => model.id === modelId);
       if (!config) throw new Error(`no ModelConfig for ${modelId}`);
       if (!config.enabled) throw new Error(`model ${modelId} is disabled`);
-      return this.activation.wrap(project, makeAdapter(config, ENV.opencodeBaseUrl));
+      return this.execution.wrap(project, config, this.activation.wrap(project, makeAdapter(config, ENV.opencodeBaseUrl)));
     };
     const worktrees = new WorktreeManagerImpl(settings);
     const git = new GitServiceImpl();
@@ -1222,6 +1228,7 @@ export class EngineRunner {
    * priority runtime already owns the project, promote that exact runtime;
    * never create a competing Orchestrator. */
   async start(project: Project): Promise<void> {
+    if (this.execution.workspaceHeld(project.id) && !this.runtimes.has(project.id)) throw new ResourceUnavailableError("Isolated workers still own this project. Resolve them before restarting work.", false);
     if (pendingPlanChange(this.db, project.id)) throw new Error("plan application is pending — retry it before running tasks");
     this.assertAcceptingWork();
     const persistenceError = planningPersistenceError(project);
@@ -1473,6 +1480,7 @@ export class EngineRunner {
     const cleanupWorktree = async (): Promise<void> => {
       const task = this.rollbackTask(sourceTask, refresh());
       try {
+        if (this.execution.workspaceHeld(project.id, task.id)) throw new ResourceUnavailableError("Isolated worker still owns this rollback workspace.", false);
         await deps.worktrees.remove(project, task);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

@@ -70,6 +70,8 @@ export function modelEffortError(
 export interface ModelConfig {
   /** Profiles sharing one CLI account must use the same resource pool. */
   accountPoolId?: string;
+  /** Omitted preserves explicit native host CLI execution. */
+  executionProfileId?: string;
   id: ModelId;
   displayName: string;
   runner: RunnerKind;
@@ -677,6 +679,7 @@ export const SECRET_SENTINEL = "__SET__";
 export interface Settings {
   /** Optional for old persisted settings; normalized reads always supply []. */
   accountPools?: import("./resources").AccountPool[];
+  executionProfiles?: import("./execution").ExecutionProfile[];
   models: ModelConfig[];
   /** Role/difficulty -> model assignment. Edited via the Settings selectors. */
   routing: RoutingPolicy;

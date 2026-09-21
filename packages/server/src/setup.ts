@@ -431,6 +431,7 @@ export async function testModels(
   onInvocation?: (event: ModelInvocation) => void,
   signal?: AbortSignal,
   beforeInvocation?: (model: ModelConfig, id: string, signal?: AbortSignal) => Promise<{ accounting: InvocationAccounting; release: () => void }>,
+  wrapAdapter?: (model: ModelConfig, adapter: ReturnType<typeof makeAdapter>) => ReturnType<typeof makeAdapter>,
 ): Promise<TestModelsResponse> {
   const enabled = settings.models.filter((m) => m.enabled);
   const results: ModelTestResult[] = await Promise.all(
@@ -459,9 +460,11 @@ export async function testModels(
           tokensCached: 0,
         });
         started = true;
-        const adapter = makeAdapter(cfg, opencodeBaseUrl);
+        const native = makeAdapter(cfg, opencodeBaseUrl);
+        const adapter = wrapAdapter?.(cfg, native) ?? native;
         let res = await adapter.run({
           model: cfg.id,
+          invocation: { id: baseInvocation.id, stage: "health" },
           // F33: "OK" only proved liveness, not identity — the owner wants to
           // see the model actually say who it is, so a passing test reads
           // like a real handshake instead of a cryptic two-letter footnote.
