@@ -5359,3 +5359,36 @@ test("VW14: automatic fallback never downgrades an isolated author to host execu
   await new Orchestrator(fakeDeps({ settings: cfg, adapterFor: () => ({ runner: "opencode", run: (options) => { invoked.push(options.model); return Promise.resolve({ ok: false, exitReason: "error", costUsd: 0, tokensIn: 0, tokensOut: 0 }); } }) }, [])).runTask(PROJECT, task("isolated-fallback", [], { maxAttempts: 1 }));
   assert.deepEqual(invoked, ["deepseek-flash"]);
 });
+
+test("VW15: milestone verification joins the scheduler without an author, PR or merge and records every criterion", async () => {
+  const contributor = task("contributor", [], { status: "done", attempts: 1 });
+  const candidate = task("milestone", [contributor.id], { acceptanceCriteria: ["The integrated journey works"], milestone: { maxRepairRounds: 1, maxInvocations: 3, maxDurationMinutes: 5, maxCostUsd: 2 } });
+  const decisions: MergeDecision[] = []; const merged: number[] = [];
+  const deps = fakeDeps({
+    getTasks: () => [contributor, candidate],
+    adapterFor: () => { throw new Error("Verification must not invoke an author"); },
+    git: { verificationRevision() { return Promise.resolve("a".repeat(40)); }, openPr() { return Promise.reject(new Error("No verification PR")); } },
+    gates: { run() { return Promise.resolve({ ...GOOD_GATE, vacuous: false, executed: ["tests"] }); } },
+    validator: { review(p, t, gate) { return Promise.resolve({ id: "proof", projectId: p.id, taskId: t.id, runId: "verify", validatorModel: "deepseek-pro", verdict: "approve", reasons: [], confidence: 1, gate, ts: "", criterionEvidence: [{ criterion: t.acceptanceCriteria[0]!, passed: true, evidence: "test/journey.ts:1 exercises the combined implementation" }] }); } },
+    events: { onLog() {}, onTaskUpdated() {}, onRunUpdated() { throw new Error("No author attempt"); }, onMergeDecision(d) { decisions.push(d); }, requestApproval() { return Promise.reject(new Error("No acceptance override")); } },
+  }, merged);
+  await new Orchestrator(deps).start(PROJECT, [contributor, candidate]);
+  assert.equal(candidate.status, "done"); assert.equal(candidate.attempts, 1); assert.deepEqual(merged, []);
+  assert.equal(decisions[0]?.milestoneProof?.headSha, "a".repeat(40)); assert.equal(decisions[0]?.milestoneProof?.dependencies[0]?.id, contributor.id);
+});
+
+test("VW15: missing tests, incomplete criteria, provider failure and changing revisions preserve independent work and never accept", async () => {
+  for (const mode of ["missing-tests", "missing-criterion", "provider-failure", "revision-moved", "self-review"]) {
+    const contributor = task(`source-${mode}`, [], { status: "done", attempts: 1, ...(mode === "self-review" ? { assignedModel: "deepseek-pro" } : {}) });
+    const candidate = task(`check-${mode}`, [contributor.id], { acceptanceCriteria: ["Original criterion"], milestone: { maxRepairRounds: 1, maxInvocations: 3, maxDurationMinutes: 5, maxCostUsd: 2 } });
+    let cleaned = false;
+    const deps = fakeDeps({ getTasks: () => [contributor, candidate],
+      git: { verificationRevision(_project, inspected) { return Promise.resolve(mode === "revision-moved" && !inspected ? "b".repeat(40) : "a".repeat(40)); } },
+      worktrees: { remove() { cleaned = true; return Promise.resolve(); } },
+      gates: { run() { return Promise.resolve({ ...GOOD_GATE, vacuous: false, executed: mode === "missing-tests" ? [] : ["tests"] }); } },
+      validator: { review(p, t, gate) { if (mode === "provider-failure") return Promise.reject(new Error("Provider unavailable")); return Promise.resolve({ id: "proof", projectId: p.id, taskId: t.id, runId: "verify", validatorModel: "deepseek-pro", verdict: "approve", reasons: [], confidence: 1, gate, ts: "", criterionEvidence: mode === "missing-criterion" ? [] : [{ criterion: "Original criterion", passed: true, evidence: "test/integrated.ts:1" }] }); } },
+    }, []);
+    await new Orchestrator(deps).runTask(PROJECT, candidate);
+    assert.equal(candidate.status, "failed", mode); assert.equal(contributor.status, "done"); assert.equal(cleaned, true);
+  }
+});

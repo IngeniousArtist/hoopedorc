@@ -98,7 +98,7 @@ export class ValidatorImpl implements Validator {
     const cwd = task.worktreePath ?? project.localPath;
     const diff = await this.getDiff(project, cwd, signal);
     const adapter = this.adapterFactory(validatorModel, validatorConfig);
-    const prompt = this.buildReviewPrompt(task, gate, diff, attemptSettings) + (this.referenceContext?.(project, task) ?? "");
+    const prompt = (task.milestone ? `You are verifying an integrated milestone at the current committed repository revision. Inspect the complete implementation in this worktree, including the contributing changes already merged. An empty diff is expected. Do not modify files. For EACH acceptance criterion return criterionEvidence in original order: {criterion: exact original text, passed: boolean, evidence: concrete file/line or test output and observed behavior}. Missing evidence means request_changes. Never weaken a criterion.\n` : "") + this.buildReviewPrompt(task, gate, diff, attemptSettings) + (this.referenceContext?.(project, task) ?? "");
     const invocationId = `validator-${task.id}-${randomUUID()}`;
     const startedAt = new Date().toISOString();
     const baseInvocation = {
@@ -169,6 +169,8 @@ export class ValidatorImpl implements Validator {
         gate,
         validatorModel,
       );
+
+      if (task.milestone && !result.ok) { decision.verdict = "request_changes"; decision.reasons.unshift("The milestone reviewer did not complete successfully."); }
 
       if (!diff.ok || diff.truncated) {
         decision.verdict = "escalate";
@@ -287,7 +289,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 {
   "verdict": "approve" | "request_changes" | "escalate",
   "reasons": ["reason 1", "reason 2"],
-  "confidence": 0.0 to 1.0
+  "confidence": 0.0 to 1.0${task.milestone ? `,\n  "criterionEvidence": [{"criterion": "exact original criterion", "passed": true, "evidence": "concrete file/line, observed behavior or test output"}]` : ""}
 }`;
   }
 
@@ -310,6 +312,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
       verdict?: string;
       reasons?: string[];
       confidence?: number;
+      criterionEvidence?: MergeDecision["criterionEvidence"];
     };
     let parsed: ParsedDecision | undefined;
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
@@ -345,6 +348,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
       taskId: task.id,
       runId: taskRunId(task),
       validatorModel: validatorModel as MergeDecision["validatorModel"],
+      ...(task.milestone && Array.isArray(parsed?.criterionEvidence) ? { criterionEvidence: parsed.criterionEvidence.filter((item) => item && typeof item.criterion === "string" && typeof item.passed === "boolean" && typeof item.evidence === "string").map((item) => ({ criterion: item.criterion.slice(0, 4000), passed: item.passed, evidence: item.evidence.slice(0, 8000) })) } : {}),
       verdict,
       reasons,
       confidence,

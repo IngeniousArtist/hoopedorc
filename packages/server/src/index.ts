@@ -1,3 +1,5 @@
+import { MilestoneError, createMilestoneRepairDraft, milestoneOutcomes, withMilestoneDraft } from "./milestones";
+import type { MilestoneRepairDraftRequest } from "@orc/types";
 import { registerExecutionRoutes } from "./execution-routes";
 import { prepareProjectInvocation } from "./invocation-preparation";
 import { registerResourceRoutes } from "./resource-routes";
@@ -343,7 +345,7 @@ function withAssignedModels(
     verifiedFigmaReferences,
     settings,
   );
-  return ensureDocsTask(tasksWithVisualQa, buildDocsTaskDraft(settings));
+  return withMilestoneDraft(ensureDocsTask(tasksWithVisualQa, buildDocsTaskDraft(settings)));
 }
 
 const gitForPlanning = new GitServiceImpl();
@@ -1821,6 +1823,27 @@ async function assembleServer(
       taskGeneration: repo.getTaskGeneration(db, id), tasks: repo.getTasks(db, id), executionActive: executionActive(id),
       latestReview: latestPlanChange(db, id, revisionId) };
   });
+  app.get("/api/projects/:id/milestones", async (req, reply) => {
+    const { id } = req.params as RouteParams; const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    return milestoneOutcomes(db, project, gitForPlanning, env.mock);
+  });
+  app.post("/api/projects/:id/milestones/:taskId/repair-draft", async (req, reply) => {
+    const { id, taskId } = req.params as { id: string; taskId: string }; const project = repo.getProject(db, id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    const input = req.body as Partial<MilestoneRepairDraftRequest> | undefined;
+    if (!input || !isPlanningRevisionId(input.revisionId) || !Number.isSafeInteger(input.sessionVersion) || !Number.isSafeInteger(input.taskGeneration)) return reply.code(400).send({ error: "A current planning revision, session version and task generation are required." });
+    try {
+      if (activePlanningOperation(db, id) || planningCommitInProgress(id) || pendingPlanChange(db, id) || deletingProjects.has(id)) throw new MilestoneError("Wait for current planning work to settle.");
+      const current = (await milestoneOutcomes(db, project, gitForPlanning, env.mock)).milestones.find((item) => item.task.id === taskId);
+      if (!current) throw new MilestoneError("Milestone not found.", 404);
+      if (current.state === "accepted" || current.state === "checking") throw new MilestoneError("This milestone does not need a repair draft.");
+      return createMilestoneRepairDraft(db, project, taskId, input as MilestoneRepairDraftRequest);
+    } catch (error) {
+      if (error instanceof MilestoneError) return reply.code(error.status).send({ error: error.message, code: "MILESTONE_REFUSED" });
+      throw error;
+    }
+  });
   app.post("/api/projects/:id/plan/changes/review", (req, reply) => {
     const { id } = req.params as RouteParams;
     try {
@@ -1828,6 +1851,7 @@ async function assembleServer(
       validatePlanChangeInput(req.body);
       return { review: reviewPlanChanges(db, id, req.body, repo.getSettings(db) ?? defaultSettings()) };
     } catch (error) {
+      if (error instanceof MilestoneError) return reply.code(error.status).send({ error: error.message, code: "MILESTONE_REFUSED" });
       if (error instanceof PlanChangeError) return reply.code(error.status).send({ error: error.message, code: error.code });
       throw error;
     }
@@ -1868,6 +1892,7 @@ async function assembleServer(
       return { revisionId: committed.revisionId, project: committed.project,
         tasks: committed.tasks, prdMarkdown: committed.prdMarkdown, agentsMd: committed.agentsMd };
     } catch (error) {
+      if (error instanceof MilestoneError) return reply.code(error.status).send({ error: error.message, code: "MILESTONE_REFUSED" });
       if (error instanceof PlanChangeError) return reply.code(error.status).send({ error: error.message, code: error.code });
       if (error instanceof RepositoryUnavailableError) return reply.code(503).send({ error: error.message, code: error.code });
       if (error instanceof PlanningCommitError) {
@@ -1962,6 +1987,7 @@ async function assembleServer(
       const current = repo.getProject(db, id)!;
       broadcast({ type: "project.updated", payload: current });
       const message = err instanceof Error ? err.message : String(err);
+      if (err instanceof MilestoneError) return reply.code(err.status).send({ error: err.message, code: "MILESTONE_REFUSED" });
       app.log.error(`planning commit failed for ${id}: ${message}`);
       const status =
         err instanceof PlanningCommitError &&
@@ -2188,6 +2214,9 @@ async function assembleServer(
     if (body.status) updates.status = body.status;
     if (body.assignedModel) updates.assignedModel = body.assignedModel;
     if (body.acceptanceCriteria) updates.acceptanceCriteria = body.acceptanceCriteria;
+    if ((existing.milestone || existing.repairFor) && ["title", "description", "difficulty", "acceptanceCriteria", "dependsOn", "scopePaths", "maxAttempts"].some((key) => key in body)) {
+      return reply.code(409).send({ error: "Milestone and repair criteria, scope and limits were frozen at approval. Add a reviewed follow-up instead." });
+    }
     if (body.scopePaths) updates.scopePaths = body.scopePaths;
 
     const updated = repo.updateTask(db, id, updates as Parameters<typeof repo.updateTask>[2]);
@@ -2208,7 +2237,7 @@ async function assembleServer(
     if (!settings) return reply.code(500).send({ error: "settings not found" });
 
     // Budget check
-    const budgetMsg = checkBudget(db, task.projectId, task.assignedModel, settings);
+    const budgetMsg = checkBudget(db, task.projectId, task.milestone ? settings.routing.validatorByDifficulty[task.difficulty] : task.assignedModel, settings);
     if (budgetMsg) {
       return reply.code(403).send({ error: `budget cap: ${budgetMsg}` });
     }

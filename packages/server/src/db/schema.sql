@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   difficulty          TEXT NOT NULL,
   status              TEXT NOT NULL,
   depends_on          TEXT NOT NULL DEFAULT '[]',  -- JSON array of task ids
+  milestone       TEXT,
+  repair_for      TEXT,
   acceptance_criteria TEXT NOT NULL DEFAULT '[]',  -- JSON array of strings
   assigned_model      TEXT NOT NULL,
   role                TEXT,                         -- optional Role for routing
@@ -172,6 +174,8 @@ CREATE TABLE IF NOT EXISTS merge_decisions (
   verdict         TEXT NOT NULL,
   reasons         TEXT NOT NULL DEFAULT '[]',  -- JSON array
   confidence      REAL NOT NULL,
+  criterion_evidence TEXT,
+  milestone_proof TEXT,
   gate            TEXT NOT NULL,               -- JSON GateResult
   ts              TEXT NOT NULL
 );
@@ -499,3 +503,24 @@ CREATE TABLE IF NOT EXISTS execution_workers (
 );
 CREATE INDEX IF NOT EXISTS idx_execution_workers_state ON execution_workers(state, project_id);
 CREATE TABLE IF NOT EXISTS execution_capabilities (profile_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, json TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS milestone_budgets (
+  task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  started_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS milestone_calls (
+  invocation_id TEXT PRIMARY KEY,
+  milestone_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_milestone_calls_root ON milestone_calls(milestone_id);
+CREATE TABLE IF NOT EXISTS milestone_repairs (
+  milestone_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  round INTEGER NOT NULL,
+  revision_id TEXT NOT NULL,
+  draft_json TEXT NOT NULL,
+  applied INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (milestone_id, round),
+  UNIQUE (milestone_id, revision_id)
+);

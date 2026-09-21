@@ -1,3 +1,4 @@
+import { DEFAULT_MILESTONE_POLICY, type PlanChangeTask } from "@orc/types";
 import { PlanChanges } from "../components/PlanChanges";
 import type {
   Difficulty,
@@ -40,6 +41,10 @@ const DIFFICULTIES: Difficulty[] = ["easy", "medium", "hard"];
 
 /** UI-side draft task: deps tracked by stable UUID key, not array index. */
 interface UiTask {
+  milestone?: DraftTask["milestone"];
+  repairFor?: DraftTask["repairFor"];
+  existingDependsOn?: string[];
+  generatedTaskKind?: DraftTask["generatedTaskKind"];
   key: string;
   title: string;
   description: string;
@@ -115,6 +120,7 @@ function uiTasksFromDraft(drafts: DraftTask[]): UiTask[] {
   const keys: string[] = drafts.map(() => newKey());
   return drafts.map((t, i) => ({
     key: keys[i]!,
+    milestone: t.milestone, repairFor: t.repairFor, generatedTaskKind: t.generatedTaskKind, existingDependsOn: (t as PlanChangeTask).existingDependsOn,
     title: t.title,
     description: t.description,
     difficulty: t.difficulty,
@@ -128,9 +134,12 @@ function uiTasksFromDraft(drafts: DraftTask[]): UiTask[] {
   }));
 }
 
-function draftTasksFromUi(tasks: UiTask[]): DraftTask[] {
+function draftTasksFromUi(tasks: UiTask[]): (DraftTask & { existingDependsOn?: string[] })[] {
   const keyIndex = new Map(tasks.map((t, i) => [t.key, i]));
   return tasks.map((t) => ({
+    ...(t.milestone ? { milestone: t.milestone } : {}), ...(t.repairFor ? { repairFor: t.repairFor } : {}),
+    ...(t.existingDependsOn ? { existingDependsOn: t.existingDependsOn } : {}),
+    ...(t.generatedTaskKind ? { generatedTaskKind: t.generatedTaskKind } : {}),
     title: t.title,
     description: t.description,
     difficulty: t.difficulty,
@@ -1106,6 +1115,7 @@ export function PlanView({
 
   return (
     <div className="max-w-[1440px] space-y-6">
+
       <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
           Plan — {project.name}
@@ -1573,7 +1583,7 @@ export function PlanView({
         <fieldset disabled={deconstructing || committing || chatting} className="min-w-0 space-y-4">
           <section className="rounded-lg border border-neutral-800 bg-neutral-900 p-4">
             <h3 className="mb-2 text-sm font-medium text-neutral-300">Brief</h3>
-            <textarea aria-label="Planning brief" value={prd ?? ""} onChange={(event) => { markEdited(); setPrd(event.target.value); }} rows={8}
+            <textarea aria-label="Planning brief" readOnly={tasks?.some((task) => !!task.repairFor)} value={prd ?? ""} onChange={(event) => { markEdited(); setPrd(event.target.value); }} rows={8}
               className="w-full resize-y rounded border border-neutral-700 bg-neutral-950 p-3 text-sm leading-relaxed text-neutral-200" />
           </section>
 
@@ -1606,6 +1616,7 @@ export function PlanView({
               </h3>
               <button
                 onClick={addTask}
+                disabled={tasks.some((task) => !!task.repairFor)}
                 className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800"
               >
                 + Add task
@@ -1618,6 +1629,12 @@ export function PlanView({
                   key={t.key}
                   className="rounded border border-neutral-800 bg-neutral-950 p-3"
                 >
+                  <div className="mb-3 space-y-2">
+                    <label className="flex min-h-10 items-center gap-2 text-sm"><input type="checkbox" checked={!!t.milestone} disabled={!!t.repairFor} onChange={(event) => patchTask(t.key, { milestone: event.target.checked ? { ...DEFAULT_MILESTONE_POLICY } : undefined })} />Verification milestone</label>
+                    {t.milestone && <><p className="text-xs text-neutral-400">Checks the combined repository and every criterion below after its dependencies complete. Uses the configured validator for this difficulty, independently of contributing authors. The model below is for a possible repair. Criteria and limits become fixed at approval.</p>
+                      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{([ ["maxRepairRounds", "Repair rounds"], ["maxInvocations", "Total calls"], ["maxDurationMinutes", "Minutes"], ["maxCostUsd", "Observed USD limit"] ] as const).map(([field, label]) => <label key={field} className="text-xs text-neutral-400">{label}<input aria-label={`Task ${idx + 1} ${label}`} type="number" min={field === "maxRepairRounds" ? 0 : 1} disabled={!!t.repairFor} value={t.milestone![field]} onChange={(event) => patchTask(t.key, { milestone: { ...t.milestone!, [field]: Number(event.target.value) } })} className="mt-1 min-h-10 w-full rounded border border-neutral-700 bg-neutral-900 px-2 text-sm focus-visible:ring-2 focus-visible:ring-blue-500" /></label>)}</div></>}
+                    {t.repairFor && <p className="text-xs text-amber-300">Bounded repair round {t.repairFor.round}. Original criteria, scope, dependencies and limits must remain unchanged.</p>}
+                  </div>
                   <div className="mb-2 flex items-start gap-2">
                     <span className="mt-2 text-[11px] text-neutral-600">
                       {idx + 1}
@@ -1633,7 +1650,7 @@ export function PlanView({
                     <button
                       aria-label={`Move ${t.title || `task ${idx + 1}`} up`}
                       onClick={() => moveTask(idx, -1)}
-                      disabled={idx === 0}
+                      disabled={idx === 0 || !!t.repairFor}
                       className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-400 hover:bg-neutral-800 disabled:opacity-30"
                     >
                       ↑
@@ -1641,13 +1658,14 @@ export function PlanView({
                     <button
                       aria-label={`Move ${t.title || `task ${idx + 1}`} down`}
                       onClick={() => moveTask(idx, 1)}
-                      disabled={idx === tasks.length - 1}
+                      disabled={idx === tasks.length - 1 || !!t.repairFor}
                       className="rounded border border-neutral-700 px-2 py-1 text-[11px] text-neutral-400 hover:bg-neutral-800 disabled:opacity-30"
                     >
                       ↓
                     </button>
                     <button
                       aria-label={`Remove ${t.title || `task ${idx + 1}`}`}
+                      disabled={!!t.repairFor}
                       onClick={() => removeTask(t.key)}
                       className="rounded border border-red-900 px-2 py-1 text-[11px] text-red-400 hover:bg-red-950/50"
                     >
@@ -1673,6 +1691,7 @@ export function PlanView({
                       </label>
                       <select
                         aria-label={`Difficulty for ${t.title || `task ${idx + 1}`}`}
+                        disabled={!!t.repairFor}
                         value={t.difficulty}
                         onChange={(e) =>
                           patchTask(t.key, {
@@ -1690,7 +1709,7 @@ export function PlanView({
                     </div>
                     <div>
                       <label className="mb-1 block text-[10px] uppercase text-neutral-400">
-                        Assigned model
+                        {t.milestone ? "Repair author model" : "Assigned model"}
                       </label>
                       <ModelSelect
                         ariaLabel={`Assigned model for ${t.title || "task"}`}
@@ -1707,6 +1726,7 @@ export function PlanView({
                       </label>
                       <input
                         aria-label={`Scope paths for ${t.title || `task ${idx + 1}`}`}
+                        readOnly={!!t.repairFor}
                         value={t.scopePaths.join(", ")}
                         onChange={(e) =>
                           patchTask(t.key, {
@@ -1724,6 +1744,7 @@ export function PlanView({
                       </label>
                       <textarea
                         aria-label={`Acceptance criteria for ${t.title || `task ${idx + 1}`}`}
+                        readOnly={!!t.repairFor}
                         value={t.acceptanceCriteria.join("\n")}
                         onChange={(e) =>
                           patchTask(t.key, {
@@ -1758,6 +1779,7 @@ export function PlanView({
                               >
                                 <input
                                   type="checkbox"
+                                  disabled={!!t.repairFor}
                                   checked={on}
                                   onChange={(e) =>
                                     patchTask(t.key, {
@@ -1847,7 +1869,7 @@ export function PlanView({
             )}
           </div>
         </fieldset>
-        <PlanChanges key={projectId} projectId={projectId} draftTitles={tasks.map((t) => t.title)}
+        <PlanChanges key={projectId} fixedDependencies={tasks.map((task) => task.repairFor ? task.existingDependsOn ?? [] : undefined)} projectId={projectId} draftTitles={tasks.map((t) => t.title)}
           disabled={chatting || deconstructing} onApplying={setCommitting}
           prepareDraft={async () => {
             if (!revisionId) throw new Error("Reload the planning session first.");
@@ -1859,7 +1881,7 @@ export function PlanView({
               if (saved.sessionVersion !== undefined) versionsRef.current.set(projectId, saved.sessionVersion);
               savedSeqRef.current = editSeqRef.current; setSavedSeq(editSeqRef.current);
               return { ...draft, sessionVersion: versionsRef.current.get(projectId) ?? 0,
-                tasks: draft.tasks.map((t) => ({ ...t, existingDependsOn: [] })) };
+                tasks: draft.tasks.map((t) => ({ ...t, existingDependsOn: t.existingDependsOn ?? [] })) };
             });
           }}
           onApplied={(result) => { setCommitted(result); setProject(result.project); setTasks(null); setAgentsMd(null); setVerifiedFigmaReferences([]); }} />

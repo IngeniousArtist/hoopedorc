@@ -213,6 +213,7 @@ test("VW01: mock planning chat and deconstruction never reach a CLI, a clone, or
         "Implement: Add an API health endpoint.",
         "Add regression coverage: Add an API health endpoint.",
         "Project documentation",
+        "Verify the integrated brief",
       ],
     );
     assert.deepEqual(plan.tasks[1]?.dependsOn, [0]);
@@ -223,7 +224,7 @@ test("VW01: mock planning chat and deconstruction never reach a CLI, a clone, or
       assert.ok(task.assignedModel.length > 0);
     }
     const persisted = repo.getPlanningSession(fx.deps.db, PROJECT_ID);
-    assert.equal(persisted.draftTasks?.length, 3);
+    assert.deepEqual(persisted.draftTasks, plan.tasks);
     assert.equal(persisted.prd, plan.prdMarkdown);
 
     // Deterministic: the same transcript yields the same plan (the mock
@@ -432,6 +433,7 @@ test("VW01: mock Figma verification persists exact references and inserts the ge
         "Add regression coverage: Match the referenced design for login",
         "Visual fidelity QA",
         "Project documentation",
+        "Verify the integrated brief",
       ],
     );
     const visualQa = plan.tasks[2];
@@ -447,7 +449,7 @@ test("VW01: mock Figma verification persists exact references and inserts the ge
 
     const persisted = repo.getPlanningSession(fx.deps.db, PROJECT_ID);
     assert.deepEqual(persisted.verifiedFigmaReferences, plan.verifiedFigmaReferences);
-    assert.equal(persisted.draftTasks?.length, 4);
+    assert.deepEqual(persisted.draftTasks, plan.tasks);
     assert.deepEqual(fx.invokedClis(), []);
   } finally {
     await app.close();

@@ -1,3 +1,4 @@
+import { MilestonesPanel } from "../components/MilestonesPanel";
 import {
   type EstimateResponse,
   type LogEvent,
@@ -886,6 +887,7 @@ export function Board({
         </div>
       )}
 
+      {tasks.some((task) => task.milestone) && <MilestonesPanel key={projectId} projectId={projectId} compact />}
       <BoardSummary
         tasks={tasks}
         costUsd={costUsd}

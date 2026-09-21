@@ -1,3 +1,4 @@
+import { validateMilestoneDrafts } from "./milestones";
 import { PlanChangeError, assertPlanChangeCurrent, finalizePlanChanges, getPlanChange } from "./plan-changes";
 import type { PlanChangeReview } from "@orc/types";
 import { activePlanningOperation } from "./planning-operations.js";
@@ -37,6 +38,8 @@ export class PlanningCommitError extends Error {
 }
 
 type MaterializableTask = {
+  milestone?: Task["milestone"];
+  repairFor?: Task["repairFor"];
   title: string;
   description: string;
   difficulty: Task["difficulty"];
@@ -59,6 +62,8 @@ export function materializeTasks(
     repo.createTask(db, {
       id: ids[index]!,
       projectId: project.id,
+      milestone: draft.milestone,
+      repairFor: draft.repairFor,
       title: draft.title,
       description: draft.description,
       difficulty: draft.difficulty,
@@ -71,7 +76,7 @@ export function materializeTasks(
       role: draft.role,
       scopePaths: draft.scopePaths,
       attempts: 0,
-      maxAttempts: project.config?.maxAttempts ?? 3,
+      maxAttempts: draft.milestone || draft.repairFor ? 1 : project.config?.maxAttempts ?? 3,
     }),
   );
 }
@@ -152,6 +157,8 @@ export function planningContentHash(
       scopePaths: task.scopePaths,
       assignedModel: task.assignedModel,
       generatedTaskKind: task.generatedTaskKind ?? null,
+      ...(task.milestone ? { milestone: { maxRepairRounds: task.milestone.maxRepairRounds, maxInvocations: task.milestone.maxInvocations, maxDurationMinutes: task.milestone.maxDurationMinutes, maxCostUsd: task.milestone.maxCostUsd } } : {}),
+      ...(task.repairFor ? { repairFor: { milestoneId: task.repairFor.milestoneId, round: task.repairFor.round } } : {}),
     })),
     agentsMd: input.agentsMd ?? null,
   };
@@ -229,6 +236,8 @@ export function commitPlanningDraft(
       new PlanningCommitError("revision", "a valid planning revisionId is required"),
     );
   }
+  try { validateMilestoneDrafts(input.tasks, Boolean(input.review)); }
+  catch (error) { return Promise.reject(error instanceof Error ? error : new Error(String(error))); }
   const contentHash = planningContentHash(project, input);
   const active = activePlanningCommits.get(project.id);
   if (active) {
@@ -366,6 +375,7 @@ async function commitPlanningDraftOwned(
   if (replay) return replay;
 
   const files: RepositoryFileWrite[] = [
+    { path: `docs/plans/${input.revisionId}.json`, content: JSON.stringify({ revisionId: input.revisionId, prdMarkdown, tasks: input.tasks }, null, 2) + "\n" },
     {
       path: project.prdPath ?? "docs/PRD.md",
       content: prdMarkdown,

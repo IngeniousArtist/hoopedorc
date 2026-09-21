@@ -800,6 +800,8 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `modelHealth` | `GET /api/setup/model-health` | → `ModelHealthResponse` |
 | `testModels` | `POST /api/setup/test-models` | no body → `TestModelsResponse` |
 | `stopAll` | `POST /api/engine/stop-all` | (F23 — global panic button) → `StopAllResponse` |
+| `milestones` | `GET /api/projects/:id/milestones` | → `MilestonesResponse`; current observed local revision, criterion evidence, freshness, remaining limits; mock cannot supply verified Git evidence |
+| `milestoneRepairDraft` | `POST /api/projects/:id/milestones/:taskId/repair-draft` | `MilestoneRepairDraftRequest` → `MilestoneRepairDraftResponse`; versioned empty session required; exact replay is idempotent; 400 malformed, 404 wrong ownership, 409 stale/busy/exhausted |
 <!-- ROUTES:END -->
 
 ## WebSocket (`@orc/types/ws.ts`, `WS_PATH = /ws`)
@@ -1058,3 +1060,46 @@ owned termination. Uncertain workers retain account capacity even after terminal
 usage is recorded. Recovery of a Docker reservation first verifies container
 termination; the existing native process-stop assertion remains operator-owned.
 Execution records outlive projects. See [worker operations](../deploy/worker/README.md).
+
+### VW15 milestone verification and bounded repair
+
+`DraftTask.milestone` / `Task.milestone` hold the approved repair policy
+(`maxRepairRounds`, `maxInvocations`, `maxDurationMinutes`, `maxCostUsd`). This
+is verification-only work in the existing scheduler. Every acceptance criterion
+maps to the task's contributing `dependsOn` IDs. The reviewed draft, criteria,
+dependencies and limits are persisted in `docs/plans/<revisionId>.json` alongside
+the PRD/guidance at the exact planning commit boundary. Existing task IDs and
+legacy decisions are preserved. A plan without milestones discloses that task
+completion alone is not brief acceptance.
+
+A repair draft contains exactly one author task and one verification task,
+linked by `repairFor: {milestoneId, round}`. The original brief, criterion list,
+dependencies, scope and limits are immutable under repair. Titles, descriptions
+and eligible model choices can be reviewed. Apply uses VW07's existing
+comparison/approval and Git persistence, with a unique `(milestone_id, round)`
+receipt; no task is added by the repair-draft endpoint. Existing planning work
+is never overwritten. The legacy commit endpoint refuses repair metadata.
+
+`GateResult.executed` records which checks actually ran; `environment` records
+the actual host/container gate runtime. `MergeDecision.criterionEvidence` and
+`milestoneProof` bind all original criteria, dependency generations/attempts and
+review to a clean combined HEAD. Required gates, an executed test command and
+an independent successful review are mandatory; a human merge approval cannot
+turn missing evidence into milestone acceptance. Verification creates no PR or
+code change. Later merges requeue previously accepted verification work in the
+same scheduler within the original limits. Startup rechecks known stale HEADs.
+Dirty/unreadable revisions, changed contributors and missing evidence remain
+unaccepted. GET reports the local checkout, not an unobserved remote HEAD. For changes made
+outside Hoopedorc, safely update the primary checkout before rechecking; a
+verification worktree at a different remote revision cannot pass.
+
+SQLite `milestone_budgets`, `milestone_calls` and `milestone_repairs` preserve the
+fixed deadline, exactly-once admitted invocation IDs (including subscription
+calls) and reviewed repair rounds. Calls that were admitted but did not report
+usage consume call allowance and disclose unknown spending. Observed spend is
+an admission cutoff, not a hard bound on an in-flight provider call. Time
+expiry cancels the scheduler-owned process group. Limits are never reset by
+Retry or server restart. Superseded verification attempts remain historical;
+project completion uses current milestone outcomes as well as ordinary tasks.
+The existing run summary/Telegram digest includes milestone acceptance counts
+and attention reasons; no separate model manager or notification transport exists.
