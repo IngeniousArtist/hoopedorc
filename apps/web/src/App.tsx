@@ -28,10 +28,12 @@ import { ProjectsView } from "./pages/ProjectsView";
 import { Settings } from "./pages/Settings";
 import { SetupView } from "./pages/SetupView";
 import { Welcome } from "./pages/Welcome";
+import { WorkspacesView } from "./pages/WorkspacesView";
 
 export type Page =
   | "board"
   | "plan"
+  | "workspaces"
   | "costs"
   | "audit"
   | "notifications"
@@ -52,6 +54,7 @@ const NAV_GROUPS: { label: string; items: { page: Page; label: string }[] }[] = 
     items: [
       { page: "board", label: "Board" },
       { page: "plan", label: "Plan" },
+      { page: "workspaces", label: "Workspaces" },
       { page: "costs", label: "Costs" },
       { page: "audit", label: "Audit" },
       { page: "notifications", label: "Notifications" },
@@ -69,7 +72,7 @@ const NAV_GROUPS: { label: string; items: { page: Page; label: string }[] }[] = 
 ];
 
 /** Pages that need a selected project to render anything useful. */
-const PROJECT_PAGES: Page[] = ["board", "plan", "costs", "audit", "notifications"];
+const PROJECT_PAGES: Page[] = ["board", "plan", "workspaces", "costs", "audit", "notifications"];
 
 const STORAGE_KEY = "hoop.projectId";
 
@@ -150,6 +153,8 @@ export function App() {
   // display:none when inactive) so any in-flight chat or deconstruct request
   // finishes even if the user switches tabs before the reply arrives.
   const [planMounted, setPlanMounted] = useState(false);
+  const [planningReference, setPlanningReference] = useState<{ id: string; projectId: string; text: string } | null>(null);
+  const consumePlanningReference = useCallback(() => setPlanningReference(null), []);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsLoaded, setProjectsLoaded] = useState(false);
   // U1: global "action required" nav badge — notifications aren't
@@ -752,10 +757,16 @@ export function App() {
                 <PlanView
                   projectId={selectedProjectId}
                   onDone={() => setPage("board")}
+                  reference={planningReference?.projectId === selectedProjectId ? planningReference : null}
+                  onReferenceConsumed={consumePlanningReference}
                 />
               </div>
             )}
             {page === "costs" && <CostView projectId={selectedProjectId} />}
+            {page === "workspaces" && <WorkspacesView key={selectedProjectId} projectId={selectedProjectId} onAddToPlan={(text) => {
+              setPlanningReference({ id: crypto.randomUUID(), projectId: selectedProjectId, text });
+              setPlanMounted(true); setPage("plan");
+            }} />}
             {page === "audit" && <AuditView projectId={selectedProjectId} />}
             {page === "notifications" && (
               <Notifications projectId={selectedProjectId} />

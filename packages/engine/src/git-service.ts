@@ -9,6 +9,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { abortableDelay, execManagedProcess } from "@orc/adapters";
 import type { Project, RollbackJob, Task } from "@orc/types";
 import type { GitService } from "./index.js";
+import { describeWorkspace, diffWorkspaceFile, inspectWorkspaceRoot, readWorkspaceFile, WorkspaceInspectionError } from "./workspace-inspection.js";
 import {
   RepositoryLock,
   repositoryLock,
@@ -226,6 +227,21 @@ export class GitServiceImpl implements GitService {
   ) {
     this.runGh = runtime.runGh ?? gh;
     this.delay = runtime.delay ?? abortableDelay;
+  }
+
+  /** VW08: revalidate ownership on every read under the existing Git lock. */
+  async inspectWorkspace(project: Project, task?: Task, file?: { path: string; diff?: boolean }) {
+    return this.sharedRepositoryLock.run(project.localPath, async () => {
+      const root = await inspectWorkspaceRoot(project, task);
+      const inspection = await describeWorkspace(root, project, task);
+      if (file && !inspection.files.some((entry) => entry.path === file.path)) {
+        throw new WorkspaceInspectionError("File is not in this workspace's bounded Git inventory.", 404);
+      }
+      const contents = file && !file.diff ? readWorkspaceFile(root, file.path) : undefined;
+      const diff = file?.diff ? await diffWorkspaceFile(root, file.path, inspection.baseSha) : undefined;
+      if (await inspectWorkspaceRoot(project, task) !== root) throw new WorkspaceInspectionError("Workspace changed during inspection. Refresh and try again.");
+      return { ...inspection, contents, diff };
+    });
   }
 
   async ensureClone(project: Project, signal?: AbortSignal): Promise<void> {

@@ -668,6 +668,10 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `createProject` | `POST /api/projects` | `CreateProjectRequest` → `CreateProjectResponse` |
 | `listProjects` | `GET /api/projects` | → `ListProjectsResponse` |
 | `getProject` | `GET /api/projects/:id` | → `GetProjectResponse` |
+| `listWorkspaces` | `GET /api/projects/:id/workspaces` | → `ListWorkspacesResponse` |
+| `workspaceFiles` | `GET /api/projects/:id/workspaces/:workspaceId/files` | → `WorkspaceFilesResponse` |
+| `workspaceFile` | `GET /api/projects/:id/workspaces/:workspaceId/file` | Query `path` → `WorkspaceFileResponse` |
+| `workspaceDiff` | `GET /api/projects/:id/workspaces/:workspaceId/diff` | Query `path` → `WorkspaceDiffResponse` |
 | `updateProject` | `PATCH /api/projects/:id` | `UpdateProjectRequest` → `UpdateProjectResponse` |
 | `deleteProject` | `DELETE /api/projects/:id` | → `DeleteProjectResponse` |
 | `planProject` | `POST /api/projects/:id/plan` | `PlanProjectRequest` → `PlanProjectResponse` |
@@ -826,3 +830,28 @@ in-flight request rather than a debounce timer.
   planning routes answer through the deterministic mock planner described
   above, so mock planning never spawns a planner CLI, contacts a Figma MCP, or
   clones a repository; that isolation is bounded to planning.
+
+### VW08 workspace inspection
+
+`workspaceId` is `primary` or a task ID belonging to the project. No endpoint
+accepts a filesystem root or command. Inventory retains unavailable task
+workspaces with an explicit reason. File/diff routes revalidate canonical Git
+roots, common repository, registered worktree and recorded task path/branch on
+every read; cross-project IDs are 404. Inspection does not clone or fetch.
+
+File paths are query parameters encoded by the shared API client. Only paths
+in the bounded Git inventory (tracked and non-ignored untracked) are readable.
+Traversal, Git metadata, symlinks, shared hardlinks, non-regular files, binary
+and non-UTF-8 text are refused. Text is bounded at 128 KiB / 5,000 lines, file
+lists at 5,000 entries, Git output at 1 MiB and diffs at 256 KiB. Limit/ownership
+failures are explicit 400/403/404/409/413/415 responses with
+`WORKSPACE_INSPECTION_REFUSED`, never successful empty content. External Git
+filters, text conversion, diffs and filesystem monitors are disabled.
+
+Responses include HEAD/base, observation time and a SHA-256 of returned file
+bytes. These describe the observed working copy, which may change while an
+agent runs. A task diff uses its merge base with the observed default branch;
+primary-clone diffs compare against HEAD. Missing base refuses the diff. An
+untracked file has content but no tracked diff. There are no filesystem writes,
+cleanup, terminal or execution actions. Mock mode serves only fixed in-memory
+files, regardless of the configured host path. These APIs use normal API auth.

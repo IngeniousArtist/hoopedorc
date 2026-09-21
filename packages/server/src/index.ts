@@ -1,4 +1,5 @@
 import { PlanChangeError, assertPlanChangeCurrent, getPlanChange, latestPlanChange, pendingPlanChange, reviewPlanChanges, validatePlanChangeInput } from "./plan-changes";
+import { registerWorkspaceRoutes } from "./workspaces";
 import type { ApplyPlanChangesRequest } from "@orc/types";
 import "dotenv/config";
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -618,6 +619,8 @@ async function assembleServer(
   function broadcast(e: ServerEvent) {
     hub.broadcast(e);
   }
+
+  registerWorkspaceRoutes(app, db, env.mock);
 
   type ApprovalResolutionState =
     | "applied"

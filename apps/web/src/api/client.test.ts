@@ -13,6 +13,12 @@ afterEach(() => {
 });
 
 describe("API route contract", () => {
+  it("encodes workspace file paths as query data, keeping auth and route identity", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await api("workspaceFile", { params: { id: "p", workspaceId: "primary" }, query: { path: "src/name with &?#.ts" } });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/projects/p/workspaces/primary/file?path=src%2Fname+with+%26%3F%23.ts");
+  });
   it("maps settings and project actions to the canonical server routes", () => {
     expect(apiMethod("updateSettings")).toBe("PUT");
     expect(apiUrl("updateSettings")).toBe("/api/settings");

@@ -304,3 +304,14 @@ author → gates → validator → merge path, not a critic loop.
   rotation.
 - One project lives on exactly one instance — nothing deduplicates across
   servers (see USER_GUIDE's "Two boxes" section for the Mac↔EC2 split).
+
+### Workspace inspection (VW08)
+
+`server/workspaces.ts` owns project/task resolution and the read-only route
+boundary. `GitServiceImpl.inspectWorkspace` reuses the common repository lock
+and delegates bounded Git/file inspection to `engine/workspace-inspection.ts`.
+It revalidates roots and task ownership before returning data. Read operations
+never bootstrap a clone or invoke repository-defined Git filters/monitors.
+Mock inventory/content stays in memory. The Workspaces view consumes shared
+contracts; selected lines enter the existing planning composer as an explicit,
+version-labelled reference, preserving its current text without a model call.

@@ -148,11 +148,15 @@ export function PlanView({
   projectId,
   onDone,
   saveDebounceMs = 1000,
+  reference,
+  onReferenceConsumed,
 }: {
   projectId: string;
   onDone: () => void;
   /** VW02: debounce for draft auto-save; tests shorten it. */
   saveDebounceMs?: number;
+  reference?: { id: string; text: string } | null;
+  onReferenceConsumed?: () => void;
 }) {
   const [project, setProject] = useState<Project | null>(null);
   const [models, setModels] = useState<ModelConfig[]>([]);
@@ -196,6 +200,13 @@ export function PlanView({
   // Chat
   const [messages, setMessages] = useState<PlanChatMessage[]>([]);
   const [input, setInput] = useState("");
+  const consumedReference = useRef<string | null>(null);
+  useEffect(() => {
+    if (loading || project?.id !== projectId || !reference || consumedReference.current === reference.id) return;
+    consumedReference.current = reference.id;
+    setInput((current) => [current, reference.text].filter(Boolean).join("\n\n"));
+    onReferenceConsumed?.();
+  }, [loading, project?.id, projectId, reference, onReferenceConsumed]);
   const [chatting, setChatting] = useState(false);
   const [planCost, setPlanCost] = useState(0);
   const [plannerReady, setPlannerReady] = useState(false);

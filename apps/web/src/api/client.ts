@@ -64,6 +64,7 @@ export function apiMethod(key: RouteKey): string {
 
 export interface ApiCallOptions {
   params?: Record<string, string>;
+  query?: Record<string, string>;
   body?: unknown;
   signal?: AbortSignal;
 }
@@ -109,7 +110,8 @@ function doFetch(
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  return fetch(apiUrl(key, params), {
+  const query = opts.query ? `?${new URLSearchParams(opts.query)}` : "";
+  return fetch(`${apiUrl(key, params)}${query}`, {
     method: apiMethod(key),
     headers: Object.keys(headers).length ? headers : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
