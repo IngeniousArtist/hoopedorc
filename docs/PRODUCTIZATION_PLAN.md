@@ -7370,7 +7370,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 |---|---|---|---|
 | VW01 | Deterministic mock planning; no real planner/Figma calls | Done (merged 2026-09-21) | [PR #262](https://github.com/IngeniousArtist/hoopedorc/pull/262) → main `c050b4d`; PR CI `build-and-test` passed; main CI run [35565173055](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35565173055) passed; see the VW01 acceptance record below |
 | VW02 | Preserve planning input and truthful draft-save state | Done (merged 2026-09-21) | [PR #264](https://github.com/IngeniousArtist/hoopedorc/pull/264) → main `8d00383`; PR CI `build-and-test` passed; main CI run [35567524350](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35567524350) passed; see the VW02 acceptance record below |
-| VW03 | Repository-aware planning and truthful task history | Implemented; PR open, awaiting required CI and merge | [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266); see the VW03 acceptance record below |
+| VW03 | Repository-aware planning and truthful task history | Done (merged 2026-09-21) | [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266) → main `9757a91`; PR CI `build-and-test` passed; main CI run [35570272080](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35570272080) passed; see the VW03 acceptance record below |
 | VW04 | Project navigation, compact board/list, task inspector | Not started | — |
 | VW05 | Organize existing settings and setup | Not started | — |
 | VW06 | Durable planning operations and planning workbench | Not started | — |
@@ -7701,4 +7701,14 @@ the Stop-all scenario presents the project as running through a shared
 `presentProjectStatus` helper (REST list/detail + WebSocket) instead of
 relying on seed state. Verified by replaying `app.spec.ts` twice in one
 Playwright process (22/22) plus the full suite (21/21).
-Publication: [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266). Required PR CI must pass before merge; merge/main CI evidence is appended after merge.
+
+**Publication and merge evidence:**
+[PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266); required PR
+check `build-and-test` passed (2m21s, run 35570050869) after the e2e hardening
+commit, before the squash merge to main as `9757a91` on 2026-09-21. Post-merge
+main CI run
+[35570272080](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35570272080)
+completed successfully. Independent post-merge check on `9757a91`: server
+typecheck and the 68 tests in the four VW03 server test files passed locally.
+Next: VW04 (part 1: navigation groups, compact header, outcome groups and
+phone list; part 2: task inspector), starting from the merged result.
