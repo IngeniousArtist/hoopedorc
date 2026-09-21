@@ -23,7 +23,7 @@ test("VW16: environment requirements reject wrong hosts/versions and do not exec
   await assert.rejects(probeEnvironment(p, false, () => Promise.resolve({ stdout: "garbage" }), "linux"), /Cannot verify/);
 });
 
-test("VW16: real Python backend setup, literal arguments, failure, cancellation, restart/retry and retained gate output", { timeout: 30_000 }, async () => {
+test("VW16: real Python backend setup, literal arguments, failure, cancellation, restart/retry and retained gate output", { timeout: 30_000 }, async (t) => {
   const root = mkdtempSync(join(tmpdir(), "hoop-python-")); const path = join(root, "primary"); const remote = join(root, "remote.git");
   const git = (args: string[], cwd = root) => execManagedProcess("git", args, { cwd, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" } });
   const p = project(path, remote); const settings = { sandboxGates: "off" as const }; let manager = new WorktreeManagerImpl(settings);
@@ -38,13 +38,13 @@ test("VW16: real Python backend setup, literal arguments, failure, cancellation,
     const workspace = await manager.create(p, task); task.worktreePath = workspace.path; task.branch = workspace.branch;
     const marker = join(workspace.path, ".hoopedorc-setup-hash"); const initial = readFileSync(marker, "utf8");
     let result = await new GateRunnerImpl(manager, settings).run(p, task);
-    assert.equal(result.tests, true, result.details.tests); assert.match(result.environment ?? "", /Python 3\./); assert.match(result.details.tests, /test_health_and_missing_record.*ok/);
+    assert.equal(result.tests, true, result.details.tests); assert.match(result.environment ?? "", /Python 3\./); t.diagnostic(result.environment!); assert.match(result.details.tests ?? "", /test_health_and_missing_record.*ok/);
     // A fresh manager represents a process restart; immutable setup remains reusable.
     manager = new WorktreeManagerImpl(settings); await manager.prepareForGates(p, task); assert.equal(readFileSync(marker, "utf8"), initial);
     writeFileSync(join(workspace.path, "bootstrap.txt"), "v2"); await manager.prepareForGates(p, task); assert.notEqual(readFileSync(marker, "utf8"), initial);
     await git(["restore", "bootstrap.txt"], workspace.path);
     p.config!.gates!.commands!.tests = { command: ".hoopedorc-venv/bin/python", args: ["-B", "-c", "import sys; print(sys.argv[1]); sys.exit(1)", "literal space;$(not-a-shell)"] };
-    result = await new GateRunnerImpl(manager, settings).run(p, task); assert.equal(result.tests, false); assert.match(result.details.tests, /literal space;\$\(not-a-shell\)/);
+    result = await new GateRunnerImpl(manager, settings).run(p, task); assert.equal(result.tests, false); assert.match(result.details.tests ?? "", /literal space;\$\(not-a-shell\)/);
     p.config!.gates!.commands!.tests = { command: "no-such-hoop-tool", args: [] };
     assert.equal((await new GateRunnerImpl(manager, settings).run(p, task)).tests, false);
     const controller = new AbortController();

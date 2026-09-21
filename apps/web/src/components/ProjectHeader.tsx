@@ -114,7 +114,10 @@ export function ProjectHeader({ project, compact = false }: { project: Project; 
   const running = project.status === "running";
   const startLabel = project.status === "paused" ? "Resume" : "Start";
   const budgetDirty = budget !== origBudget;
-  const configDirty = JSON.stringify(configForm) !== JSON.stringify(origConfigForm);
+  // API normalization may reorder nested profile/command fields. Compare
+  // values so a successful save does not remain falsely marked unsaved.
+  const formKey = (form: typeof configForm) => JSON.stringify(form, (_key, value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value);
+  const configDirty = formKey(configForm) !== formKey(origConfigForm);
   const configError = projectConfigFormError(configForm);
   const scheduleLabel = formatSchedule(project.config?.schedule);
 

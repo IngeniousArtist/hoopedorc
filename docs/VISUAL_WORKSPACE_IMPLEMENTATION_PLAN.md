@@ -12,7 +12,7 @@ VW01–VW13 are implemented as of 21 September 2026 (AWS validation is owner-def
 see the [current status and evidence](PRODUCTIZATION_PLAN.md#part-14--visual-development-workspace).
 VW14 isolated execution implementation is merged; its real no-model Docker
 boundary is tested, while provider login/model and AWS checks remain pending.
-The current implementation item is **VW15 — milestone acceptance and bounded replanning**. The initial
+The current implementation item is **VW16 — portable framework/environment profiles**. The initial
 VW01 → VW02/VW03 → VW04 sequence remains the dependency foundation for the
 later work. Do not start by replacing the engine, creating a second
 scheduler, or implementing every screen at once.
@@ -36,10 +36,10 @@ For each item:
 5. Start the next item from the merged result. Do not combine unrelated slices
    into a large rewrite PR.
 
-**Current implementation request:** “Implement VW15 from this plan and its
+**Current implementation request:** “Implement VW16 from this plan and its
 acceptance record in PRODUCTIZATION_PLAN.md, starting from reviewed main. Add
-milestone outcome evidence and bounded repair through existing scheduler,
-planning and accounting boundaries. Follow AGENTS.md's focused testing policy
+runtime requirements, typed validation commands and verified non-Node profiles
+through existing setup, worktree, preview and review boundaries. Follow AGENTS.md's focused testing policy
 through verification and PR.”
 
 ## Recommendation
