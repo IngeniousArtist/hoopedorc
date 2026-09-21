@@ -1527,18 +1527,17 @@ export class Orchestrator implements Scheduler {
     }
     this.switchRunningModel(task.id, currentModel);
 
-    let referenceBlocked = true;
+    let preservePreflightWorkspace = true;
     try {
       const referenceIssue = this.deps.checkTaskReferences?.(project, task);
       if (referenceIssue) {
-        referenceBlocked = true;
+        preservePreflightWorkspace = true;
         task.status = "blocked";
         task.statusReason = `Library reference needs attention: ${referenceIssue}`;
         this.emit("warn", "engine", task.statusReason, task.id);
         this.deps.events.onTaskUpdated(task);
         return;
       }
-      referenceBlocked = false;
       // B46: resolve to a live, enabled candidate — including when
       // task.assignedModel itself starts disabled/missing — before the
       // first Figma proof or worktree creation, so neither ever happens
@@ -1550,6 +1549,13 @@ export class Orchestrator implements Scheduler {
       );
       if (!runnableStartModel) return;
       currentModel = runnableStartModel;
+      const activationIssue = await this.deps.checkActivation?.(project, task, currentModel, signal);
+      if (activationIssue) {
+        preservePreflightWorkspace = true;
+        task.status = "blocked"; task.statusReason = `Activation needs attention: ${activationIssue}`;
+        this.emit("warn", "engine", task.statusReason, task.id); this.deps.events.onTaskUpdated(task); return;
+      }
+
 
       // B42: this first proof is deliberately before worktree creation and
       // before the attempt loop mutates `attempts`.
@@ -1562,6 +1568,7 @@ export class Orchestrator implements Scheduler {
         task,
         signal,
       );
+      preservePreflightWorkspace = false;
       task.branch = branch;
       task.worktreePath = path;
       this.deps.events.onTaskUpdated(task);
@@ -1624,6 +1631,13 @@ export class Orchestrator implements Scheduler {
           task.status = "backlog";
           this.deps.events.onTaskUpdated(task);
           return;
+        }
+
+        const activationIssue = await this.deps.checkActivation?.(project, task, currentModel, signal);
+        if (activationIssue) {
+          preservePreflightWorkspace = true;
+          task.status = "blocked"; task.statusReason = `Activation needs attention: ${activationIssue}`;
+          this.emit("warn", "engine", task.statusReason, task.id); this.deps.events.onTaskUpdated(task); return;
         }
 
         // The initial model hits the per-runtime positive cache populated
@@ -2052,7 +2066,7 @@ export class Orchestrator implements Scheduler {
       this.figmaCapabilityByTask.delete(task.id);
       this.noFigmaReferenceTasks.delete(task.id);
       try {
-        if (!referenceBlocked) await this.deps.worktrees.remove(project, task);
+        if (!preservePreflightWorkspace) await this.deps.worktrees.remove(project, task);
       } catch (err) {
         this.emit(
           "warn",
@@ -2485,6 +2499,7 @@ export class Orchestrator implements Scheduler {
 
     try {
       const result = await adapter.run({
+        invocation: { id: taskRunId(task), taskId: task.id, stage: "author" },
         model,
         prompt,
         cwd: task.worktreePath!,
@@ -2634,6 +2649,7 @@ export class Orchestrator implements Scheduler {
     let result: AgentRunResult;
     try {
       result = await this.deps.adapterFor(docsModel).run({
+        invocation: { id: runId, taskId: task.id, stage: "docs" },
         model: docsModel,
         prompt: this.buildDocsPrompt(project, task),
         cwd: path,

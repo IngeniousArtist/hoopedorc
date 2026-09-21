@@ -5293,3 +5293,17 @@ test("O8: thrown AbortError stuck path has no adapter usage to preserve", async 
   assert.equal(stuckRuns[1]!.tokensIn, 0);
   assert.equal(stuckRuns[1]!.tokensOut, 0);
 });
+
+test("VW12: unsupported activation block before worktree or author attempt and preserve existing work", async () => {
+  const candidate = task("reference-blocked", [], { worktreePath: "/tmp/operator-work", branch: "orc/reference-blocked" });
+  let creates = 0; let removals = 0; let authors = 0;
+  await new Orchestrator(fakeDeps({
+    checkActivation: () => Promise.resolve("Selective activation is not verified for this harness."),
+    worktrees: { create() { creates++; return Promise.reject(new Error("must not create")); }, remove() { removals++; return Promise.resolve(); } },
+    adapterFor: () => ({ runner: "opencode", run() { authors++; return Promise.reject(new Error("must not invoke")); } }),
+  }, [])).start(PROJECT, [candidate]);
+  assert.equal(candidate.status, "blocked"); assert.equal(candidate.attempts, 0);
+  assert.match(candidate.statusReason!, /activation is not verified/);
+  assert.equal(creates, 0); assert.equal(removals, 0); assert.equal(authors, 0);
+  assert.equal(candidate.worktreePath, "/tmp/operator-work");
+});

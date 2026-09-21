@@ -153,6 +153,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_preview_port_owner ON workspace_previews(p
   WHERE state IN ('starting', 'ready', 'stopping');
 `;
 
+const VW12_ACTIVATION_MIGRATION = `
+-- VW12: immutable activation settings and credential-free invocation receipts.
+CREATE TABLE IF NOT EXISTS activation_versions (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  revision INTEGER NOT NULL,
+  request_id TEXT NOT NULL UNIQUE,
+  request_hash TEXT NOT NULL,
+  json TEXT NOT NULL,
+  PRIMARY KEY (project_id, revision)
+);
+CREATE TABLE IF NOT EXISTS activation_manifests (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_activation_manifests_project ON activation_manifests(project_id);
+`;
+
 const VW11_LIBRARY_MIGRATION = `
 CREATE TABLE IF NOT EXISTS library_versions (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -492,6 +510,7 @@ export function initDb(path: string = ENV.dbPath): Db {
   db.exec(VW09_PREVIEW_MIGRATION);
   db.exec(VW10_REVIEW_MIGRATION);
   db.exec(VW11_LIBRARY_MIGRATION);
+  db.exec(VW12_ACTIVATION_MIGRATION);
   // No CLI can be resumed by restoring an in-memory Promise. Keep the input,
   // settle orphaned ownership, and require an explicit, separately counted retry.
   db.prepare(`UPDATE planning_operations SET state = 'interrupted', ended_at = ?,

@@ -391,6 +391,7 @@ export interface SchedulerDeps {
    */
   getPendingApproval?: (projectId: string) => { title: string } | undefined;
   /** VW11: resolve only explicitly pinned references; refuse before an attempt. */
+  checkActivation?: (project: Project, task: Task, model: ModelId, signal?: AbortSignal) => Promise<string | null>;
   checkTaskReferences?: (project: Project, task: Task) => string | null;
   taskReferenceContext?: (project: Project, task: Task) => string;
   /**

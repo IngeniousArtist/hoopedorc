@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ImportLibraryResponse, LibraryDetailResponse, LibraryHandoffResponse, LibraryReference, LibraryResponse, LibrarySelection, ReferenceInput, ReferenceKind, SaveLibraryReferenceResponse } from "@orc/types";
 import { api, isAbortError } from "../api/client";
+import { ActivationPanel } from "./ActivationPanel";
 
 const control = "min-h-10 rounded border border-neutral-700 bg-neutral-900 px-3 text-sm focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50";
 const panel = "min-w-0 space-y-3 rounded-lg border border-neutral-800 p-4";
@@ -24,6 +25,7 @@ export function LibraryView({ projectId, onAddToPlan }: { projectId: string; onA
   const [busy, setBusy] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [query, setQuery] = useState("");
+  const [capabilities, setCapabilities] = useState(false);
   const [selected, setSelected] = useState<LibrarySelection[]>([]);
   const [detail, setDetail] = useState<LibraryDetailResponse | null>(null);
   const [editing, setEditing] = useState<EditorDraft | null>(() => restoreDraft(projectId));
@@ -88,6 +90,8 @@ export function LibraryView({ projectId, onAddToPlan }: { projectId: string; onA
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-xl font-semibold">Library</h1><p className="mt-1 text-sm text-neutral-400">Keep the sources your project should follow. Select only what a plan needs.</p></div>
       <button className={control} disabled={!!busy || !!editing} onClick={() => edit()}>New reference</button></div>
     <p className="text-xs text-neutral-400">Task requirements → project rules → existing components and code → design system → defaults. References do not install or enable skills, plugins or MCPs.</p>
+    <button className={control} aria-expanded={capabilities} onClick={() => setCapabilities((open) => !open)}>Agent capabilities</button>
+    {capabilities && <ActivationPanel projectId={projectId} entries={data?.entries ?? []} onHandoff={onAddToPlan} />}
     <div className="flex flex-wrap gap-2"><button className={control} disabled={!!busy} onClick={() => void act("Importing existing sources…", async () => {
       const result = await api<ImportLibraryResponse>("importProjectLibrary", { params: owner, body: {} });
       if (alive.current) { setImported(result); setRefresh((value) => value + 1); }

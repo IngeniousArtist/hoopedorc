@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -1642,4 +1642,22 @@ test("VW03: prior planning history keeps task statuses distinct instead of treat
   assert.match(prompt, /backlog, ready, in_progress, or in_review: planned or underway but not merged/);
   assert.doesNotMatch(prompt, /Treat all of this as DONE/);
   assert.match(prompt, /\[failed\] Billing/);
+});
+
+
+test("VW12: planner activation precedes invocation, delivers selected context, and closes after success/refusal", async () => {
+  const root = mkdtempSync(join(tmpdir(), "planner-activation-")); const oldPath = process.env.PATH;
+  const cli = join(root, "claude");
+  writeFileSync(cli, `#!${process.execPath}
+let text='';process.stdin.on('data',b=>text+=b);process.stdin.on('end',()=>console.log(JSON.stringify({result:JSON.stringify({text,args:process.argv.slice(2)}),total_cost_usd:0.25})));`);
+  chmodSync(cli, 0o755); process.env.PATH = `${root}:${oldPath}`;
+  let closed = 0; const seen: string[] = [];
+  try {
+    const result = await runPlannerChat([{ role: "user", content: "Plan" }], "Activation", root, { runner: "claude-code", prepareActivation: (id, stage) => {
+      seen.push(`${stage}:${id}`); return Promise.resolve({ launch: { mcpConfigPath: "owned.json" }, instructions: "SELECTED_CONTEXT", close: () => { closed++; return Promise.resolve(); } });
+    } });
+    const report = JSON.parse(result.reply) as { text: string; args: string[] }; assert.match(report.text, /SELECTED_CONTEXT/); assert.ok(report.args.includes("--strict-mcp-config")); assert.equal(closed, 1); assert.match(seen[0]!, /^planner:planner-/);
+    await assert.rejects(runPlannerChat([{ role: "user", content: "Plan" }], "Activation", root, { runner: "codex", prepareActivation: () => Promise.resolve({ launch: { mcpConfigPath: "owned.json" }, instructions: "", close: () => { closed++; return Promise.resolve(); } }) }), /not verified/);
+    assert.equal(closed, 2);
+  } finally { process.env.PATH = oldPath; rmSync(root, { recursive: true, force: true }); }
 });

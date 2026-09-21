@@ -23,6 +23,8 @@ import {
 } from "@orc/types";
 import { sanitizedEnv } from "./env.js";
 import { abortableDelay, spawnManagedProcess } from "./managed-process.js";
+import { selectiveClaudeArgs, type SelectiveLaunch } from "./activation.js";
+export * from "./activation.js";
 
 export { safeNpmConfigEnv, sanitizedEnv } from "./env.js";
 export {
@@ -38,6 +40,9 @@ export type {
 } from "./managed-process.js";
 
 export interface AgentRunOptions {
+  /** Server-owned activation; never supplied by generated task prose. */
+  activation?: SelectiveLaunch;
+  invocation?: { id: string; taskId: string; stage: import("@orc/types").ModelInvocation["stage"] };
   model: ModelId;
   /** The full task instructions: description + acceptance criteria + scope. */
   prompt: string;
@@ -132,6 +137,7 @@ export class ClaudeAdapter implements AgentAdapter {
       ];
       if (this.claudeModel) args.push("--model", this.claudeModel);
       args.push(...modelEffortArgs(this.runner, this.effort));
+      args.push(...selectiveClaudeArgs(opts.activation));
       const managed = spawnManagedProcess(
         "claude",
         args,
@@ -287,6 +293,7 @@ export class OpenCodeAdapter implements AgentAdapter {
   ) {}
 
   async run(opts: AgentRunOptions): Promise<AgentRunResult> {
+    if (opts.activation) throw new Error("Selective activation is not verified for this harness.");
     // Retry transient STARTUP races (cost===0 means it died before doing any
     // billable work, so a retry can't double-charge). Anything that already
     // incurred cost, or doesn't match a known-transient signature, is returned
@@ -506,6 +513,7 @@ export class CodexAdapter implements AgentAdapter {
   ) {}
 
   async run(opts: AgentRunOptions): Promise<AgentRunResult> {
+    if (opts.activation) throw new Error("Selective activation is not verified for this harness.");
     const outputFile = join(tmpdir(), `codex-summary-${randomUUID()}.txt`);
     try {
       return await this.runOnce(opts, outputFile);

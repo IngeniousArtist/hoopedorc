@@ -8,6 +8,8 @@ const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 const DEFAULT_KILL_GRACE_MS = 2_000;
 
 export interface ManagedProcessOptions extends SpawnOptionsWithoutStdio {
+  /** Control protocols send more than one request; caller owns stdin writes. */
+  keepStdinOpen?: boolean;
   input?: string | Buffer;
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -103,6 +105,7 @@ export function spawnManagedProcess(
     killGraceMs = DEFAULT_KILL_GRACE_MS,
     maxOutputBytes = DEFAULT_MAX_OUTPUT_BYTES,
     captureOutput = true,
+    keepStdinOpen = false,
     ...spawnOptions
   } = options;
   const child = spawn(command, [...args], {
@@ -197,7 +200,8 @@ export function spawnManagedProcess(
   child.stdin.on("error", () => {
     /* EPIPE is expected when a process exits before consuming all input. */
   });
-  child.stdin.end(input);
+  if (keepStdinOpen) { if (input !== undefined) child.stdin.write(input); }
+  else child.stdin.end(input);
   return { child, settled };
 }
 

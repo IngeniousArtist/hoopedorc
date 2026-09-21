@@ -12,6 +12,8 @@ import { initDb } from "../../../packages/server/src/db/index";
 import * as repo from "../../../packages/server/src/db/repo";
 import { PreviewManager, processGroupExists } from "../../../packages/server/src/previews";
 import { ReviewManager } from "../../../packages/server/src/reviews";
+import { openTaskBrowser } from "../../../packages/server/src/activation-browser";
+import { probeSelectiveClaude } from "@orc/adapters";
 
 const git = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
 async function fixture() {
@@ -38,6 +40,36 @@ res.setHeader('Content-Type','text/html');res.end('<!doctype html><html><body><h
   catch (error) { await reviews.close(); await previews.close(); db.close(); rmSync(root, { recursive: true, force: true }); throw error; }
   return { root, project, task, db, previews, reviews };
 }
+
+test("VW12: task-scoped MCP delivers real Playwright evidence and settles cancellation", async () => {
+  test.setTimeout(60_000);
+  const f = await fixture();
+  const bridge = await openTaskBrowser(f.db, f.previews, f.reviews, f.project, f.task);
+  const call = async (name: string, args = {}) => (await fetch(bridge.config.url, { method: "POST", headers: { ...bridge.config.headers, "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }) })).json();
+  try {
+    // Optional installed-CLI control initialization, never a model request.
+    // CI always exercises the real browser bridge; local compatibility checks
+    // additionally prove the installed harness receives the actual tool list.
+    if (process.env.VW12_LIVE_CLAUDE === "1") {
+      const old = process.env; const home = join(f.root, "cli-home"); mkdirSync(home);
+      const config = join(f.root, "mcp.json"); writeFileSync(config, JSON.stringify({ mcpServers: { "hoop-browser": bridge.config } }), { mode: 0o600 });
+      process.env = { PATH: `${join(old.HOME ?? "", ".local", "bin")}:${old.PATH}`, HOME: home, CLAUDE_CONFIG_DIR: home, TMPDIR: f.root, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
+      try { const result = await probeSelectiveClaude(f.task.worktreePath!, { mcpConfigPath: config }, ["hoop-browser"]); expect(result[0]?.tools.map((tool) => tool.name).sort()).toEqual(["browser_capture", "browser_start", "browser_status"]); }
+      finally { process.env = old; }
+    }
+    const result = await call("browser_capture", { path: "/", viewport: { width: 390, height: 844 }, steps: [{ action: "clickText", target: "Show result" }, { action: "expectText", target: "Complete" }] });
+    expect(result.result.isError).toBe(false);
+    const evidence = JSON.parse(result.result.content[0].text);
+    expect(evidence.taskId).toBe(f.task.id); expect(evidence.state).toBe("passed");
+    expect(result.result.content[1].type).toBe("image");
+    expect(evidence.artifacts.map((item: { kind: string }) => item.kind).sort()).toEqual(["screenshot", "text", "trace"]);
+    const waiting = call("browser_capture", { path: "/wait", viewport: { width: 390, height: 844 }, steps: [] }).catch(() => null);
+    await expect.poll(() => f.reviews.hasActivity(f.project.id)).toBe(true);
+    await bridge.close(); await waiting;
+    expect(f.reviews.hasActivity(f.project.id)).toBe(false);
+    expect(f.previews.latest(f.project.id, f.task.id)?.state, "An operator-started preview survives invocation cleanup").toBe("ready");
+  } finally { await bridge.close(); await f.reviews.close(); await f.previews.close(); f.db.close(); rmSync(f.root, { recursive: true, force: true }); }
+});
 
 test("VW10: real browser captures success/failure artifacts, cancels, and survives owner disappearance", async () => {
   test.setTimeout(90_000);

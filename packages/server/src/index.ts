@@ -1,3 +1,4 @@
+import { registerActivationRoutes } from "./activation-routes";
 import { PlanChangeError, assertPlanChangeCurrent, getPlanChange, latestPlanChange, pendingPlanChange, reviewPlanChanges, validatePlanChangeInput } from "./plan-changes";
 import { registerWorkspaceRoutes } from "./workspaces";
 import { registerPreviewRoutes } from "./preview-routes";
@@ -649,6 +650,8 @@ async function assembleServer(
   const reviews = new ReviewManager(db, previews, env.mock);
   registerReviewRoutes(app, db, reviews);
   registerLibraryRoutes(app, db, env.mock);
+  registerActivationRoutes(app, db);
+  engine.activation.setBrowser(previews, reviews);
   app.addHook("onClose", () => reviews.close());
 
   type ApprovalResolutionState =
@@ -1426,6 +1429,8 @@ async function assembleServer(
       // rather than a special-cased error — this legacy single-shot endpoint
       // never hard-fails, by design.
       const plannerModel = resolvePlannerModel(settings, "deconstruct");
+      const activationRevision = engine.activation.store.resolve(project.id);
+      plannerModel.prepareActivation = (invocationId, stage, cwd, signal) => engine.activation.prepare({ id: invocationId, project, stage, cwd, signal, runner: plannerModel.runner }, activationRevision);
       // VW03: no planning against a temporary directory — an unreachable
       // repository lands in this route's documented stub fallback below.
       const repository = await planning.inspect(project, cancellation.signal);
@@ -1572,6 +1577,8 @@ async function assembleServer(
       const project = repo.getProject(db, id)!;
       const settings = repo.getSettings(db) ?? defaultSettings();
       const plannerModel = resolvePlannerModel(settings, operation.kind);
+      const activationRevision = engine.activation.store.resolve(project.id);
+      plannerModel.prepareActivation = (invocationId, stage, cwd, signal) => engine.activation.prepare({ id: invocationId, project, stage, cwd, signal, runner: plannerModel.runner }, activationRevision);
       const messages = operation.input.messages;
       const attachmentNames = listAttachments(attachmentsDir(project, env.mock)).map((a) => a.name);
       const repository = await planning.inspect(project, signal);
@@ -1595,7 +1602,7 @@ async function assembleServer(
       }
       const { output, costUsd, verifiedFigmaReferences } = await planning.deconstruct({
         ...context, onWarn: (msg) => app.log.warn(msg),
-        cachedVerifiedFigmaReferences: repo.getPlanningSession(db, id).verifiedFigmaReferences,
+        cachedVerifiedFigmaReferences: activationRevision.policy.mode === "selected" ? [] : repo.getPlanningSession(db, id).verifiedFigmaReferences,
         onVerifiedFigmaReferences: (references) => savePlanningRevision(id, operation.revisionId, { verifiedFigmaReferences: references }),
         figmaVerification: operation.input.figmaVerification ?? "live",
       });

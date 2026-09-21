@@ -1,5 +1,14 @@
 # Architecture
 
+VW12 activation is owned by the server's `ActivationService`/`ActivationStore`.
+The existing scheduler performs preflight; adapter wrappers and the planner's
+shared invocation boundary prepare immutable configuration, persist a redacted
+manifest, invoke the harness and settle capabilities. Adapters own Claude flags,
+auth identity checks and bounded no-model protocol discovery. An ephemeral
+task-scoped MCP delegates to the existing preview/review managers, never a new
+execution scheduler. SQLite versions/manifests preserve history across restart;
+temporary credentials do not. See [the focused design](specs/activation.md).
+
 ## One TypeScript monorepo (npm workspaces)
 
 ```

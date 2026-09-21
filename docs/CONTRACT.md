@@ -1,5 +1,26 @@
 # The Contract
 
+## VW12 activation
+
+`GET /api/projects/:id/activation` returns the saved default, immutable revisions,
+the latest 50 invocation manifests and explicit harness/plugin compatibility.
+`PUT` accepts `SaveActivationRequest`: UUID v4 request ID, optimistic
+`expectedRevision` and policy `{mode,skills,mcps,browser}`. Skills pin Library
+Skill revisions. Up to twelve named MCPs store enabled state separately from
+their stdio absolute command/argument array or HTTP URL; credentials/env/header
+overrides and native plugin fields are unsupported. Saving is inert in real and
+mock modes. Identical retries reuse the revision; stale/reused request IDs with
+different payloads return 409. There are at most 200 revisions per project.
+
+SQLite `activation_versions` and `activation_manifests` migrate idempotently and
+cascade with project deletion. `hoop-activation:N` selects an immutable revision
+within the task's project. Conflicting/malformed/missing selections refuse.
+Invocation manifests use the existing model invocation/run ID; preflight checks
+use separate health IDs without billing/model-ledger entries. Manifests contain
+selected instruction hashes, observed tool names, version and limitations,
+never launch credentials or full instruction text. Missing tool schemas are
+represented by absent hashes. See [activation semantics](specs/activation.md).
+
 Everything below lives in code in `@orc/types`. This doc is the human-readable
 summary. **If you need to change the contract, change `@orc/types` and announce
 it — all three modules depend on it.**
@@ -678,6 +699,8 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `openWorkspacePreview` | `POST /api/projects/:id/workspaces/:workspaceId/preview/open` | → `PreviewLaunchResponse` |
 | `setPreviewProfile` | `PUT /api/projects/:id/preview-profile` | `SetPreviewProfileRequest` → `WorkspacePreviewResponse` (primary context) |
 | `taskReview` | `GET /api/projects/:id/tasks/:taskId/review` | → `TaskReviewResponse` |
+| `projectActivation` | `GET /api/projects/:id/activation` | → `ActivationResponse` saved revisions, invocation manifests and compatibility |
+| `saveProjectActivation` | `PUT /api/projects/:id/activation` | `SaveActivationRequest` → `SaveActivationResponse`; inert optimistic/idempotent save |
 | `projectLibrary` | `GET /api/projects/:id/library` | → `LibraryResponse` metadata and known task marker usage |
 | `libraryReference` | `GET /api/projects/:id/library/:referenceId` | → `LibraryDetailResponse` current and historical snapshots |
 | `saveLibraryReference` | `PUT /api/projects/:id/library/:referenceId` | `SaveLibraryReferenceRequest` → `SaveLibraryReferenceResponse` |
