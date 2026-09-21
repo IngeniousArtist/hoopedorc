@@ -7368,7 +7368,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 
 | ID | Work item | Status | PR / acceptance evidence |
 |---|---|---|---|
-| VW01 | Deterministic mock planning; no real planner/Figma calls | Implemented; PR open, awaiting required CI and merge | Branch `vw01-deterministic-mock-planning`; see the VW01 acceptance record below |
+| VW01 | Deterministic mock planning; no real planner/Figma calls | Implemented; PR open, awaiting required CI and merge | [PR #262](https://github.com/IngeniousArtist/hoopedorc/pull/262); see the VW01 acceptance record below |
 | VW02 | Preserve planning input and truthful draft-save state | Not started | — |
 | VW03 | Repository-aware planning and truthful task history | Not started | — |
 | VW04 | Project navigation, compact board/list, task inspector | Not started | — |
@@ -7495,4 +7495,7 @@ or CLI-authentication change; no `ROUTES`/payload change; no fixture platform.
 **Not required / outstanding:** no live paid-model verification (production
 behavior unchanged); no UI code changed, so no new responsive browser pass
 beyond the existing Playwright suite at 1280×800 and the unchanged responsive
-suite. PR link and merge/main CI evidence are recorded when available.
+suite. Publication:
+[PR #262](https://github.com/IngeniousArtist/hoopedorc/pull/262). Required PR
+CI must pass before merge; the PR records its final result, and merge/main CI
+evidence is appended after merge.
