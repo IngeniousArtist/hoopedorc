@@ -54,7 +54,7 @@ test("VW08: symlinks, shared files, binary/invalid text, oversized files and tra
     writeFileSync(join(root, "invalid"), Buffer.from([255]));
     writeFileSync(join(root, "large"), "a".repeat(128 * 1024 + 1));
     for (const path of ["escape", "linked-dir/code.ts", "shared", "binary", "invalid", "large", "../private", ".git/config", "/etc/passwd"]) {
-      assert.throws(() => readWorkspaceFile(root, path), undefined, path);
+      assert.throws(() => readWorkspaceFile(root, path), path);
     }
     assert.throws(() => checkedWorkspaceFile(root, "./code.ts"));
     await assert.rejects(f.service.inspectWorkspace(f.project, f.task, { path: "escape", diff: true }), /Symlink/);

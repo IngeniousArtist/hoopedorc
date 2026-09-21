@@ -7377,7 +7377,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW05 | Organize existing settings and setup | Implemented | [PR #271](https://github.com/IngeniousArtist/hoopedorc/pull/271); see VW05 acceptance record below and PR checks for required CI/merge evidence |
 | VW06 | Durable planning operations and planning workbench | Implemented | [PR #272](https://github.com/IngeniousArtist/hoopedorc/pull/272), merged as `0e84781`; required CI passed; see VW06 acceptance record below |
 | VW07 | Propose/apply plan revisions during execution | Implemented | [PR #273](https://github.com/IngeniousArtist/hoopedorc/pull/273); see VW07 acceptance record below and PR checks for CI/merge evidence |
-| VW08 | Workspace inventory and read-only code inspection | Implemented | See VW08 acceptance record below; PR records required CI/merge evidence |
+| VW08 | Workspace inventory and read-only code inspection | Implemented | [PR #274](https://github.com/IngeniousArtist/hoopedorc/pull/274); see VW08 acceptance record below; PR records required CI/merge evidence |
 | VW09 | Managed environments and preview lifecycle | Not started | — |
 | VW10 | Full review workbench and browser evidence | Not started | — |
 | VW11 | Project design/reference library | Not started | — |
@@ -8285,3 +8285,8 @@ keyboard handoff and preservation of the unsent planning composer. Rendered
 390px and 1440px screenshots were reviewed. Affected package builds/typechecks,
 changed-file lint (existing GitService warnings unchanged) and whitespace checks
 passed. PR records required CI/merge evidence. Next: VW09.
+
+Initial CI run `35590873677` found a TypeScript overload mismatch in the new
+engine test's `assert.throws` message argument (the runtime case had passed).
+The assertion uses the supported overload; the focused engine typecheck passed
+after correction. Required CI is rerun on the final head before merge.
