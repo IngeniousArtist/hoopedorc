@@ -53,17 +53,25 @@ vi.mock("../components/TaskDrawer", () => ({
     task,
     logs,
     logsOmittedOlder,
+    logsError,
+    onReloadLogs,
     onRetry,
     onModelChange,
   }: {
     task: Task;
     logs?: Array<{ id: string; message: string }>;
     logsOmittedOlder?: boolean;
+    logsError?: string | null;
+    onReloadLogs?: () => void;
     onRetry: () => void | Promise<void>;
     onModelChange: (model: ModelId) => void | Promise<void>;
   }) => (
     <div data-testid="task-drawer">
       <span data-testid="drawer-model">{task.assignedModel}</span>
+      {logsError ? <span data-testid="drawer-logs-error">{logsError}</span> : null}
+      <button type="button" onClick={() => onReloadLogs?.()}>
+        Reload logs
+      </button>
       {logsOmittedOlder ? (
         <span>Showing latest 1,000 lines. Older lines were omitted.</span>
       ) : null}
@@ -795,5 +803,78 @@ describe("Board bounded task logs", () => {
     expect(
       screen.queryByText("Showing latest 1,000 lines. Older lines were omitted."),
     ).not.toBeInTheDocument();
+  });
+});
+
+
+describe("VW04 task inspector on the board", () => {
+  function inspectorLog(index: number, taskId: string): LogEvent {
+    return {
+      id: `${taskId}-log-${index}`,
+      projectId: "project-1",
+      runId: "run-1",
+      taskId,
+      ts: new Date(1_700_000_000_000 + index).toISOString(),
+      level: "info",
+      source: "engine",
+      message: `initial line ${index}`,
+    };
+  }
+
+  beforeEach(() => {
+    apiMock.mockReset();
+    wsState.handler = undefined;
+    wsState.handlers.clear();
+  });
+
+  it("explains a deep link to a task that is not on this board and lets the shell clear it", async () => {
+    apiMock.mockImplementation(async (key) => {
+      if (key === "listTasks") return { tasks: [task("initial", "Initial task")] };
+      if (key === "getSettings") return { settings: settingsFixture() };
+      if (key === "costAnalytics") return { totalUsd: 1, budgetUsd: undefined };
+      if (key === "estimatePlan") return { tasks: [] };
+      throw new Error(`Unexpected API call: ${String(key)}`);
+    });
+    const onSelectTask = vi.fn();
+    render(
+      <ToastProvider>
+        <Board projectId="project-1" selectedTaskId="ghost-task" onSelectTask={onSelectTask} />
+      </ToastProvider>,
+    );
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent("Task ghost-task is not on this board");
+    expect(screen.queryByTestId("task-drawer")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(onSelectTask).toHaveBeenCalledExactlyOnceWith(null);
+  });
+
+  it("reports a failed log history read in the inspector and recovers on reload", async () => {
+    const ready = task("initial", "Initial task");
+    let logCalls = 0;
+    apiMock.mockImplementation(async (key) => {
+      if (key === "listTasks") return { tasks: [ready] };
+      if (key === "getSettings") return { settings: settingsFixture() };
+      if (key === "costAnalytics") return { totalUsd: 1, budgetUsd: undefined };
+      if (key === "estimatePlan") return { tasks: [] };
+      if (key === "taskRollback") return { rollback: null };
+      if (key === "taskLogs") {
+        logCalls += 1;
+        if (logCalls === 1) throw new Error("log store unavailable");
+        return { logs: [inspectorLog(1, ready.id)] };
+      }
+      throw new Error(`Unexpected API call: ${String(key)}`);
+    });
+
+    renderBoard();
+    fireEvent.click(await screen.findByRole("button", { name: "Initial task" }));
+    expect(await screen.findByTestId("drawer-logs-error")).toHaveTextContent(
+      "log store unavailable",
+    );
+    expect(screen.queryByTestId("drawer-log")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload logs" }));
+    expect(await screen.findByText("initial line 1")).toBeVisible();
+    expect(screen.queryByTestId("drawer-logs-error")).not.toBeInTheDocument();
+    expect(logCalls).toBe(2);
   });
 });

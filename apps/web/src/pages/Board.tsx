@@ -90,10 +90,16 @@ type BoardRequest = {
 export function Board({
   projectId,
   repoUrl,
+  selectedTaskId: selectedTaskIdProp,
+  onSelectTask,
   onViewNotifications,
 }: {
   projectId: string;
   repoUrl?: string;
+  /** VW04: when provided, the app shell owns which task's inspector is open
+   *  (it is part of the URL); otherwise the Board keeps that state itself. */
+  selectedTaskId?: string | null;
+  onSelectTask?: (taskId: string | null) => void;
   /** F4's mission-control strip deep-links its pending-approvals count here. */
   onViewNotifications?: () => void;
 }) {
@@ -102,11 +108,19 @@ export function Board({
   const [tasks, setTasks] = useState<Task[]>([]);
   const [settings, setSettings] = useState<SettingsType | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [internalSelectedTaskId, setInternalSelectedTaskId] = useState<string | null>(null);
+  const controlledSelection = selectedTaskIdProp !== undefined;
+  const selectedTaskId = controlledSelection ? selectedTaskIdProp : internalSelectedTaskId;
+  const [tasksLoaded, setTasksLoaded] = useState(false);
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [logsOmittedOlder, setLogsOmittedOlder] = useState(false);
   const logsOmittedOlderRef = useRef(false);
   const [logsLoading, setLogsLoading] = useState(false);
+  // VW04: a failed history read is reported as such — never as "no logs" or
+  // "no rollback" — and can be retried without closing the inspector.
+  const [logsError, setLogsError] = useState<string | null>(null);
+  const [logsReloadNonce, setLogsReloadNonce] = useState(0);
+  const [rollbackError, setRollbackError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [rollbackJobs, setRollbackJobs] = useState<Record<string, RollbackJob>>({});
   const [diff, setDiff] = useState<string | null>(null);
@@ -292,6 +306,7 @@ export function Board({
           return merged;
         });
         setSettings(settingsRes.settings);
+        setTasksLoaded(true);
         setBudgetUsd(costRes.budgetUsd);
         if (
           costAuthorityRef.current.projectId === projectId &&
@@ -315,11 +330,14 @@ export function Board({
       logsOmittedOlderRef.current = false;
       setLogsOmittedOlder(false);
       setLogs([]);
+      setLogsError(null);
+      setRollbackError(null);
       return;
     }
     let cancelled = false;
     async function loadLogs() {
       setLogsLoading(true);
+      setLogsError(null);
       logsOmittedOlderRef.current = false;
       setLogsOmittedOlder(false);
       setLogs([]);
@@ -336,13 +354,14 @@ export function Board({
         logsOmittedOlderRef.current = bounded.omittedOlder;
         setLogsOmittedOlder(bounded.omittedOlder);
         setLogs(bounded.logs);
-      } catch {
-        /* ignore fetch errors for logs */
+      } catch (e) {
+        if (!cancelled) setLogsError(e instanceof Error ? e.message : String(e));
       } finally {
         if (!cancelled) setLogsLoading(false);
       }
     }
     loadLogs();
+    setRollbackError(null);
     api<TaskRollbackResponse>("taskRollback", {
       params: { id: selectedTaskId },
     })
@@ -355,11 +374,13 @@ export function Board({
           return next;
         });
       })
-      .catch(() => {});
+      .catch((e: unknown) => {
+        if (!cancelled) setRollbackError(e instanceof Error ? e.message : String(e));
+      });
     return () => {
       cancelled = true;
     };
-  }, [selectedTaskId, selectedTaskPrNumber]);
+  }, [selectedTaskId, selectedTaskPrNumber, logsReloadNonce]);
 
   const pendingActivityRef = useRef<Record<string, number>>({});
   const activityFrameRef = useRef<number | null>(null);
@@ -588,9 +609,23 @@ export function Board({
   };
   const handleStopRef = useRef(handleStop);
   handleStopRef.current = handleStop;
-  const selectTask = useCallback((taskId: string) => {
-    setSelectedTaskId((current) => (current === taskId ? null : taskId));
-  }, []);
+  const updateSelectedTaskId = useCallback(
+    (next: string | null) => {
+      if (!controlledSelection) setInternalSelectedTaskId(next);
+      onSelectTask?.(next);
+    },
+    [controlledSelection, onSelectTask],
+  );
+  const selectTask = useCallback(
+    (taskId: string) => {
+      updateSelectedTaskId(selectedTaskIdRef.current === taskId ? null : taskId);
+    },
+    [updateSelectedTaskId],
+  );
+  const missingSelectedTask =
+    tasksLoaded && selectedTaskId && !tasks.some((t) => t.id === selectedTaskId)
+      ? selectedTaskId
+      : null;
   const stopTask = useCallback((taskId: string) => {
     void handleStopRef.current(taskId);
   }, []);
@@ -824,6 +859,25 @@ export function Board({
         </div>
       )}
 
+      {missingSelectedTask && (
+        <div
+          role="status"
+          className="mb-4 flex flex-wrap items-center gap-2 rounded border border-amber-800/60 bg-amber-950/20 px-4 py-2 text-xs text-amber-200"
+        >
+          <span className="min-w-0 flex-1">
+            Task <code className="font-mono">{missingSelectedTask}</code> is not on this board —
+            it may belong to another project or have been deleted.
+          </span>
+          <button
+            type="button"
+            onClick={() => updateSelectedTaskId(null)}
+            className="min-h-10 rounded border border-amber-700 px-3 py-2 text-xs hover:bg-amber-900/40 focus-visible:ring-2 focus-visible:ring-amber-400"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       <BoardSummary
         tasks={tasks}
         costUsd={costUsd}
@@ -1025,6 +1079,9 @@ export function Board({
           logs={logs}
           logsLoading={logsLoading}
           logsOmittedOlder={logsOmittedOlder}
+          logsError={logsError}
+          onReloadLogs={() => setLogsReloadNonce((nonce) => nonce + 1)}
+          rollbackError={rollbackError}
           diff={diff}
           rollbackJob={
             rollbackJobs[selectedTask.id]?.sourcePrNumber === selectedTask.prNumber
@@ -1033,7 +1090,7 @@ export function Board({
           }
           estimate={estimates[selectedTask.id]}
           actionBusy={actionBusy}
-          onClose={() => setSelectedTaskId(null)}
+          onClose={() => updateSelectedTaskId(null)}
           onViewDiff={() => handleViewDiff(selectedTask.id)}
           onRetry={() => handleRetry(selectedTask.id)}
           onRollback={() =>

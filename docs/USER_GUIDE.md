@@ -133,8 +133,16 @@ going on a always-on box.
    moving, a **Needs attention · N** shortcut, and spend against budget;
    active agents and pending approvals sit right below it. Click any card
    for the full detail drawer: logs, gate results, the validator's verdict
-   and reasons, the PR link. Budget, gate scripts, retries, merge policy, and
-   schedule are under the project header's **Project settings** disclosure.
+   and reasons, the PR link. Opening a card is its own history entry —
+   the URL becomes `#/p/<project>/board/<taskId>`, so a task can be pasted as a
+   link, the browser's Back button closes the inspector, and on phones the
+   inspector is full-screen with a **‹ Back** control. History that fails to
+   load (attempts, gate results and verdicts, log history, rollback status) is
+   reported as a failure with **Retry**, never shown as "No runs yet" or "No
+   logs yet"; live log lines keep streaming under a failed history read. A
+   link to a task that is not on the current board says so and offers
+   **Dismiss**. Budget, gate scripts, retries, merge policy, and schedule are
+   under the project header's **Project settings** disclosure.
 6. **Approvals**, if any come up (a risky change, or the merge policy is set
    to always ask), show up as `action_required` in Notifications, and — if
    you've set up Telegram (Settings → Telegram, needs a bot token from

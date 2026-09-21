@@ -27,10 +27,15 @@ export function LogPanel({
   logs,
   loading,
   omittedOlder = false,
+  error = null,
+  onRetry,
 }: {
   logs: LogEvent[];
   loading: boolean;
   omittedOlder?: boolean;
+  /** VW04: the history read failed. Live lines may still stream in below. */
+  error?: string | null;
+  onRetry?: () => void;
 }) {
   const [source, setSource] = useState("all");
   const [autoFollow, setAutoFollow] = useState(true);
@@ -80,13 +85,33 @@ export function LogPanel({
         data-testid="task-log-scroller"
         className="flex-1 overflow-y-auto p-3 font-mono text-xs leading-relaxed"
       >
-        {loading && <p className="text-neutral-400">Loading logs…</p>}
-        {!loading && omittedOlder && (
+        {loading && <p role="status" className="text-neutral-400">Loading logs…</p>}
+        {!loading && error && (
+          <div
+            role="alert"
+            className="mb-2 flex flex-wrap items-center gap-2 rounded border border-red-800 bg-red-950/40 px-3 py-2 font-sans text-red-200"
+          >
+            <span className="min-w-0 flex-1">
+              Could not load log history: {error}. Lines streamed since you opened this task
+              still appear below.
+            </span>
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="min-h-10 rounded border border-red-700 px-3 py-2 text-[11px] hover:bg-red-900/40 focus-visible:ring-2 focus-visible:ring-red-400"
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        )}
+        {!loading && !error && omittedOlder && (
           <p className="mb-2 text-neutral-400">
             Showing latest 1,000 lines. Older lines were omitted.
           </p>
         )}
-        {!loading && filtered.length === 0 && (
+        {!loading && !error && filtered.length === 0 && (
           <p className="text-neutral-400">No logs yet.</p>
         )}
         {filtered.map((log) => (
