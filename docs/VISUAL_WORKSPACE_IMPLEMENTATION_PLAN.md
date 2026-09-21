@@ -8,9 +8,11 @@ This document records the requested product direction and implementation sequenc
 
 ## Start here
 
-Implement **VW01 — deterministic mock planning** first, then VW02 and VW03.
-These fixes make subsequent UX work safer to test and keep planning grounded in
-real project state. Do not start by replacing the engine, creating a second
+VW01–VW04 are implemented, reviewed, and merged as of 21 September 2026;
+see the [current status and evidence](PRODUCTIZATION_PLAN.md#part-14--visual-development-workspace).
+The next item is **VW05 — organize existing settings and setup**. The initial
+VW01 → VW02/VW03 → VW04 sequence remains the dependency foundation for the
+later work. Do not start by replacing the engine, creating a second
 scheduler, or implementing every screen at once.
 
 For each item:
@@ -30,10 +32,10 @@ For each item:
 5. Start the next item from the merged result. Do not combine unrelated slices
    into a large rewrite PR.
 
-**First implementation request:** “Implement VW01 from
-VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md. Preserve production planner behavior,
-prove mock planning cannot invoke real models or Figma MCP, and follow
-AGENTS.md through verification and PR.”
+**Next implementation request:** “Implement VW05 from
+VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md, starting from reviewed main. Organize
+the existing settings and setup experience while preserving current settings
+contracts and normalization. Follow AGENTS.md through verification and PR.”
 
 ## Recommendation
 

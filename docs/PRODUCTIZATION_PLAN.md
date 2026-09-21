@@ -7346,10 +7346,10 @@ owner later supplies Figma input.
 
 ## Part 14 — Visual development workspace
 
-**Status (2026-09-21):** implementation plan recorded at the owner's request;
-all implementation items are not started. This documentation change does not
-alter application behavior. The detailed scope, inspected source, research,
-acceptance criteria, non-goals, dependencies, and verification requirements are
+**Status (2026-09-21):** VW01–VW04 are implemented, reviewed, and merged,
+including the recovery fixes below. VW05 is the next unstarted item. The
+detailed scope, inspected source, research, acceptance criteria, non-goals,
+dependencies, and verification requirements are
 in [VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
 The [clickable layout concept](design/visual-workspace-concept.html) is sample
 UI only, not a shipped implementation or a final visual specification.
@@ -7361,8 +7361,9 @@ existing Figma integration, gates/validation, accounting, and Telegram. Improve
 the user journey and failure handling, then extend capabilities incrementally.
 Small tasks and large briefs share the same execution system.
 
-**Start here:** VW01 → VW02/VW03 → VW04. Consult the focused plan's dependency
-table for subsequent items. Do not start by replacing the scheduler or adding
+**Next:** VW05 (organize existing settings and setup), starting from the
+reviewed VW01–VW04 result. Consult the focused plan's dependency table for
+subsequent items. Do not start by replacing the scheduler or adding
 all future schemas. Use one scoped branch/PR per coherent change; split larger
 work packages into backward-compatible contract/backend/UI steps as needed.
 
@@ -7371,7 +7372,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW01 | Deterministic mock planning; no real planner/Figma calls | Done (merged 2026-09-21) | [PR #262](https://github.com/IngeniousArtist/hoopedorc/pull/262) → main `c050b4d`; PR CI `build-and-test` passed; main CI run [35565173055](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35565173055) passed; see the VW01 acceptance record below |
 | VW02 | Preserve planning input and truthful draft-save state | Done (merged 2026-09-21) | [PR #264](https://github.com/IngeniousArtist/hoopedorc/pull/264) → main `8d00383`; PR CI `build-and-test` passed; main CI run [35567524350](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35567524350) passed; see the VW02 acceptance record below |
 | VW03 | Repository-aware planning and truthful task history | Done (merged 2026-09-21) | [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266) → main `9757a91`; PR CI `build-and-test` passed; main CI run [35570272080](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35570272080) passed; see the VW03 acceptance record below |
-| VW04 | Project navigation, compact board/list, task inspector | Part 1 done (merged 2026-09-21); part 2 implemented (PR open, awaiting CI and merge) | Part 1: [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268) → main `88ca12b`, PR CI passed, main CI run [35571774985](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35571774985) passed. Part 2: [PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269); see the VW04 acceptance record below |
+| VW04 | Project navigation, compact board/list, task inspector | Done (merged and reviewed 2026-09-21) | Part 1: [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268) → main `88ca12b`, PR CI passed, main CI run [35571774985](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35571774985) passed. Part 2 and VW01–VW04 recovery review: [PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269) → main `9d2e270`; required exact-head CI passed; see the review/merge record below |
 | VW05 | Organize existing settings and setup | Not started | — |
 | VW06 | Durable planning operations and planning workbench | Not started | — |
 | VW07 | Propose/apply plan revisions during execution | Not started | — |
@@ -7983,3 +7984,18 @@ probe change and passed again on the final source state.
 [PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269), alongside
 VW04 part 2. Exact-head required CI and merged-commit evidence follow after
 GitHub completes them; no failed required check may be bypassed.
+
+
+**Publication and independent merge evidence (VW04 part 2 + review):**
+[PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269) merged as
+`9d2e270a993197570d2ca07e1edca928d31490a7` on 2026-09-21 at 08:05:38 UTC.
+Required `build-and-test` passed on the exact reviewed head `ae15bdf` in
+[PR CI run 35575843134](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35575843134)
+(2m33s) before merging; no bypass was used. The merged tree was compared
+against that reviewed head and is identical. Independent verification on the
+actual merged commit passed: full typecheck, all 148 web tests, and all 11
+planning-route tests (including the new real-Git recovery cases).
+[Main CI run 35576105555](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35576105555)
+is the separate post-merge gate record. The primary checkout was fast-forwarded
+to the merged result; unrelated operator files were preserved. Next work is
+VW05.
