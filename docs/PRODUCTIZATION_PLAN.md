@@ -9019,3 +9019,9 @@ required for new worktrees. No credentials were changed and no provider was
 called. Live authenticated Gemini completion, Linux provider execution and AWS
 commissioning remain pending, as detailed in the
 [compatibility spec](specs/harness-compatibility.md). AWS is owner-deferred.
+
+
+VW17 CI review caught a missing row in CONTRACT.md's canonical route inventory
+(the endpoint and detailed contract were present). Added the row and reran the
+focused O33 inventory check; no required check was bypassed. Local lint passed
+with 330 legacy findings unchanged; whitespace checks passed.

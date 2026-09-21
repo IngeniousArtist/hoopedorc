@@ -796,6 +796,7 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `selfUpdateStatus` | `GET /api/setup/self-update` | → `SelfUpdateStatusResponse` (deployment availability, temporary blockers, and current/last update phase) |
 | `startSelfUpdate` | `POST /api/setup/self-update` | no body → `StartSelfUpdateResponse` (202; launches only the fixed guarded updater in a separate systemd unit) |
 | `setupModels` | `GET /api/setup/models` | → `ModelRosterResponse` |
+| `harnessCompatibility` | `GET /api/setup/harnesses` | → `HarnessCompatibilityResponse`; fixed local version probes, no model calls; mock starts no tools |
 | `modelCatalog` | `GET /api/setup/model-catalog` | → `ModelCatalogResponse` (installed Codex catalog, Claude Code aliases/current IDs, and OpenCode `zai/`/`zai-coding-plan/`/`xai/`/`deepseek/` models) |
 | `modelHealth` | `GET /api/setup/model-health` | → `ModelHealthResponse` |
 | `testModels` | `POST /api/setup/test-models` | no body → `TestModelsResponse` |
