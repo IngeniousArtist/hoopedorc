@@ -840,7 +840,10 @@ export class EngineRunner {
           };
           const recorded = this.recordInvocation(invocation, settingsSnapshot);
           this.pendingAdmissions.delete(r.id);
-          r = { ...r, costUsd: recorded.costUsd };
+          // Legacy stopped-run projections may receive late counters after
+          // their old ledger row was finalized. Preserve that compatibility;
+          // new invocation snapshots own canonical billing.
+          if (recorded.accounting) r = { ...r, costUsd: recorded.costUsd };
 
           const existingRun = repo.getRun(this.db, r.id);
           if (existingRun?.status === "stopped" && r.status !== "running") {

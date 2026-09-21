@@ -1677,3 +1677,21 @@ test("VW07: proposal planning shares execution, but a pending apply blocks every
     assert.equal(repo.getTask(db, task.id)?.dispatchRequestedAt, undefined);
   } finally { controlled.resolveStart(); db.close(); }
 });
+
+
+test("VW13: a stopped pooled author settles its snapshot once and releases capacity", () => {
+  const db = setup(); const engine = new EngineRunner(db, new WsHub()); const owner = project(db, "pooled-stop");
+  const task = seedTask(db, owner.id, "pooled-task", { status: "in_progress", attempts: 1 });
+  const settings = repo.getSettings(db)!; settings.accountPools = [{ id: "shared", name: "Shared", billing: "subscription", maxConcurrent: 1, reviewSlots: 0 }];
+  settings.models = settings.models.map((model) => ({ ...model, accountPoolId: "shared" })); repo.upsertSettings(db, settings);
+  const deps = buildDeps(engine, owner); const id = "run-pooled-task-1";
+  assert.equal(deps.reserveAuthor!(owner, task, task.assignedModel, id), null);
+  const run = { id, projectId: owner.id, taskId: task.id, model: task.assignedModel, attempt: 1, status: "running" as const, startedAt: new Date().toISOString(), costUsd: 0, tokensIn: 0, tokensOut: 0 };
+  deps.events.onRunUpdated(run); repo.updateRun(db, id, { status: "stopped", exitReason: "killed" });
+  assert.equal(engine.resources.response().pools[0]!.active, 1);
+  deps.events.onRunUpdated({ ...run, status: "failed", exitReason: "killed", costUsd: 4, tokensIn: 10, tokensOut: 2 });
+  assert.equal(repo.getRun(db, id)!.status, "stopped"); assert.equal(repo.getRun(db, id)!.costUsd, 0);
+  assert.equal(repo.getInvocation(db, id)!.reportedCostUsd, 4); assert.equal(engine.resources.response().pools[0]!.active, 0);
+  deps.events.onRunUpdated({ ...run, status: "failed", exitReason: "killed", costUsd: 99, tokensIn: 10, tokensOut: 2 });
+  assert.equal(repo.getInvocation(db, id)!.reportedCostUsd, 4); db.close();
+});

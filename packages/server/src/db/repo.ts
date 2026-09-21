@@ -152,6 +152,7 @@ export function updateProject(
  */
 export function deleteProject(db: Db, id: string): void {
   const run = db.transaction((projectId: string) => {
+    if (db.prepare("SELECT 1 FROM resource_reservations WHERE project_id = ? AND state != 'released' LIMIT 1").get(projectId)) throw new Error("Cannot delete a project with occupied or unresolved account capacity.");
     const taskIds = (
       db.prepare("SELECT id FROM tasks WHERE project_id = ?").all(projectId) as { id: string }[]
     ).map((r) => r.id);
@@ -162,6 +163,9 @@ export function deleteProject(db: Db, id: string): void {
       db.prepare("DELETE FROM runs WHERE task_id = ?").run(taskId);
     }
     db.prepare("DELETE FROM costs WHERE project_id = ?").run(projectId);
+    // Shared quotas are installation-wide. Project cleanup must not reset an
+    // account's window; retain only detached usage, without project/task IDs.
+    db.prepare("UPDATE model_invocations SET project_id = NULL, task_id = NULL, run_id = NULL WHERE project_id = ? AND json_extract(accounting_json, '$.poolId') IS NOT NULL").run(projectId);
     db.prepare("DELETE FROM model_invocations WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM notifications WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM budget_alerts WHERE scope = ?").run(`project:${projectId}`);

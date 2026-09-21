@@ -142,3 +142,15 @@ test("VW13: normalized pool membership is explicit and unpooled in-flight pricin
     assert.equal(resources.response().pools[0]!.observedCalls, 0, "new membership cannot rewrite old history");
   } finally { db.close(); }
 });
+
+
+test("VW13: deleting a finished project cannot reset its shared account quota", () => {
+  const { db, resources, settings } = fixture(":memory:", { maxConcurrent: 1, reviewSlots: 0, quota: { windowHours: 1, maxCalls: 1 } });
+  try {
+    const call = event("retained", settings.models[0]!.id); resources.reserve(call); persistInvocationEvent(db, call);
+    assert.throws(() => repo.deleteProject(db, "p1"), /occupied/);
+    finish(db, call); repo.deleteProject(db, "p1");
+    assert.equal(repo.getProject(db, "p1"), null); assert.equal(repo.getInvocation(db, call.id)!.projectId, undefined);
+    assert.equal(resources.response().pools[0]!.observedCalls, 1); assert.match(resources.check(settings.models[1]!.id)!, /call limit/);
+  } finally { db.close(); }
+});

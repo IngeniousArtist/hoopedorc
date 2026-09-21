@@ -54,3 +54,7 @@ Full worker isolation and verified process ownership are VW14. This policy does
 not turn host CLI execution into a sandbox. AWS checks remain deferred because
 the owner has no running installation. No provider login, paid model call or
 Telegram message is needed to configure or test the admission policy locally.
+
+VW13 project deletion retains detached pooled invocation usage so cleanup cannot
+reset a shared rolling quota. Project/task/run identifiers are removed from those
+ledger rows; deleting occupied or unresolved workers remains refused.

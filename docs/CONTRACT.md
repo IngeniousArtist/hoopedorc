@@ -1027,3 +1027,7 @@ Screenshots, traces and diagnostics are retained on failure when capture is
 possible. Traces can include preview data/session cookies; only the authenticated
 operator can retrieve them. Evidence and repair handoff never mutate existing
 code-check decisions, task success, approvals or merge policy.
+
+VW13 project deletion retains detached pooled invocation usage so cleanup cannot
+reset a shared rolling quota. Project/task/run identifiers are removed from those
+ledger rows; deleting occupied or unresolved workers remains refused.

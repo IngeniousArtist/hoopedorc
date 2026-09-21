@@ -8632,3 +8632,14 @@ VW13 implementation evidence (2026-09-21; PR/required CI pending):
   Account pools do not switch CLI logins, infer provider allowance, guarantee a
   maximum in-flight cost or claim host CLI isolation. VW14 owns verified worker
   isolation; no deployment, paid provider call or Telegram send was performed.
+
+
+VW13 CI follow-up: initial CI [35611373010](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35611373010)
+passed build, typecheck and lint, then caught the B34 legacy stopped-run late-cost
+projection regression. Preserve that old projection when no accounting snapshot
+exists; new pooled calls continue to use immutable ledger billing. Added pooled
+stop/duplicate-settlement coverage. Project cleanup also now retains detached
+pooled usage so deletion cannot reset an account quota; a regression verifies it.
+The focused follow-up passed **8 tests** (B34 plus VW13 resource/engine cases),
+server typecheck and affected lint. Required CI is being rerun; no failed check
+was bypassed.
