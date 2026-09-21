@@ -18,9 +18,10 @@ import type {
   PlanSessionArchive,
   Project,
   Role,
+  SaveDraftResponse,
   VerifiedFigmaReference,
 } from "@orc/types";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiRequestError, api, apiUpload, isAbortError } from "../api/client";
 import { ModelSelect } from "../components/ModelSelect";
 import { useToast } from "../hooks/useToast";
@@ -109,9 +110,12 @@ function draftTasksFromUi(tasks: UiTask[]): DraftTask[] {
 export function PlanView({
   projectId,
   onDone,
+  saveDebounceMs = 1000,
 }: {
   projectId: string;
   onDone: () => void;
+  /** VW02: debounce for draft auto-save; tests shorten it. */
+  saveDebounceMs?: number;
 }) {
   const [project, setProject] = useState<Project | null>(null);
   const [models, setModels] = useState<ModelConfig[]>([]);
@@ -181,14 +185,108 @@ export function PlanView({
   const [committing, setCommitting] = useState(false);
   const [committed, setCommitted] = useState<PlanCommitResponse | null>(null);
 
-  // Auto-save draft edits debounced (1 s after last change)
+  // VW02: truthful draft saving. Every operator edit bumps `editSeq`; a save
+  // request carries the sequence it captured, and only an acknowledgement for
+  // the newest sequence may show "Saved". `saveGenerationRef` invalidates
+  // in-flight results on project change, deconstruct, commit, reload, and
+  // unmount so a stale completion can never repaint state for another draft.
   const saveDraftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadGenerationRef = useRef(0);
+  const [editSeq, setEditSeq] = useState(0);
+  const [savedSeq, setSavedSeq] = useState(0);
+  const [savesInFlight, setSavesInFlight] = useState(0);
+  const [saveError, setSaveError] = useState<{
+    message: string;
+    stale: boolean;
+  } | null>(null);
+  const [draftNotice, setDraftNotice] = useState<string | null>(null);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const editSeqRef = useRef(0);
+  const savedSeqRef = useRef(0);
+  // Highest edit sequence a save was issued for: the auto-save never issues
+  // a second request for a sequence already in flight or already failed
+  // (an explicit Retry does), so an older acknowledgement cannot trigger a
+  // duplicate that repaints the error state.
+  const requestedSeqRef = useRef(0);
+  const saveGenerationRef = useRef(0);
+  // Latest rendered draft, readable from async completions and effect
+  // cleanups without capturing stale closures.
+  const draftRef = useRef<{
+    projectId: string;
+    revisionId: string | null;
+    prd: string | null;
+    agentsMd: string | null;
+    tasks: UiTask[] | null;
+    committed: boolean;
+  }>({
+    projectId,
+    revisionId: null,
+    prd: null,
+    agentsMd: null,
+    tasks: null,
+    committed: false,
+  });
+  // Unsaved edits stashed per project when the operator switches projects
+  // mid-save; restored only while the server still reports the same revision.
+  // In-memory only, scoped to project + revision, never containing secrets.
+  const unsavedDraftsRef = useRef(
+    new Map<
+      string,
+      {
+        revisionId: string;
+        prd: string | null;
+        agentsMd: string | null;
+        tasks: UiTask[];
+      }
+    >(),
+  );
+  // VW02: a chat turn the server has not accepted yet — shown in the
+  // transcript, kept with its error when the send fails, and merged into
+  // `messages` only once the planner's reply arrives.
+  const [pendingTurn, setPendingTurn] = useState<{
+    content: string;
+    error: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    draftRef.current = {
+      projectId,
+      revisionId,
+      prd,
+      agentsMd,
+      tasks,
+      committed: committed !== null,
+    };
+  }, [projectId, revisionId, prd, agentsMd, tasks, committed]);
+  useEffect(() => {
+    editSeqRef.current = editSeq;
+  }, [editSeq]);
+  useEffect(() => {
+    savedSeqRef.current = savedSeq;
+  }, [savedSeq]);
+
+  const cancelScheduledSave = () => {
+    if (saveDraftTimer.current) {
+      clearTimeout(saveDraftTimer.current);
+      saveDraftTimer.current = null;
+    }
+  };
+  /** Drop every in-flight save result; the caller owns the next draft state. */
+  const invalidateSaves = () => {
+    cancelScheduledSave();
+    saveGenerationRef.current += 1;
+    setSavesInFlight(0);
+    setSaveError(null);
+  };
+  const markEdited = () => setEditSeq((seq) => seq + 1);
 
   // ── Load session on mount / project change ──
   useEffect(() => {
     if (!projectId) return;
     const controller = new AbortController();
+    // The stash Map itself is stable; a local copy keeps the cleanup honest
+    // about which container it consults (react-hooks/exhaustive-deps).
+    const unsavedDrafts = unsavedDraftsRef.current;
     const loadGeneration = ++loadGenerationRef.current;
     setLoading(true);
     setCommitted(null);
@@ -196,6 +294,20 @@ export function PlanView({
     setFigmaIssue(null);
     setPlannerReady(false);
     setRevisionId(null);
+    // VW02: a new session owns fresh save/turn state; the previous project's
+    // in-flight work was flushed or stashed by this effect's cleanup.
+    if (saveDraftTimer.current) {
+      clearTimeout(saveDraftTimer.current);
+      saveDraftTimer.current = null;
+    }
+    saveGenerationRef.current += 1;
+    requestedSeqRef.current = 0;
+    setEditSeq(0);
+    setSavedSeq(0);
+    setSavesInFlight(0);
+    setSaveError(null);
+    setDraftNotice(null);
+    setPendingTurn(null);
     const authorityAtRequest = projectAuthorityRef.current;
     const request = { params: { id: projectId }, signal: controller.signal };
     Promise.all([
@@ -228,14 +340,32 @@ export function PlanView({
         setRevisionId(sessionRes.revisionId);
         setPlanCost(sessionRes.planCostUsd);
         setVerifiedFigmaReferences(sessionRes.verifiedFigmaReferences ?? []);
-        if (sessionRes.draftTasks && sessionRes.draftTasks.length > 0) {
-          setTasks(uiTasksFromDraft(sessionRes.draftTasks));
-          setPrd(sessionRes.prd ?? null);
-          setAgentsMd(sessionRes.agentsMd ?? null);
+        // VW02: edits stashed when this project was left mid-save win over
+        // the server copy only while the revision is unchanged; they are
+        // marked unsaved so the auto-save resumes immediately.
+        const stash = unsavedDrafts.get(projectId);
+        unsavedDrafts.delete(projectId);
+        if (stash && stash.revisionId === sessionRes.revisionId) {
+          setTasks(stash.tasks);
+          setPrd(stash.prd);
+          setAgentsMd(stash.agentsMd);
+          setSavedSeq(0);
+          setEditSeq(1);
         } else {
-          setTasks(null);
-          setPrd(null);
-          setAgentsMd(null);
+          if (stash) {
+            setDraftNotice(
+              "Unsaved edits from an earlier planning revision were discarded because the plan changed on the server.",
+            );
+          }
+          if (sessionRes.draftTasks && sessionRes.draftTasks.length > 0) {
+            setTasks(uiTasksFromDraft(sessionRes.draftTasks));
+            setPrd(sessionRes.prd ?? null);
+            setAgentsMd(sessionRes.agentsMd ?? null);
+          } else {
+            setTasks(null);
+            setPrd(null);
+            setAgentsMd(null);
+          }
         }
         setAttachments(attachmentsRes.attachments);
       })
@@ -248,8 +378,53 @@ export function PlanView({
       .finally(() => {
         if (loadGenerationRef.current === loadGeneration) setLoading(false);
       });
-    return () => controller.abort();
-  }, [projectId]);
+    return () => {
+      controller.abort();
+      // VW02: leaving this project (switch, reload, unmount) must not lose
+      // edits the server has not acknowledged. Invalidate in-flight results
+      // for the UI, stash the draft for a return visit, and flush one final
+      // save whose outcome only decides whether the stash is still needed.
+      if (saveDraftTimer.current) {
+        clearTimeout(saveDraftTimer.current);
+        saveDraftTimer.current = null;
+      }
+      saveGenerationRef.current += 1;
+      const draft = draftRef.current;
+      if (
+        draft.projectId === projectId &&
+        draft.revisionId &&
+        draft.tasks &&
+        !draft.committed &&
+        editSeqRef.current > savedSeqRef.current
+      ) {
+        const stash = {
+          revisionId: draft.revisionId,
+          prd: draft.prd,
+          agentsMd: draft.agentsMd,
+          tasks: draft.tasks,
+        };
+        unsavedDrafts.set(projectId, stash);
+        api<SaveDraftResponse>("planSaveDraft", {
+          params: { id: projectId },
+          body: {
+            revisionId: stash.revisionId,
+            prdMarkdown: stash.prd ?? "",
+            tasks: draftTasksFromUi(stash.tasks),
+            agentsMd: stash.agentsMd ?? "",
+          },
+        })
+          .then(() => {
+            if (unsavedDrafts.get(projectId) === stash) {
+              unsavedDrafts.delete(projectId);
+            }
+          })
+          .catch(() => {
+            // Kept in the stash: restored and retried when the project is
+            // reopened, or reported there if the revision has moved on.
+          });
+      }
+    };
+  }, [projectId, reloadNonce]);
 
   // F27: upload from the hidden file input; errors surface as a toast
   // rather than the page-level error banner, since a failed attachment
@@ -295,54 +470,192 @@ export function PlanView({
         ? "auto"
         : "smooth",
     });
-  }, [messages, chatting]);
+  }, [messages, chatting, pendingTurn]);
 
-  // Auto-save draft tasks whenever they change (debounced)
+  // VW02: one draft save for edit sequence `seq`, built from the latest
+  // rendered draft. Completions are ignored once the generation moved on;
+  // a failure for a draft older than an acknowledged one is moot.
+  const performSave = useCallback((seq: number) => {
+    const draft = draftRef.current;
+    if (!draft.projectId || !draft.revisionId || !draft.tasks || draft.committed) {
+      return;
+    }
+    const generation = saveGenerationRef.current;
+    requestedSeqRef.current = Math.max(requestedSeqRef.current, seq);
+    setSavesInFlight((count) => count + 1);
+    setSaveError(null);
+    api<SaveDraftResponse>("planSaveDraft", {
+      params: { id: draft.projectId },
+      body: {
+        revisionId: draft.revisionId,
+        prdMarkdown: draft.prd ?? "",
+        tasks: draftTasksFromUi(draft.tasks),
+        agentsMd: draft.agentsMd ?? "",
+      },
+    })
+      .then(() => {
+        if (generation !== saveGenerationRef.current) return;
+        setSavedSeq((prev) => Math.max(prev, seq));
+      })
+      .catch((e: unknown) => {
+        if (generation !== saveGenerationRef.current) return;
+        if (seq < savedSeqRef.current) return;
+        setSaveError({
+          message: e instanceof Error ? e.message : String(e),
+          stale: e instanceof ApiRequestError && e.status === 409,
+        });
+      })
+      .finally(() => {
+        if (generation !== saveGenerationRef.current) return;
+        setSavesInFlight((count) => Math.max(0, count - 1));
+      });
+  }, []);
+
+  // Debounced auto-save of operator edits only (loads and deconstruction
+  // results are already persisted server-side and never mark the draft dirty).
   useEffect(() => {
-    if (!tasks || committed || !projectId || !revisionId) return;
+    if (committed || !tasks || !revisionId || editSeq <= savedSeq) return;
+    if (editSeq <= requestedSeqRef.current) return;
     if (saveDraftTimer.current) clearTimeout(saveDraftTimer.current);
     saveDraftTimer.current = setTimeout(() => {
-      api("planSaveDraft", {
-        params: { id: projectId },
-        body: {
-          revisionId,
-          prdMarkdown: prd ?? "",
-          tasks: draftTasksFromUi(tasks),
-          agentsMd: agentsMd ?? "",
-        },
-      }).catch(() => {});
-    }, 1000);
+      saveDraftTimer.current = null;
+      performSave(editSeq);
+    }, saveDebounceMs);
     return () => {
-      if (saveDraftTimer.current) clearTimeout(saveDraftTimer.current);
+      if (saveDraftTimer.current) {
+        clearTimeout(saveDraftTimer.current);
+        saveDraftTimer.current = null;
+      }
     };
-  }, [tasks, prd, agentsMd, committed, projectId, revisionId]);
+  }, [editSeq, savedSeq, committed, tasks, revisionId, saveDebounceMs, performSave]);
 
-  async function sendChat() {
-    if (!projectId || !revisionId || !input.trim() || chatting || running) return;
-    const next: PlanChatMessage[] = [
-      ...messages,
-      { role: "user", content: input.trim() },
-    ];
-    setMessages(next);
-    setInput("");
+  const unsavedEdits = tasks !== null && !committed && editSeq > savedSeq;
+  // A reload or tab close would discard an unsent turn or unsaved edits; the
+  // browser's own prompt covers what in-app navigation (this view stays
+  // mounted across tabs) does not.
+  const unsavedWork = pendingTurn !== null || savesInFlight > 0 || unsavedEdits;
+  useEffect(() => {
+    if (!unsavedWork) return;
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault();
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [unsavedWork]);
+
+  const saveStatusLabel = saveError
+    ? "Save failed"
+    : savesInFlight > 0
+      ? "Saving…"
+      : unsavedEdits
+        ? "Unsaved changes"
+        : savedSeq > 0
+          ? "Saved"
+          : "Edits are saved automatically.";
+
+  /** Send one user turn. The accepted transcript (`messages`) changes only
+   *  when the planner replies; a failure keeps the turn visible with its
+   *  error and leaves the composer untouched. */
+  async function submitTurn(text: string, revision: string | null = revisionId) {
+    if (!projectId || !revision) return;
+    const next: PlanChatMessage[] = [...messages, { role: "user", content: text }];
+    setPendingTurn({ content: text, error: null });
     setChatting(true);
     setError(null);
     setPlannerReady(false); // reset until the planner confirms again
     try {
       const res = await api<PlanChatResponse>("planChat", {
         params: { id: projectId },
-        body: { revisionId, messages: next },
+        body: { revisionId: revision, messages: next },
       });
+      if (draftRef.current.projectId !== projectId) return;
       const { content, ready } = extractPlanComplete(res.reply);
       if (ready) setPlannerReady(true);
       setMessages([...next, { role: "assistant", content }]);
+      setPendingTurn(null);
       setPlanCost((c) => c + res.costUsd);
     } catch (e) {
-      setError(String(e));
-      setMessages(messages); // roll back optimistic user turn
+      if (draftRef.current.projectId !== projectId) return;
+      setPendingTurn({
+        content: text,
+        error: e instanceof Error ? e.message : String(e),
+      });
     } finally {
-      setChatting(false);
+      if (draftRef.current.projectId === projectId) setChatting(false);
     }
+  }
+
+  function sendChat() {
+    const text = input.trim();
+    if (!projectId || !revisionId || !text || chatting || running || pendingTurn) {
+      return;
+    }
+    setInput("");
+    void submitTurn(text);
+  }
+
+  /** Retry a failed turn. Reconcile with the server first: a lost response
+   *  may mean the turn was already accepted, in which case the server's
+   *  transcript is adopted instead of sending the same turn twice. */
+  async function retrySend() {
+    if (!pendingTurn || !projectId || chatting || running) return;
+    const turn = pendingTurn.content;
+    let revision = revisionId;
+    setPendingTurn({ content: turn, error: null });
+    setChatting(true);
+    try {
+      const session = await api<PlanningSessionResponse>("planSession", {
+        params: { id: projectId },
+      });
+      if (draftRef.current.projectId !== projectId) return;
+      const server = session.messages;
+      const acceptedOnServer =
+        server.length === messages.length + 2 &&
+        messages.every(
+          (m, i) =>
+            server[i]?.role === m.role &&
+            (m.role !== "user" || server[i]?.content === m.content),
+        ) &&
+        server[messages.length]?.role === "user" &&
+        server[messages.length]?.content === turn &&
+        server[server.length - 1]?.role === "assistant";
+      if (acceptedOnServer) {
+        let ready = false;
+        const cleaned = server.map((m) => {
+          if (m.role !== "user") {
+            const extracted = extractPlanComplete(m.content);
+            if (extracted.ready) ready = true;
+            return { ...m, content: extracted.content };
+          }
+          return m;
+        });
+        setMessages(cleaned);
+        setPlannerReady(ready);
+        setRevisionId(session.revisionId);
+        setPlanCost(session.planCostUsd);
+        setPendingTurn(null);
+        setChatting(false);
+        return;
+      }
+      if (session.revisionId !== revisionId) {
+        setRevisionId(session.revisionId);
+        revision = session.revisionId;
+      }
+    } catch {
+      // Reconciliation is best-effort; the send below reports its own error.
+    }
+    if (draftRef.current.projectId !== projectId) return;
+    setChatting(false);
+    await submitTurn(turn, revision);
+  }
+
+  /** Move a failed turn back into the composer without clobbering anything
+   *  typed since the send. */
+  function editFailedTurn() {
+    if (!pendingTurn) return;
+    const failed = pendingTurn.content;
+    setInput((current) => (current.trim() ? `${failed}\n\n${current}` : failed));
+    setPendingTurn(null);
   }
 
   async function generateTable(
@@ -351,6 +664,9 @@ export function PlanView({
     if (!projectId || !revisionId || deconstructing || running) return;
     setDeconstructing(true);
     setError(null);
+    // The server persists the new draft itself; an older pending save must
+    // not land afterwards and overwrite it.
+    invalidateSaves();
     try {
       const res = await api<PlanDeconstructResponse>("planDeconstruct", {
         params: { id: projectId },
@@ -366,6 +682,7 @@ export function PlanView({
       setPrd(res.prdMarkdown);
       setAgentsMd(res.agentsMd ?? null);
       setTasks(uiTasksFromDraft(res.tasks));
+      setSavedSeq((prev) => Math.max(prev, editSeqRef.current));
       setVerifiedFigmaReferences(res.verifiedFigmaReferences ?? []);
       setFigmaIssue(null);
     } catch (e) {
@@ -386,12 +703,14 @@ export function PlanView({
   }
 
   function patchTask(key: string, patch: Partial<UiTask>) {
+    markEdited();
     setTasks((ts) =>
       ts ? ts.map((t) => (t.key === key ? { ...t, ...patch } : t)) : ts,
     );
   }
 
   function removeTask(key: string) {
+    markEdited();
     setTasks((ts) =>
       ts
         ? ts
@@ -407,6 +726,7 @@ export function PlanView({
   function addTask() {
     const fallback =
       models.find((m) => m.enabled)?.id ?? ("deepseek-flash" as ModelId);
+    markEdited();
     setTasks((ts) => [
       ...(ts ?? []),
       {
@@ -423,6 +743,7 @@ export function PlanView({
   }
 
   function moveTask(idx: number, dir: -1 | 1) {
+    markEdited();
     setTasks((ts) => {
       if (!ts) return ts;
       const j = idx + dir;
@@ -437,6 +758,9 @@ export function PlanView({
     if (!projectId || !revisionId || !tasks || tasks.length === 0) return;
     setCommitting(true);
     setError(null);
+    // The commit body is the exact visible draft; a save still in flight
+    // must neither be waited for nor allowed to repaint state afterwards.
+    invalidateSaves();
     try {
       const res = await api<PlanCommitResponse>("planCommit", {
         params: { id: projectId },
@@ -461,6 +785,8 @@ export function PlanView({
         .catch(() => {});
     } catch (e) {
       setError(String(e));
+      // The draft is still on screen; resume saving it if edits were unsaved.
+      if (editSeqRef.current > savedSeqRef.current) performSave(editSeqRef.current);
     } finally {
       setCommitting(false);
     }
@@ -694,6 +1020,49 @@ export function PlanView({
                 <div className="whitespace-pre-wrap">{m.content}</div>
               </div>
             ))}
+            {pendingTurn && (
+              <div
+                data-testid="pending-turn"
+                className={
+                  "rounded px-3 py-2 text-xs leading-relaxed " +
+                  (pendingTurn.error
+                    ? "border border-red-800 bg-red-950/40 text-red-100"
+                    : "bg-blue-950/40 text-blue-100 opacity-80")
+                }
+              >
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-neutral-400">
+                  You{pendingTurn.error ? " — not sent" : " — sending…"}
+                </div>
+                <div className="whitespace-pre-wrap">{pendingTurn.content}</div>
+                {pendingTurn.error && (
+                  <div role="alert" className="mt-2 space-y-2">
+                    <p className="text-red-300">Send failed: {pendingTurn.error}</p>
+                    <p className="text-red-200/80">
+                      Your message and chat history are kept. Retry sends it
+                      again, or edit it in the composer below.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void retrySend()}
+                        disabled={chatting || running}
+                        className="min-h-10 rounded bg-red-700 px-3 py-2 text-xs font-medium text-white hover:bg-red-600 focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-50"
+                      >
+                        Retry send
+                      </button>
+                      <button
+                        type="button"
+                        onClick={editFailedTurn}
+                        disabled={chatting}
+                        className="min-h-10 rounded border border-neutral-600 px-3 py-2 text-xs text-neutral-200 hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-blue-400 disabled:opacity-50"
+                      >
+                        Edit message
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             {chatting && (
               <div className="px-3 py-2 text-xs text-neutral-400">
                 {plannerDisplayName} is thinking…
@@ -776,7 +1145,12 @@ export function PlanView({
                 <button
                   type="button"
                   onClick={sendChat}
-                  disabled={!input.trim() || chatting}
+                  disabled={!input.trim() || chatting || pendingTurn !== null}
+                  title={
+                    pendingTurn?.error
+                      ? "Retry or edit the failed message first"
+                      : undefined
+                  }
                   className="min-h-10 shrink-0 rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 focus-visible:ring-2 focus-visible:ring-blue-400 disabled:opacity-50"
                 >
                   Send
@@ -786,6 +1160,9 @@ export function PlanView({
                 id="planning-message-help"
                 className="text-xs text-neutral-400"
               >
+                {pendingTurn?.error
+                  ? "Retry or edit the failed message above before sending another. "
+                  : ""}
                 Drag the lower-right corner to resize. Ctrl/Cmd+Enter sends.
               </p>
             </div>
@@ -845,7 +1222,10 @@ export function PlanView({
               <textarea
                 aria-label="AGENTS.md draft"
                 value={agentsMd}
-                onChange={(e) => setAgentsMd(e.target.value)}
+                onChange={(e) => {
+                  markEdited();
+                  setAgentsMd(e.target.value);
+                }}
                 rows={16}
                 className="w-full resize-y border-t border-neutral-800 bg-neutral-950 px-4 py-3 font-mono text-xs leading-relaxed text-neutral-300"
               />
@@ -1041,10 +1421,63 @@ export function PlanView({
               >
                 {committing ? "Creating tasks…" : "Approve & Create Tasks"}
               </button>
+              <span
+                role="status"
+                aria-live="polite"
+                data-testid="draft-save-status"
+                className={
+                  "text-[11px] " +
+                  (saveError
+                    ? "text-red-300"
+                    : unsavedEdits || savesInFlight > 0
+                      ? "text-amber-300"
+                      : "text-neutral-400")
+                }
+              >
+                {saveStatusLabel}
+              </span>
               <span className="text-[11px] text-neutral-400">
-                Edits are auto-saved. Tasks appear on the Board after approval.
+                Tasks appear on the Board after approval.
               </span>
             </div>
+            {saveError && (
+              <div
+                role="alert"
+                className="mt-3 flex flex-wrap items-center gap-2 rounded border border-red-800 bg-red-950/40 px-3 py-2 text-xs text-red-200"
+              >
+                <span className="min-w-0 flex-1">
+                  Draft save failed: {saveError.message}{" "}
+                  {saveError.stale
+                    ? "Reload the session to continue from the server's copy; your current edits stay on screen until you do."
+                    : "Your edits are kept on screen; retry the save, or approve to create tasks from exactly what you see."}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => performSave(editSeqRef.current)}
+                  disabled={savesInFlight > 0}
+                  className="min-h-10 rounded bg-red-700 px-3 py-2 text-xs font-medium text-white hover:bg-red-600 focus-visible:ring-2 focus-visible:ring-red-400 disabled:opacity-50"
+                >
+                  Retry save
+                </button>
+                {saveError.stale && (
+                  <button
+                    type="button"
+                    onClick={() => setReloadNonce((nonce) => nonce + 1)}
+                    className="min-h-10 rounded border border-red-700 px-3 py-2 text-xs hover:bg-red-900/40 focus-visible:ring-2 focus-visible:ring-red-400"
+                  >
+                    Reload session
+                  </button>
+                )}
+              </div>
+            )}
+            {draftNotice && (
+              <p
+                role="status"
+                className="mt-3 rounded border border-amber-800/60 bg-amber-950/20 px-3 py-2 text-xs text-amber-200"
+              >
+                {draftNotice}
+              </p>
+            )}
           </div>
         </section>
       )}

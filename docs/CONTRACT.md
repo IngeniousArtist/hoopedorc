@@ -63,6 +63,29 @@ new ID even when its content is identical. Existing planning scratch is
 backfilled with one revision during migration; empty projects are initialized
 lazily on their first session read.
 
+VW02 makes the client side of that contract truthful. `plan/save-draft`
+answers `409` for a stale `revisionId` both at the guard and when the
+revision-scoped UPDATE finds no row (a revision that moved mid-request), never
+`500`. PlanView tracks an edit sequence per operator edit; each save carries
+the sequence it captured and "Saved" is shown only when the newest sequence is
+acknowledged. Loads and deconstruction results never trigger a save (the
+server already persisted them), an acknowledgement for an older sequence
+cannot mark newer edits saved, at most one automatic request is issued per
+sequence (explicit Retry re-sends), and results are discarded after a project
+switch, deconstruction, commit, reload, or unmount. A failed save keeps the
+edits on screen with an inline error plus Retry; a stale revision offers a
+session reload instead. Unsaved edits are stashed in memory per project and
+revision when the operator switches projects (one final save is flushed) and
+restored on return only while the server still reports the same revision.
+`plan/commit` sends the exact visible draft and ignores in-flight save
+outcomes; the server's exact-content receipt remains the only commit boundary.
+A failed `plan/chat` turn is never merged into the accepted transcript: it
+stays visible with its error, the composer keeps anything typed since, and
+Retry first reads `plan/session` so a turn whose response was lost after the
+server accepted it is adopted from the server instead of being sent twice.
+A `beforeunload` guard is registered only while a turn is unsent or edits
+are unsaved.
+
 `GitOperationError.stage` identifies `inspect`, `fetch`, `checkout`, `merge`,
 `write`, `stage`, `commit`, `push`, or `cleanup`. `commitAll()` treats only a
 confirmed empty porcelain status as a no-op; other failures propagate.

@@ -7369,7 +7369,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | ID | Work item | Status | PR / acceptance evidence |
 |---|---|---|---|
 | VW01 | Deterministic mock planning; no real planner/Figma calls | Done (merged 2026-09-21) | [PR #262](https://github.com/IngeniousArtist/hoopedorc/pull/262) → main `c050b4d`; PR CI `build-and-test` passed; main CI run [35565173055](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35565173055) passed; see the VW01 acceptance record below |
-| VW02 | Preserve planning input and truthful draft-save state | Not started | — |
+| VW02 | Preserve planning input and truthful draft-save state | Implemented; PR open, awaiting required CI and merge | Branch `vw02-planning-input-and-save-state`; see the VW02 acceptance record below |
 | VW03 | Repository-aware planning and truthful task history | Not started | — |
 | VW04 | Project navigation, compact board/list, task inspector | Not started | — |
 | VW05 | Organize existing settings and setup | Not started | — |
@@ -7505,3 +7505,85 @@ merge to main as `c050b4d` on 2026-09-21. Post-merge main CI run
 completed successfully. Independent post-merge check on `c050b4d`: server
 typecheck and the 16 VW01 server tests passed locally. Next: VW02 and VW03,
 starting from the merged result.
+
+### VW02 — planning work must survive failure (implemented 2026-09-21)
+
+**Problems confirmed on main (`e1bc9ae`):** `sendChat` cleared the composer
+before the request and rolled the optimistic turn back on failure, losing the
+message; the debounced auto-save was fire-and-forget (`.catch(() => {})`)
+while the UI claimed "Edits are auto-saved"; the save effect also fired after
+every load and deconstruction, not just operator edits; nothing prevented an
+older save completion, a project switch, or a commit from repainting state for
+a different draft; and a save-draft whose revision moved between the guard and
+the conditional UPDATE surfaced as `500`.
+
+**Scope delivered (`apps/web/src/pages/PlanView.tsx`, one server route):**
+
+- Pending chat turn: the user's turn is rendered as a pending bubble and only
+  merged into the accepted transcript when the planner replies. On failure it
+  stays visible with the error, **Retry send**, and **Edit message** (moves the
+  text into the composer above anything typed since). Retry first reads
+  `plan/session`; a turn the server already accepted (lost response) is
+  adopted from the server instead of being sent twice. Send is disabled with a
+  reason while a failed turn is unresolved.
+- Draft-save engine: an edit sequence bumps on every task/AGENTS edit; each
+  save carries its sequence and only an acknowledgement for the newest
+  sequence shows **Saved**. Loads/deconstruction never save; at most one
+  automatic request per sequence (explicit **Retry save** re-sends); a save
+  generation invalidates in-flight results on project switch, deconstruction,
+  commit, reload, and unmount; a `409` shows a stale-revision error with
+  **Reload session**. Live status (`role="status"`) replaces the static copy;
+  failures render as `role="alert"` with the recovery actions and the note that
+  approving commits exactly what is visible.
+- Project switch/unmount: the effect cleanup flushes one final save for the
+  old project and stashes unsaved edits in memory keyed by project + revision;
+  on return they are restored (and re-saved) only while the server still
+  reports the same revision, otherwise a notice explains the discard.
+- `beforeunload` guard only while a turn is unsent or edits are unsaved.
+- Commit: cancels the timer, invalidates in-flight saves, sends the exact
+  visible draft, and resumes saving if the commit fails.
+- Server: `POST /plan/save-draft` returns `409` (not `500`) when the
+  revision-scoped UPDATE finds no row.
+- Docs: CONTRACT.md (VW02 paragraph after O3), USER_GUIDE.md planning
+  reliability paragraph.
+
+**Non-goals honored:** no background planner execution or live revision
+application (VW06/VW07); no new endpoint or payload change; no persistent
+storage of unsent drafts (in-memory, scoped, secret-free).
+
+**Acceptance evidence (Node 22.23.0, local):**
+
+- `apps/web/src/pages/PlanView.reliability.test.tsx` (9): failed send keeps
+  the turn, later typing, and history, Send disabled until resolved, retry
+  sends once with the accepted history and no duplicate turn; retry adopts a
+  server-accepted turn without a second `planChat`; Edit message prepends the
+  failed text to typed input; no save on load, **Saved** only after
+  acknowledgement, failed save shows an actionable alert and Retry recovers
+  with the edited content; an older acknowledgement cannot mark newer edits
+  saved and a failed newer save reports **Save failed** until Retry succeeds;
+  a stale (`409`) save offers **Reload session**, which restores the server
+  draft; switching projects flushes the old project's edits, never shows them
+  on the new project, and restores + re-saves them on return after the flush
+  failed; commit sends the exact visible draft and a late save failure is
+  ignored after commit; the `beforeunload` guard is registered only while
+  unsaved and removed after acknowledgement.
+- Existing `PlanView.test.tsx` (11) unchanged and passing.
+- `apps/web/e2e/app.spec.ts` "VW02: planning input survives an injected send
+  failure and saves report the truth": injected `502` on the real chat route
+  keeps the message and later typing, Retry reaches the mock planner once
+  more; injected `500` on the real save-draft route shows **Save failed** with
+  the reason, Retry save reaches **Saved**, and a page reload restores exactly
+  the acknowledged edited title.
+
+**Not required / outstanding:** no live paid-model check (planner behavior
+unchanged); the mid-request stale-revision `409` is a two-line defensive
+mapping exercised by type-checked code rather than a route test, because the
+race cannot be produced through the public API in a single-threaded test.
+The VW02 Playwright scenario also asserts no document overflow, fixed
+surfaces inside the viewport, and ≥40px phone touch targets at 360, 768, and
+1440px while the failed-turn and failed-save states are visible.
+
+**Gates (all passed, Node 22.23.0):** `npm run typecheck`, `npm run build`,
+`npm run lint` (330 legacy findings, baseline unchanged), 234 engine, 18
+adapter, 343 server, 109 web tests (26 files, 9 new), 21 Playwright scenarios,
+`git diff --check`. PR/merge evidence is appended below when available.

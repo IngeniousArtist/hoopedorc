@@ -664,6 +664,25 @@ session—it receives a reload-the-session error. After a successful commit, the
 next planning iteration receives a new revision ID, so intentionally planning
 another identical batch remains possible.
 
+Planning work also survives ordinary failures (VW02). If a chat message cannot
+be sent — the planner CLI is unavailable, the network drops, the server
+refuses — the message stays in the transcript marked **not sent** with the
+error, your history is untouched, and anything you typed since is still in the
+composer. **Retry send** first checks the saved session, so a reply that was
+lost in transit is adopted rather than sent twice; **Edit message** moves the
+text back into the composer above whatever you were typing. Draft edits to the
+task table and AGENTS.md report their real state next to **Approve & Create
+Tasks**: **Unsaved changes**, **Saving…**, **Saved** (only after the server
+acknowledged your newest edit), or **Save failed** with the reason and a
+**Retry save** button. Your edits stay on screen through a failed save, and
+approving always creates tasks from exactly what you see, so a failed
+auto-save never blocks a commit. If the session went stale (another tab
+committed or re-planned), the Plan tab offers **Reload session** instead of
+retrying. Switching projects flushes a final save and keeps any still-unsaved
+edits in memory until you return, as long as the plan has not changed on the
+server; reloading or closing the tab while a message is unsent or edits are
+unsaved triggers the browser's leave-page prompt.
+
 ## Backups & data
 
 Everything lives in two places: the SQLite DB (`DB_PATH`, default
