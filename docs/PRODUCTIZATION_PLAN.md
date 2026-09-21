@@ -7371,7 +7371,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW01 | Deterministic mock planning; no real planner/Figma calls | Done (merged 2026-09-21) | [PR #262](https://github.com/IngeniousArtist/hoopedorc/pull/262) → main `c050b4d`; PR CI `build-and-test` passed; main CI run [35565173055](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35565173055) passed; see the VW01 acceptance record below |
 | VW02 | Preserve planning input and truthful draft-save state | Done (merged 2026-09-21) | [PR #264](https://github.com/IngeniousArtist/hoopedorc/pull/264) → main `8d00383`; PR CI `build-and-test` passed; main CI run [35567524350](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35567524350) passed; see the VW02 acceptance record below |
 | VW03 | Repository-aware planning and truthful task history | Done (merged 2026-09-21) | [PR #266](https://github.com/IngeniousArtist/hoopedorc/pull/266) → main `9757a91`; PR CI `build-and-test` passed; main CI run [35570272080](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35570272080) passed; see the VW03 acceptance record below |
-| VW04 | Project navigation, compact board/list, task inspector | Part 1 done (merged 2026-09-21); part 2 implemented (PR open, awaiting CI and merge) | Part 1: [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268) → main `88ca12b`, PR CI passed, main CI run [35571774985](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35571774985) passed. Part 2: branch `vw04-task-inspector-part2`; see the VW04 acceptance record below |
+| VW04 | Project navigation, compact board/list, task inspector | Part 1 done (merged 2026-09-21); part 2 implemented (PR open, awaiting CI and merge) | Part 1: [PR #268](https://github.com/IngeniousArtist/hoopedorc/pull/268) → main `88ca12b`, PR CI passed, main CI run [35571774985](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35571774985) passed. Part 2: [PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269); see the VW04 acceptance record below |
 | VW05 | Organize existing settings and setup | Not started | — |
 | VW06 | Durable planning operations and planning workbench | Not started | — |
 | VW07 | Propose/apply plan revisions during execution | Not started | — |
@@ -7891,4 +7891,4 @@ navigation (VW08/VW10 own code and evidence views); settings/setup (VW05).
   findings, baseline unchanged), 234 engine, 18 adapter, 358 server, 138 web
   tests (30 files, 1 new), 22 Playwright scenarios, `git diff --check`.
 
-PR/merge evidence is appended below when available.
+Publication: [PR #269](https://github.com/IngeniousArtist/hoopedorc/pull/269). Required PR CI must pass before merge; merge/main CI evidence is appended after merge.
