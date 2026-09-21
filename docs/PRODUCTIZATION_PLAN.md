@@ -8233,6 +8233,10 @@ asserts the route's 204 response. A focused run of the VW07 scenario followed by
 the affected 360px editing workflow passed (2/2); changed-file lint and whitespace
 checks passed. Required CI is rerun on the corrected PR head before merge.
 
+Final API review also reproduced an empty `existingTaskId` being accepted as a
+new task ID. Boundary validation now rejects blank identities; the focused
+identity/DAG regression failed before the fix and passed afterward.
+
 **Limits:** application uses an explicit pause/settle/re-review boundary; it does
 not hot-swap prompts, cancel tasks, resume execution automatically, or rebase
 stale proposals automatically. No authenticated model, external Telegram,

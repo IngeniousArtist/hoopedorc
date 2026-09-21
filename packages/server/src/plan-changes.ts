@@ -51,7 +51,7 @@ export function validatePlanChangeInput(value: unknown): asserts value is Review
     if (!t || typeof t.title !== "string" || !t.title.trim() || typeof t.description !== "string" ||
         !["easy", "medium", "hard"].includes(t.difficulty) || typeof t.assignedModel !== "string" ||
         (t.role !== undefined && !["planner", "frontend", "hard", "medium", "docs", "validator", "updates"].includes(t.role)) ||
-        (t.existingTaskId !== undefined && typeof t.existingTaskId !== "string") ||
+        (t.existingTaskId !== undefined && (typeof t.existingTaskId !== "string" || !t.existingTaskId.trim())) ||
         !strings(t.acceptanceCriteria) || !strings(t.scopePaths) || !strings(t.existingDependsOn) ||
         !Array.isArray(t.dependsOn) || t.dependsOn.some((n) => !Number.isSafeInteger(n) || n < 0 || n >= v.tasks!.length)) return bad();
   }

@@ -38,6 +38,7 @@ test("VW07: immutable review preserves accepted/active work and validates identi
     assert.equal(repo.getProject(f.db, "p")?.prd, "# Accepted");
     assert.equal(getPlanChange(f.db, "other", review.id), null);
     for (const tasks of [
+      [{ ...f.input.tasks[0]!, existingTaskId: "" }],
       [{ ...f.input.tasks[0]!, existingTaskId: "active" }],
       [{ ...f.input.tasks[0]!, existingTaskId: "other-project-task" }],
       [{ ...f.input.tasks[0]!, existingDependsOn: ["unknown"] }],
