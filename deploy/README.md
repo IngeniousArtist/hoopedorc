@@ -148,3 +148,17 @@ Evidence payloads are in SQLite, included in its existing backup/checkpoint path
 allow up to 200 MiB per project plus normal DB overhead and backups. Payloads expire
 after 30 days, while metadata remains. Remote AWS/private-origin verification is
 still owner-deferred until the replacement host exists.
+
+## Isolated Codex workers (VW14)
+
+Follow [worker image/account setup](worker/README.md) for optional per-model
+Docker execution. Build the server before restart so `execution-entry.mjs` and
+`execution-proxy.mjs` ship alongside the prebuilt entry point. The service user
+must access the explicitly configured local Unix Docker socket and keep its
+state/server checkout separate from project workspaces. A missing daemon/image
+or worker login refuses execution; no host/API-key fallback is used. Existing
+host harnesses and repository gate sandboxing remain separate capabilities.
+
+The no-model Docker boundary was exercised locally. Provider login renewal,
+actual model access and new AWS-host execution remain pending; the old AWS
+server is shut down and no replacement installation is configured.

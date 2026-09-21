@@ -395,6 +395,8 @@ export interface SchedulerDeps {
   checkActivation?: (project: Project, task: Task, model: ModelId, signal?: AbortSignal) => Promise<string | null>;
   /** Atomically reserve the next author call before consuming its attempt. */
   reserveAuthor?: (project: Project, task: Task, model: ModelId, invocationId: string) => string | null;
+  /** A live or unresolved external worker prevents Git/worktree cleanup. */
+  workspaceHeld?: (project: Project, task: Task) => boolean;
   releaseUnstartedInvocation?: (invocationId: string) => void;
   beforeDocsInvocation?: (project: Project, task: Task, model: ModelConfig, invocationId: string, signal?: AbortSignal) => Promise<void>;
   checkTaskReferences?: (project: Project, task: Task) => string | null;

@@ -1401,3 +1401,25 @@ live capacity. Check and stop the old worker on its host before selecting
 Recovery preserves the interrupted usage record and is safe to retry after a
 lost response. Unresolved workers also prevent deleting the affected project or
 account pool. See [resource limits and recovery](specs/resources.md).
+
+### Choose isolated agent execution
+
+**Settings → Resources → Where agents run** configures optional Docker/Codex
+workers. Native host CLI is the default and is labelled as having no app-enforced
+filesystem/network isolation. Start with a subscription pool, follow
+[worker setup](../deploy/worker/README.md) to build the pinned image and sign in
+inside its separate account volume, then save and verify the execution profile.
+Assign models to a profile for the same harness/account. Verification sends no
+model prompt; use the explicit model test to check provider access when ready.
+
+A required worker that is unavailable blocks the task; it never falls back to
+host execution or API-key billing. Agents edit workspace files while Hoopedorc
+manages Git and gates. This initial worker does not support arbitrary external
+MCPs, package downloads, Claude or OpenCode. Existing host/browser workflows
+remain available through host profiles. AWS deployment and live provider login
+checks remain pending for installations that have not been set up.
+
+If Docker disappears during a run, the task workspace and account capacity stay
+protected. Inspect the worker in Resources, confirm **Stop and verify**, then
+resolve the held account slot. This targets only containers with matching
+installation/invocation ownership and preserves your task files and login volume.

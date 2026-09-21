@@ -55,6 +55,7 @@ export function ResourcesPanel({ settings, active, onChange }: { settings: Setti
     {pools.map((pool, index) => {
       const usage = status?.pools.find((item) => item.pool.id === pool.id);
       const occupied = usage ? usage.active + usage.reserved + usage.unresolved : 0;
+      const usedByWorker = settings.executionProfiles?.some((profile) => profile.accountPoolId === pool.id);
       const prefix = `Account ${index + 1}`;
       return <fieldset key={pool.id} className="min-w-0 space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
         <legend className="px-1 text-sm font-medium">{prefix}</legend>
@@ -74,7 +75,8 @@ export function ResourcesPanel({ settings, active, onChange }: { settings: Setti
           {usage.unknownSpendCalls > 0 && <p className="text-amber-300">{usage.unknownSpendCalls} interrupted calls have incomplete usage.</p>}
           {usage.reason && <p className="break-words text-amber-300">{usage.reason}</p>}
         </div> : <p className="text-xs text-neutral-500">{status ? "No saved usage for this pool yet." : "Usage is unavailable until status loads."}</p>}
-        <button className={button} disabled={occupied > 0} onClick={() => setConfirm({ kind: "remove", id: pool.id })}>Remove account pool</button>
+        <button className={button} disabled={occupied > 0 || usedByWorker} onClick={() => setConfirm({ kind: "remove", id: pool.id })}>Remove account pool</button>
+        {usedByWorker && <p className="text-xs text-neutral-400">Remove or reassign the execution profiles using this account first.</p>}
         {occupied > 0 && <p className="text-xs text-neutral-400">Finish or resolve active reservations before removing this pool.</p>}
         {confirm?.kind === "remove" && confirm.id === pool.id && <div role="group" aria-label="Confirm pool removal" className="space-y-2 rounded border border-amber-800 p-3"><p className="text-sm">Remove this pool and unassign its profiles? This takes effect when you save.</p><div className="flex flex-wrap gap-2"><button className={button} onClick={() => { onChange({ accountPools: pools.filter((item) => item.id !== pool.id), models: settings.models.map((model) => model.accountPoolId === pool.id ? { ...model, accountPoolId: undefined } : model) }); setConfirm(undefined); }}>Remove pool from draft</button><button className={button} onClick={() => setConfirm(undefined)}>Cancel</button></div></div>}
       </fieldset>;
@@ -82,7 +84,7 @@ export function ResourcesPanel({ settings, active, onChange }: { settings: Setti
     <section className="space-y-3"><h3 className="font-medium">Profile membership</h3><p className="text-xs text-neutral-400">Existing per-model limits still apply. Assign each profile to the account used by its CLI login.</p>
       {settings.models.map((model) => <label key={model.id} className="grid items-center gap-2 text-sm sm:grid-cols-2"><span className="break-words">{model.displayName}</span><select className={input} aria-label={`${model.displayName} account pool`} value={model.accountPoolId ?? ""} onChange={(e) => onChange({ accountPools: pools, models: settings.models.map((item) => item.id === model.id ? { ...item, accountPoolId: e.target.value || undefined } : item) })}><option value="">Individual limits only</option>{pools.map((pool) => <option key={pool.id} value={pool.id}>{pool.name || "Unnamed account"}</option>)}</select></label>)}
     </section>
-    {!!status?.unresolved.length && <section className="space-y-3"><h3 className="font-medium">Workers needing attention</h3><p className="text-sm text-neutral-400">A restart interrupted these calls. Stop or verify the old worker on its host before releasing capacity. This action does not terminate a process.</p>
+    {!!status?.unresolved.length && <section className="space-y-3"><h3 className="font-medium">Workers needing attention</h3><p className="text-sm text-neutral-400">A restart interrupted these calls. For host CLIs, stop or verify the old process yourself before releasing capacity. For isolated Docker workers, recovery also verifies termination of the owned containers.</p>
       {status.unresolved.map((item) => <div key={item.id} className="space-y-2 rounded border border-amber-900 p-3"><p className="break-words text-sm">{item.model} · {item.stage} · {item.taskId ?? item.projectId ?? "Model health"}</p><p className="break-all text-xs text-neutral-500">{item.id}</p>
         {confirm?.kind === "recover" && confirm.id === item.id ? <div role="group" aria-label="Confirm stopped worker" className="space-y-2"><p className="text-sm">Confirm that this worker has stopped. Releasing a live worker could exceed the account limit.</p><div className="flex flex-wrap gap-2"><button className={button} disabled={busy} aria-busy={busy} onClick={() => void recover()}>{busy ? "Releasing…" : "Worker is stopped · release slot"}</button><button className={button} disabled={busy} onClick={() => { setConfirm(undefined); recovery.current = undefined; }}>Cancel</button></div></div> : <button className={button} disabled={busy} onClick={() => { recovery.current = { id: item.id, request: { requestId: crypto.randomUUID(), expectedUpdatedAt: item.updatedAt, confirmWorkerStopped: true } }; setConfirm({ kind: "recover", id: item.id }); }}>Resolve worker</button>}
       </div>)}

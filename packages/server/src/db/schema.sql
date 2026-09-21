@@ -485,3 +485,17 @@ CREATE TABLE IF NOT EXISTS resource_recoveries (
   request_hash TEXT NOT NULL,
   result_json TEXT NOT NULL
 );
+
+-- VW14: durable ownership precedes Docker mutations; records outlive projects.
+CREATE TABLE IF NOT EXISTS execution_installation (id INTEGER PRIMARY KEY CHECK(id = 1), owner TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS execution_workers (
+  id TEXT PRIMARY KEY,
+  invocation_id TEXT NOT NULL UNIQUE,
+  project_id TEXT,
+  task_id TEXT,
+  profile_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('preparing', 'running', 'stopping', 'stopped', 'unresolved')),
+  json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_execution_workers_state ON execution_workers(state, project_id);
+CREATE TABLE IF NOT EXISTS execution_capabilities (profile_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, json TEXT NOT NULL);

@@ -540,10 +540,26 @@ export function initDb(path: string = ENV.dbPath): Db {
   db.exec(VW11_LIBRARY_MIGRATION);
   db.exec(VW12_ACTIVATION_MIGRATION);
   db.exec(VW13_RESOURCE_MIGRATION);
+  db.exec(`
+-- VW14: durable ownership precedes Docker mutations; records outlive projects.
+CREATE TABLE IF NOT EXISTS execution_installation (id INTEGER PRIMARY KEY CHECK(id = 1), owner TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS execution_workers (
+  id TEXT PRIMARY KEY,
+  invocation_id TEXT NOT NULL UNIQUE,
+  project_id TEXT,
+  task_id TEXT,
+  profile_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('preparing', 'running', 'stopping', 'stopped', 'unresolved')),
+  json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_execution_workers_state ON execution_workers(state, project_id);
+CREATE TABLE IF NOT EXISTS execution_capabilities (profile_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, json TEXT NOT NULL);
+`);
+  db.prepare("UPDATE execution_workers SET state = 'unresolved' WHERE state != 'stopped'").run();
   // A dead server does not prove its child CLI stopped. Never auto-expire
   // potentially live capacity; only unstarted or terminal calls can release.
   db.prepare(`UPDATE resource_reservations SET state = CASE
-    WHEN EXISTS (SELECT 1 FROM model_invocations i WHERE i.id = resource_reservations.id AND i.outcome = 'interrupted') THEN 'unresolved'
+    WHEN EXISTS (SELECT 1 FROM execution_workers w WHERE w.invocation_id = resource_reservations.id AND w.state != 'stopped') OR EXISTS (SELECT 1 FROM model_invocations i WHERE i.id = resource_reservations.id AND i.outcome = 'interrupted') THEN 'unresolved'
     ELSE 'released' END, updated_at = ? WHERE state IN ('reserved', 'active')`).run(new Date().toISOString());
   // No CLI can be resumed by restoring an in-memory Promise. Keep the input,
   // settle orphaned ownership, and require an explicit, separately counted retry.

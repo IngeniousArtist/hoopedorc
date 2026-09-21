@@ -1,3 +1,4 @@
+import { ExecutionPanel } from "../components/ExecutionPanel";
 import {
   SECRET_SENTINEL,
   type HealthResponse,
@@ -562,6 +563,7 @@ export function Settings({
         </SectionPanel>
         <SectionPanel group="settings" id="resources" selected={section}>
           <ResourcesPanel settings={settings} active={section === "resources"} onChange={(patch) => { setSettings((previous) => previous ? { ...previous, ...patch } : previous); setDirty(true); setSaved(false); }} />
+          <ExecutionPanel settings={settings} active={section === "resources"} onChange={(patch) => { setSettings((previous) => previous ? { ...previous, ...patch } : previous); setDirty(true); setSaved(false); }} />
         </SectionPanel>
         <SectionPanel group="settings" id="guidelines" selected={section}>
           <p className="text-sm text-neutral-400">Shared instructions for agents and reviewers. These apply according to the scope described for each field.</p>

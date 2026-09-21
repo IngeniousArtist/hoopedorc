@@ -934,6 +934,9 @@ export interface ApiError {
  */
 export const ROUTES = {
   resources: "GET /api/resources",
+  executionStatus: "GET /api/execution",
+  verifyExecutionProfile: "POST /api/execution/profiles/:profileId/verify",
+  stopExecutionWorker: "POST /api/execution/workers/:workerId/stop",
   recoverResource: "POST /api/resources/:reservationId/recover",
   projectActivation: "GET /api/projects/:id/activation",
   saveProjectActivation: "PUT /api/projects/:id/activation",

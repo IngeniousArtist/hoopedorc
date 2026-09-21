@@ -1,19 +1,23 @@
 # Sandbox mode for agents & gates (F13 design doc)
 
-**Status: phase 1 (gates-only Docker sandbox, F13-P1) shipped** —
-`Settings.sandboxGates` ("off"/"auto"/"required"), `ProjectConfig.gateImage`,
-and `packages/engine/src/sandbox.ts` (`detectDocker`, `resolveSandboxMode`,
-`sandboxedExecFile`). `GateRunnerImpl`'s gate scripts/testCommand and
-`WorktreeManagerImpl.ensureDeps` reproducible npm/pnpm/Yarn/Bun install and
-structured `ProjectConfig.setupCommand` route through it; the
-*author agent* still runs on the host exactly as this doc describes below —
-phases 2/3 (below) remain unbuilt. Re-confirm against the code before
-extending it, the same way every item in `docs/PRODUCTIZATION_PLAN.md` gets a
-real-CLI check before being trusted.
+**Current boundaries (VW14):** gate/setup Docker isolation is shipped through
+`Settings.sandboxGates`, `ProjectConfig.gateImage` and `engine/sandbox.ts`.
+Agent execution defaults to native host CLIs. Optional Docker/Codex execution
+profiles now use a separate CLI-owned ChatGPT account volume, assigned workspace,
+network-none worker, restricted CONNECT sidecar and durable termination checks.
+See [the implemented worker contract and setup](../../deploy/worker/README.md).
+The real no-model container boundary is tested; live provider login/model access
+and AWS evidence remain explicitly pending. Other harnesses are not claimed as
+isolated. Gate sandboxing does not automatically enable agent isolation.
+
+The rest of this document preserves the earlier F13 design and tradeoffs.
+Historical phases/auth proposals below are not the current worker implementation.
+Host Git integration remains outside the VW14 worker; agents edit files and do
+not receive host Git metadata or credentials.
 
 ## Why this exists
 
-The honest current security posture (established by S5 and B11) is: agents
+The original pre-F13 security posture (established by S5 and B11) was: agents
 and gate scripts execute **directly on the host**, with the operator's own
 `gh`/`claude`/`opencode` auth, real filesystem access, and real network
 access. S10's `sanitizedEnv()` (`packages/adapters/src/env.ts`) builds every
@@ -60,21 +64,15 @@ constraints from scratch.
 
 ## The authenticated-CLIs-inside-a-container problem
 
-This is the load-bearing constraint the whole design has to route around.
-F10 (packaging) already hit and documented the sharpest edge of it
-(`deploy/README.md`, `docs/USER_GUIDE.md`'s troubleshooting table): **on
-macOS, Claude Code's login lives in the system Keychain**
-(verified directly: `security find-generic-password -s
-"Claude Code-credentials"` finds it) — a Linux container has **no path to
-that Keychain at all**, mountable or not. `claude --help` documents a
-`--bare` mode whose auth is "strictly `ANTHROPIC_API_KEY` or
-`apiKeyHelper`... OAuth and keychain are never read," confirming
-`ANTHROPIC_API_KEY` is the only container-compatible auth path for Claude.
-The real cost implication: `ANTHROPIC_API_KEY` bills **pay-per-token via the
-Anthropic Console**, not the flat rate of a Pro/Max subscription — a
-sandboxed run of the Claude-backed roles (planner, and any author/validator
-role mapped to `claude`) is not free just because the subscription is
-already paid for.
+Host authentication and worker authentication are different owners. The original
+F13 inspection found a macOS Claude Keychain login, which cannot simply be
+mounted into Linux. Its inference that `--bare`'s API-key-only behavior made all
+container Claude execution API-key-only was incorrect. Current
+[Claude authentication documentation](https://code.claude.com/docs/en/authentication)
+explicitly describes browser/code login for containers and Pro/Max accounts.
+That does not prove a particular Hoopedorc worker/version/network profile works:
+Claude isolation remains unsupported here until separately tested. Do not switch
+an existing subscription to provider-key billing to make a container start.
 
 The other two CLIs are more container-friendly but still need care:
 

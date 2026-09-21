@@ -15,7 +15,7 @@ import { openTaskBrowser } from "./activation-browser";
 export interface ActivationInvocation {
   id: string; project: Project; task?: Task; stage: ModelInvocation["stage"]; runner: RunnerKind; cwd: string; signal?: AbortSignal;
 }
-export interface PreparedActivation { launch?: SelectiveLaunch; instructions: string; accounting?: import("@orc/types").InvocationAccounting; close: () => Promise<void> }
+export interface PreparedActivation { execution?: import("@orc/adapters").AgentExecution; launch?: SelectiveLaunch; instructions: string; accounting?: import("@orc/types").InvocationAccounting; close: () => Promise<void> }
 const LIMITATION = "Repository CLAUDE.md and managed policy remain inherited. Selected skills are instruction snapshots; native skill catalogs, plugins and hooks are disabled. MCP tool names were observed before the model request; this CLI does not expose all tool schemas. This is context control, not filesystem isolation.";
 
 export class ActivationService {
@@ -95,7 +95,7 @@ export class ActivationService {
   }
   wrap(project: Project, adapter: AgentAdapter): AgentAdapter {
     return { runner: adapter.runner, run: async (options) => {
-      const task = options.invocation ? repo.getTask(this.db, options.invocation.taskId) ?? undefined : undefined;
+      const task = options.invocation?.taskId ? repo.getTask(this.db, options.invocation.taskId) ?? undefined : undefined;
       if (options.invocation && !task) throw new Error("Invocation task is no longer available.");
       if (task && task.projectId !== project.id) throw new Error("Invocation task belongs to another project.");
       const owner = repo.getProject(this.db, project.id);

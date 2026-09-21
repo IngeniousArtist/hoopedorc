@@ -111,6 +111,7 @@ export const DEFAULT_GUIDELINES = {
 function rawDefaultSettings(): Settings {
   return {
     accountPools: [],
+    executionProfiles: [],
     models: DEFAULT_MODELS.map((model) => ({ ...model, roles: [...model.roles] })),
     routing: {
       planner: "claude",
@@ -307,6 +308,7 @@ function normalizeModel(value: unknown, index: number): ModelConfig {
 
   const model: ModelConfig = {
     accountPoolId: optionalString(raw.accountPoolId, field("accountPoolId"), 64),
+    executionProfileId: optionalString(raw.executionProfileId, field("executionProfileId"), 64),
     id,
     displayName,
     runner,
@@ -451,6 +453,28 @@ function normalizeAccountPools(value: unknown): AccountPool[] {
   });
 }
 
+function normalizeExecutionProfiles(value: unknown, pools: AccountPool[]): import("@orc/types").ExecutionProfile[] {
+  if (!Array.isArray(value) || value.length > 16) throw new SettingsValidationError("executionProfiles", "must contain at most 16 profiles");
+  const ids = new Set<string>(); const volumes = new Map<string, string>();
+  return value.map((entry, index) => {
+    const field = `executionProfiles[${index}]`; const raw = record(entry, field);
+    const id = string(raw.id, `${field}.id`, { nonEmpty: true, max: 64 })!;
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(id) || ids.has(id)) throw new SettingsValidationError(`${field}.id`, "must be a unique stable ID");
+    ids.add(id);
+    const accountPoolId = string(raw.accountPoolId, `${field}.accountPoolId`, { nonEmpty: true, max: 64 })!;
+    if (!pools.some((pool) => pool.id === accountPoolId && pool.billing === "subscription")) throw new SettingsValidationError(`${field}.accountPoolId`, "requires a subscription pool; the initial isolated Codex profile uses ChatGPT login only");
+    const accountVolume = string(raw.accountVolume, `${field}.accountVolume`, { nonEmpty: true, max: 128 })!;
+    if (!/^hoopedorc-account-[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(accountVolume) || volumes.has(accountVolume) && volumes.get(accountVolume) !== accountPoolId) throw new SettingsValidationError(`${field}.accountVolume`, "must be a hoopedorc-account-* named volume assigned to this one pool");
+    volumes.set(accountVolume, accountPoolId);
+    const image = string(raw.image, `${field}.image`, { nonEmpty: true, max: 256 })!;
+    if (!/^(?:[a-zA-Z0-9][a-zA-Z0-9._:/-]*@)?sha256:[a-f0-9]{64}$/.test(image)) throw new SettingsValidationError(`${field}.image`, "requires a locally installed immutable sha256 image ID or repository digest");
+    return { id, name: string(raw.name, `${field}.name`, { nonEmpty: true, max: 160 })!, kind: enumValue(raw.kind, ["docker"], `${field}.kind`), runner: enumValue(raw.runner, ["codex"], `${field}.runner`), image, accountVolume, accountPoolId,
+      cpus: finiteNumber(raw.cpus ?? 2, `${field}.cpus`, { min: 0.25, max: 16 })!,
+      memoryMiB: finiteNumber(raw.memoryMiB ?? 1024, `${field}.memoryMiB`, { min: 256, max: 16384, integer: true })!,
+      pidsLimit: finiteNumber(raw.pidsLimit ?? 128, `${field}.pidsLimit`, { min: 32, max: 1024, integer: true })! };
+  });
+}
+
 export function normalizeSettings(value: unknown): Settings {
   const defaults = rawDefaultSettings();
   const raw = record(value, "settings");
@@ -460,8 +484,14 @@ export function normalizeSettings(value: unknown): Settings {
   }
   const models = migrateLegacyGlmProvider(modelsRaw).map(normalizeModel);
   const accountPools = normalizeAccountPools(raw.accountPools ?? []);
+  const executionProfiles = normalizeExecutionProfiles(raw.executionProfiles ?? [], accountPools);
   for (const model of models) {
     if (model.accountPoolId && !accountPools.some((pool) => pool.id === model.accountPoolId)) throw new SettingsValidationError(`models.${model.id}.accountPoolId`, "must reference a configured account pool; detach the profile explicitly before removing a pool");
+  }
+  for (const model of models) {
+    if (!model.executionProfileId) continue;
+    const profile = executionProfiles.find((item) => item.id === model.executionProfileId);
+    if (!profile || profile.runner !== model.runner || profile.accountPoolId !== model.accountPoolId) throw new SettingsValidationError(`models.${model.id}.executionProfileId`, "must reference a profile for the same harness and account pool");
   }
   const ids = new Set<string>();
   for (const model of models) {
@@ -625,6 +655,7 @@ export function normalizeSettings(value: unknown): Settings {
   return {
     models,
     accountPools,
+    executionProfiles,
     routing,
     mergePolicy: enumValue(
       raw.mergePolicy ?? defaults.mergePolicy,

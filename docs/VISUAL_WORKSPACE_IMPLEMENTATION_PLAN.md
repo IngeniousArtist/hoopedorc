@@ -8,10 +8,11 @@ This document records the requested product direction and implementation sequenc
 
 ## Start here
 
-VW01–VW12 are implemented as of 21 September 2026 (AWS validation is owner-deferred);
+VW01–VW13 are implemented as of 21 September 2026 (AWS validation is owner-deferred);
 see the [current status and evidence](PRODUCTIZATION_PLAN.md#part-14--visual-development-workspace).
-VW13 shared account resources are in progress. The next item after its merge
-is **VW14 — verified isolated agent execution profiles**. The initial
+VW14 isolated execution implementation is under review; its real no-model Docker
+boundary is tested, while provider login/model and AWS checks remain pending.
+The next implementation item is **VW15 — milestone acceptance and bounded replanning**. The initial
 VW01 → VW02/VW03 → VW04 sequence remains the dependency foundation for the
 later work. Do not start by replacing the engine, creating a second
 scheduler, or implementing every screen at once.

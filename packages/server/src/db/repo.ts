@@ -2484,6 +2484,9 @@ export function upsertSettings(db: Db, s: unknown): Settings {
     const poolIds = new Set((normalized.accountPools ?? []).map((pool) => pool.id));
     const busy = db.prepare("SELECT DISTINCT pool_id FROM resource_reservations WHERE state != 'released'").all() as { pool_id: string }[];
     if (busy.some((row) => !poolIds.has(row.pool_id))) throw new SettingsValidationError("accountPools", "cannot remove a pool with reserved, active or unresolved workers; settle or recover its capacity first");
+    const profileIds = new Set((normalized.executionProfiles ?? []).map((profile) => profile.id));
+    const workers = db.prepare("SELECT DISTINCT profile_id FROM execution_workers WHERE state != 'stopped'").all() as { profile_id: string }[];
+    if (workers.some((row) => !profileIds.has(row.profile_id))) throw new SettingsValidationError("executionProfiles", "cannot remove a profile until its workers have stopped");
     db.prepare(`INSERT INTO settings (id, json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json`).run(JSON.stringify(normalized));
     return getSettings(db)!;
   })();

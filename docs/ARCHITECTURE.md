@@ -398,3 +398,21 @@ activation; health checks reserve before invoking adapters. `invocation-ledger.t
 activates a reservation in the running-row transaction, then releases it and
 applies shared cooldowns in the exactly-once terminal transaction. Restart never
 assumes interrupted CLI children are dead. See [resources](specs/resources.md).
+
+### Isolated invocation transport (VW14)
+
+`ExecutionService` owns profile checks, per-invocation Docker transports and
+durable installation/worker identity. `AgentExecution` injects a managed spawn
+transport into the existing Codex adapter/planner; author, validator, docs, Figma,
+planning and health retain their existing scheduler/accounting paths. The server
+wraps calls and verifies external termination before successful completion.
+`workspaceHeld` prevents engine Git/worktree cleanup while external ownership is
+unsettled. Resource release independently consults that durable ownership.
+
+A network-none worker and a separate CONNECT sidecar share one private socket
+volume. The sidecar sees no credentials or project files. Neither container sees
+the Docker socket or control-plane state. Account login is an explicit separate
+CLI-owned volume. Host execution remains the backward-compatible default;
+Docker agent execution and gate sandboxing are distinct settings. Runtime,
+provider-auth/model, and AWS evidence are tracked separately in
+[worker operations](../deploy/worker/README.md).
