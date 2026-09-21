@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { execManagedProcess, sanitizedEnv } from "@orc/adapters";
 import type { GateResult, Project, ProjectConfig, Settings, Task } from "@orc/types";
 import type { GateRunner, WorktreeManager } from "./index.js";
+import { probeEnvironment } from "./environment.js";
 import {
   DEFAULT_GATE_IMAGE,
   resolveSandboxMode,
@@ -109,11 +110,19 @@ export class GateRunnerImpl implements GateRunner {
       return this.allFail((err as Error).message);
     }
 
+    let environment: string | undefined;
+    try { environment = await probeEnvironment(project, ctx.sandboxed, (command, args) => this.exec(ctx, worktreePath, command, args, signal)); }
+    catch (error) { signal?.throwIfAborted(); return this.allFail(error instanceof Error ? error.message : String(error)); }
     const gates = project.config?.gates;
-    const typecheck = await this.runGate(task, worktreePath, "typecheck", gates?.typecheckScript, ctx, signal);
-    const lint = await this.runGate(task, worktreePath, "lint", gates?.lintScript, ctx, signal);
-    const build = await this.runGate(task, worktreePath, "build", gates?.buildScript, ctx, signal);
-    const tests = await this.runTestsGate(task, worktreePath, gates, ctx, signal);
+    const run = (slot: import("@orc/types").ValidationSlot, legacy: () => Promise<{ passed: boolean; ran: boolean; output: string }>) => {
+      const command = gates?.commands?.[slot];
+      if (command === false) return Promise.resolve({ passed: true, ran: false, output: `${slot} disabled by explicit environment configuration` });
+      return command ? this.runArgv(task, worktreePath, command.command, command.args, ctx, signal) : legacy();
+    };
+    const typecheck = await run("typecheck", () => this.runGate(task, worktreePath, "typecheck", gates?.typecheckScript, ctx, signal));
+    const lint = await run("lint", () => this.runGate(task, worktreePath, "lint", gates?.lintScript, ctx, signal));
+    const build = await run("build", () => this.runGate(task, worktreePath, "build", gates?.buildScript, ctx, signal));
+    const tests = await run("tests", () => this.runTestsGate(task, worktreePath, gates, ctx, signal));
     const noConflictsGate = await this.withCleanWorktree(task, "no-conflicts", async () => ({
       passed: await this.checkNoConflicts(project, worktreePath, signal),
       ran: true,
@@ -134,7 +143,7 @@ export class GateRunnerImpl implements GateRunner {
       noConflicts,
       inScope,
       vacuous,
-      environment: ctx.sandboxed ? `Docker gate container: ${ctx.image}` : `Host gates: ${process.platform}/${process.arch}; Node ${process.version}`,
+      environment: environment ?? (ctx.sandboxed ? `Docker ${ctx.image}` : `Host ${process.platform}/${process.arch}`),
       executed: (["typecheck", "lint", "build", "tests"] as const).filter((name) => ({ typecheck, lint, build, tests })[name].ran),
       details: {
         typecheck: typecheck.output,
@@ -225,7 +234,12 @@ export class GateRunnerImpl implements GateRunner {
   ): Promise<{ passed: boolean; ran: boolean; output: string }> {
     const [cmd, ...args] = command.trim().split(/\s+/).filter(Boolean);
     if (!cmd) return { passed: true, ran: false, output: "empty testCommand" };
-    return this.withCleanWorktree(task, `command "${command}"`, async () => {
+    return this.runArgv(task, cwd, cmd, args, ctx, signal);
+  }
+
+  private runArgv(task: Task, cwd: string, cmd: string, args: string[], ctx: GateExecContext, signal?: AbortSignal): Promise<{ passed: boolean; ran: boolean; output: string }> {
+    const command = [cmd, ...args].map((item) => JSON.stringify(item)).join(" ");
+    return this.withCleanWorktree(task, `command ${command}`, async () => {
       try {
         const { stdout, stderr } = await this.exec(ctx, cwd, cmd, args, signal);
         return { passed: true, ran: true, output: processOutput(stdout, stderr) };

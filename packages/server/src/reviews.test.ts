@@ -126,3 +126,11 @@ test("VW10: recovery refuses a competing capture while an unverified old process
     assert.equal(recovered.hasActivity("p"), false);
   } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM"); await closed; await recovered.close(); await f.previews.close(); f.db.close(); }
 });
+
+test("VW16: mock-safe review context exposes the project's artifact output preference", async () => {
+  const f = fixture();
+  try {
+    f.project.config = { environment: { runtime: "python3", platform: "any", output: "artifacts", setupInputs: [], setupOutputs: [] } };
+    assert.equal((await f.reviews.context(f.project, f.task)).output, "artifacts");
+  } finally { await f.reviews.close(); await f.previews.close(); f.db.close(); }
+});

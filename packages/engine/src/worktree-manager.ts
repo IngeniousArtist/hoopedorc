@@ -1,3 +1,4 @@
+import { environmentFile, probeEnvironment } from "./environment.js";
 import { createHash } from "node:crypto";
 import { workspaceRetained } from "./workspace-leases.js";
 import {
@@ -275,7 +276,7 @@ function validArtifactPath(root: string, artifact: unknown): artifact is string 
 async function walkFiles(root: string, wanted: (name: string) => boolean): Promise<string[]> {
   const found: string[] = [];
   await walkDirents(root, (dir, entry) => {
-    if (entry.name === ".git" || entry.name === "node_modules") return "skip";
+    if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".hoopedorc-venv") return "skip";
     if (entry.isFile() && wanted(entry.name)) found.push(join(dir, entry.name));
     return entry.isDirectory() ? "enter" : "skip";
   });
@@ -478,7 +479,7 @@ async function containsAppleProject(
   if (command === "xcodebuild" || command === "pod") return true;
   let found = false;
   await walkDirents(root, (_dir, entry) => {
-    if (found || entry.name === ".git" || entry.name === "node_modules") return "skip";
+    if (found || entry.name === ".git" || entry.name === "node_modules" || entry.name === ".hoopedorc-venv") return "skip";
     if (entry.name.endsWith(".xcodeproj") || entry.name.endsWith(".xcworkspace")) {
       found = true;
       return "skip";
@@ -499,6 +500,7 @@ const GIT_EXCLUDE_ENTRIES = [
   ".yarn/unplugged",
   ".yarn/install-state.gz",
   ".hoopedorc-setup-hash",
+  ".hoopedorc-venv",
 ];
 
 export class WorktreeManagerImpl implements WorktreeManager {
@@ -1094,6 +1096,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
   private async customSetupFingerprint(
     project: Project,
     worktreePath: string,
+    environment?: string,
   ): Promise<string> {
     const setup = project.config?.setupCommand;
     if (!setup) return "";
@@ -1101,6 +1104,8 @@ export class WorktreeManagerImpl implements WorktreeManager {
     hash.update(JSON.stringify({
       command: setup.command,
       args: setup.args,
+      environment,
+      profile: project.config?.environment,
       platform: this.setupDeps.hostPlatform ?? process.platform,
       arch: this.setupDeps.hostArch ?? process.arch,
       sandbox: this.settings?.sandboxGates ?? "auto",
@@ -1110,6 +1115,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
       worktreePath,
       (name) => SETUP_MANIFESTS.has(name) || name.endsWith(".csproj") || name.endsWith(".fsproj"),
     );
+    for (const input of project.config?.environment?.setupInputs ?? []) inputs.push(environmentFile(worktreePath, input));
     const contents = await mapLimited(inputs, (path) => readFile(path));
     for (const [index, path] of inputs.entries()) {
       hash.update("\0");
@@ -1124,12 +1130,17 @@ export class WorktreeManagerImpl implements WorktreeManager {
     project: Project,
     worktreePath: string,
     signal?: AbortSignal,
+    environment?: string,
   ): Promise<string | null> {
     const setup = project.config?.setupCommand;
     if (!setup) return null;
-    const fingerprint = await this.customSetupFingerprint(project, worktreePath);
+    const fingerprint = await this.customSetupFingerprint(project, worktreePath, environment);
     const marker = join(worktreePath, ".hoopedorc-setup-hash");
-    if (existsSync(marker) && readFileSync(marker, "utf8").trim() === fingerprint) {
+    const outputsPresent = (project.config?.environment?.setupOutputs ?? []).every((path) => {
+      if (!existsSync(join(worktreePath, path))) return false;
+      environmentFile(worktreePath, path); return true;
+    });
+    if (outputsPresent && existsSync(marker) && readFileSync(marker, "utf8").trim() === fingerprint) {
       return `${setup.command} (cached for this worktree)`;
     }
     const appleToolchain = await containsAppleProject(worktreePath, setup.command);
@@ -1155,6 +1166,7 @@ export class WorktreeManagerImpl implements WorktreeManager {
       );
     }
     signal?.throwIfAborted();
+    for (const output of project.config?.environment?.setupOutputs ?? []) environmentFile(worktreePath, output);
     writeFileSync(marker, `${fingerprint}\n`);
     return `${setup.command} ${setup.args.join(" ")}`.trim();
   }
@@ -1171,9 +1183,16 @@ export class WorktreeManagerImpl implements WorktreeManager {
     if (await containsAppleProject(worktreePath, project.config?.setupCommand?.command)) {
       await this.resolveSetupMode(project, true, signal);
     }
+    const environment = await this.environmentIdentity(project, worktreePath, signal);
     const plan = await inspectNodeDependencies(worktreePath);
     if (plan) await this.ensureNodeDeps(project, worktreePath, plan, signal);
-    await this.ensureCustomSetup(project, worktreePath, signal);
+    await this.ensureCustomSetup(project, worktreePath, signal, environment);
+  }
+
+  private async environmentIdentity(project: Project, cwd: string, signal?: AbortSignal): Promise<string | undefined> {
+    if (!project.config?.environment) return undefined;
+    const useSandbox = await this.resolveSetupMode(project, false, signal);
+    return probeEnvironment(project, useSandbox, (command, args) => this.executeSetup({ project, cwd, command, args, signal, timeoutMs: PROBE_TIMEOUT_MS, useSandbox }), this.setupDeps.hostPlatform ?? process.platform);
   }
 
   /** Project-aware Setup & Health line. It resolves the same package manager,
@@ -1188,6 +1207,8 @@ export class WorktreeManagerImpl implements WorktreeManager {
         throw new ProjectSetupError(`local clone not found at ${project.localPath}`);
       }
       const details: string[] = [];
+      const environment = await this.environmentIdentity(project, project.localPath, signal);
+      if (environment) details.push(environment);
       const setup = project.config?.setupCommand;
       const apple = await containsAppleProject(project.localPath, setup?.command);
       if (apple) {

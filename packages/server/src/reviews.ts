@@ -68,7 +68,7 @@ export class ReviewManager {
     if (repo.getProject(this.db, project.id)?.localPath !== project.localPath || current.worktreePath !== task.worktreePath || current.branch !== task.branch) { workspace.state = "unavailable"; workspace.reason = "Workspace changed while it was inspected. Refresh review."; }
     const preview = this.previews.latest(project.id, task.id);
     const listed = this.store.list(project.id, task.id);
-    return { task: current, runs: repo.getRuns(this.db, task.id), decisions: repo.getMergeDecisions(this.db, task.id), workspace, preview, browser: this.capability(),
+    return { output: project.config?.environment?.output ?? "web", task: current, runs: repo.getRuns(this.db, task.id), decisions: repo.getMergeDecisions(this.db, task.id), workspace, preview, browser: this.capability(),
       ...listed, evidence: listed.evidence.map((item) => ({ ...item, ...evidenceFreshness(item, current, workspace, preview) })) };
   }
   private value(id: string, project: Project, task: Task, workspace: WorkspaceSummary, source: ReviewEvidence["source"]): ReviewEvidence {

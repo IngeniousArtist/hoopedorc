@@ -1103,3 +1103,20 @@ Retry or server restart. Superseded verification attempts remain historical;
 project completion uses current milestone outcomes as well as ordinary tasks.
 The existing run summary/Telegram digest includes milestone acceptance counts
 and attention reasons; no separate model manager or notification transport exists.
+
+### VW16 environment profiles
+
+Existing project create/update payloads accept `config.environment` with runtime
+`node|python3`, platform `any|darwin|linux`, optional integer `majorVersion`
+(1–100), output `web|artifacts`, and bounded relative-file arrays `setupInputs`
+and `setupOutputs` (up to 20 each). Unsafe paths, escaping runtime file references
+and unsupported values are refused. Configuration uses existing project JSON
+persistence; legacy rows need no migration.
+
+`config.gates.commands` optionally maps `typecheck`, `lint`, `build`, `tests` to
+`{command:string,args:string[]}` or `false`. Present entries take precedence over
+legacy fields; missing entries retain legacy behavior. All create/update paths,
+including mock mode, use the same validation. Existing ROUTES are unchanged.
+`TaskReviewResponse.output` reflects the project preference (legacy: `web`) in
+real and mock contexts. `GateResult.environment` records the actual runtime probe
+when configured, rather than assuming every project uses Node.

@@ -1460,3 +1460,24 @@ cannot promise a hard cap on an in-flight provider bill. Exhausted limits
 require an explicit new reviewed plan; the app never silently raises them.
 The normal run report and configured Telegram digest include milestone counts
 and outstanding acceptance reasons. No extra manager model polls your work.
+
+### Choose a project environment
+
+Open **Board → Project settings → Advanced → Environment and validation**.
+Choose a Node web or Python backend preset, confirm the commands it replaces,
+then adjust the setup command, gate image and explicit gate arguments for your
+repository. Save the settings and check **Setup & Health** before running tasks.
+Existing preview commands and other project settings are preserved.
+
+The Python preset uses unittest and a task-local virtual environment; it does
+not install third-party frameworks or databases. Explicit arguments are JSON
+arrays, so `["-m", "unittest"]` means two literal arguments. Legacy gate
+fields remain in effect for slots without explicit commands. Deliberately
+skipped checks are not evidence of success.
+
+Select web output for a browser app and configure start/readiness in Workspaces.
+For a backend, native build or batch job without a web UI, select artifact output
+and inspect checks/attach diagnostics in Review. Runtime/platform requirements
+are checked in the chosen host or gate container; Linux Docker/AWS cannot
+satisfy a macOS-only toolchain. See the [tested environment matrix](specs/environments.md)
+for the precise scope and pending provider/AWS checks.

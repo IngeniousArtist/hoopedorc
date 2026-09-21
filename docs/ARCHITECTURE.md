@@ -447,3 +447,15 @@ work remains historical when a later round proves the original outcome.
 Review/Board and the existing run-summary notification path consume these
 shared contracts. No second scheduler, model polling loop or Telegram sender
 was introduced.
+
+### Portable project environments (VW16)
+
+`types/environment.ts` owns the profile and structured command contracts.
+`engine/environment.ts` verifies fixed runtime probes and bounded workspace file
+references; WorktreeManager binds setup reuse to runtime/profile/input identity.
+GateRunner dispatches explicit argv for all slots through existing host/Docker
+process ownership and records runtime evidence. Server project validation and
+author preflight reuse these boundaries. ProjectConfigFields exposes confirmed
+presets and preserves preview configuration; Review uses the output preference
+for web versus artifact presentation. No model-accounting or scheduler path is
+duplicated. See [environment behavior and compatibility](specs/environments.md).

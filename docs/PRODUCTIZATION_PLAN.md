@@ -7349,7 +7349,7 @@ owner later supplies Figma input.
 **Status (2026-09-21):** VW01–VW13 are merged, including the planning workbench,
 reviewed plan changes, workspaces, previews, browser evidence and source Library.
 VW13 adds shared account resource controls; VW14 isolated execution is implemented
-with provider/AWS acceptance pending. VW15 milestone acceptance is in progress. The
+with provider/AWS acceptance pending. VW15 milestone acceptance is merged with provider acceptance pending. VW16 environments are in progress. The
 detailed scope, inspected source, research, acceptance criteria, non-goals,
 dependencies, and verification requirements are
 in [VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
@@ -7363,8 +7363,8 @@ existing Figma integration, gates/validation, accounting, and Telegram. Improve
 the user journey and failure handling, then extend capabilities incrementally.
 Small tasks and large briefs share the same execution system.
 
-**Current:** VW15 (milestone acceptance and bounded replanning), starting from
-the reviewed VW01–VW14 implementation result. VW14 provider-auth/model and AWS
+**Current:** VW16 (portable framework/environment profiles), starting from
+the reviewed VW01–VW15 implementation result. VW14 provider-auth/model and AWS
 acceptance remain pending; do not advertise those as verified. Consult the focused plan's dependency table for
 subsequent items. Do not start by replacing the scheduler or adding
 all future schemas. Use one scoped branch/PR per coherent change; split larger
@@ -7386,8 +7386,8 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW12 | Selective skills, plugins, and MCP activation | Done; merged and verified | [PR #278](https://github.com/IngeniousArtist/hoopedorc/pull/278), CI `35606696922`, merge `4d40803`; compatibility limits explicit |
 | VW13 | Shared account pools and resource allocation | Done (merged 2026-09-21) | [PR #279](https://github.com/IngeniousArtist/hoopedorc/pull/279) → main `e96d6d0`; CI `35611869922` passed; see acceptance and audit below |
 | VW14 | Verified isolated agent execution profiles | Implementation merged; provider/AWS checks pending | [PR #280](https://github.com/IngeniousArtist/hoopedorc/pull/280) → `f8aa175`; final CI `35619841075`; no-model Linux Docker boundary passed |
-| VW15 | Milestone acceptance and bounded replanning | In progress | `vw15-milestone-acceptance`; acceptance below |
-| VW16 | Portable framework/environment profiles | Not started | — |
+| VW15 | Milestone acceptance and bounded replanning | Implementation merged; provider/AWS acceptance pending | PR #281; merge audit below |
+| VW16 | Portable framework/environment profiles | In progress | `vw16-environment-profiles`; acceptance below |
 | VW17 | Additional harness compatibility | Not started | — |
 | VW18 | Optional Jev routing evaluation | Not started | — |
 
@@ -8889,3 +8889,63 @@ VW15 final review also covers reviewer routing changing during a check: a
 contributing author can never supply accepted independent evidence. Direct
 verification dispatch accounts capacity against its reviewer, not its configured
 future repair author. The focused scheduler regression covers both cases.
+
+### VW16 — portable environment profiles (implementation acceptance)
+
+Dependencies VW09/VW10 are merged. This item keeps setup, worktree, preview,
+review artifacts and scheduler ownership in their existing layers.
+
+- Add explicit, portable project runtime/platform requirements and structured
+  argument arrays for every validation gate. Legacy setup/gate/preview config
+  remains compatible; a configured command that fails or is missing fails closed.
+- Provide reviewable Node web and Python standard-library backend presets.
+  Presets explain the commands they replace, retain unrelated project settings,
+  and do not silently install frameworks, services or authenticated tools.
+- Probe the selected runtime in the actual gate/setup environment before task
+  model work. Setup health explains unsupported host/runtime combinations. A
+  Linux container cannot satisfy a macOS-only profile. Runtime evidence records
+  the observed version; setup reuse binds to that identity and declared inputs.
+- Reuse existing preview/readiness for web output and Review artifacts for batch
+  output. Managed databases/services, Windows hosts, native simulators and new
+  package managers are non-goals; do not advertise them as verified.
+- Exercise a real Python backend fixture through worktree setup, command arrays,
+  failure/retry, cancellation/settlement, fresh manager/restart, retained output
+  and cleanup. Cover API normalization, legacy preservation and the visual
+  preset/edit/save states at the five required widths. No provider call is needed
+  for repository setup; existing invocation accounting stays authoritative.
+- Publish exact tested combinations only. AWS and provider-powered journeys are
+  owner-deferred/pending. Focused local checks now; comprehensive local suite
+  after VW18 and full required GitHub CI before merge.
+
+VW15 merge audit: PR [#281](https://github.com/IngeniousArtist/hoopedorc/pull/281)
+exact tested head `c7de0f2f2392b7bc4a713473e702317459b0e3ca` passed required CI
+[35627810826](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35627810826).
+Merged as `104db58be5d66195d2aea8087b529129da2a1090`; independent fetch and
+comparison confirmed identical tested/merged trees and main at 0/0 origin
+divergence. VW16 began independently from clean current main while those checks
+ran, then integrated the merged result. The operator-owned untracked dependency
+directory was preserved.
+
+### VW16 implementation and local evidence (2026-09-21)
+
+Implemented explicit runtime/platform/version requirements, typed commands for
+all four gate slots, confirmed Node/Python presets and artifact-first Review.
+Runtime probes run through existing host/Docker boundaries; custom setup reuse
+binds to runtime/profile/declared input identity and requires output files.
+Legacy config, previews and unrelated settings are preserved. Browser checking
+found and fixed nested-field order causing a successful save to remain marked
+unsaved. Details: [environment spec](specs/environments.md).
+
+Local verification: 5 focused environment/config tests passed, including the real
+Python 3.9.6 macOS arm64 HTTP backend/worktree/process fixture; the affected
+review-context test passed. Environment/Review interaction files passed (7
+tests). The real browser preset → invalid-argument refusal → save → artifact
+review journey passed at 360/390/768/1280/1440px, including keyboard activation,
+touch targets, fixed surfaces and overflow checks. Phone/desktop captures were
+inspected. Affected builds/typechecks, lint (330 legacy findings unchanged) and
+diff checks passed. Full required CI and exact merge evidence follow in the PR.
+
+Python Docker, provider-powered end-to-end work and AWS remain unverified; AWS
+is owner-deferred. This is verified repository setup/check execution, not a
+claim that every framework or SDK is provisioned. No provider calls or credentials
+were used. Comprehensive local regression remains deferred until VW18.

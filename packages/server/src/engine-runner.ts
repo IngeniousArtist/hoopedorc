@@ -592,6 +592,10 @@ export class EngineRunner {
       releaseUnstartedInvocation: (id) => { this.resources.releaseUnstarted(id); this.pendingAdmissions.delete(id); },
       beforeDocsInvocation: async (owner, task, model, id, signal) => { this.pendingAdmissions.set(id, { accounting: await this.resources.acquire({ id, projectId: owner.id, taskId: task.id, model: model.id, modelConfig: model, stage: "docs" }, signal), runner: model.runner }); },
       checkActivation: async (owner, task, model, signal) => {
+        if (owner.config?.environment && !ENV.mock) {
+          const health = await worktrees.setupHealth(owner, signal);
+          if (!health.ok) return `Project environment: ${health.detail}`;
+        }
         const config = liveSettings().models.find((candidate) => candidate.id === model);
         if (!config) return "Author model is unavailable.";
         if (this.execution.workspaceHeld(owner.id, task.id)) return "An isolated worker still owns this task workspace. Resolve it in Settings → Resources.";

@@ -1,3 +1,4 @@
+import { EnvironmentFields, commandFields, parseCommandFields, environmentFormError, environmentPreset, type CommandFields } from "./EnvironmentFields";
 import type { MergePolicy, ProjectConfig } from "@orc/types";
 import { useId, useState } from "react";
 
@@ -5,6 +6,9 @@ import { useId, useState } from "react";
  *  so it can sit in plain <input>s; converted to/from ProjectConfig at the
  *  edges (projectConfigFromForm / projectConfigToForm). */
 export interface ProjectConfigForm {
+  preview?: ProjectConfig["preview"];
+  environment?: ProjectConfig["environment"];
+  gateCommands: CommandFields;
   mergePolicy: MergePolicy | "";
   maxAttempts: string;
   setupCommand: string;
@@ -35,6 +39,7 @@ export interface ProjectConfigForm {
 }
 
 export const EMPTY_PROJECT_CONFIG_FORM: ProjectConfigForm = {
+  gateCommands: {},
   mergePolicy: "",
   maxAttempts: "",
   setupCommand: "",
@@ -64,6 +69,9 @@ export function projectConfigToForm(config: ProjectConfig | undefined): ProjectC
   if (!config) return EMPTY_PROJECT_CONFIG_FORM;
   const g = config.gates ?? {};
   return {
+    preview: config.preview,
+    environment: config.environment,
+    gateCommands: commandFields(config.gates?.commands),
     mergePolicy: config.mergePolicy ?? "",
     maxAttempts: config.maxAttempts != null ? String(config.maxAttempts) : "",
     setupCommand: config.setupCommand?.command ?? "",
@@ -94,6 +102,8 @@ export function projectConfigToForm(config: ProjectConfig | undefined): ProjectC
 
 export function projectConfigFromForm(form: ProjectConfigForm): ProjectConfig | undefined {
   const config: ProjectConfig = {};
+  if (form.environment) config.environment = form.environment;
+  if (form.preview) config.preview = form.preview;
   if (form.mergePolicy) config.mergePolicy = form.mergePolicy;
   if (form.maxAttempts.trim()) {
     const n = parseInt(form.maxAttempts, 10);
@@ -110,6 +120,7 @@ export function projectConfigFromForm(form: ProjectConfigForm): ProjectConfig | 
   }
 
   const gates: NonNullable<ProjectConfig["gates"]> = {};
+  if (Object.keys(form.gateCommands).length) gates.commands = parseCommandFields(form.gateCommands);
   const addGate = (
     key: "typecheckScript" | "lintScript" | "buildScript" | "testScript",
     skip: boolean,
@@ -179,6 +190,8 @@ export function projectConfigFromForm(form: ProjectConfigForm): ProjectConfig | 
  * either fully blank (no schedule intended — fine) or fully complete.
  */
 export function projectConfigFormError(form: ProjectConfigForm): string | null {
+  const environmentError = environmentFormError(form.environment, form.gateCommands);
+  if (environmentError) return environmentError;
   if (!form.setupCommand.trim() && form.setupArgs.trim()) {
     return "Project setup arguments need a setup command.";
   }
@@ -275,6 +288,10 @@ export function ProjectConfigFields({
       </button>
       {open && (
         <div className="space-y-3 border-t border-neutral-800 px-3 py-3 text-xs">
+          <EnvironmentFields profile={form.environment} commands={form.gateCommands} onChange={(environment, gateCommands) => onChange({ ...form, environment, gateCommands })} onPreset={(runtime) => {
+            const preset = projectConfigToForm(environmentPreset(runtime));
+            onChange({ ...form, environment: preset.environment, gateCommands: preset.gateCommands, setupCommand: preset.setupCommand, setupArgs: preset.setupArgs, gateImage: preset.gateImage, typecheckScript: "", typecheckSkip: false, lintScript: "", lintSkip: false, buildScript: "", buildSkip: false, testScript: "", testSkip: false, testCommand: "" });
+          }} />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-neutral-400">Merge policy override</label>
