@@ -8884,3 +8884,8 @@ comprehensive local suite remains deferred until VW18, per the owner's testing
 policy. Real provider-powered integrated acceptance is still pending; AWS checks
 remain explicitly owner-deferred because no installation is set up and the old
 server is shut down. These local fixtures are not AWS/provider acceptance.
+
+VW15 final review also covers reviewer routing changing during a check: a
+contributing author can never supply accepted independent evidence. Direct
+verification dispatch accounts capacity against its reviewer, not its configured
+future repair author. The focused scheduler regression covers both cases.

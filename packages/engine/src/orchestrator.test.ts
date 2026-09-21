@@ -5378,17 +5378,17 @@ test("VW15: milestone verification joins the scheduler without an author, PR or 
 });
 
 test("VW15: missing tests, incomplete criteria, provider failure and changing revisions preserve independent work and never accept", async () => {
-  for (const mode of ["missing-tests", "missing-criterion", "provider-failure", "revision-moved", "self-review"]) {
+  for (const mode of ["missing-tests", "missing-criterion", "provider-failure", "revision-moved", "self-review", "reviewer-changed"]) {
     const contributor = task(`source-${mode}`, [], { status: "done", attempts: 1, ...(mode === "self-review" ? { assignedModel: "deepseek-pro" } : {}) });
     const candidate = task(`check-${mode}`, [contributor.id], { acceptanceCriteria: ["Original criterion"], milestone: { maxRepairRounds: 1, maxInvocations: 3, maxDurationMinutes: 5, maxCostUsd: 2 } });
-    let cleaned = false;
-    const deps = fakeDeps({ getTasks: () => [contributor, candidate],
+    let cleaned = false; const counted: string[] = [];
+    const deps = fakeDeps({ incModelActive: (model) => { counted.push(model); }, decModelActive() {}, getTasks: () => [contributor, candidate],
       git: { verificationRevision(_project, inspected) { return Promise.resolve(mode === "revision-moved" && !inspected ? "b".repeat(40) : "a".repeat(40)); } },
       worktrees: { remove() { cleaned = true; return Promise.resolve(); } },
       gates: { run() { return Promise.resolve({ ...GOOD_GATE, vacuous: false, executed: mode === "missing-tests" ? [] : ["tests"] }); } },
-      validator: { review(p, t, gate) { if (mode === "provider-failure") return Promise.reject(new Error("Provider unavailable")); return Promise.resolve({ id: "proof", projectId: p.id, taskId: t.id, runId: "verify", validatorModel: "deepseek-pro", verdict: "approve", reasons: [], confidence: 1, gate, ts: "", criterionEvidence: mode === "missing-criterion" ? [] : [{ criterion: "Original criterion", passed: true, evidence: "test/integrated.ts:1" }] }); } },
+      validator: { review(p, t, gate) { if (mode === "provider-failure") return Promise.reject(new Error("Provider unavailable")); return Promise.resolve({ id: "proof", projectId: p.id, taskId: t.id, runId: "verify", validatorModel: mode === "reviewer-changed" ? contributor.assignedModel : "deepseek-pro", verdict: "approve", reasons: [], confidence: 1, gate, ts: "", criterionEvidence: mode === "missing-criterion" ? [] : [{ criterion: "Original criterion", passed: true, evidence: "test/integrated.ts:1" }] }); } },
     }, []);
     await new Orchestrator(deps).runTask(PROJECT, candidate);
-    assert.equal(candidate.status, "failed", mode); assert.equal(contributor.status, "done"); assert.equal(cleaned, true);
+    assert.equal(candidate.status, "failed", mode); assert.equal(contributor.status, "done"); assert.equal(cleaned, true); assert.deepEqual(counted, ["deepseek-pro"]);
   }
 });

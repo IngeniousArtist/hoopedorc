@@ -43,7 +43,10 @@ export async function verifyMilestone(project: Project, task: Task, deps: Schedu
   if (decision.verdict === "approve" && !completeCriterionEvidence(task.acceptanceCriteria, decision.criterionEvidence)) {
     decision.verdict = "request_changes"; decision.reasons.unshift("The reviewer did not provide passing evidence for every original criterion.");
   }
-  decision.milestoneProof = { headSha: before, criteria: [...task.acceptanceCriteria], dependencies: dependencies.map(({ id, runGeneration, attempts, status }) => ({ id, runGeneration, attempts, status })), environment: `${gate.environment ?? "Gate runtime unreported"}; reviewer: ${reviewer}`, checkedAt: new Date().toISOString() };
+  if (dependencies.some((item) => (item.runModel ?? item.assignedModel) === decision.validatorModel)) {
+    decision.verdict = "request_changes"; decision.reasons.unshift("Reviewer routing changed to a contributing author. Recheck with an independent validator.");
+  }
+  decision.milestoneProof = { headSha: before, criteria: [...task.acceptanceCriteria], dependencies: dependencies.map(({ id, runGeneration, attempts, status }) => ({ id, runGeneration, attempts, status })), environment: `${gate.environment ?? "Gate runtime unreported"}; reviewer: ${decision.validatorModel}`, checkedAt: new Date().toISOString() };
   return decision;
 }
 function failedDecision(project: Project, task: Task, reviewer: string, gate: GateResult, reason: string): MergeDecision {

@@ -1452,8 +1452,9 @@ export class Orchestrator implements Scheduler {
     // it here, same bookkeeping as start()'s dispatch (incModel + track which
     // model is actually running for fallback-escalation accounting), just
     // without the capacity check that start() applies before dispatching.
-    this.incModel(task.assignedModel);
-    this.runningModel.set(task.id, task.assignedModel);
+    const dispatchModel = task.milestone ? this.settings().routing.validatorByDifficulty[task.difficulty] : task.assignedModel;
+    this.incModel(dispatchModel);
+    this.runningModel.set(task.id, dispatchModel);
     const execution = this.executeTask(project, task);
     this.activeTaskPromises.set(task.id, execution);
     try {
@@ -1462,7 +1463,7 @@ export class Orchestrator implements Scheduler {
       // Mirrors start()'s per-task dispatch-finally exactly: decrement
       // whichever model the task was last running on, since fallback
       // escalation may have switched it away from task.assignedModel.
-      const ran = this.runningModel.get(task.id) ?? task.assignedModel;
+      const ran = this.runningModel.get(task.id) ?? dispatchModel;
       this.decModel(ran);
       this.runningModel.delete(task.id);
       this.clearTerminalMergeConflict(task);
