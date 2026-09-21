@@ -7378,7 +7378,7 @@ work packages into backward-compatible contract/backend/UI steps as needed.
 | VW06 | Durable planning operations and planning workbench | Implemented | [PR #272](https://github.com/IngeniousArtist/hoopedorc/pull/272), merged as `0e84781`; required CI passed; see VW06 acceptance record below |
 | VW07 | Propose/apply plan revisions during execution | Implemented | [PR #273](https://github.com/IngeniousArtist/hoopedorc/pull/273); see VW07 acceptance record below and PR checks for CI/merge evidence |
 | VW08 | Workspace inventory and read-only code inspection | Implemented | [PR #274](https://github.com/IngeniousArtist/hoopedorc/pull/274); see VW08 acceptance record below; PR records required CI/merge evidence |
-| VW09 | Managed environments and preview lifecycle | In progress | Native task preview ownership and separate-origin authenticated proxy |
+| VW09 | Managed environments and preview lifecycle | Implemented; AWS validation deferred | [#275](https://github.com/IngeniousArtist/hoopedorc/pull/275): native task preview ownership and separate-origin authenticated proxy |
 | VW10 | Full review workbench and browser evidence | Not started | — |
 | VW11 | Project design/reference library | Not started | — |
 | VW12 | Selective skills, plugins, and MCP activation | Not started | — |

@@ -8,9 +8,9 @@ This document records the requested product direction and implementation sequenc
 
 ## Start here
 
-VW01–VW08 are implemented as of 21 September 2026;
+VW01–VW09 are implemented as of 21 September 2026 (VW09 AWS validation is owner-deferred);
 see the [current status and evidence](PRODUCTIZATION_PLAN.md#part-14--visual-development-workspace).
-The next item is **VW09 — managed environments and preview lifecycle**. The initial
+The next item is **VW10 — review workbench and browser evidence**. The initial
 VW01 → VW02/VW03 → VW04 sequence remains the dependency foundation for the
 later work. Do not start by replacing the engine, creating a second
 scheduler, or implementing every screen at once.
@@ -34,10 +34,10 @@ For each item:
 5. Start the next item from the merged result. Do not combine unrelated slices
    into a large rewrite PR.
 
-**Next implementation request:** “Implement VW09 from
+**Next implementation request:** “Implement VW10 from
 VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md, starting from reviewed main. Add
-managed previews with durable process ownership, readiness, authenticated
-proxy access and restart recovery. Follow AGENTS.md's focused
+a full review workbench and durable browser evidence bound to task, attempt,
+revision, environment and viewport, with explicit stale evidence. Follow AGENTS.md's focused
 testing policy through verification and PR.”
 
 ## Recommendation
