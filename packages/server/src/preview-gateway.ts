@@ -16,7 +16,7 @@ export class PreviewGateway {
   private readonly cookieName: string;
   private readonly appPrefix: string;
   private expiresAt = 0;
-  private ticket?: { value: string; expiresAt: number };
+  private readonly tickets = new Map<string, number>();
   private readonly server: Server;
   private readonly sockets = new Set<Socket>();
   private readonly webSockets = new Set<WebSocket>();
@@ -33,10 +33,11 @@ export class PreviewGateway {
       const url = req.url ?? "/";
       if (url.startsWith("/__hoop_session/")) {
         const token = url.slice("/__hoop_session/".length);
-        if (!this.options.ready() || req.method !== "GET" || !this.ticket || this.ticket.expiresAt < Date.now() || !equal(token, this.ticket.value)) {
+        const expiresAt = this.tickets.get(token);
+        if (!this.options.ready() || req.method !== "GET" || !expiresAt || expiresAt < Date.now()) {
           res.writeHead(401).end("Preview link expired. Open it again from Hoopedorc."); return;
         }
-        this.ticket = undefined; this.expiresAt = Date.now() + 2 * 60 * 60 * 1000;
+        this.tickets.delete(token); this.expiresAt = Date.now() + 2 * 60 * 60 * 1000;
         const secure = options.origin.startsWith("https:") ? "; Secure" : "";
         res.setHeader("Set-Cookie", `${this.cookieName}=${this.session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=7200${secure}`);
         res.writeHead(303, { Location: "/" }).end(); return;
@@ -147,12 +148,14 @@ export class PreviewGateway {
   launch(controlOrigin?: string): { url: string; expiresAt: string } {
     if (this.closed || !this.options.ready()) throw new Error("Preview is not ready.");
     if (controlOrigin === this.options.origin) throw new Error("Preview origin must differ from the control plane. Configure PREVIEW_ORIGINS.");
-    this.ticket = { value: secret(), expiresAt: Date.now() + 60_000 };
-    return { url: `${this.options.origin}/__hoop_session/${this.ticket.value}`, expiresAt: new Date(this.ticket.expiresAt).toISOString() };
+    for (const [value, expiresAt] of this.tickets) if (expiresAt < Date.now()) this.tickets.delete(value);
+    if (this.tickets.size >= 8) throw new Error("Several preview links are still pending. Use one or wait a minute before opening another.");
+    const value = secret(); const expiresAt = Date.now() + 60_000; this.tickets.set(value, expiresAt);
+    return { url: `${this.options.origin}/__hoop_session/${value}`, expiresAt: new Date(expiresAt).toISOString() };
   }
   async close(): Promise<void> {
     if (this.closed) return;
-    this.closed = true; this.ticket = undefined; this.expiresAt = 0;
+    this.closed = true; this.tickets.clear(); this.expiresAt = 0;
     for (const client of this.webSockets) client.terminate();
     for (const socket of this.sockets) socket.destroy();
     this.wss.close();

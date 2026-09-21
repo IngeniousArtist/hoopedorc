@@ -131,3 +131,20 @@ AWS live validation is deferred by the owner (2026-09-21): the old server is
 shut down and the replacement is not yet set up. Before claiming remote support
 verified, test private access, HTTP and HMR WebSockets, stop/restart recovery,
 port conflicts and service-user ownership on the replacement installation.
+
+## Browser evidence capture (VW10)
+
+The prebuilt server ships `review-worker.mjs` beside its entry point and uses
+Playwright 1.61.x already present in the workspace. Install its Chromium as the
+same service user (`npx playwright install chromium`; on Linux install the required
+Playwright OS dependencies). A missing binary produces an unavailable capability,
+not a false successful check. The supervisor receives the installed executable
+path, a temporary HOME and an explicit environment; it inherits no provider or
+control-plane secrets. Browser contexts allow only the assigned preview origin.
+
+Native checks support Linux/macOS, two at a time globally and one per task. They
+are refused by required sandbox policy. They do not prove container isolation.
+Evidence payloads are in SQLite, included in its existing backup/checkpoint path;
+allow up to 200 MiB per project plus normal DB overhead and backups. Payloads expire
+after 30 days, while metadata remains. Remote AWS/private-origin verification is
+still owner-deferred until the replacement host exists.

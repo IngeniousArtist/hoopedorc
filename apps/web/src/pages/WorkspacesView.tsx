@@ -45,13 +45,14 @@ export function WorkspacesView({ projectId, onAddToPlan }: { projectId: string; 
       </div>
       {workspace?.state === "unavailable" && <div role="status" className="rounded-lg border border-amber-800 p-4 text-sm text-amber-200">{workspace.reason} Nothing is cleaned up here.</div>}
       {workspace?.taskId && <a className="inline-flex min-h-10 items-center text-sm text-blue-400 underline" href={`#/p/${projectId}/board/${encodeURIComponent(workspace.taskId)}`}>View task and recovery</a>}
+      {workspace?.taskId && <a className="ml-4 inline-flex min-h-10 items-center text-sm text-blue-400 underline" href={`#/p/${projectId}/review/${encodeURIComponent(workspace.taskId)}`}>Open full review</a>}
       {workspace && <WorkspacePreview key={`${projectId}:${workspace.id}`} projectId={projectId} workspaceId={workspace.id} />}
       {workspace?.state === "available" && <WorkspaceFiles key={`${projectId}:${workspace.id}:${refresh}`} projectId={projectId} workspace={workspace} onAddToPlan={onAddToPlan} />}
     </>}
   </section>;
 }
 
-function WorkspaceFiles({ projectId, workspace, onAddToPlan }: { projectId: string; workspace: WorkspaceSummary; onAddToPlan: (text: string) => void }) {
+export function WorkspaceFiles({ projectId, workspace, onAddToPlan }: { projectId: string; workspace: WorkspaceSummary; onAddToPlan: (text: string) => void }) {
   const [inventory, setInventory] = useState<WorkspaceFilesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");

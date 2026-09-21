@@ -153,6 +153,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_preview_port_owner ON workspace_previews(p
   WHERE state IN ('starting', 'ready', 'stopping');
 `;
 
+const VW10_REVIEW_MIGRATION = `
+CREATE TABLE IF NOT EXISTS review_evidence (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  state TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  browser_pid INTEGER,
+  workspace_path TEXT,
+  evidence_json TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_review_capture_owner ON review_evidence(task_id) WHERE state = 'running';
+CREATE INDEX IF NOT EXISTS idx_review_evidence_task ON review_evidence(project_id, task_id);
+CREATE TABLE IF NOT EXISTS review_artifacts (
+  id TEXT PRIMARY KEY,
+  evidence_id TEXT NOT NULL REFERENCES review_evidence(id) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL,
+  artifact_json TEXT NOT NULL,
+  payload BLOB
+);
+CREATE INDEX IF NOT EXISTS idx_review_artifact_evidence ON review_artifacts(evidence_id);
+CREATE INDEX IF NOT EXISTS idx_review_artifact_expiry ON review_artifacts(expires_at);
+`;
+
 export function openDb(path: string = ENV.dbPath): Db {
   const db = new Database(path);
   db.pragma("journal_mode = WAL");
@@ -448,6 +472,7 @@ export function initDb(path: string = ENV.dbPath): Db {
   db.exec(VW06_PLANNING_MIGRATION);
   db.exec(VW07_PLAN_CHANGES_MIGRATION);
   db.exec(VW09_PREVIEW_MIGRATION);
+  db.exec(VW10_REVIEW_MIGRATION);
   // No CLI can be resumed by restoring an in-memory Promise. Keep the input,
   // settle orphaned ownership, and require an explicit, separately counted retry.
   db.prepare(`UPDATE planning_operations SET state = 'interrupted', ended_at = ?,

@@ -211,6 +211,7 @@ export function TaskDrawer({
         </button>
       </div>
 
+      <a className="inline-flex min-h-10 items-center px-4 text-sm text-blue-400 underline focus-visible:ring-2 focus-visible:ring-blue-500" href={`#/p/${task.projectId}/review/${encodeURIComponent(task.id)}`}>Open full review</a>
       <div className="flex border-b border-neutral-800">
         {TABS.map((t) => (
           <button

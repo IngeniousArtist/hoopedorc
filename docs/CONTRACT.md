@@ -677,6 +677,11 @@ fields retain their `@orc/types` contract of arrays containing only strings.
 | `stopWorkspacePreview` | `POST /api/projects/:id/workspaces/:workspaceId/preview/stop` | → `WorkspacePreviewResponse` |
 | `openWorkspacePreview` | `POST /api/projects/:id/workspaces/:workspaceId/preview/open` | → `PreviewLaunchResponse` |
 | `setPreviewProfile` | `PUT /api/projects/:id/preview-profile` | `SetPreviewProfileRequest` → `WorkspacePreviewResponse` (primary context) |
+| `taskReview` | `GET /api/projects/:id/tasks/:taskId/review` | → `TaskReviewResponse` |
+| `captureReview` | `POST /api/projects/:id/tasks/:taskId/review/capture` | `CaptureReviewRequest` → `202 ReviewEvidenceResponse` (200 for a settled idempotent retry) |
+| `uploadReviewEvidence` | `POST /api/projects/:id/tasks/:taskId/review/evidence` | `UploadReviewEvidenceRequest` → `ReviewEvidenceResponse` |
+| `cancelReviewCapture` | `POST /api/projects/:id/tasks/:taskId/review/evidence/:evidenceId/cancel` | → `ReviewEvidenceResponse` |
+| `reviewArtifact` | `GET /api/projects/:id/tasks/:taskId/review/artifacts/:artifactId` | → authenticated binary attachment; 404 for wrong ownership, 410 after payload expiry |
 | `updateProject` | `PATCH /api/projects/:id` | `UpdateProjectRequest` → `UpdateProjectResponse` |
 | `deleteProject` | `DELETE /api/projects/:id` | → `DeleteProjectResponse` |
 | `planProject` | `POST /api/projects/:id/plan` | `PlanProjectRequest` → `PlanProjectResponse` |
@@ -889,3 +894,41 @@ one session from persisting into a reused slot. Cross-origin browser access to
 the control plane is refused unless its origin is explicitly allowed or the
 request carries a valid bearer token. CLI requests without Origin still follow
 the existing API authentication policy.
+
+### VW10 review evidence
+
+`taskReview` combines the existing task/runs/validator decisions with inspected
+workspace identity, preview, browser availability and the latest 100 evidence
+records (`evidenceTruncated` discloses a longer history). Every record includes
+its task/attempt/generation, canonical run ID when recorded, observed HEAD/dirty
+state, environment, preview generation, route, viewport, result and artifacts.
+Freshness is recomputed: changed attempt/commit/stopped preview is stale;
+unavailable workspaces are unknown; dirty files, a preview started at another
+commit and operator-supplied artifacts are unverified. Existing validator records
+lack exact commit identity and remain historical, without manufacturing it.
+
+Capture accepts a UUID-v4 `requestId`, reviewed `taskUpdatedAt`/`previewId`, an
+application-relative path, 240–2560 × 240–1600 viewport and up to ten typed
+`clickText|fillLabel|expectText` steps. It accepts no arbitrary URL or script.
+Identical retries reuse the record; changed payloads under the same ID return
+409. One check per task and two global checks may run. Missing Chromium or
+required sandbox policy refuses native checks. Mock captures store inert text
+and invoke no browser/process/model. Cancellation settles the owned browser;
+restart marks unfinished captures interrupted and retains available artifacts.
+
+Uploads use `{requestId,taskUpdatedAt,kind,name,description,contentBase64}`.
+Allowlisted PNG/ZIP/UTF-8 text bytes and plain filenames are validated. PNGs are
+limited to 5 MiB/4096×4096, ZIP traces to 20 MiB, and text to 256 KiB; a project
+may retain 200 MiB of payloads. Supplied artifacts do not assert a passed check.
+Payload expiry is 30 days, including failure artifacts; expiry removes bytes,
+retains metadata and returns 410 on download. Downloads use existing API auth,
+attachment disposition, no-store, nosniff and restrictive content policy. The
+web client obtains blobs through the same token gate as JSON, never by placing
+a control token in an image/download URL.
+
+Browser workers use a new context and only the assigned preview origin for
+HTTP/WS; outside resources are blocked and reported, not silently accepted.
+Screenshots, traces and diagnostics are retained on failure when capture is
+possible. Traces can include preview data/session cookies; only the authenticated
+operator can retrieve them. Evidence and repair handoff never mutate existing
+code-check decisions, task success, approvals or merge policy.

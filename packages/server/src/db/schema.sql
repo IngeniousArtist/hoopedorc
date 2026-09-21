@@ -405,3 +405,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_preview_workspace_owner ON workspace_previ
   WHERE state IN ('starting', 'ready', 'stopping');
 CREATE UNIQUE INDEX IF NOT EXISTS idx_preview_port_owner ON workspace_previews(proxy_port)
   WHERE state IN ('starting', 'ready', 'stopping');
+
+-- VW10 durable review evidence and bounded artifact payloads.
+CREATE TABLE IF NOT EXISTS review_evidence (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  state TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  browser_pid INTEGER,
+  workspace_path TEXT,
+  evidence_json TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_review_capture_owner ON review_evidence(task_id) WHERE state = 'running';
+CREATE INDEX IF NOT EXISTS idx_review_evidence_task ON review_evidence(project_id, task_id);
+CREATE TABLE IF NOT EXISTS review_artifacts (
+  id TEXT PRIMARY KEY,
+  evidence_id TEXT NOT NULL REFERENCES review_evidence(id) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL,
+  artifact_json TEXT NOT NULL,
+  payload BLOB
+);
+CREATE INDEX IF NOT EXISTS idx_review_artifact_evidence ON review_artifacts(evidence_id);
+CREATE INDEX IF NOT EXISTS idx_review_artifact_expiry ON review_artifacts(expires_at);

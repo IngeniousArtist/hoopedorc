@@ -29,11 +29,13 @@ import { Settings } from "./pages/Settings";
 import { SetupView } from "./pages/SetupView";
 import { Welcome } from "./pages/Welcome";
 import { WorkspacesView } from "./pages/WorkspacesView";
+import { ReviewView } from "./pages/ReviewView";
 
 export type Page =
   | "board"
   | "plan"
   | "workspaces"
+  | "review"
   | "costs"
   | "audit"
   | "notifications"
@@ -55,6 +57,7 @@ const NAV_GROUPS: { label: string; items: { page: Page; label: string }[] }[] = 
       { page: "board", label: "Board" },
       { page: "plan", label: "Plan" },
       { page: "workspaces", label: "Workspaces" },
+      { page: "review", label: "Review" },
       { page: "costs", label: "Costs" },
       { page: "audit", label: "Audit" },
       { page: "notifications", label: "Notifications" },
@@ -72,7 +75,8 @@ const NAV_GROUPS: { label: string; items: { page: Page; label: string }[] }[] = 
 ];
 
 /** Pages that need a selected project to render anything useful. */
-const PROJECT_PAGES: Page[] = ["board", "plan", "workspaces", "costs", "audit", "notifications"];
+const PROJECT_PAGES: Page[] = ["board", "plan", "workspaces", "review", "costs", "audit", "notifications"];
+const TASK_DETAIL_PAGES: Page[] = ["board", "review"];
 
 const STORAGE_KEY = "hoop.projectId";
 
@@ -93,7 +97,7 @@ const GLOBAL_HASH_PAGES: Page[] = [
  *  in the URL bar, or a page like "welcome" that isn't meant to be one) —
  *  callers fall back to their own defaults in that case. VW04: the board
  *  accepts one more segment, `#/p/<projectId>/board/<taskId>`, which opens
- *  that task's inspector; other project pages take no extra segment. */
+ *  that task's inspector. VW10 also uses a task segment for full review. */
 export function parseHash(
   hash: string,
 ): { page: Page; projectId?: string; taskId?: string } | null {
@@ -107,7 +111,7 @@ export function parseHash(
     if (parts.length === 3 || (parts.length === 4 && !parts[3])) {
       return { page, projectId: parts[1] };
     }
-    if (page === "board" && parts.length === 4 && parts[3]) {
+    if (TASK_DETAIL_PAGES.includes(page) && parts.length === 4 && parts[3]) {
       try {
         return { page, projectId: parts[1], taskId: decodeURIComponent(parts[3]) };
       } catch {
@@ -126,7 +130,7 @@ export function parseHash(
 export function hashFor(page: Page, projectId: string, taskId?: string | null): string {
   if (PROJECT_PAGES.includes(page) && projectId) {
     const base = `#/p/${projectId}/${page}`;
-    return page === "board" && taskId ? `${base}/${encodeURIComponent(taskId)}` : base;
+    return TASK_DETAIL_PAGES.includes(page) && taskId ? `${base}/${encodeURIComponent(taskId)}` : base;
   }
   return `#/${page}`;
 }
@@ -182,7 +186,7 @@ export function App() {
   // Board state.
   const [boardSelection, setBoardSelection] = useState(() => ({
     projectId: selectedProjectId,
-    taskId: initialHashState?.page === "board" ? (initialHashState.taskId ?? null) : null,
+    taskId: initialHashState && TASK_DETAIL_PAGES.includes(initialHashState.page) ? (initialHashState.taskId ?? null) : null,
   }));
   const boardTaskId = boardSelection.projectId === selectedProjectId ? boardSelection.taskId : null;
   const setBoardTaskId = useCallback((taskId: string | null) => {
@@ -258,7 +262,7 @@ export function App() {
     // should replace" allowance before any real page gets a chance to use it.
     const isFirst = isFirstHashSyncRef.current;
     isFirstHashSyncRef.current = false;
-    const next = hashFor(page, selectedProjectId, page === "board" ? boardTaskId : null);
+    const next = hashFor(page, selectedProjectId, TASK_DETAIL_PAGES.includes(page) ? boardTaskId : null);
     if (location.hash === next) return;
     if (isFirst) history.replaceState(null, "", next);
     else history.pushState(null, "", next);
@@ -291,7 +295,7 @@ export function App() {
         history.replaceState(
           null,
           "",
-          hashFor(page, selectedProjectId, page === "board" ? boardTaskId : null),
+          hashFor(page, selectedProjectId, TASK_DETAIL_PAGES.includes(page) ? boardTaskId : null),
         );
         return;
       }
@@ -300,7 +304,7 @@ export function App() {
         setPage(parsed.page);
         setBoardSelection({
           projectId: parsed.projectId ?? selectedProjectId,
-          taskId: parsed.page === "board" ? (parsed.taskId ?? null) : null,
+          taskId: TASK_DETAIL_PAGES.includes(parsed.page) ? (parsed.taskId ?? null) : null,
         });
       };
       if (page === "settings" && settingsDirtyRef.current) {
@@ -764,6 +768,10 @@ export function App() {
             )}
             {page === "costs" && <CostView projectId={selectedProjectId} />}
             {page === "workspaces" && <WorkspacesView key={selectedProjectId} projectId={selectedProjectId} onAddToPlan={(text) => {
+              setPlanningReference({ id: crypto.randomUUID(), projectId: selectedProjectId, text });
+              setPlanMounted(true); setPage("plan");
+            }} />}
+            {page === "review" && <ReviewView key={selectedProjectId} projectId={selectedProjectId} taskId={boardTaskId} onSelectTask={setBoardTaskId} onAddToPlan={(text) => {
               setPlanningReference({ id: crypto.randomUUID(), projectId: selectedProjectId, text });
               setPlanMounted(true); setPage("plan");
             }} />}

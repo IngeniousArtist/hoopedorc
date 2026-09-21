@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiRequestError,
   api,
+  apiBlob,
   apiMethod,
   apiUrl,
   isAbortError,
@@ -13,6 +14,15 @@ afterEach(() => {
 });
 
 describe("API route contract", () => {
+  it("retries an authenticated artifact download through the shared token gate", async () => {
+    localStorage.removeItem("hoopedorc.apiToken");
+    const fetchMock = vi.fn<typeof fetch>(async (_input, options) => (options?.headers as Record<string, string>)?.Authorization === "Bearer artifact-token"
+      ? new Response("artifact bytes", { headers: { "Content-Type": "text/plain" } }) : new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock); setUnauthorizedHandler(async () => "artifact-token");
+    const blob = await apiBlob("reviewArtifact", { params: { id: "p", taskId: "t", artifactId: "a" } });
+    expect(await blob.text()).toBe("artifact bytes"); expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/projects/p/tasks/t/review/artifacts/a");
+  });
   it("encodes workspace file paths as query data, keeping auth and route identity", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ content: "ok" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
