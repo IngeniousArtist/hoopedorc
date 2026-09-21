@@ -24,7 +24,7 @@ function fixture(path = ":memory:") {
   repo.upsertSettings(db, settings); return { db, settings, model: settings.models.find((model) => model.runner === "codex")! };
 }
 function saveWorker(service: ExecutionService, invocationId: string, state = "unresolved") {
-  const identity = workerIdentity(service.owner); const now = new Date().toISOString();
+  const identity = workerIdentity(service.owner, "fixture-runtime"); const now = new Date().toISOString();
   const record = { id: identity.id, invocationId, profileId: profile.id, imageId: profile.image, workerName: identity.workerName, proxyName: identity.proxyName, state, createdAt: now, updatedAt: now, identity, cwd: "/tmp/work", directory: join(service.root, "jobs", identity.id) };
   service.db.prepare("INSERT INTO execution_workers (id, invocation_id, profile_id, state, json) VALUES (?, ?, ?, ?, ?)").run(record.id, invocationId, profile.id, state, JSON.stringify(record)); return record;
 }
@@ -82,10 +82,11 @@ test("VW14: unavailable image/auth refuses before adapter prompt and mock routes
 });
 
 test("VW14: Docker cleanup refuses foreign labels and retains daemon failures instead of interpreting absence", async () => {
-  const identity = workerIdentity("installation"); const commands: string[][] = [];
+  const identity = workerIdentity("installation", "fixture-runtime"); const commands: string[][] = [];
   const driver = new DockerExecutionDriver();
-  driver.command = (args) => { commands.push(args); return Promise.resolve(args.includes("ls") ? "foreign-id" : JSON.stringify([{ Config: { Labels: { "io.hoopedorc.owner": "someone-else" } } }])); };
+  driver.command = (args) => { commands.push(args); return Promise.resolve(args.includes("info") ? "fixture-runtime" : args.includes("ls") ? "foreign-id" : JSON.stringify([{ Config: { Labels: { "io.hoopedorc.owner": "someone-else" } } }])); };
   await assert.rejects(driver.stop(identity), ExecutionUnsettledError); assert.equal(commands.some((args) => args.includes("rm")), false);
+  driver.command = () => Promise.resolve("different-runtime"); await assert.rejects(driver.stop(identity), ExecutionUnsettledError);
   driver.command = () => Promise.reject(new Error("daemon unavailable")); await assert.rejects(driver.stop(identity), /daemon unavailable/);
 });
 

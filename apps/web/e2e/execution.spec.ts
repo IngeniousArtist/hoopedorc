@@ -14,7 +14,7 @@ test("VW14: execution profile draft, save, mock refusal and confirmation work at
       await page.screenshot({ path: `/tmp/vw14-${viewport.width}.png`, fullPage: true });
     }
     await page.getByRole("button", { name: "Save Settings", exact: true }).focus(); await page.keyboard.press("Enter"); await expect(page.getByText("Settings saved.", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Refresh workers" }).click(); await expect(page.getByRole("button", { name: "Verify worker" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Verify worker" })).toBeEnabled();
     await page.getByRole("button", { name: "Verify worker" }).click(); await expect(page.getByRole("alert").filter({ hasText: "mock mode" })).toBeVisible();
     await expect(page.getByLabel("Worker 1 name")).toHaveValue("My isolated worker");
     await page.getByRole("button", { name: "Remove execution profile" }).click(); await expect(page.getByRole("group", { name: "Confirm execution profile removal" })).toBeVisible(); await page.getByRole("button", { name: "Cancel", exact: true }).click(); await expect(page.getByLabel("Worker 1 name")).toHaveValue("My isolated worker");

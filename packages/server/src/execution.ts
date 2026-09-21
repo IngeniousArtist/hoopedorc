@@ -53,11 +53,11 @@ export class ExecutionService {
     this.db.prepare("UPDATE execution_workers SET state = ?, json = ? WHERE id = ?").run(state, JSON.stringify(record), id);
     if (state === "unresolved") this.db.prepare("UPDATE resource_reservations SET state = 'unresolved', updated_at = ? WHERE id = ? AND state != 'released'").run(record.updatedAt, record.invocationId);
   }
-  private async newWorker(profile: ExecutionProfile, imageId: string, invocationId: string, cwd: string, readOnly: boolean, signal?: AbortSignal, project?: Project, task?: Task, verification?: ExecutionCapability): Promise<{ execution: AgentExecution; finish: () => Promise<void> }> {
+  private async newWorker(profile: ExecutionProfile, imageId: string, runtimeId: string, invocationId: string, cwd: string, readOnly: boolean, signal?: AbortSignal, project?: Project, task?: Task, verification?: ExecutionCapability): Promise<{ execution: AgentExecution; finish: () => Promise<void> }> {
     if (this.db.prepare("SELECT 1 FROM execution_workers WHERE invocation_id = ?").get(invocationId)) throw new ResourceUnavailableError("This invocation already owns an isolated worker. Retry with a new invocation ID.", false);
-    const identity = workerIdentity(this.owner); const directory = join(this.root, "jobs", identity.id);
+    const identity = workerIdentity(this.owner, runtimeId); const directory = join(this.root, "jobs", identity.id);
     const now = new Date().toISOString();
-    const record: WorkerRecord = { id: identity.id, invocationId, projectId: project?.id, taskId: task?.id, profileId: profile.id, profile: structuredClone(profile), verification, imageId, workerName: identity.workerName, proxyName: identity.proxyName, state: "preparing", createdAt: now, updatedAt: now, identity, directory, cwd };
+    const record: WorkerRecord = { id: identity.id, invocationId, projectId: project?.id, taskId: task?.id, profileId: profile.id, profile: structuredClone(profile), verification, imageId, runtimeId, workerName: identity.workerName, proxyName: identity.proxyName, state: "preparing", createdAt: now, updatedAt: now, identity, directory, cwd };
     this.db.prepare("INSERT INTO execution_workers (id, invocation_id, project_id, task_id, profile_id, state, json) VALUES (?, ?, ?, ?, ?, ?, ?)").run(record.id, invocationId, project?.id ?? null, task?.id ?? null, profile.id, record.state, JSON.stringify(record));
     const execution = await this.driver.prepare({ identity, profile, imageId, cwd, directory, readOnly, transition: (state) => this.transition(identity.id, state) }, signal);
     return { execution, finish: async () => { await execution.close(); await this.cleanFiles(record);
@@ -102,7 +102,7 @@ export class ExecutionService {
       const row = this.db.prepare("SELECT fingerprint, json FROM execution_capabilities WHERE profile_id = ?").get(profile.id) as { fingerprint: string; json: string } | undefined;
       return row?.fingerprint === fingerprint(profile) ? JSON.parse(row.json) as ExecutionCapability : { profileId: profile.id, runner: profile.runner, state: "unavailable", detail: "Verify the installed worker image and its separate CLI login.", checkedAt: new Date().toISOString() };
     });
-    const workers = (this.db.prepare("SELECT id FROM execution_workers WHERE state != 'stopped' OR id IN (SELECT id FROM execution_workers WHERE state = 'stopped' ORDER BY rowid DESC LIMIT 30) ORDER BY rowid DESC").all() as { id: string }[]).map(({ id }) => { const row = this.row(id)!; return { id: row.id, invocationId: row.invocationId, projectId: row.projectId, taskId: row.taskId, profileId: row.profileId, profile: row.profile, verification: row.verification, imageId: row.imageId, workerName: row.workerName, proxyName: row.proxyName, state: row.state, createdAt: row.createdAt, updatedAt: row.updatedAt, detail: row.detail }; });
+    const workers = (this.db.prepare("SELECT id FROM execution_workers WHERE state != 'stopped' OR id IN (SELECT id FROM execution_workers WHERE state = 'stopped' ORDER BY rowid DESC LIMIT 30) ORDER BY rowid DESC").all() as { id: string }[]).map(({ id }) => { const row = this.row(id)!; return { id: row.id, invocationId: row.invocationId, projectId: row.projectId, taskId: row.taskId, profileId: row.profileId, profile: row.profile, verification: row.verification, imageId: row.imageId, runtimeId: row.runtimeId, workerName: row.workerName, proxyName: row.proxyName, state: row.state, createdAt: row.createdAt, updatedAt: row.updatedAt, detail: row.detail }; });
     return { platform: process.platform, profiles, workers, host: { filesystemIsolated: false, networkIsolated: false, authentication: "host-cli" } };
   }
   async verify(profile: ExecutionProfile, signal?: AbortSignal): Promise<ExecutionCapability> {
@@ -121,9 +121,9 @@ export class ExecutionService {
     let probe: Awaited<ReturnType<ExecutionService["newWorker"]>> | undefined;
     const cwd = join(this.root, "probes", randomUUID());
     try {
-      const { imageId } = await this.driver.inspectProfile(profile, signal); result.imageId = imageId;
+      const { imageId, runtimeId } = await this.driver.inspectProfile(profile, signal); result.imageId = imageId; result.runtimeId = runtimeId;
       await mkdir(cwd, { recursive: true, mode: 0o700 });
-      probe = await this.newWorker(profile, imageId, `execution-probe-${randomUUID()}`, cwd, true, signal);
+      probe = await this.newWorker(profile, imageId, runtimeId, `execution-probe-${randomUUID()}`, cwd, true, signal);
       const output = await execInvocationProcess("node", ["-e", PROBE], { cwd, signal, timeoutMs: 20_000, maxOutputBytes: 4096 }, probe.execution);
       const checked = JSON.parse(output.stdout) as { version: string; chatgpt: boolean }; result.cliVersion = checked.version;
       if (checked.version !== WORKER_CLI_VERSION) throw new ResourceUnavailableError(`This profile requires ${WORKER_CLI_VERSION}. Rebuild the pinned worker image.`, false);
@@ -162,8 +162,8 @@ export class ExecutionService {
     const forbidden = await Promise.all([this.root, resolve(ENV.dbPath), homedir(), resolve(process.cwd())].map(canonicalPath));
     if (forbidden.some((path) => within(root, path)) || within(controlRoot, root) && project) throw new ResourceUnavailableError("The worker workspace overlaps control-plane state, the server checkout or HOME. Use a separate project clone and place DB_PATH outside project workspaces.", false);
     const status = await this.verify(profile, signal);
-    if (status.state !== "verified" || !status.imageId) throw new ResourceUnavailableError(status.detail, false);
-    return this.newWorker(profile, status.imageId, invocationId, cwd, !["author", "docs"].includes(stage), signal, project, task, status);
+    if (status.state !== "verified" || !status.imageId || !status.runtimeId) throw new ResourceUnavailableError(status.detail, false);
+    return this.newWorker(profile, status.imageId, status.runtimeId, invocationId, cwd, !["author", "docs"].includes(stage), signal, project, task, status);
   }
   wrap(project: Project | undefined, model: ModelConfig, adapter: AgentAdapter): AgentAdapter {
     if (!model.executionProfileId) return adapter;

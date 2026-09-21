@@ -82,7 +82,9 @@ Selected Codex capabilities remain unavailable until separately verified.
   this initial worker. Prepare dependencies through the host-owned setup/gates.
   Do not advertise a host browser/MCP as an isolated capability.
 - Ownership is persisted before Docker mutation. Containers and proxy volume
-  have exact installation/invocation labels. Cancellation removes and verifies
+  have exact installation/invocation labels and a persisted Docker engine ID.
+  A changed Docker engine cannot confirm absence on the old engine; restore access
+  to that engine to verify termination. Moving a database never releases old workers. Cancellation removes and verifies
   both containers before success or releasing the account slot. Startup attempts
   the same bounded recovery. A daemon failure or foreign label leaves unresolved
   ownership; worktree cleanup and new project runs are blocked.

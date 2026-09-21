@@ -21,6 +21,7 @@ export interface ExecutionCapability {
   state: "host" | "unavailable" | "verified";
   detail: string;
   imageId?: string;
+  runtimeId?: string;
   cliVersion?: string;
   authentication?: "chatgpt" | "unavailable";
   checkedAt: string;
@@ -35,6 +36,7 @@ export interface ExecutionWorker {
   profile: ExecutionProfile;
   verification?: ExecutionCapability;
   imageId: string;
+  runtimeId: string;
   workerName: string;
   proxyName: string;
   state: "preparing" | "running" | "stopping" | "stopped" | "unresolved";

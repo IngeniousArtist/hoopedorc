@@ -1047,7 +1047,8 @@ an unsettled worker is refused. Existing native models are unchanged.
 `ExecutionCapability.state=verified` records runtime, exact CLI version and
 ChatGPT login status, not a successful model request or AWS smoke test. A profile
 edit invalidates its saved verification fingerprint. Launch rechecks actual
-runtime/login and pins the inspected image. Mock verification/stop return 409
+runtime/login and pins the inspected image and Docker engine ID. Recovery refuses
+a different daemon; absence on a new host cannot release an old worker. Mock verification/stop return 409
 without Docker I/O. Status excludes host paths and account contents.
 
 SQLite `execution_installation`, `execution_workers` and `execution_capabilities`

@@ -3,13 +3,13 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 const input = "min-h-10 w-full min-w-0 rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-blue-400";
 const button = "min-h-10 rounded border border-neutral-700 px-3 py-2 text-sm hover:bg-neutral-800 disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-blue-400";
-export function ExecutionPanel({ settings, active, onChange }: { settings: Settings; active: boolean; onChange: (patch: Pick<Settings, "models" | "executionProfiles">) => void }) {
+export function ExecutionPanel({ settings, active, onChange, saved }: { settings: Settings; active: boolean; saved?: boolean; onChange: (patch: Pick<Settings, "models" | "executionProfiles">) => void }) {
   const [status, setStatus] = useState<ExecutionStatusResponse>();
   const [busy, setBusy] = useState<string>(); const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>(); const [notice, setNotice] = useState<string>();
   const [confirm, setConfirm] = useState<{ kind: "remove" | "stop"; id: string }>();
   const refresh = useCallback(async () => { setLoading(true); try { setStatus(await api<ExecutionStatusResponse>("executionStatus")); setError(undefined); } catch (e) { setError(e instanceof Error ? e.message : "Worker status is unavailable. Try again."); } finally { setLoading(false); } }, []);
-  useEffect(() => { if (active) void refresh(); }, [active, refresh]);
+  useEffect(() => { if (active) void refresh(); }, [active, refresh, saved]);
   const profiles = settings.executionProfiles ?? []; const pools = (settings.accountPools ?? []).filter((pool) => pool.billing === "subscription");
   const patch = (id: string, change: Partial<ExecutionProfile>) => onChange({ models: settings.models, executionProfiles: profiles.map((profile) => profile.id === id ? { ...profile, ...change } : profile) });
   async function verify(id: string) {
@@ -25,8 +25,9 @@ export function ExecutionPanel({ settings, active, onChange }: { settings: Setti
   return <section aria-label="Agent execution" className="space-y-4 border-t border-neutral-800 pt-6">
     <h3 className="font-medium">Where agents run</h3>
     <p className="text-sm text-neutral-400">Host CLI is the default and has no app-enforced filesystem or network isolation. Docker profiles use a separate CLI login, an assigned workspace and a restricted network. Repository gates have their own sandbox setting.</p>
-    <p className="text-xs text-neutral-500">The initial worker supports Codex 0.154.0 with a ChatGPT subscription. Install the worker image and sign in following deploy/worker/README.md. Save edits before verifying. Verification sends no model prompt; it does not prove model access or AWS readiness.</p>
+    <p className="text-xs text-neutral-500">The initial worker supports Codex 0.154.0 with a ChatGPT subscription. Use the setup guide to install the worker image and sign in. Save edits before verifying. Verification sends no model prompt; it does not prove model access or AWS readiness.</p>
     <div className="flex flex-wrap gap-2"><button className={button} disabled={loading || !!busy} onClick={() => void refresh()} aria-busy={loading}>{loading ? "Refreshing…" : "Refresh workers"}</button><button className={button} disabled={!pools.length} onClick={() => onChange({ models: settings.models, executionProfiles: [...profiles, { id: `worker-${crypto.randomUUID()}`, name: "Isolated Codex", kind: "docker", runner: "codex", image: "", accountVolume: "hoopedorc-account-codex", accountPoolId: pools[0]!.id, cpus: 2, memoryMiB: 1024, pidsLimit: 128 }] })}>Add Docker profile</button></div>
+    <a href="https://github.com/IngeniousArtist/hoopedorc/blob/main/deploy/worker/README.md" target="_blank" rel="noreferrer" className="inline-flex min-h-10 items-center text-sm text-blue-300 underline focus-visible:outline-2 focus-visible:outline-blue-400">Worker setup guide ↗</a>
     {!pools.length && <p className="text-xs text-neutral-400">Add a subscription account pool above to configure an isolated worker.</p>}
     {loading && !status && <p role="status" className="text-sm">Loading execution status…</p>}
     {error && <p role="alert" className="break-words rounded border border-red-900 p-3 text-sm text-red-300">{error}</p>}

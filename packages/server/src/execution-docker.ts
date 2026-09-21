@@ -9,7 +9,7 @@ export const WORKER_CLI_VERSION = "codex-cli 0.154.0";
 export class ExecutionUnsettledError extends ResourceUnavailableError {
   constructor() { super("Worker termination could not be verified. Its account slot and workspace remain protected; inspect execution status before recovery.", false); }
 }
-export interface DockerWorkerIdentity { id: string; workerName: string; proxyName: string; volumeName: string; owner: string }
+export interface DockerWorkerIdentity { id: string; workerName: string; proxyName: string; volumeName: string; owner: string; runtimeId: string }
 export interface DockerWorkerSpec {
   identity: DockerWorkerIdentity;
   profile: ExecutionProfile;
@@ -21,8 +21,8 @@ export interface DockerWorkerSpec {
   transition: (state: "preparing" | "running" | "stopping" | "stopped" | "unresolved") => void;
 }
 const inside = (root: string, target: string) => { const path = relative(root, target); return path === "" || path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path); };
-export function workerIdentity(owner: string): DockerWorkerIdentity {
-  const id = randomUUID(); return { id, owner, workerName: `hoop-worker-${id}`, proxyName: `hoop-proxy-${id}`, volumeName: `hoop-proxy-${id}` };
+export function workerIdentity(owner: string, runtimeId: string): DockerWorkerIdentity {
+  const id = randomUUID(); return { id, owner, runtimeId, workerName: `hoop-worker-${id}`, proxyName: `hoop-proxy-${id}`, volumeName: `hoop-proxy-${id}` };
 }
 
 /** External values remain argv entries. The Docker endpoint is server-owned. */
@@ -45,7 +45,7 @@ export class DockerExecutionDriver {
   async command(args: string[], signal?: AbortSignal): Promise<string> {
     return (await (this.options.run ?? execManagedProcess)("docker", this.args(args), this.processOptions(signal))).stdout;
   }
-  async inspectProfile(profile: ExecutionProfile, signal?: AbortSignal): Promise<{ imageId: string }> {
+  async inspectProfile(profile: ExecutionProfile, signal?: AbortSignal): Promise<{ imageId: string; runtimeId: string }> {
     const version = JSON.parse(await this.command(["version", "--format", "{{json .Server}}"], signal)) as { Os?: string };
     if (version.Os !== "linux") throw new ResourceUnavailableError("The isolated worker requires a Linux Docker engine.", false);
     const image = JSON.parse(await this.command(["image", "inspect", profile.image], signal)) as { Id: string; Config?: { Labels?: Record<string, string>; Volumes?: Record<string, unknown> } }[];
@@ -54,7 +54,9 @@ export class DockerExecutionDriver {
     const volumes = JSON.parse(await this.command(["volume", "inspect", profile.accountVolume], signal)) as { Driver: string; Options?: Record<string, unknown> | null; Labels?: Record<string, string> }[];
     const volume = volumes[0];
     if (!volume || volume.Driver !== "local" || Object.keys(volume.Options ?? {}).length || volume.Labels?.["io.hoopedorc.account"] !== profile.accountPoolId) throw new ResourceUnavailableError("Account volume must already exist with the matching pool label and no host-path/remote driver options. Sign in with the worker CLI first.", false);
-    return { imageId: selected.Id };
+    const runtimeId = (await this.command(["info", "--format", "{{.ID}}"], signal)).trim();
+    if (!runtimeId || runtimeId.length > 256 || /[\r\n]/.test(runtimeId)) throw new ResourceUnavailableError("Docker engine identity is unavailable.", false);
+    return { imageId: selected.Id, runtimeId };
   }
   private labels(identity: DockerWorkerIdentity) { return ["--label", `io.hoopedorc.owner=${identity.owner}`, "--label", `io.hoopedorc.worker-id=${identity.id}`]; }
   private async ownedContainer(name: string, identity: DockerWorkerIdentity): Promise<boolean> {
@@ -71,7 +73,11 @@ export class DockerExecutionDriver {
     const pending = this.stopOwned(identity).finally(() => this.stopping.delete(identity.id));
     this.stopping.set(identity.id, pending); return pending;
   }
+  private async assertRuntime(identity: DockerWorkerIdentity, signal?: AbortSignal) {
+    if (!identity.runtimeId || (await this.command(["info", "--format", "{{.ID}}"], signal)).trim() !== identity.runtimeId) throw new ExecutionUnsettledError();
+  }
   private async stopOwned(identity: DockerWorkerIdentity): Promise<void> {
+    await this.assertRuntime(identity);
     for (const name of [identity.workerName, identity.proxyName]) {
       if (await this.ownedContainer(name, identity)) await this.command(["container", "rm", "-f", name]);
       if (await this.ownedContainer(name, identity)) throw new ExecutionUnsettledError();
@@ -109,6 +115,7 @@ export class DockerExecutionDriver {
     })();
     try {
       spec.transition("preparing");
+      await this.assertRuntime(identity, signal);
       await this.command(["volume", "create", ...this.labels(identity), "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=uid=${uid},gid=${gid},mode=0700,size=1048576`, identity.volumeName], signal);
       const security = ["--pull=never", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", `${uid}:${gid}`, "--pids-limit", "32", "--memory", "128m", "--cpus", "0.25", "--init"];
       await this.command(["run", "-d", "--name", identity.proxyName, ...this.labels(identity), ...security, "--network", "bridge", "--mount", `type=volume,source=${identity.volumeName},target=/proxy,volume-nocopy`, "--mount", `type=bind,source=${join(transport, "execution-proxy.mjs")},target=/proxy.mjs,readonly`, "--entrypoint", "node", spec.imageId, "/proxy.mjs"], signal);

@@ -8746,3 +8746,16 @@ Still pending: operator-created worker ChatGPT login, OAuth renewal/provider mod
 access through the restricted proxy, and live AWS deployment. These are separate
 from the passing no-model boundary fixture. The user explicitly deferred AWS
 because the previous server is shut down and the replacement is not set up.
+
+VW14 review follow-up: persist the actual Docker engine ID with every worker
+and refuse cleanup when the configured daemon changes. This prevents a copied
+database/new host from treating absent local containers as evidence that workers
+on the old host stopped. The focused ownership test covers changed-daemon refusal.
+
+Initial VW14 PR [#280](https://github.com/IngeniousArtist/hoopedorc/pull/280)
+head `7256d53` passed full required CI
+[35618751782](https://github.com/IngeniousArtist/hoopedorc/actions/runs/35618751782)
+including the real Ubuntu Docker boundary (3m54s). The reviewed runtime-identity
+follow-up requires a fresh green head before merge; initial CI is not merge
+evidence for that follow-up. Its targeted real Docker/ownership tests (7),
+server/web typechecks, changed-file lint and five-width browser flow pass.
