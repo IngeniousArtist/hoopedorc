@@ -74,6 +74,18 @@ fix the stale documentation in the same PR.
 
 ## Repository gates
 
+### Current implementation-wave testing policy (owner request, 2026-09-21)
+
+For VW05 and subsequent visual-workspace items, run only local checks directly
+relevant to the changed behavior: focused unit/interaction tests, affected
+package typecheck/build or lint, and focused browser scenarios for UI changes.
+Do not repeat the entire repository suite for each item or documentation-only
+follow-up. Record which checks ran and defer the comprehensive local regression
+pass until the implementation plan is finished, when remaining bugs are audited.
+Existing required GitHub CI still must pass before merge; do not bypass it.
+This explicit owner preference supersedes the per-item full local gate list
+below and step 7's instruction to run every local gate.
+
 Run all of these before a PR is considered ready:
 
 ```bash

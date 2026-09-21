@@ -268,6 +268,7 @@ test.describe.serial("critical operator workflows", () => {
     // against a server where the VW01 scenario already paused the project.
     await presentProjectAsRunning(page, projectId);
     await page.goto("/#/settings");
+    await page.getByRole("tab", { name: "Models & routing" }).click();
     const effort = page.getByLabel("Claude (planner / reviewer) reasoning effort");
     const nextEffort = (await effort.inputValue()) === "high" ? "medium" : "high";
     await effort.selectOption(nextEffort);

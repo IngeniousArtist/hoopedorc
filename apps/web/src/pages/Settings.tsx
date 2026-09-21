@@ -8,7 +8,7 @@ import {
   type TelegramTestResponse,
 } from "@orc/types";
 import type { ModelConfig } from "@orc/types";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useBrowserNotify } from "../hooks/useBrowserNotify";
 import {
@@ -17,6 +17,7 @@ import {
   type ModelSlugSuggestions,
 } from "../components/ModelsEditor";
 import { RoutingEditor } from "../components/RoutingEditor";
+import { SectionPanel, SectionTabs } from "../components/SectionTabs";
 
 const MERGE_POLICY_LABELS: Record<MergePolicy, string> = {
   hard_gate_flag_risky: "Hard gates, flag risky",
@@ -81,6 +82,14 @@ const GUIDELINE_FIELDS: {
   },
 ];
 
+const SETTINGS_SECTIONS = [
+  { id: "policy", label: "Run policy" },
+  { id: "models", label: "Models & routing" },
+  { id: "guidelines", label: "Guidelines" },
+  { id: "notifications", label: "Notifications" },
+  { id: "installation", label: "Installation" },
+] as const;
+
 export function Settings({
   onDirtyChange,
 }: {
@@ -95,6 +104,8 @@ export function Settings({
     null,
   );
   const [dirty, setDirty] = useState(false);
+  const [section, setSection] = useState<(typeof SETTINGS_SECTIONS)[number]["id"]>("policy");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -122,7 +133,7 @@ export function Settings({
   const [runtimeHealthError, setRuntimeHealthError] = useState(false);
   const [modelSlugs, setModelSlugs] = useState<ModelSlugSuggestions>({});
 
-  async function refreshRuntimeHealth() {
+  const refreshRuntimeHealth = useCallback(async () => {
     setRuntimeHealthLoading(true);
     setRuntimeHealthError(false);
     try {
@@ -132,24 +143,42 @@ export function Settings({
     } finally {
       setRuntimeHealthLoading(false);
     }
-  }
+  }, []);
+
+  const loadSettings = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await api<{ settings: SettingsType }>("getSettings");
+      setSettings(response.settings);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    api<{ settings: SettingsType }>("getSettings")
-      .then((r) => setSettings(r.settings))
-      .catch((e) => setError(String(e)));
+    void loadSettings();
     api<ModelCatalogResponse>("modelCatalog")
       .then((catalog) => setModelSlugs(modelSlugSuggestions(catalog)))
       .catch(() => {
         /* advisory only — ModelsEditor falls back to a blind text field */
       });
     void refreshRuntimeHealth();
-  }, []);
+  }, [loadSettings, refreshRuntimeHealth]);
 
   if (!settings) {
     return (
-      <div className="text-sm text-neutral-400">
-        {error ? `Error: ${error}` : "Loading settings…"}
+      <div className="space-y-3 text-sm text-neutral-400">
+        {error ? (
+          <div role="alert" className="space-y-3 text-red-300">
+            <p>Could not load settings: {error}</p>
+            <button type="button" disabled={loading} onClick={() => void loadSettings()} className="min-h-10 rounded border border-neutral-700 px-3 py-2 text-neutral-200 hover:bg-neutral-800">
+              Retry settings
+            </button>
+          </div>
+        ) : <p role="status">Loading settings…</p>}
       </div>
     );
   }
@@ -344,7 +373,7 @@ export function Settings({
   }
 
   async function save() {
-    if (!settings) return;
+    if (!settings || saving || !dirty) return;
     setSaving(true);
     setError(null);
     try {
@@ -364,479 +393,486 @@ export function Settings({
   }
 
   return (
-    <div className="max-w-2xl space-y-8">
-      <h2 className="text-lg font-semibold">Settings</h2>
-
-      {error && (
-        <div className="rounded border border-red-800 bg-red-950/50 px-4 py-2 text-sm text-red-400">
-          {error}
-        </div>
-      )}
-      {saved && (
-        <div className="rounded border border-green-800 bg-green-950/50 px-4 py-2 text-sm text-green-400">
-          Settings saved.
-        </div>
-      )}
-
-      <ModelsEditor
-        models={settings.models}
-        onChange={updateModels}
-        routing={settings.routing}
-        modelSlugs={modelSlugs}
-      />
-
-      <RoutingEditor
-        routing={settings.routing}
-        models={enabledModels}
-        onChange={updateRouting}
-      />
-
-      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <h3 className="text-sm font-medium text-neutral-300">
-          Merge Policy
-        </h3>
-        <select
-          aria-label="Merge policy"
-          value={settings.mergePolicy}
-          onChange={(e) =>
-            updateMergePolicy(e.target.value as MergePolicy)
-          }
-          className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
-        >
-          {(
-            Object.entries(MERGE_POLICY_LABELS) as [
-              MergePolicy,
-              string,
-            ][]
-          ).map(([key, label]) => (
-            <option key={key} value={key}>
-              {label}
-            </option>
-          ))}
-        </select>
-        <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={settings.holdWhileAwaitingApproval ?? false}
-            onChange={(e) =>
-              updateHoldWhileAwaitingApproval(e.target.checked)
-            }
-            className="rounded border-neutral-700 bg-neutral-800"
-          />
-          Hold new dispatch while an approval is pending
-        </label>
-        <p className="text-xs text-neutral-500">
-          Trades slower overall runs for zero unsupervised spend while a
-          decision is waiting on you — active tasks still finish normally,
-          but nothing new starts until you respond.
+    <div className="max-w-3xl space-y-5">
+      <div>
+        <h2 className="text-lg font-semibold">Settings</h2>
+        <p className="mt-1 text-sm text-neutral-400">
+          Configure this Hoopedorc installation. Project-specific controls stay in project settings.
         </p>
-      </section>
-
-      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <h3 className="text-sm font-medium text-neutral-300">
-          Gate Sandbox
-        </h3>
-        <select
-          aria-label="Gate sandbox mode"
-          value={settings.sandboxGates ?? "auto"}
-          onChange={(e) =>
-            updateSandboxGates(e.target.value as SandboxGatesMode)
-          }
-          className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
-        >
-          {(
-            Object.entries(SANDBOX_GATES_LABELS) as [
-              SandboxGatesMode,
-              string,
-            ][]
-          ).map(([key, label]) => (
-            <option key={key} value={key}>
-              {label}
-            </option>
-          ))}
-        </select>
-        <p className="text-xs text-neutral-500">
-          {SANDBOX_GATES_HELP[settings.sandboxGates ?? "auto"]}
-        </p>
-      </section>
-
-      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <h3 className="text-sm font-medium text-neutral-300">
-          Risky Change Rules
-        </h3>
-        <div className="space-y-2">
-          {RISKY_RULES.map(({ key, label, hint }) => (
-            <div key={key}>
-              <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
-                <input
-                  type="checkbox"
-                  // S8's destructiveChanges is optional (absent on settings
-                  // persisted before it existed) and defaults to enabled —
-                  // `!== false` renders that "absent" state as checked,
-                  // matching how the engine enforces it.
-                  checked={settings.riskyChangeRules[key] !== false}
-                  onChange={(e) =>
-                    updateRiskyRule(key, e.target.checked)
-                  }
-                  className="rounded border-neutral-700 bg-neutral-800"
-                />
-                {label}
-              </label>
-              {hint && (
-                <p className="ml-6 mt-0.5 text-[10px] text-neutral-600">{hint}</p>
-              )}
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <h3 className="text-sm font-medium text-neutral-300">Guidelines</h3>
-        <p className="text-[10px] text-neutral-600">
-          Engineering standards injected into every author and validator
-          prompt — the validator grades against the exact same text the
-          author was given, so "meets the standards" is checkable rather
-          than vibes. Blank a field to stop including that section.
-        </p>
-        {GUIDELINE_FIELDS.map(({ key, label, hint }) => (
-          <div key={key}>
-            <label className="mb-1 block text-xs text-neutral-400">
-              {label}
-            </label>
-            <textarea
-              aria-label={label}
-              value={settings.guidelines?.[key] ?? ""}
-              onChange={(e) => updateGuidelines(key, e.target.value)}
-              rows={5}
-              maxLength={4000}
-              className="w-full resize-y rounded border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-xs text-neutral-200"
-            />
-            <p className="mt-1 text-[10px] text-neutral-600">{hint}</p>
-          </div>
-        ))}
-      </section>
-
-      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <h3 className="text-sm font-medium text-neutral-300">Projects</h3>
-        <div>
-          <label className="mb-1 block text-xs text-neutral-400">
-            Default projects directory
-          </label>
-          <input
-            aria-label="Default projects directory"
-            type="text"
-            value={settings.defaultProjectsDir ?? ""}
-            onChange={(e) => updateDefaultProjectsDir(e.target.value)}
-            placeholder="~/.hoopedorc/repos (default)"
-            className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
-          />
-          <p className="mt-1 text-[10px] text-neutral-600">
-            New projects clone here by default (a slug of the project name, e.g.
-            ~/projects/my-app), unless you set a local directory explicitly on
-            New Project.
-          </p>
-        </div>
-      </section>
-
-      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <h3 className="text-sm font-medium text-neutral-300">Security</h3>
-        <div>
-          <label className="mb-1 block text-xs text-neutral-400">
-            API token
-          </label>
-          <input
-            aria-label="API token"
-            type="password"
-            autoComplete="off"
-            value={
-              settings.apiToken === SECRET_SENTINEL
-                ? ""
-                : (settings.apiToken ?? "")
-            }
-            onChange={(e) => updateApiToken(e.target.value)}
-            placeholder={
-              settings.apiToken === SECRET_SENTINEL
-                ? "token saved — enter to replace"
-                : "unset — API is open to anything reaching this host"
-            }
-            className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
-          />
-          <p className="mt-1 text-[10px] text-neutral-600">
-            When set, every request (HTTP and the WebSocket connection) must
-            present this token. Frictionless on localhost by default; required
-            if the server binds beyond localhost (the HOST env var) unless
-            ALLOW_UNAUTHENTICATED=1 is set. The API_TOKEN env var, if present,
-            overrides this.
-          </p>
-        </div>
-      </section>
-
-      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <h3 className="text-sm font-medium text-neutral-300">
-          Budget & Thresholds
-        </h3>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label className="mb-1 block text-xs text-neutral-400">
-              Monthly budget (USD)
-            </label>
-            <input
-              aria-label="Global monthly budget in USD"
-              type="number"
-              value={
-                settings.globalMonthlyBudgetUsd ?? ""
-              }
-              onChange={(e) => updateBudget(e.target.value)}
-              placeholder="Unlimited"
-              className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-neutral-400">
-              Confidence threshold
-            </label>
-            <input
-              aria-label="Confidence threshold"
-              type="number"
-              min={0}
-              max={1}
-              step={0.05}
-              value={settings.confidenceThreshold}
+      </div>
+      <SectionTabs id="settings" label="Settings sections" sections={SETTINGS_SECTIONS} selected={section} onSelect={setSection} />
+      <fieldset disabled={saving} className="min-w-0">
+        <SectionPanel group="settings" id="policy" selected={section}>
+          <p className="text-sm text-neutral-400">Choose when work needs your approval, how checks run, and how much the installation can spend.</p>
+          <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+            <h3 className="text-sm font-medium text-neutral-300">
+              Merge Policy
+            </h3>
+            <select
+              aria-label="Merge policy"
+              value={settings.mergePolicy}
               onChange={(e) =>
-                updateConfidence(e.target.value)
+                updateMergePolicy(e.target.value as MergePolicy)
               }
               className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
-            />
-          </div>
-        </div>
-      </section>
-
-      <section className="space-y-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <h3 className="text-sm font-medium text-neutral-300">
-          Browser Notifications
-        </h3>
-        <p className="text-[11px] text-neutral-400">
-          Fires a native browser notification for approvals and task failures
-          while this tab is hidden — no need to keep it in the foreground.
-          On phones, Telegram (below) is the more reliable channel.
-        </p>
-        {/* B24: order matters — a real support/context gap takes priority
-            over the permission-state messaging below it. */}
-        {!browserNotify.supported ? (
-          <p className="text-[11px] text-amber-400">
-            Not supported in this browser.
-          </p>
-        ) : !browserNotify.secureContext ? (
-          <p className="text-[11px] text-amber-400">
-            Needs HTTPS — this page isn't in a secure context (plain HTTP to
-            another machine, e.g. over Tailscale, doesn't count). See{" "}
-            <a
-              href="https://github.com/IngeniousArtist/hoopedorc/blob/main/docs/USER_GUIDE.md"
-              target="_blank"
-              rel="noreferrer"
-              className="text-blue-400 hover:underline"
             >
-              the User Guide ↗
-            </a>{" "}
-            for the recommended <code>tailscale serve</code> remote setup.
-          </p>
-        ) : browserNotify.permission === "granted" && browserNotify.constructionFailed ? (
-          <p className="text-[11px] text-amber-400">
-            Permission granted, but this browser can't actually show page
-            notifications (common on Android Chrome). Rely on Telegram for
-            pings on this device.
-          </p>
-        ) : browserNotify.permission === "granted" ? (
-          <p className="text-[11px] text-green-400">Enabled.</p>
-        ) : browserNotify.permission === "denied" ? (
-          <p className="text-[11px] text-red-400">
-            Blocked — re-enable it from your browser's site settings.
-          </p>
-        ) : (
-          <button
-            onClick={() => browserNotify.requestPermission()}
-            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500"
-          >
-            Enable browser notifications
+              {(
+                Object.entries(MERGE_POLICY_LABELS) as [
+                  MergePolicy,
+                  string,
+                ][]
+              ).map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.holdWhileAwaitingApproval ?? false}
+                onChange={(e) =>
+                  updateHoldWhileAwaitingApproval(e.target.checked)
+                }
+                className="rounded border-neutral-700 bg-neutral-800"
+              />
+              Hold new dispatch while an approval is pending
+            </label>
+            <p className="text-xs text-neutral-500">
+              Trades slower overall runs for zero unsupervised spend while a
+              decision is waiting on you — active tasks still finish normally,
+              but nothing new starts until you respond.
+            </p>
+          </section>
+
+          <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+            <h3 className="text-sm font-medium text-neutral-300">
+              Gate Sandbox
+            </h3>
+            <select
+              aria-label="Gate sandbox mode"
+              value={settings.sandboxGates ?? "auto"}
+              onChange={(e) =>
+                updateSandboxGates(e.target.value as SandboxGatesMode)
+              }
+              className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+            >
+              {(
+                Object.entries(SANDBOX_GATES_LABELS) as [
+                  SandboxGatesMode,
+                  string,
+                ][]
+              ).map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-neutral-500">
+              {SANDBOX_GATES_HELP[settings.sandboxGates ?? "auto"]}
+            </p>
+          </section>
+
+          <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+            <h3 className="text-sm font-medium text-neutral-300">
+              Risky Change Rules
+            </h3>
+            <div className="space-y-2">
+              {RISKY_RULES.map(({ key, label, hint }) => (
+                <div key={key}>
+                  <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      // S8's destructiveChanges is optional (absent on settings
+                      // persisted before it existed) and defaults to enabled —
+                      // `!== false` renders that "absent" state as checked,
+                      // matching how the engine enforces it.
+                      checked={settings.riskyChangeRules[key] !== false}
+                      onChange={(e) =>
+                        updateRiskyRule(key, e.target.checked)
+                      }
+                      className="rounded border-neutral-700 bg-neutral-800"
+                    />
+                    {label}
+                  </label>
+                  {hint && (
+                    <p className="ml-6 mt-0.5 text-[10px] text-neutral-600">{hint}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+            <h3 className="text-sm font-medium text-neutral-300">
+              Budget & Thresholds
+            </h3>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs text-neutral-400">
+                  Monthly budget (USD)
+                </label>
+                <input
+                  aria-label="Global monthly budget in USD"
+                  type="number"
+                  value={
+                    settings.globalMonthlyBudgetUsd ?? ""
+                  }
+                  onChange={(e) => updateBudget(e.target.value)}
+                  placeholder="Unlimited"
+                  className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-neutral-400">
+                  Confidence threshold
+                </label>
+                <input
+                  aria-label="Confidence threshold"
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={settings.confidenceThreshold}
+                  onChange={(e) =>
+                    updateConfidence(e.target.value)
+                  }
+                  className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+                />
+              </div>
+            </div>
+          </section>
+        </SectionPanel>
+        <SectionPanel group="settings" id="models" selected={section}>
+          <p className="text-sm text-neutral-400">Manage available models, their capacity, and the roles they handle. Changes take effect when you save.</p>
+          <ModelsEditor
+            models={settings.models}
+            onChange={updateModels}
+            routing={settings.routing}
+            modelSlugs={modelSlugs}
+          />
+
+          <RoutingEditor
+            routing={settings.routing}
+            models={enabledModels}
+            onChange={updateRouting}
+          />
+        </SectionPanel>
+        <SectionPanel group="settings" id="guidelines" selected={section}>
+          <p className="text-sm text-neutral-400">Shared instructions for agents and reviewers. These apply according to the scope described for each field.</p>
+          <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+            <h3 className="text-sm font-medium text-neutral-300">Guidelines</h3>
+            <p className="text-[10px] text-neutral-600">
+              Engineering standards injected into every author and validator
+              prompt — the validator grades against the exact same text the
+              author was given, so "meets the standards" is checkable rather
+              than vibes. Blank a field to stop including that section.
+            </p>
+            {GUIDELINE_FIELDS.map(({ key, label, hint }) => (
+              <div key={key}>
+                <label className="mb-1 block text-xs text-neutral-400">
+                  {label}
+                </label>
+                <textarea
+                  aria-label={label}
+                  value={settings.guidelines?.[key] ?? ""}
+                  onChange={(e) => updateGuidelines(key, e.target.value)}
+                  rows={5}
+                  maxLength={4000}
+                  className="w-full resize-y rounded border border-neutral-700 bg-neutral-900 px-2 py-1 font-mono text-xs text-neutral-200"
+                />
+                <p className="mt-1 text-[10px] text-neutral-600">{hint}</p>
+              </div>
+            ))}
+          </section>
+        </SectionPanel>
+        <SectionPanel group="settings" id="notifications" selected={section}>
+          <p className="text-sm text-neutral-400">Choose how approvals, failures, and progress reach you.</p>
+          <section className="space-y-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+            <h3 className="text-sm font-medium text-neutral-300">
+              Browser Notifications
+            </h3>
+            <p className="text-[11px] text-neutral-400">
+              Fires a native browser notification for approvals and task failures
+              while this tab is hidden — no need to keep it in the foreground.
+              On phones, Telegram (below) is the more reliable channel.
+            </p>
+            {/* B24: order matters — a real support/context gap takes priority
+                over the permission-state messaging below it. */}
+            {!browserNotify.supported ? (
+              <p className="text-[11px] text-amber-400">
+                Not supported in this browser.
+              </p>
+            ) : !browserNotify.secureContext ? (
+              <p className="text-[11px] text-amber-400">
+                Needs HTTPS — this page isn't in a secure context (plain HTTP to
+                another machine, e.g. over Tailscale, doesn't count). See{" "}
+                <a
+                  href="https://github.com/IngeniousArtist/hoopedorc/blob/main/docs/USER_GUIDE.md"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-blue-400 hover:underline"
+                >
+                  the User Guide ↗
+                </a>{" "}
+                for the recommended <code>tailscale serve</code> remote setup.
+              </p>
+            ) : browserNotify.permission === "granted" && browserNotify.constructionFailed ? (
+              <p className="text-[11px] text-amber-400">
+                Permission granted, but this browser can't actually show page
+                notifications (common on Android Chrome). Rely on Telegram for
+                pings on this device.
+              </p>
+            ) : browserNotify.permission === "granted" ? (
+              <p className="text-[11px] text-green-400">Enabled.</p>
+            ) : browserNotify.permission === "denied" ? (
+              <p className="text-[11px] text-red-400">
+                Blocked — re-enable it from your browser's site settings.
+              </p>
+            ) : (
+              <button
+                onClick={() => browserNotify.requestPermission()}
+                className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500"
+              >
+                Enable browser notifications
+              </button>
+            )}
+          </section>
+
+          <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+            <h3 className="text-sm font-medium text-neutral-300">Telegram</h3>
+            <p className="text-[11px] text-neutral-400">
+              Create a bot with @BotFather, paste its token + your chat ID below,
+              send a test, then enable. Tip: message the bot once with no chat ID
+              set and it replies with yours. Approvals + commands are restricted to
+              that private chat and its matching user ID.
+            </p>
+            {runtimeHealthLoading ? (
+              <div className="rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-[11px] text-neutral-400">
+                Delivery: checking…
+              </div>
+            ) : runtimeHealthError ? (
+              <div className="flex min-h-10 items-center justify-between gap-3 rounded border border-amber-800 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-200">
+                <span>Delivery status unavailable.</span>
+                <button
+                  type="button"
+                  onClick={() => void refreshRuntimeHealth()}
+                  className="min-h-10 rounded border border-amber-700 px-3 py-2 focus-visible:ring-2 focus-visible:ring-amber-400"
+                >
+                  Re-check
+                </button>
+              </div>
+            ) : runtimeHealth ? (
+              <div
+                className={
+                  "rounded border px-3 py-2 text-[11px] " +
+                  (runtimeHealth.dependencies.telegram.state === "degraded"
+                    ? "border-amber-800 bg-amber-950/30 text-amber-200"
+                    : "border-neutral-800 bg-neutral-950 text-neutral-300")
+                }
+              >
+                Delivery: {runtimeHealth.dependencies.telegram.state.replace("_", " ")}
+                {runtimeHealth.dependencies.telegram.lastError
+                  ? ` — ${runtimeHealth.dependencies.telegram.lastError}`
+                  : runtimeHealth.dependencies.telegram.lastSuccessAt
+                    ? ` — last success ${new Date(runtimeHealth.dependencies.telegram.lastSuccessAt).toLocaleString()}`
+                    : ""}
+              </div>
+            ) : null}
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <label className="mb-1 block text-xs text-neutral-400">
+                  Bot token (from @BotFather)
+                </label>
+                <input
+                  aria-label="Telegram bot token"
+                  type="password"
+                  autoComplete="off"
+                  value={
+                    settings.telegram?.botToken === SECRET_SENTINEL
+                      ? ""
+                      : (settings.telegram?.botToken ?? "")
+                  }
+                  onChange={(e) => updateTelegramField("botToken", e.target.value)}
+                  placeholder={
+                    settings.telegram?.botToken === SECRET_SENTINEL
+                      ? "token saved — enter to replace"
+                      : "123456789:ABCdef…"
+                  }
+                  className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+                />
+                <p className="mt-1 text-[10px] text-neutral-600">
+                  Stored locally in the app DB. Leave blank to use the env var under
+                  Advanced instead.
+                </p>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-neutral-400">Chat ID</label>
+                <input
+                  aria-label="Telegram chat ID"
+                  type="text"
+                  value={settings.telegram?.chatId ?? ""}
+                  onChange={(e) => updateTelegramField("chatId", e.target.value)}
+                  placeholder="e.g. 123456789"
+                  className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+                />
+              </div>
+              <div className="flex items-end">
+                <button
+                  onClick={sendTelegramTest}
+                  disabled={telegramTesting || !settings.telegram?.chatId}
+                  className="rounded border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+                >
+                  {telegramTesting ? "Sending…" : "Send test message"}
+                </button>
+              </div>
+            </div>
+            {telegramTestMsg && (
+              <div className="rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-[11px] text-neutral-300">
+                {telegramTestMsg}
+              </div>
+            )}
+
+            <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.telegram?.enabled ?? false}
+                onChange={(e) => updateTelegramEnabled(e.target.checked)}
+                className="rounded border-neutral-700 bg-neutral-800"
+              />
+              Enable Telegram notifications
+            </label>
+
+            <div>
+              <label className="mb-1 block text-xs text-neutral-400">
+                Task-status digest
+              </label>
+              <select
+                aria-label="Telegram task-status digest"
+                value={settings.telegram?.digest ?? "terminal"}
+                onChange={(e) =>
+                  updateTelegramDigest(
+                    e.target.value as NonNullable<SettingsType["telegram"]>["digest"],
+                  )
+                }
+                className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 sm:w-auto"
+              >
+                <option value="terminal">Terminal only — done/failed (default)</option>
+                <option value="all">All — every status change, incl. in-progress</option>
+                <option value="off">Off — approvals only, no status chatter</option>
+              </select>
+            </div>
+
+            <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.telegram?.modelAlerts ?? true}
+                onChange={(e) => updateTelegramModelAlerts(e.target.checked)}
+                className="rounded border-neutral-700 bg-neutral-800"
+              />
+              Alert me when a model hits trouble (rate limit, fallback switch, or
+              exhausted with no fallback left)
+            </label>
+
+            <details>
+              <summary className="cursor-pointer text-[11px] text-neutral-400">
+                Advanced: read the token from an env var instead of storing it
+              </summary>
+              <div className="mt-2">
+                <label className="mb-1 block text-xs text-neutral-400">
+                  Bot token env var
+                </label>
+                <input
+                  aria-label="Telegram bot token environment variable"
+                  type="text"
+                  value={settings.telegram?.botTokenRef ?? ""}
+                  onChange={(e) => updateTelegramField("botTokenRef", e.target.value)}
+                  placeholder="TELEGRAM_BOT_TOKEN"
+                  className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+                />
+                <p className="mt-1 text-[10px] text-neutral-600">
+                  Used only when the token field above is empty.
+                </p>
+              </div>
+            </details>
+          </section>
+        </SectionPanel>
+        <SectionPanel group="settings" id="installation" selected={section}>
+          <p className="text-sm text-neutral-400">Manage the default checkout location and access to this installation.</p>
+          <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+            <h3 className="text-sm font-medium text-neutral-300">Projects</h3>
+            <div>
+              <label className="mb-1 block text-xs text-neutral-400">
+                Default projects directory
+              </label>
+              <input
+                aria-label="Default projects directory"
+                type="text"
+                value={settings.defaultProjectsDir ?? ""}
+                onChange={(e) => updateDefaultProjectsDir(e.target.value)}
+                placeholder="~/.hoopedorc/repos (default)"
+                className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+              />
+              <p className="mt-1 text-[10px] text-neutral-600">
+                New projects clone here by default (a slug of the project name, e.g.
+                ~/projects/my-app), unless you set a local directory explicitly on
+                New Project.
+              </p>
+            </div>
+          </section>
+
+          <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
+            <h3 className="text-sm font-medium text-neutral-300">Security</h3>
+            <div>
+              <label className="mb-1 block text-xs text-neutral-400">
+                API token
+              </label>
+              <input
+                aria-label="API token"
+                type="password"
+                autoComplete="off"
+                value={
+                  settings.apiToken === SECRET_SENTINEL
+                    ? ""
+                    : (settings.apiToken ?? "")
+                }
+                onChange={(e) => updateApiToken(e.target.value)}
+                placeholder={
+                  settings.apiToken === SECRET_SENTINEL
+                    ? "token saved — enter to replace"
+                    : "unset — API is open to anything reaching this host"
+                }
+                className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+              />
+              <p className="mt-1 text-[10px] text-neutral-600">
+                When set, every request (HTTP and the WebSocket connection) must
+                present this token. Frictionless on localhost by default; required
+                if the server binds beyond localhost (the HOST env var) unless
+                ALLOW_UNAUTHENTICATED=1 is set. The API_TOKEN env var, if present,
+                overrides this.
+              </p>
+            </div>
+          </section>
+        </SectionPanel>
+      </fieldset>
+
+      <div className="sticky bottom-0 z-10 space-y-2 border-t border-neutral-800 bg-neutral-950 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
+        {error && (
+          <div role="alert" className="break-words rounded border border-red-800 bg-red-950/50 px-3 py-2 text-sm text-red-300">
+            <p>{error}</p>
+            <p className="mt-1 text-xs">Your edits are kept in every section. Check the indicated field and save again.</p>
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-3">
+          <button onClick={() => void save()} disabled={!dirty || saving} aria-busy={saving} className="min-h-10 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50">
+            {saving ? "Saving…" : "Save Settings"}
           </button>
-        )}
-      </section>
-
-      <section className="space-y-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-        <h3 className="text-sm font-medium text-neutral-300">Telegram</h3>
-        <p className="text-[11px] text-neutral-400">
-          Create a bot with @BotFather, paste its token + your chat ID below,
-          send a test, then enable. Tip: message the bot once with no chat ID
-          set and it replies with yours. Approvals + commands are restricted to
-          that private chat and its matching user ID.
-        </p>
-        {runtimeHealthLoading ? (
-          <div className="rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-[11px] text-neutral-400">
-            Delivery: checking…
-          </div>
-        ) : runtimeHealthError ? (
-          <div className="flex min-h-10 items-center justify-between gap-3 rounded border border-amber-800 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-200">
-            <span>Delivery status unavailable.</span>
-            <button
-              type="button"
-              onClick={() => void refreshRuntimeHealth()}
-              className="min-h-10 rounded border border-amber-700 px-3 py-2 focus-visible:ring-2 focus-visible:ring-amber-400"
-            >
-              Re-check
-            </button>
-          </div>
-        ) : runtimeHealth ? (
-          <div
-            className={
-              "rounded border px-3 py-2 text-[11px] " +
-              (runtimeHealth.dependencies.telegram.state === "degraded"
-                ? "border-amber-800 bg-amber-950/30 text-amber-200"
-                : "border-neutral-800 bg-neutral-950 text-neutral-300")
-            }
-          >
-            Delivery: {runtimeHealth.dependencies.telegram.state.replace("_", " ")}
-            {runtimeHealth.dependencies.telegram.lastError
-              ? ` — ${runtimeHealth.dependencies.telegram.lastError}`
-              : runtimeHealth.dependencies.telegram.lastSuccessAt
-                ? ` — last success ${new Date(runtimeHealth.dependencies.telegram.lastSuccessAt).toLocaleString()}`
-                : ""}
-          </div>
-        ) : null}
-
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div className="sm:col-span-2">
-            <label className="mb-1 block text-xs text-neutral-400">
-              Bot token (from @BotFather)
-            </label>
-            <input
-              aria-label="Telegram bot token"
-              type="password"
-              autoComplete="off"
-              value={
-                settings.telegram?.botToken === SECRET_SENTINEL
-                  ? ""
-                  : (settings.telegram?.botToken ?? "")
-              }
-              onChange={(e) => updateTelegramField("botToken", e.target.value)}
-              placeholder={
-                settings.telegram?.botToken === SECRET_SENTINEL
-                  ? "token saved — enter to replace"
-                  : "123456789:ABCdef…"
-              }
-              className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
-            />
-            <p className="mt-1 text-[10px] text-neutral-600">
-              Stored locally in the app DB. Leave blank to use the env var under
-              Advanced instead.
-            </p>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs text-neutral-400">Chat ID</label>
-            <input
-              aria-label="Telegram chat ID"
-              type="text"
-              value={settings.telegram?.chatId ?? ""}
-              onChange={(e) => updateTelegramField("chatId", e.target.value)}
-              placeholder="e.g. 123456789"
-              className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
-            />
-          </div>
-          <div className="flex items-end">
-            <button
-              onClick={sendTelegramTest}
-              disabled={telegramTesting || !settings.telegram?.chatId}
-              className="rounded border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
-            >
-              {telegramTesting ? "Sending…" : "Send test message"}
-            </button>
-          </div>
-        </div>
-        {telegramTestMsg && (
-          <div className="rounded border border-neutral-800 bg-neutral-950 px-3 py-2 text-[11px] text-neutral-300">
-            {telegramTestMsg}
-          </div>
-        )}
-
-        <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={settings.telegram?.enabled ?? false}
-            onChange={(e) => updateTelegramEnabled(e.target.checked)}
-            className="rounded border-neutral-700 bg-neutral-800"
-          />
-          Enable Telegram notifications
-        </label>
-
-        <div>
-          <label className="mb-1 block text-xs text-neutral-400">
-            Task-status digest
-          </label>
-          <select
-            aria-label="Telegram task-status digest"
-            value={settings.telegram?.digest ?? "terminal"}
-            onChange={(e) =>
-              updateTelegramDigest(
-                e.target.value as NonNullable<SettingsType["telegram"]>["digest"],
-              )
-            }
-            className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200 sm:w-auto"
-          >
-            <option value="terminal">Terminal only — done/failed (default)</option>
-            <option value="all">All — every status change, incl. in-progress</option>
-            <option value="off">Off — approvals only, no status chatter</option>
-          </select>
-        </div>
-
-        <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={settings.telegram?.modelAlerts ?? true}
-            onChange={(e) => updateTelegramModelAlerts(e.target.checked)}
-            className="rounded border-neutral-700 bg-neutral-800"
-          />
-          Alert me when a model hits trouble (rate limit, fallback switch, or
-          exhausted with no fallback left)
-        </label>
-
-        <details>
-          <summary className="cursor-pointer text-[11px] text-neutral-400">
-            Advanced: read the token from an env var instead of storing it
-          </summary>
-          <div className="mt-2">
-            <label className="mb-1 block text-xs text-neutral-400">
-              Bot token env var
-            </label>
-            <input
-              aria-label="Telegram bot token environment variable"
-              type="text"
-              value={settings.telegram?.botTokenRef ?? ""}
-              onChange={(e) => updateTelegramField("botTokenRef", e.target.value)}
-              placeholder="TELEGRAM_BOT_TOKEN"
-              className="w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
-            />
-            <p className="mt-1 text-[10px] text-neutral-600">
-              Used only when the token field above is empty.
-            </p>
-          </div>
-        </details>
-      </section>
-
-      {/* U4: sticky so the save control (and the dirty hint) stay visible
-          while scrolling this long form, instead of only being reachable
-          at the very bottom. */}
-      <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-3 border-t border-neutral-800 bg-neutral-950 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
-        <button
-          onClick={save}
-          disabled={!dirty || saving}
-          className="rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
-        >
-          {saving ? "Saving…" : "Save Settings"}
-        </button>
-        {dirty && (
-          <span className="text-xs text-amber-400">
-            Unsaved changes
+          <span role="status" className={`text-xs ${dirty ? "text-amber-300" : saved ? "text-green-400" : "text-neutral-500"}`}>
+            {dirty ? "Unsaved changes" : saved ? "Settings saved." : "No unsaved changes"}
           </span>
-        )}
+          <span className="text-xs text-neutral-500">Saves changes across all sections.</span>
+        </div>
       </div>
     </div>
   );

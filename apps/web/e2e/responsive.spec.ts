@@ -214,6 +214,7 @@ for (const viewport of TARGET_VIEWPORTS) {
       await captureViewport(page, testInfo, `${viewport.name}-plan-editing`);
 
       await page.goto("/#/settings");
+      await page.getByRole("tab", { name: "Models & routing" }).click();
       const effort = page.getByLabel("Claude (planner / reviewer) reasoning effort");
       await expect(effort).toBeVisible();
       const nextEffort = (await effort.inputValue()) === "high" ? "medium" : "high";
@@ -269,6 +270,7 @@ for (const viewport of TARGET_VIEWPORTS) {
         });
       });
       await page.goto("/#/setup");
+      await page.getByRole("tab", { name: "Updates" }).click();
       await page.getByRole("button", { name: "Update & restart" }).click();
       await expect(page.getByText(/Update and restart now\?/i)).toBeVisible();
       await expectResponsivePage(page, viewport.width < 640);
