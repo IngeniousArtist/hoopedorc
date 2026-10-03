@@ -145,5 +145,7 @@ being completed first after the owner asked to clarify the execution scope.
   regression/UI suite was not repeated for this documentation-only PR. Required
   remote CI remains mandatory before merge.
 
-Update this record with exact results as stages complete; link the PR/CI evidence
-from Productization Plan Part 15. Keep an incomplete run explicitly incomplete.
+Initial documentation/readiness:
+[PR #285](https://github.com/IngeniousArtist/hoopedorc/pull/285). Update this record
+with exact results as stages complete; link subsequent PR/CI evidence from
+Productization Plan Part 15. Keep an incomplete run explicitly incomplete.

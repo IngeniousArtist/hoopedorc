@@ -9214,3 +9214,8 @@ provider doubles and are not live provider evidence. Documentation local-link
 validation and `git diff --check` passed. The full local suite/browser checks
 were not repeated for these documentation-only changes under the owner testing
 policy. Required remote CI/PR evidence is recorded in the PR before merge.
+
+Documentation and readiness PR:
+[#285](https://github.com/IngeniousArtist/hoopedorc/pull/285). Its final head,
+required CI result and merge audit are recorded in the PR; this does not complete
+the pending live-provider or deployment acceptance above.
