@@ -104,8 +104,8 @@ and durability failures first, then repeated setup and workflow friction.
 
 ## Evidence record — 3 October 2026
 
-Status: local readiness checked; live model run not started. The owner requested
-a clear documentation checkpoint before execution continues.
+Status: local readiness checked; live model run not started. Documentation is
+being completed first after the owner asked to clarify the execution scope.
 
 - Baseline: `5bb62ba`; fetched `origin/main`, local main has zero ahead/behind
   commits and no tracked modifications. Existing untracked dependency directory

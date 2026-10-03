@@ -9204,7 +9204,7 @@ an isolated two-profile native test configuration (Claude `sonnet` planner/revie
 Codex `gpt-6-sol` author/docs), ten calls per account per 24 hours and no metered
 fallback. Codex's installed bundled catalog confirms the model slug; availability
 still requires a live response. The temporary local test server was stopped at
-the owner's requested documentation checkpoint. No model calls, reference-repo
+the documentation checkpoint after the owner asked to clarify scope. No model calls, reference-repo
 creation, app build or deployment occurred.
 
 Validation: the existing `milestone-process.test.ts`, `planning-commit.test.ts`
