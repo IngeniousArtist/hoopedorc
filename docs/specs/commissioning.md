@@ -1,5 +1,11 @@
 # Remaining live commissioning after VW01–VW18
 
+The October owner-approved follow-up is
+[AW01 reference-app commissioning](app-workspace-commissioning.md), part of the
+[complete app workspace plan](../APP_WORKSPACE_PLAN.md). Its dated evidence
+records current readiness and live results without replacing this matrix's
+pending deployment/provider checks.
+
 The implementation wave preserves the orchestration core and adds the visual
 workspace, durable planning, review/workspace services, selective context controls,
 resource pools, isolated profiles, milestone verification, environment profiles,

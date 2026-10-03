@@ -98,8 +98,13 @@ parts were appended after the original ten:
   2026-09-21): preserves the existing orchestration core and defines VW01–VW18
   for planning reliability, a designer-oriented workspace, previews/review,
   selective context, resources, isolation, and bounded large-brief delivery.
-  Start with VW01. Full spec: [Visual workspace implementation plan](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
-  All implementation items remain not started.
+  Full spec: [Visual workspace implementation plan](VISUAL_WORKSPACE_IMPLEMENTATION_PLAN.md).
+  VW01–VW18 are implemented; the final local regression and merge evidence are
+  recorded below. Live commissioning remains separately pending.
+- **Part 15 — Complete app workspace** (owner-approved direction, 2026-10-03):
+  extends the completed visual workspace for the owner as a technical solo
+  builder. Start with AW01 live commissioning and the reference journey.
+  Full spec: [Complete app workspace plan](APP_WORKSPACE_PLAN.md).
 
 **Ground rules for every change:**
 - `main` is sacred: branch → PR → merge. Keep `npm run typecheck`, `npm run build`,
@@ -9143,3 +9148,69 @@ The final raw-draft download correction then passed its focused real-browser
 journey (including malformed text preservation), web typecheck, affected-component
 lint and whitespace checks. Required CI runs on the final head; its exact SHA,
 run link and independently verified merge are recorded in PR #284.
+
+## Part 15 — Complete app workspace
+
+Owner-approved direction, 2026-10-03: make the preceding product analysis a
+durable reference and execute its steps for the owner as a technical solo
+builder. The focused source of truth is
+[APP_WORKSPACE_PLAN.md](APP_WORKSPACE_PLAN.md), with explicit acceptance,
+dependencies, non-goals and owning layers for AW01–AW11. The implementation keeps
+the existing single scheduler and all load-bearing invariants from AGENTS.md.
+
+| ID | Item | Status | Evidence / next acceptance |
+| --- | --- | --- | --- |
+| AW01 | Real-provider reference journey | Local readiness checked; live run not started | [Runbook and evidence](specs/app-workspace-commissioning.md); subscription-only policy, documentation checkpoint first |
+| AW02 | Feasible model teams and preflight | Not started | Use AW01 intervention evidence; preserve independent reviewer capacity |
+| AW03 | Project outcome overview | Not started | Current milestone/preview data before new contracts |
+| AW04 | Executable product requirements | Not started | Stable coverage links and reviewed version changes |
+| AW05 | Complete app environment | Not started | One supported stack and isolated service/test data |
+| AW06 | Reusable acceptance journeys | Not started | Executed evidence for original requirements |
+| AW07 | Design direction and visual corrections | Not started | Scoped repair and before/after verification |
+| AW08 | Cause-based recovery | Not started | Bounded retry with evidence of what changed |
+| AW09 | Target-app releases | Not started | Chosen/provisioned target and staging acceptance |
+| AW10 | Inspectable project knowledge | Not started | Provenance, supersession and bounded context |
+| AW11 | Measured model/context optimization | Not started | Held-out results; live routing remains off |
+
+### AW01 — acceptance and initial work (2026-10-03)
+
+Acceptance before calling the baseline commissioned: a dedicated existing-repo
+feature traverses real planning, durable approval, concurrent task execution,
+independent review, gates/PRs and current combined milestone evidence. Record
+provider interruption, restart, failing-test repair and visual correction
+separately. The full reference app covers client/admin authentication, project
+access, persistent assignments, uploads and activity; release evidence remains
+pending until AW09 and a deployment target exist. A fixture or authenticated
+status probe is not a live model completion.
+
+Readiness evidence: fetched `origin/main` at `5bb62ba`; main is 0 ahead/0 behind
+with no tracked edits. Preserved the existing untracked dependency directory and
+created the implementation branch in a separate clean worktree. Node `22.23.0`,
+npm `10.9.8`, gh `2.96.0`, Claude `2.1.278`, Codex `0.158.0`, OpenCode `1.18.30`
+are installed. Docker is absent from PATH. Sanitized-environment auth probes
+confirm Claude logged in with `oauth_token`/`firstParty` and Codex with ChatGPT,
+not an API key; GitHub active-account authentication succeeds. No credentials
+were printed and no model invocation was made by these probes. Auth status does
+not establish model availability or remaining allowance.
+
+The reference document preserves all ten recommended upgrades, maps them to
+AW01–AW11, specifies sequencing and acceptance, and distinguishes existing VW
+implementation from pending live acceptance. Corrected the stale Part 14 index
+summary without changing historical implementation evidence. AWS remains
+owner-deferred.
+
+The owner chose existing subscriptions only, with no metered API spend. Prepared
+an isolated two-profile native test configuration (Claude `sonnet` planner/reviewer,
+Codex `gpt-6-sol` author/docs), ten calls per account per 24 hours and no metered
+fallback. Codex's installed bundled catalog confirms the model slug; availability
+still requires a live response. The temporary local test server was stopped at
+the owner's requested documentation checkpoint. No model calls, reference-repo
+creation, app build or deployment occurred.
+
+Validation: the existing `milestone-process.test.ts`, `planning-commit.test.ts`
+and `plan-changes.test.ts` passed together through `node --import tsx --test`:
+14 passed, zero failed/skipped. These exercise local Git/process boundaries with
+provider doubles and are not live provider evidence. Documentation local-link
+validation and `git diff --check` passed. The full local suite/browser checks
+were not repeated for these documentation-only changes under the owner testing
+policy. Required remote CI/PR evidence is recorded in the PR before merge.
