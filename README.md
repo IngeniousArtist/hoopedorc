@@ -39,6 +39,13 @@ moving.
 > current completion state and evidence live in
 > [`docs/OPTIMIZATION_PLAN.md`](docs/OPTIMIZATION_PLAN.md).
 
+The next product direction is the
+[complete app workspace plan](docs/APP_WORKSPACE_PLAN.md): a technical solo
+builder's path from brief through multiple models, verified product behavior and
+release. Start with its [reference-app commissioning runbook](docs/specs/app-workspace-commissioning.md);
+the [roadmap status table](docs/PRODUCTIZATION_PLAN.md#part-15--complete-app-workspace)
+tracks implementation and remaining acceptance.
+
 ## Quick start
 
 ### Requirements
